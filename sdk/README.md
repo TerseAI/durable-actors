@@ -38,6 +38,23 @@ The npm package installs the `little-actors` CLI. On first use, `dev` downloads 
 
 `little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
+## Test runners
+
+Start a local server programmatically and pass its connection settings to your test runner:
+
+```ts
+import { startLocalActors } from "little-actors/dev"
+
+const runtime = await startLocalActors({ entrypoint: "src/actors.ts" })
+try {
+    await runTests(runtime.connection)
+} finally {
+    await runtime.stop()
+}
+```
+
+The launcher downloads the matching runtime and waits for readiness. It defaults to a free loopback port and `.little-actors/`; set `project`, `dataDir`, or `port` to override them. `stop()` preserves state and waits for shutdown. `connection` exposes the server settings; `closed` rejects on process failure.
+
 ## Hosted backends
 
 Set these before the first actor call:

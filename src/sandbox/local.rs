@@ -27,6 +27,7 @@ use super::{
 pub(crate) struct LocalSandboxProvider {
     executable: PathBuf,
     project: PathBuf,
+    sdk_host: Option<PathBuf>,
     leases: Arc<dyn HostLeaseStore>,
     hosts: Mutex<HashMap<String, LocalHost>>,
     stopping: AtomicBool,
@@ -37,10 +38,12 @@ impl LocalSandboxProvider {
         executable: PathBuf,
         project: PathBuf,
         leases: Arc<dyn HostLeaseStore>,
+        sdk_host: Option<PathBuf>,
     ) -> Self {
         Self {
             executable,
             project,
+            sdk_host,
             leases,
             hosts: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
@@ -57,7 +60,13 @@ impl LocalSandboxProvider {
 
     async fn launch(&self, request: &EnsureHostRequest) -> Result<LocalHost> {
         let directory = tempfile::Builder::new().prefix("ldo-").tempdir_in("/tmp")?;
-        let environment = host_environment(request, &directory);
+        let mut environment = host_environment(request, &directory);
+        if let Some(module) = &self.sdk_host {
+            environment.insert(
+                "DURABLE_OBJECT_SDK_HOST".into(),
+                module.display().to_string(),
+            );
+        }
         let child = Command::new(&self.executable)
             .current_dir(&self.project)
             .env_clear()
@@ -269,8 +278,12 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let project = directory.path().to_path_buf();
         let leases = Arc::new(SqliteStore::open(&project.join("metadata.sqlite")).await?);
-        let provider =
-            LocalSandboxProvider::new(project.join("unused-executable"), project.clone(), leases);
+        let provider = LocalSandboxProvider::new(
+            project.join("unused-executable"),
+            project.clone(),
+            leases,
+            None,
+        );
         provider.shutdown().await;
         let request = EnsureHostRequest {
             namespace_id: "local".into(),
