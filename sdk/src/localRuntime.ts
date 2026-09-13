@@ -12,6 +12,7 @@ export interface LocalActorOptions {
     dataDir?: string
     port?: number
     startupTimeoutMs?: number
+    quiet?: boolean
 }
 
 const connectionSchema = z.object({
@@ -72,7 +73,7 @@ function launch(executable: string, options: LocalActorOptions) {
                 DURABLE_OBJECT_PROCESS_ROLE: "control_plane",
                 DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"
             },
-            stdio: ["pipe", "inherit", "inherit", "pipe"]
+            stdio: ["pipe", options.quiet ? "ignore" : "inherit", options.quiet ? "ignore" : "inherit", "pipe"]
         }
     )
 }
