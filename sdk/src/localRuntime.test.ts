@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import { promisify } from "node:util"
 
 import { startLocalActors } from "./localRuntime.js"
 
@@ -75,3 +77,32 @@ test("rejects malformed readiness and stops the process", async () => {
         }
     )
 })
+
+for (const quiet of [false, true]) {
+    test(`local runtime output is ${quiet ? "suppressed" : "inherited"}`, async () => {
+        await fixture(
+            `const fs = require("node:fs");
+            fs.writeSync(1, "actor stdout\\n");
+            fs.writeSync(2, "actor stderr\\n");
+            fs.writeSync(3, JSON.stringify({controlPlaneUrl:"http://127.0.0.1:7100", apiKey:"secret", namespaceId:"local", storageRegion:"local", pid:process.pid}));
+            fs.closeSync(3);
+            process.stdin.resume();
+            process.stdin.on("end", () => process.exit(0));`,
+            async () => {
+                const source = `
+                    import { startLocalActors } from ${JSON.stringify(new URL("./localRuntime.js", import.meta.url).href)};
+                    const runtime = await startLocalActors({ entrypoint: "src/actors.ts", quiet: ${quiet} });
+                    await runtime.stop();
+                    console.log("workflow output");
+                `
+                const { stdout, stderr } = await promisify(execFile)(process.execPath, [
+                    "--input-type=module",
+                    "-e",
+                    source
+                ])
+                assert.equal(stdout, quiet ? "workflow output\n" : "actor stdout\nworkflow output\n")
+                assert.equal(stderr, quiet ? "" : "actor stderr\n")
+            }
+        )
+    })
+}
