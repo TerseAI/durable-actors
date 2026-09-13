@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     future::Future,
     io::Write,
+    os::fd::FromRawFd,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -43,6 +44,10 @@ pub struct DevOptions {
     pub entrypoint: String,
     #[arg(long, value_enum, default_value = "local")]
     pub storage: DevStorage,
+    #[arg(long, hide = true, value_parser = clap::value_parser!(i32).range(3..))]
+    pub ready_fd: Option<i32>,
+    #[arg(long, hide = true)]
+    pub sdk_host: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -80,6 +85,7 @@ pub async fn serve_local(
         std::env::current_exe()?,
         project.clone(),
         database.clone(),
+        options.sdk_host.clone(),
     ));
     let api_key = uuid::Uuid::new_v4().simple().to_string();
     let routes = local_routes(
@@ -93,7 +99,13 @@ pub async fn serve_local(
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = publish_connection(&directory, &origin, &api_key, &storage.region);
+    let ready = publish_connection(
+        &directory,
+        &origin,
+        &api_key,
+        &storage.region,
+        options.ready_fd,
+    );
     if ready.is_ok() {
         println!(
             "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx little-actors generate\nRestart this command after changing actor code.",
@@ -309,11 +321,22 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     )
 }
 
-fn publish_connection(directory: &Path, origin: &str, api_key: &str, region: &str) -> Result<()> {
-    write_private_json(
-        &directory.join("runtime.json"),
-        &serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region }),
-    )
+fn publish_connection(
+    directory: &Path,
+    origin: &str,
+    api_key: &str,
+    region: &str,
+    ready_fd: Option<i32>,
+) -> Result<()> {
+    let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
+    write_private_json(&directory.join("runtime.json"), &connection)?;
+    if let Some(fd) = ready_fd {
+        // The launcher transfers ownership of this inherited readiness descriptor.
+        let mut ready = unsafe { File::from_raw_fd(fd) };
+        serde_json::to_writer(&mut ready, &connection)?;
+        ready.flush()?;
+    }
+    Ok(())
 }
 
 fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {

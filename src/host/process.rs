@@ -554,7 +554,7 @@ fn spawn_javascript_process() -> Result<tokio::process::Child> {
     Command::new("node")
         .args([
             "--eval",
-            "import(\"little-actors/host\").then(module => module.runDurableObjectHost())",
+            "import(process.env.DURABLE_OBJECT_SDK_HOST ?? \"little-actors/host\").then(module => module.runDurableObjectHost())",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())

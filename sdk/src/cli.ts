@@ -3,11 +3,10 @@ import { Command, InvalidArgumentError, Option } from "commander"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
-import { homedir } from "node:os"
 import path from "node:path"
 
 import { registerObjectCommands } from "./cli/objects.js"
-import { RuntimeInstaller } from "./runtimeInstaller.js"
+import { runtimeExecutable } from "./runtimeInstaller.js"
 
 interface DevOptions {
     port: number
@@ -138,14 +137,7 @@ function devArguments(options: DevOptions): string[] {
 }
 
 async function runRuntime(args: string[]): Promise<number> {
-    const executable = process.env.DURABLE_OBJECT_BINARY
-        ? path.resolve(process.env.DURABLE_OBJECT_BINARY)
-        : await new RuntimeInstaller({
-              version: await version(),
-              platform: process.platform,
-              arch: process.arch,
-              cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/little-actors")
-          }).install()
+    const executable = await runtimeExecutable()
     return runProcess(
         executable,
         args,

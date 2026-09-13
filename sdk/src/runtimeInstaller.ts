@@ -1,10 +1,22 @@
 import { createHash } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import path from "node:path"
 import { x } from "tar"
 
 const executables = ["little-actors", "little-actors-modal-go"]
 const maximumBytes = 200 * 1024 * 1024
+
+export async function runtimeExecutable(): Promise<string> {
+    if (process.env.DURABLE_OBJECT_BINARY) return path.resolve(process.env.DURABLE_OBJECT_BINARY)
+    const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+    return new RuntimeInstaller({
+        version,
+        platform: process.platform,
+        arch: process.arch,
+        cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/little-actors")
+    }).install()
+}
 
 interface RuntimeOptions {
     version: string
