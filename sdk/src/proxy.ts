@@ -15,7 +15,6 @@ interface SocketProxyDependencies {
 }
 
 interface ProxyActor<Metadata = unknown> {
-    readonly metadata: (value: unknown) => boolean
     readonly types?: Metadata
 }
 
@@ -66,7 +65,6 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         const actorId = validateActorComponent("actor ID", authorization.actorId)
         if (!Object.hasOwn(this.actors, actorType)) throw new Error(`Unknown actor type: ${actorType}`)
         const metadata = socketMetadata(authorization.metadata)
-        if (!this.actors[actorType].metadata(metadata)) throw new Error(`Invalid socket metadata for ${actorType}`)
         const authorizationLifetimeMs = authorization.authorizationLifetimeMs ?? 900000
         if (
             !Number.isSafeInteger(authorizationLifetimeMs) ||

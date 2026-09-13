@@ -73,7 +73,8 @@ const socketEffectSchema = z.discriminatedUnion("type", [
         type: z.literal("broadcast"),
         message: socketMessageSchema,
         except_connection_ids: z.array(socketConnectionIdSchema).max(128),
-        tags: socketTagsSchema
+        tags: socketTagsSchema,
+        tag_match: z.enum(["all", "any"]).optional()
     }),
     z.object({
         type: z.literal("close"),
@@ -132,6 +133,7 @@ type SocketEffect =
           readonly message: SocketMessage
           readonly except_connection_ids: readonly string[]
           readonly tags: readonly string[]
+          readonly tag_match?: "all" | "any"
       }
     | {
           readonly type: "close" | "reject"

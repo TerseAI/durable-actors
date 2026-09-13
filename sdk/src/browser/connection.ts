@@ -44,7 +44,7 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
             schedule: dependencies.schedule ?? ((callback, delay) => setTimeout(callback, delay)),
             cancel: dependencies.cancel ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>))
         }
-        this.cache = new StateCache(descriptor.validators.state)
+        this.cache = new StateCache<State>()
     }
 
     get status(): ConnectionStatus {
@@ -79,8 +79,6 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
     send(message: Incoming): void {
         if (this.status !== "open" || this.socket?.readyState !== 1 || this.runtime.now() >= this.authorizationDeadline)
             throw new SocketError("not_open", "Actor connection is not open")
-        if (!this.descriptor.validators.incoming(message))
-            throw new SocketError("invalid_message", "Invalid message for this actor")
         this.socket.send(encodeFrame({ type: "message", data: message }))
     }
 
@@ -173,8 +171,6 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
                 this.notifyFields(this.cache.update(frame.changes, frame.removed, frame.version))
                 return
             case "message":
-                if (!this.descriptor.validators.outgoing(frame.data))
-                    throw new SocketError("invalid_message", "Invalid actor message received from the server")
                 this.emit("message", frame.data as Outgoing)
                 return
             case "ready":

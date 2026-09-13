@@ -76,6 +76,7 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
             message,
             except_connection_ids,
             tags,
+            ..
         } => {
             ensure!(
                 except_connection_ids.len() <= MAX_SOCKET_TAGS,

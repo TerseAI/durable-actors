@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { Actor, registerActorClass } from "../../actor/actor.js"
 import type { ActorMessageOf, ActorSocketOf } from "../../actor/actor.js"
+import { Persistence } from "../../actor/schema.js"
 import type { SocketConnection } from "../../actor/socketProtocol.js"
 import { ActorRuntime } from "../actor-runtime.js"
 import type { WebSocketEventCommand } from "../protocol.js"
@@ -59,9 +60,16 @@ const definition = registerActorClass(ValidatedRoom)
 const actor = { namespace_id: "project", actor_type: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
-test("generated contracts validate messages without requiring application Zod schemas", async () => {
+test("host contracts reject invalid metadata, messages, output, and state without application Zod schemas", async () => {
     let handled = 0
-    class ContractRoom extends Actor<{}, { count: number }> {
+    class ContractRoom extends Actor<{ userId: string }, { count: number }> {
+        count = 0
+        async onConnect() {
+            handled++
+        }
+        async invalidState() {
+            this.count = "invalid" as never
+        }
         async onMessage() {
             handled++
         }
@@ -71,15 +79,15 @@ test("generated contracts validate messages without requiring application Zod sc
     }
     const definition = registerActorClass(ContractRoom, {
         actorType: "ContractRoom",
-        fields: [],
+        fields: [{ name: "count", persistence: Persistence.Persisted }],
         contract: {
             version: 1,
             actorType: "ContractRoom",
             emittable: [],
             schema: {
                 definitions: {
-                    Metadata: { type: "object" },
-                    State: { type: "object" },
+                    Metadata: { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },
+                    State: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
                     Incoming: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
                     Outgoing: { type: "object", properties: { count: { type: "number" } }, required: ["count"] }
                 }
@@ -93,21 +101,34 @@ test("generated contracts validate messages without requiring application Zod sc
         message: { type: "text", data: '{"count":"wrong"}' }
     })
     const identity = { ...actor, actor_type: "ContractRoom" }
-    assert.equal((await runtime.handle({ ...request, actor: identity })).type, "failed")
+    const invalidConnection = { ...connection, metadata: { userId: 123 } }
+    const metadataReply = await runtime.handle({
+        ...event({ type: "connect", connection: invalidConnection }, [invalidConnection]),
+        actor: identity
+    })
+    assert.equal(metadataReply.type, "failed")
+    assert.match(JSON.stringify(metadataReply), /metadata violates its socket contract/)
+    const messageReply = await runtime.handle({ ...request, actor: identity })
+    assert.equal(messageReply.type, "failed")
+    assert.equal(messageReply.type === "failed" && messageReply.code, "actor_socket_failed")
     assert.equal(handled, 0)
-    assert.equal(
-        (
-            await runtime.handle({
-                type: "invoke",
-                request_id: "invalid",
-                actor: identity,
-                state: null,
-                method: "invalidOutput",
-                args: []
-            })
-        ).type,
-        "failed"
-    )
+    for (const [method, kind] of [
+        ["invalidOutput", "outgoing"],
+        ["invalidState", "state"]
+    ]) {
+        const reply = await runtime.handle({
+            type: "invoke",
+            request_id: "invalid",
+            actor: identity,
+            state: null,
+            method: method!,
+            args: []
+        })
+        assert.equal(reply.type, "failed")
+        assert.match(JSON.stringify(reply), new RegExp(`${kind} violates its socket contract`))
+        assert.equal("state" in reply, false, "invalid state must not be committed")
+        assert.equal("effects" in reply, false, "invalid output must not be returned")
+    }
     const valid = {
         ...request,
         actor: identity,

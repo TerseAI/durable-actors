@@ -4,6 +4,53 @@ import { test } from "node:test"
 import { ActorProtocolError, ActorSerializationError } from "../errors.js"
 
 import { decodeSocketMessage, runWithActorSockets } from "./socket.js"
+import { parseSocketEffects } from "./socketProtocol.js"
+
+test("broadcast tag matching modes survive socket transport", async () => {
+    const published: unknown[] = []
+    await runWithActorSockets(
+        {},
+        [],
+        async scope => {
+            for (const tagMatch of ["all", "any"] as const) {
+                scope.broadcast({ type: "files-ready" }, { tags: ["file:a", "file:b"], tagMatch })
+            }
+        },
+        async effects => {
+            published.push(...parseSocketEffects(effects))
+        }
+    )
+    assert.deepEqual(
+        published,
+        ["all", "any"].map(tag_match => ({
+            type: "broadcast",
+            message: { type: "text", data: '{"type":"files-ready"}' },
+            except_connection_ids: [],
+            tags: ["file:a", "file:b"],
+            tag_match
+        }))
+    )
+})
+
+test("invalid broadcast tag matching modes fail before publishing", async () => {
+    const result = await runWithActorSockets({}, [], async scope => {
+        assert.throws(() => scope.broadcast({}, { tagMatch: "either" as never }), ActorProtocolError)
+    })
+    assert.deepEqual(result.effects, [])
+    assert.throws(
+        () =>
+            parseSocketEffects([
+                {
+                    type: "broadcast",
+                    message: { type: "text", data: "{}" },
+                    except_connection_ids: [],
+                    tags: [],
+                    tag_match: "either"
+                }
+            ]),
+        ActorProtocolError
+    )
+})
 
 test("actor sends and broadcasts snapshot JSON values without caller serialization", async () => {
     const message = { type: "delta", payload: { text: "hello", flags: [true, null, 3] } }

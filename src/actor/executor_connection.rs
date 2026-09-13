@@ -83,6 +83,14 @@ pub struct ActorSocketInvocation {
     pub connections: Vec<ActorSocketConnection>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorSocketTagMatch {
+    #[default]
+    All,
+    Any,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActorSocketEffect {
@@ -108,6 +116,8 @@ pub enum ActorSocketEffect {
         message: ActorSocketMessage,
         except_connection_ids: Vec<String>,
         tags: Vec<String>,
+        #[serde(default)]
+        tag_match: ActorSocketTagMatch,
     },
     Close {
         connection_id: String,

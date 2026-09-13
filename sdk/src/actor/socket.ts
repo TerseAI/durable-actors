@@ -22,6 +22,7 @@ interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends st
 interface ActorBroadcastOptions<Tag extends string = string> {
     readonly except?: Pick<ActorSocket, "id"> | readonly Pick<ActorSocket, "id">[]
     readonly tags?: readonly Tag[]
+    readonly tagMatch?: "all" | "any"
 }
 
 interface ActorConnection<Send = JsonValue, Receive = Send, State = JsonValue> {
@@ -115,11 +116,14 @@ class ActorSocketScope {
     }
 
     broadcast(message: unknown, options: ActorBroadcastOptions = {}): void {
+        if (options.tagMatch !== undefined && options.tagMatch !== "all" && options.tagMatch !== "any")
+            throw new ActorProtocolError('broadcast tagMatch must be "all" or "any"')
         this.effects.push({
             type: "broadcast",
             message: socketMessage(message, this.schemas),
             except_connection_ids: excludedSocketIds(options.except),
-            tags: socketTags(options.tags ?? [], this.schemas)
+            tags: socketTags(options.tags ?? [], this.schemas),
+            ...(options.tagMatch === undefined ? {} : { tag_match: options.tagMatch })
         })
     }
 }

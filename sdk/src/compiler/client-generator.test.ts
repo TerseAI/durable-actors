@@ -1,6 +1,6 @@
 import { build } from "esbuild"
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -97,13 +97,20 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         { actorType: "Room", actorId: "one", metadata: {} },
         { actorType: "Room", actorId: "one", metadata: { userId: 1 } },
         { actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } },
-        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } },
+        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } }
+    ])
+        assert.equal((await proxy.handle(authorization)).key, "ticket")
+    for (const authorization of [
         { actorType: "Missing", actorId: "one", metadata: {} },
         { actorType: "toString", actorId: "one", metadata: {} }
     ])
         await assert.rejects(proxy.handle(authorization), /metadata|actor type/i)
-    assert.equal(requests.length, 2, "invalid authorization must fail before issuing a ticket")
-    t.mock.method(globalThis, "fetch", fetch)
+    assert.equal(requests.length, 6, "unknown actors must fail before issuing a ticket")
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetch
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
     const original = { url: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL, key: process.env.DURABLE_OBJECT_API_KEY }
     t.after(() => {
         for (const [key, value] of Object.entries({
@@ -211,9 +218,11 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
     }
 })
 
-test("generates loose browser source and standalone validators without server imports", async () => {
+test("regenerates typed descriptors without stale validators or server imports", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-client-"))
     try {
+        for (const suffix of ["validators.js", "validators.d.ts", "proxy-validators.js", "proxy-validators.d.ts"])
+            await writeFile(path.join(directory, `Room.${suffix}`), "old generated validator")
         const { generateClient } = await import("./client-generator.js")
         await generateClient(
             [
@@ -241,13 +250,8 @@ test("generates loose browser source and standalone validators without server im
         assert.match(source, /little-actors\/browser/)
         assert.match(source, /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler|durable-objects/)
-        const validators = await readFile(path.join(directory, "Room.validators.js"), "utf8")
-        assert.doesNotMatch(validators, /new Function|require\(/)
-        const module = await import(`data:text/javascript,${encodeURIComponent(validators)}`)
-        assert.equal(module.incoming({ amount: 1, futureField: true }), true)
-        assert.equal(module.incoming({ amount: "wrong" }), false)
-        assert.equal(module.state({}), false)
-        assert.equal(module.outgoing("hello"), true)
+        assert.deepEqual((await readdir(directory)).sort(), ["Room.actor.ts", "Room.proxy.ts", "index.ts", "proxy.ts"])
+        assert.doesNotMatch(source, /validators/)
         assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /ActorClient/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(
@@ -279,7 +283,7 @@ test("generates loose browser source and standalone validators without server im
         })
         assert.equal(
             Object.keys(bundle.metafile!.inputs).some(file =>
-                /\/host\/|\/compiler\/|\/client\/|proxy|node:/.test(file)
+                /\/host\/|\/compiler\/|\/client\/|proxy|node:|ajv|validators/.test(file)
             ),
             false
         )

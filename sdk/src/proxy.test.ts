@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { SocketProxy } from "./proxy.js"
 
-const actors = { Room: { metadata: (_value: unknown) => true } }
+const actors = { Room: {} }
 
 test("proxy issues socket authorization using only server-selected target and metadata", async () => {
     const requests: { url: string; headers: Headers; body: unknown }[] = []
@@ -39,15 +39,18 @@ test("proxy issues socket authorization using only server-selected target and me
     assert.equal(requests.length, 1)
 })
 
-test("proxy validates metadata and requires a backend API key", async () => {
+test("proxy requires JSON metadata and a backend API key", async () => {
     const proxy = new SocketProxy(
-        { Room: { metadata: (value: unknown) => typeof value === "string" } },
+        actors,
         { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" },
         {
             fetch: async () => assert.fail("invalid request reached issuance")
         }
     )
-    await assert.rejects(proxy.handle({ actorType: "Room", actorId: "lobby", metadata: {} }), /metadata/)
+    await assert.rejects(
+        proxy.handle({ actorType: "Room", actorId: "lobby", metadata: { invalid: () => undefined } }),
+        /JSON/
+    )
     assert.throws(
         () => new SocketProxy(actors, { controlPlaneUrl: "https://actors.example.com", apiKey: "" }),
         /API key/

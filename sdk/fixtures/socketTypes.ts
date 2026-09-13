@@ -32,6 +32,10 @@ class TypedRoom extends Actor<ChatroomMetadata, Incoming, Outgoing, z.infer<type
         this.connections[0]?.send(response)
         socket.setTags("member", "moderator")
         this.broadcast(response, { tags: ["member"], except: socket })
+        this.broadcast(response, { tags: ["member", "moderator"], tagMatch: "any" })
+        this.broadcast(response, { tags: ["member", "moderator"], tagMatch: "all" })
+        // @ts-expect-error Broadcast tag matching accepts only all or any.
+        this.broadcast(response, { tagMatch: "either" })
         const tags: readonly ("member" | "moderator")[] = socket.tags
         void tags
         // @ts-expect-error Socket tags follow the actor's tag union.

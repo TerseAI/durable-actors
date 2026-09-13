@@ -169,7 +169,7 @@ npx little-actors generate
 
 The entrypoint defaults to `src/durable-objects.ts`; output defaults to `generated/`. Pass a different entrypoint as a positional argument, `--out-dir <directory>` to change the output location, or `--config <file>` to select a TypeScript configuration. Generation checks the actor dependency graph without executing it and fails immediately on unsupported socket or public-state types.
 
-Output contains TypeScript descriptors, standalone validators, `ActorClient` in `index.ts`, and `ActorProxy` in `proxy.ts`. Generate these source files once in a shared directory, or copy the output into separate projects. Each project needs `little-actors` installed. Import `index.ts` from the frontend and `proxy.ts` from the backend. The proxy restricts actor names and metadata to the original actor definitions. This does not publish a separate SDK package. Regenerate when the actor contract changes. See [browser clients](../../sdk/README.md#browser-clients) for the proxy and frontend integration.
+Output contains TypeScript descriptors, `ActorClient` in `index.ts`, and `ActorProxy` in `proxy.ts`. Generate these source files once in a shared directory, or copy the output into separate projects. Each project needs `little-actors` installed. Import `index.ts` from the frontend and `proxy.ts` from the backend. The proxy restricts actor names at runtime and metadata types at compile time. Actor-specific runtime validation runs in the actor host. Regeneration removes obsolete validator files for the generated actors. This does not publish a separate SDK package. Regenerate when the actor contract changes. See [browser clients](../../sdk/README.md#browser-clients) for the proxy and frontend integration.
 
 ## Start a hosted server
 

@@ -20,7 +20,7 @@ use tracing::warn;
 use crate::{
     actor::{
         ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent,
-        ActorSocketInvocation, ActorSocketMessage, MAX_SOCKET_MESSAGE_BYTES,
+        ActorSocketInvocation, ActorSocketMessage, ActorSocketTagMatch, MAX_SOCKET_MESSAGE_BYTES,
         MAX_SOCKET_METADATA_BYTES, validate_socket_effects,
     },
     control_plane::ActorPrincipal,
@@ -537,6 +537,7 @@ impl SocketRegistry {
                 message,
                 except_connection_ids,
                 tags,
+                tag_match,
             } => {
                 let recipients = self
                     .entries
@@ -549,7 +550,15 @@ impl SocketRegistry {
                             .filter(|entry| {
                                 entry.open
                                     && !except_connection_ids.contains(&entry.connection.id)
-                                    && tags.iter().all(|tag| entry.connection.tags.contains(tag))
+                                    && (tags.is_empty()
+                                        || match tag_match {
+                                            ActorSocketTagMatch::All => tags
+                                                .iter()
+                                                .all(|tag| entry.connection.tags.contains(tag)),
+                                            ActorSocketTagMatch::Any => tags
+                                                .iter()
+                                                .any(|tag| entry.connection.tags.contains(tag)),
+                                        })
                             })
                             .map(|entry| entry.outbound.clone())
                             .collect::<Vec<_>>()
@@ -762,6 +771,102 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn broadcast_matches_all_or_any_tags_and_preserves_exclusions() {
+        let registry = SocketRegistry::default();
+        let actor = ActorKey {
+            namespace_id: "default".into(),
+            actor_type: "Files".into(),
+            actor_id: "files".into(),
+        };
+        let mut receivers = Vec::new();
+        for (id, tags, open) in [
+            ("a", vec!["file:a"], true),
+            ("b", vec!["file:b"], true),
+            ("both", vec!["file:a", "file:b", "file:c"], true),
+            ("neither", vec!["file:c"], true),
+            ("excluded", vec!["file:a", "file:b"], true),
+            ("connecting", vec!["file:a", "file:b"], false),
+        ] {
+            let (outbound, receiver) = mpsc::unbounded_channel();
+            assert!(
+                registry
+                    .insert(
+                        &actor,
+                        ActorSocketConnection {
+                            id: id.into(),
+                            metadata: json!({}),
+                            tags: Vec::new(),
+                        },
+                        outbound,
+                        None
+                    )
+                    .await
+            );
+            if open {
+                registry.activate(&actor, id).await;
+            }
+            registry
+                .apply(
+                    &actor,
+                    vec![ActorSocketEffect::SetTags {
+                        connection_id: id.into(),
+                        tags: tags.into_iter().map(String::from).collect(),
+                    }],
+                )
+                .await;
+            receivers.push((id, receiver));
+        }
+        for (mode, tags, expected) in [
+            (None, vec!["file:a", "file:b"], vec!["both"]),
+            (Some("all"), vec!["file:a", "file:b"], vec!["both"]),
+            (
+                Some("any"),
+                vec!["file:a", "file:b"],
+                vec!["a", "b", "both"],
+            ),
+            (Some("any"), vec!["file:missing"], vec![]),
+            (Some("all"), vec![], vec!["a", "b", "both", "neither"]),
+            (Some("any"), vec![], vec!["a", "b", "both", "neither"]),
+        ] {
+            let mut effect = json!({
+                "type": "broadcast", "message": {"type": "text", "data": "ready"},
+                "except_connection_ids": ["excluded"], "tags": tags,
+            });
+            if let Some(mode) = mode {
+                effect["tag_match"] = json!(mode);
+            }
+            registry
+                .apply(&actor, vec![serde_json::from_value(effect).unwrap()])
+                .await;
+            for (id, receiver) in &mut receivers {
+                let delivered = receiver.try_recv().ok();
+                assert_eq!(
+                    delivered.is_some(),
+                    expected.contains(id),
+                    "mode={mode:?}, socket={id}"
+                );
+                if let Some(message) = delivered {
+                    assert!(
+                        matches!(message, OutboundMessage::Message(ActorSocketMessage::Text { data }) if data == "ready")
+                    );
+                }
+                assert!(receiver.try_recv().is_err(), "duplicate delivery to {id}");
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_rejects_invalid_tag_matching_mode() {
+        assert!(
+            serde_json::from_value::<ActorSocketEffect>(json!({
+                "type": "broadcast", "message": {"type": "text", "data": "ready"},
+                "except_connection_ids": [], "tags": [], "tag_match": "either",
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn accepts_structured_public_state_effects_and_rejects_invalid_snapshots() -> anyhow::Result<()>
     {
@@ -896,6 +1001,7 @@ mod tests {
                         },
                         except_connection_ids: Vec::new(),
                         tags: vec!["member".into()],
+                        tag_match: ActorSocketTagMatch::All,
                     },
                 ],
             )

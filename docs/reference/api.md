@@ -95,7 +95,7 @@ Each schema is optional. JSON shape and size checks always run. When supplied, `
 
 Schemas are synchronous validators. Their input and output types must agree with the corresponding generic. Parsed schema output is not substituted: defaults, coercion, transformations, and unknown-key stripping do not rewrite wire data. Use refinements or strict objects to reject unwanted values. Static schemas are not saved actor state.
 
-The message type `"state"` is reserved for automatic initial state delivery. This message uses the runtime's state envelope validation and bypasses the application outgoing schema. Actor startup and client generation derive runtime validators from the actor generics. Optional Zod schemas may add stricter server-side checks.
+The message type `"state"` is reserved for automatic initial state delivery. This message uses the runtime's state envelope validation and bypasses the application outgoing schema. Actor startup derives runtime validators from the actor generics. Client generation emits TypeScript types without runtime validators; the actor host enforces the contract. Optional Zod schemas may add stricter server-side checks.
 
 ### Actor.get
 
@@ -162,6 +162,7 @@ Inside an actor method or hook:
 ```ts
 this.broadcast({ type: "chat", text: "Hello" }, { except: socket })
 this.broadcast({ type: "updated" }, { tags: ["editors", "document-1"] })
+this.broadcast({ type: "files-ready" }, { tags: ["file:a", "file:b"], tagMatch: "any" })
 ```
 
 ### Actor.onConnect
@@ -715,7 +716,15 @@ Connections to exclude. Defaults to none; at most 128 exclusions are allowed.
 readonly tags?: readonly Tag[]
 ```
 
-Deliver only to connections having **all** listed tags. Omitted or empty means no tag filter. Each tag must contain 1–256 JavaScript string code units and pass the actor's tag schema. The same count and byte limits as `setTags()` apply.
+Deliver only to connections matching the listed tags according to `tagMatch` (default: `"all"`). Omitted or empty means no tag filter in either mode. Each tag must contain 1–256 JavaScript string code units and pass the actor's tag schema. The same count and byte limits as `setTags()` apply.
+
+#### ActorBroadcastOptions.tagMatch
+
+```ts
+readonly tagMatch?: "all" | "any"
+```
+
+Controls how `tags` selects recipients. `"all"` requires every listed tag and is the default. `"any"` requires at least one listed tag. Each matching connection receives the message once, even if several tags match. `except` excludes connections in either mode.
 
 ### ActorSocketMessage
 

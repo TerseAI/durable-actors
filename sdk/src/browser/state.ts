@@ -1,19 +1,15 @@
 import { SocketError } from "./types.js"
-import type { Validator } from "./types.js"
 
 class StateCache<State extends object> {
     private value: Record<string, unknown> | undefined
     private readonly versions = new Map<string, number>()
     private baseline = -1
 
-    constructor(private readonly validate: Validator) {}
-
     get current(): Readonly<State> | undefined {
         return this.value === undefined ? undefined : (structuredClone(this.value) as Readonly<State>)
     }
 
     snapshot(state: Record<string, unknown>, version: number): void {
-        this.check(state)
         this.value = state
         this.baseline = version
         this.versions.clear()
@@ -37,7 +33,6 @@ class StateCache<State extends object> {
                 })
             else delete next[field]
         }
-        this.check(next)
         this.value = next
         for (const field of fields) this.versions.set(field, version)
         return fields
@@ -45,11 +40,6 @@ class StateCache<State extends object> {
 
     field<Key extends keyof State>(key: Key): State[Key] {
         return structuredClone(this.value?.[key as string]) as State[Key]
-    }
-
-    private check(value: unknown): void {
-        if (!this.validate(value))
-            throw new SocketError("invalid_state", "Invalid actor state received from the server")
     }
 }
 

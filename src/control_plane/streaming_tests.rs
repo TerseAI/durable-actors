@@ -277,6 +277,64 @@ async fn browser_rejects_wrong_renewal_and_expires_during_pending_actor_executio
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
+async fn broadcast_tag_modes_reach_only_matching_websockets() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let mut first = stack.connect().await?;
+    receive(&mut first).await?;
+    let first_id = stack.invoke("clients", vec![]).await?[0]["id"].clone();
+    stack
+        .invoke(
+            "watchFiles",
+            vec![first_id.clone(), serde_json::json!(["file:a"])],
+        )
+        .await?;
+
+    let mut second = stack.connect().await?;
+    receive(&mut second).await?;
+    let clients = stack.invoke("clients", vec![]).await?;
+    let second_id = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|client| client["id"] != first_id)
+        .unwrap()["id"]
+        .clone();
+    stack
+        .invoke(
+            "watchFiles",
+            vec![second_id, serde_json::json!(["file:a", "file:b"])],
+        )
+        .await?;
+
+    for mode in ["all", "any"] {
+        stack
+            .invoke("notifyFiles", vec![serde_json::json!(mode)])
+            .await?;
+        if mode == "any" {
+            assert_eq!(
+                receive(&mut first).await?,
+                serde_json::json!({"text":"matched"})
+            );
+        }
+        assert_eq!(
+            receive(&mut first).await?,
+            serde_json::json!({"text":"done"})
+        );
+        assert_eq!(
+            receive(&mut second).await?,
+            serde_json::json!({"text":"matched"})
+        );
+        assert_eq!(
+            receive(&mut second).await?,
+            serde_json::json!({"text":"done"})
+        );
+    }
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     let mut stack = Stack::start().await?;
     assert_eq!(
@@ -636,7 +694,7 @@ async fn start_worker(
 import {{ Actor, Persisted, Emittable, type ActorSocket }} from {};
 import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
-export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"}}, {{delta:string}} | {{text:string}}, "member"> {{
+export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"}}, {{delta:string}} | {{text:string}}> {{
     @Persisted history = '';
     @Persisted @Emittable count = 0;
     @Persisted private secret = 'private';
@@ -649,6 +707,13 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     }}
     async clients() {{
         return this.connections.map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
+    }}
+    async watchFiles(id: string, tags: string[]) {{
+        this.connections.find(socket => socket.id === id)!.setTags(...tags);
+    }}
+    async notifyFiles(tagMatch: "all" | "any") {{
+        this.broadcast({{ text: 'matched' }}, {{ tags: ['file:a', 'file:b'], tagMatch }});
+        this.broadcast({{ text: 'done' }});
     }}
     async notifyClient(id: string) {{
         const socket = this.connections.find(socket => socket.id === id)!;

@@ -6,7 +6,7 @@ pub use self::{
     executor_connection::{
         ActorExecutor, ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome,
         ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
-        ActorSocketMessage, ActorSocketOutcome,
+        ActorSocketMessage, ActorSocketOutcome, ActorSocketTagMatch,
     },
     protocol::{
         ActorExecutionResult, ActorInvocation, ActorInvocationFailure, ActorKey, ActorScope,

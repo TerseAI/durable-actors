@@ -6,11 +6,9 @@ interface ActorDescriptor<
 > {
     readonly actorType: string
     readonly emittable: readonly Field[]
-    readonly validators: { readonly incoming: Validator; readonly outgoing: Validator; readonly state: Validator }
     readonly types?: { incoming: Incoming; outgoing: Outgoing; state: State; field: Field }
 }
 
-type Validator = (value: unknown) => boolean
 type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "error"
 interface ActorTarget {
     readonly actorType: string
@@ -64,6 +62,5 @@ export type {
     ClientDependencies,
     ClientOptions,
     ConnectionEvents,
-    ConnectionStatus,
-    Validator
+    ConnectionStatus
 }

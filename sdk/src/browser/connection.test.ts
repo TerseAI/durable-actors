@@ -7,13 +7,7 @@ import type { ActorDescriptor } from "./types.js"
 
 const room: ActorDescriptor<{ text: string }, { text: string }, { messages: string[]; title?: string }, "messages"> = {
     actorType: "Room",
-    emittable: ["messages"],
-    validators: {
-        incoming: (value: any) => typeof value?.text === "string",
-        outgoing: (value: any) => typeof value?.text === "string",
-        state: (value: any) =>
-            Array.isArray(value?.messages) && value.messages.every((item: unknown) => typeof item === "string")
-    }
+    emittable: ["messages"]
 }
 
 test("rejects unsupported actor IDs immediately", () => {
@@ -22,7 +16,7 @@ test("rejects unsupported actor IDs immediately", () => {
     assert.equal(env.requests.length, 0)
 })
 
-test("hides authorization, validates payloads, and caches field subscriptions", async () => {
+test("hides authorization, sends payloads for host validation, and caches field subscriptions", async () => {
     const env = harness()
     const connection = env.client.Room.get("lobby")
     const states: string[][] = []
@@ -40,7 +34,8 @@ test("hides authorization, validates payloads, and caches field subscriptions", 
     assert.deepEqual(states, [["initial"]])
     connection.send({ text: "hello" })
     assert.deepEqual(socket.sent.at(-1), { type: "message", data: { text: "hello" } })
-    assert.throws(() => connection.send({ text: 1 } as never), /invalid/i)
+    connection.send({ text: 1 } as never)
+    assert.deepEqual(socket.sent.at(-1), { type: "message", data: { text: 1 } })
     socket.receive({ type: "state_update", changes: { messages: ["new"] }, removed: [], version: 2 })
     socket.receive({ type: "state_update", changes: { messages: ["old"] }, removed: [], version: 1 })
     assert.deepEqual(states, [["initial"], ["new"]])
@@ -107,7 +102,7 @@ test("permission denial stops retries and a close cancels an outstanding grant r
     assert.equal(pending.sockets.length, 0)
 })
 
-test("invalid wire data stops the connection instead of delivering falsely typed events", async () => {
+test("invalid protocol frames stop the connection", async () => {
     const env = harness()
     const connection = env.client.Room.get("lobby")
     const messages: unknown[] = []
@@ -116,7 +111,7 @@ test("invalid wire data stops the connection instead of delivering falsely typed
     await setImmediate()
     env.ready(env.sockets[0]!)
     await connecting
-    env.sockets[0]!.receive({ type: "message", data: { text: 3 } })
+    env.sockets[0]!.receive({ type: "unknown_frame", data: { text: "hello" } })
     assert.equal(connection.status, "error")
     assert.deepEqual(messages, [])
     await env.advance(10000)

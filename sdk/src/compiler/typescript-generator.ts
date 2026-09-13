@@ -1,9 +1,5 @@
-import { Ajv } from "ajv"
-import standaloneCode from "ajv/dist/standalone/index.js"
-import { build } from "esbuild"
 import { compile } from "json-schema-to-typescript"
 import type { JSONSchema } from "json-schema-to-typescript"
-import { fileURLToPath } from "node:url"
 import ts from "typescript"
 
 import type { SocketContract } from "../wire/contract.js"
@@ -24,27 +20,15 @@ async function generateTypeScript(contracts: readonly SocketContract[]): Promise
 
 async function actorFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
     const name = contract.actorType
-    const kinds = ["Incoming", "Outgoing", "State"]
     const fields = contract.emittable.map(field => JSON.stringify(field)).join(" | ") || "never"
-    const validators = validatorBinding(name, declarations)
-    const source = `import * as ${validators} from "./${name}.validators.js"\n\n${declarations}\nexport type Connection = import("little-actors/browser").ActorConnection<Incoming, Outgoing, State, ${fields}>\n\nexport const ${name}: import("little-actors/browser").ActorDescriptor<Incoming, Outgoing, State, ${fields}> = {\n    actorType: ${JSON.stringify(name)},\n    emittable: ${JSON.stringify(contract.emittable)},\n    validators: ${validators}\n}\n`
-    return [
-        [`${name}.actor.ts`, source],
-        [`${name}.validators.js`, await validatorsSource(contract, kinds)],
-        [`${name}.validators.d.ts`, validatorDeclarations(kinds)]
-    ]
+    const source = `${declarations}\nexport type Connection = import("little-actors/browser").ActorConnection<Incoming, Outgoing, State, ${fields}>\n\nexport const ${name}: import("little-actors/browser").ActorDescriptor<Incoming, Outgoing, State, ${fields}> = {\n    actorType: ${JSON.stringify(name)},\n    emittable: ${JSON.stringify(contract.emittable)}\n}\n`
+    return [[`${name}.actor.ts`, source]]
 }
 
 async function proxyFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
     const name = contract.actorType
-    const kinds = ["Metadata"]
-    const validators = validatorBinding(name, declarations)
-    const source = `import * as ${validators} from "./${name}.proxy-validators.js"\n\n${declarations}\nexport interface Authorization {\n    actorType: ${JSON.stringify(name)}\n    actorId: string\n    metadata: Metadata\n    authorizationLifetimeMs?: number\n}\n\nexport const ${name}: import("little-actors/proxy").ProxyActor<Metadata> = { metadata: ${validators}.metadata }\n`
-    return [
-        [`${name}.proxy.ts`, source],
-        [`${name}.proxy-validators.js`, await validatorsSource(contract, kinds)],
-        [`${name}.proxy-validators.d.ts`, validatorDeclarations(kinds)]
-    ]
+    const source = `${declarations}\nexport interface Authorization {\n    actorType: ${JSON.stringify(name)}\n    actorId: string\n    metadata: Metadata\n    authorizationLifetimeMs?: number\n}\n\nexport const ${name}: import("little-actors/proxy").ProxyActor<Metadata> = {}\n`
+    return [[`${name}.proxy.ts`, source]]
 }
 
 async function wireDeclarations(contract: SocketContract): Promise<string> {
@@ -127,37 +111,6 @@ function inlinePrimitiveReferences(
     return Object.fromEntries(
         Object.entries(node).map(([key, child]) => [key, inlinePrimitiveReferences(child, definitions)])
     )
-}
-
-function validatorBinding(name: string, declarations: string): string {
-    let validators = `${name}Validators`
-    while (declarations.includes(validators)) validators = `_${validators}`
-    return validators
-}
-
-function validatorDeclarations(kinds: readonly string[]): string {
-    return (
-        kinds.map(kind => `export declare const ${kind.toLowerCase()}: (value: unknown) => boolean`).join("\n") + "\n"
-    )
-}
-
-async function validatorsSource(contract: SocketContract, kinds: readonly string[]): Promise<string> {
-    const ajv = new Ajv({ strict: false, validateFormats: false, code: { source: true, esm: true } })
-    ajv.addSchema({ ...contract.schema, $id: "actor-contract" })
-    const source = standaloneCode.default(
-        ajv,
-        Object.fromEntries(kinds.map(kind => [kind.toLowerCase(), `actor-contract#/definitions/${kind}`]))
-    )
-    const result = await build({
-        stdin: { contents: source, resolveDir: fileURLToPath(new URL("../../", import.meta.url)), loader: "js" },
-        bundle: true,
-        platform: "browser",
-        format: "esm",
-        write: false,
-        minify: true,
-        logLevel: "silent"
-    })
-    return result.outputFiles[0]!.text
 }
 
 function clientIndex(contracts: readonly SocketContract[]): string {
