@@ -2,6 +2,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import ts from "typescript"
 
+import { validateActorComponent } from "../actor/identity.js"
 import { ActorDefinitionError } from "../errors.js"
 
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
@@ -195,6 +196,11 @@ function actorExportError(
     if (actor === undefined || base === undefined || symbolAt(checker, base.expression) !== sdk.Actor)
         return `actor entrypoint export ${name} must be a class that directly extends Actor`
     if (actor.name?.text !== name) return `actor entrypoint export ${name} must have the same class name`
+    try {
+        validateActorComponent("actor type", name)
+    } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+    }
     if (actor.typeParameters?.length) return `actor class ${name} cannot have type parameters`
     if (actor.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AbstractKeyword))
         return `actor class ${name} cannot be abstract`
