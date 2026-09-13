@@ -353,7 +353,9 @@ test("checks class decorators and entrypoint exports", () => {
         ["class Base extends Actor {}; export class Counter extends Base {}", /directly extends Actor/],
         ["class Base<T> extends Actor {}; export class Counter extends Base<string> {}", /directly extends Actor/],
         ["export abstract class Counter extends Actor {}", /cannot be abstract/],
-        ["export class Counter<T> extends Actor {}", /cannot have type parameters/]
+        ["export class Counter<T> extends Actor {}", /cannot have type parameters/],
+        ["export class $Counter extends Actor {}", /actor type may contain only ASCII/],
+        ["export class Café extends Actor {}", /actor type may contain only ASCII/]
     ] as const) {
         const result = analyze(`import { Actor, Persisted } from "./sdk.js";
             export const helper = 1
