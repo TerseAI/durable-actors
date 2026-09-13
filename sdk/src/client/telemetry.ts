@@ -21,7 +21,9 @@ class LatencyTimeline {
     }
 }
 
-const stderrTelemetry: TelemetrySink = event => process.stderr.write(`${JSON.stringify(event)}\n`)
+const stderrTelemetry: TelemetrySink = event => {
+    if (process.env.DURABLE_OBJECT_TELEMETRY !== "0") process.stderr.write(`${JSON.stringify(event)}\n`)
+}
 
 export { LatencyTimeline, stderrTelemetry }
 export type { TelemetryEvent, TelemetrySink }
