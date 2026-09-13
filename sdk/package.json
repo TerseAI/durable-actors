@@ -1,6 +1,6 @@
 {
     "name": "little-actors",
-    "version": "0.1.30",
+    "version": "0.1.31",
     "description": "Provider-neutral actors for sandbox compute",
     "type": "module",
     "license": "MIT",
