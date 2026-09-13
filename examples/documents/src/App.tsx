@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import type { ActorTypes } from "../generated/Workspace.actor.js"
+import type { State } from "../generated/Workspace.actor.js"
 import { ActorClient } from "../generated/index.js"
 
 import { DocumentEditor } from "./Editor.js"
@@ -10,7 +10,7 @@ import "./style.css"
 const workspace = ActorClient().Workspace.get("demo")
 
 function App() {
-    const [documents, setDocuments] = useState<ActorTypes["state"]["documents"]>([])
+    const [documents, setDocuments] = useState<State["documents"]>([])
     const [selected, select] = useState("welcome")
     const [status, setStatus] = useState(workspace.status)
 
