@@ -144,7 +144,7 @@ test("generates subscription-only clients whose actor has no outgoing applicatio
             ],
             directory
         )
-        assert.match(await readFile(path.join(directory, "Counter.actor.ts"), "utf8"), /outgoing: never/)
+        assert.match(await readFile(path.join(directory, "Counter.actor.ts"), "utf8"), /export type Outgoing = never/)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -164,7 +164,13 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             "createClient",
             "createBrowserClient",
             "validators",
-            "ActorDescriptor"
+            "ActorDescriptor",
+            "Connection",
+            "Authorization",
+            "Metadata",
+            "Incoming",
+            "Outgoing",
+            "State"
         ]
         await generateClient(
             names.map(actorType => ({
@@ -280,6 +286,123 @@ test("generates loose browser source and standalone validators without server im
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
+})
+
+test("each actor module exposes complete unprefixed contract types", async t => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-readable-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const { generateClient } = await import("./client-generator.js")
+    await generateClient(
+        ["Counter", "Room"].map(actorType => ({
+            version: 1 as const,
+            actorType,
+            emittable: ["count"],
+            schema: {
+                definitions: {
+                    Metadata: { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },
+                    Incoming: { type: "object", properties: { by: { type: "number" } }, required: ["by"] },
+                    Outgoing: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
+                    Field_count: { type: "number" },
+                    State: {
+                        type: "object",
+                        properties: { count: { $ref: "#/definitions/Field_count" } },
+                        required: ["count"]
+                    }
+                }
+            }
+        })),
+        directory
+    )
+    for (const name of ["Counter", "Room"]) {
+        for (const suffix of ["actor", "proxy"]) {
+            const source = await readFile(path.join(directory, `${name}.${suffix}.ts`), "utf8")
+            for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) {
+                assert.ok(source.includes(`export interface ${type} {`))
+                assert.ok(!source.includes(`interface ${name}${type}`))
+            }
+            assert.match(source, /count: number/)
+            assert.doesNotMatch(source, /ActorTypes|FieldCount/)
+        }
+        assert.match(
+            await readFile(path.join(directory, `${name}.actor.ts`), "utf8"),
+            /ActorConnection<Incoming, Outgoing, State, "count">/
+        )
+        assert.match(await readFile(path.join(directory, `${name}.proxy.ts`), "utf8"), /metadata: Metadata/)
+    }
+    const consumer = path.join(directory, "consumer.ts")
+    await writeFile(
+        consumer,
+        `
+        import type { Metadata, Incoming, Outgoing, State, Connection } from "./Counter.actor.js"
+        import type { Metadata as RoomMetadata, Authorization } from "./Room.proxy.js"
+        const metadata: Metadata = { userId: "alice" }
+        const other: RoomMetadata = metadata
+        const incoming: Incoming = { by: 1 }
+        const outgoing: Outgoing = { count: 1 }
+        const state: State = outgoing
+        const authorization: Authorization = { actorType: "Room", actorId: "lobby", metadata: other }
+        declare const counter: Connection
+        counter.send(incoming)
+        counter.subscribe("count", value => value.toFixed())
+        // @ts-expect-error invalid metadata
+        const invalid: Metadata = { userId: 1 }
+        // @ts-expect-error wrong actor identity
+        const wrong: Authorization = { actorType: "Counter", actorId: "one", metadata }
+    `
+    )
+    checkTypes(consumer)
+})
+
+test("readable contract types preserve recursive metadata and helper-name collisions", async t => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-recursive-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const { generateClient } = await import("./client-generator.js")
+    await generateClient(
+        [
+            {
+                version: 1,
+                actorType: "Room",
+                emittable: [],
+                schema: {
+                    definitions: {
+                        Metadata: {
+                            type: "object",
+                            properties: { connection: { $ref: "#/definitions/Connection" } },
+                            required: ["connection"]
+                        },
+                        Connection: {
+                            type: "object",
+                            properties: { parent: { $ref: "#/definitions/Connection" }, id: { type: "string" } },
+                            required: ["id"]
+                        },
+                        Incoming: { type: "null" },
+                        Outgoing: true,
+                        State: { type: "object" }
+                    }
+                }
+            }
+        ],
+        directory
+    )
+    const consumer = path.join(directory, "consumer.ts")
+    await writeFile(
+        consumer,
+        `
+        import type { Metadata, Incoming, Outgoing, Connection } from "./Room.actor.js"
+        import type { Authorization } from "./Room.proxy.js"
+        const metadata: Metadata = { connection: { id: "a", parent: { id: "b" } } }
+        const authorization: Authorization = { actorType: "Room", actorId: "one", metadata }
+        const incoming: Incoming = null
+        const outgoing: Outgoing = { anything: true }
+        declare const connection: Connection
+        connection.send(incoming)
+        // @ts-expect-error recursive metadata keeps its required fields
+        const invalid: Metadata = { connection: { id: "a", parent: {} } }
+        // @ts-expect-error null input accepts no payload
+        connection.send("wrong")
+    `
+    )
+    checkTypes(consumer)
 })
 
 function checkTypes(consumer: string): void {
