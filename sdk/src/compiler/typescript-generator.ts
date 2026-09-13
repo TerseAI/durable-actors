@@ -4,6 +4,7 @@ import { build } from "esbuild"
 import { compile } from "json-schema-to-typescript"
 import type { JSONSchema } from "json-schema-to-typescript"
 import { fileURLToPath } from "node:url"
+import ts from "typescript"
 
 import type { SocketContract } from "../wire/contract.js"
 
@@ -12,21 +13,21 @@ async function generateTypeScript(contracts: readonly SocketContract[]): Promise
     for (const contract of contracts) {
         if (!/^[A-Za-z_$][\w$]*$/u.test(contract.actorType))
             throw new Error(`actor name ${contract.actorType} cannot be emitted as a TypeScript identifier`)
-        for (const [file, contents] of await actorFiles(contract)) artifacts.set(file, contents)
-        for (const [file, contents] of await proxyFiles(contract)) artifacts.set(file, contents)
+        const declarations = await wireDeclarations(contract)
+        for (const [file, contents] of await actorFiles(contract, declarations)) artifacts.set(file, contents)
+        for (const [file, contents] of await proxyFiles(contract, declarations)) artifacts.set(file, contents)
     }
     artifacts.set("index.ts", clientIndex(contracts))
     artifacts.set("proxy.ts", proxyIndex(contracts))
     return artifacts
 }
 
-async function actorFiles(contract: SocketContract): Promise<[string, string][]> {
+async function actorFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
     const name = contract.actorType
     const kinds = ["Incoming", "Outgoing", "State"]
-    const declarations = await wireDeclarations(contract, kinds)
     const fields = contract.emittable.map(field => JSON.stringify(field)).join(" | ") || "never"
     const validators = validatorBinding(name, declarations)
-    const source = `import * as ${validators} from "./${name}.validators.js"\n\n${declarations}\nexport const ${name}: import("little-actors/browser").ActorDescriptor<ActorTypes["incoming"], ActorTypes["outgoing"], ActorTypes["state"], ${fields}> = {\n    actorType: ${JSON.stringify(name)},\n    emittable: ${JSON.stringify(contract.emittable)},\n    validators: ${validators}\n}\n`
+    const source = `import * as ${validators} from "./${name}.validators.js"\n\n${declarations}\nexport type Connection = import("little-actors/browser").ActorConnection<Incoming, Outgoing, State, ${fields}>\n\nexport const ${name}: import("little-actors/browser").ActorDescriptor<Incoming, Outgoing, State, ${fields}> = {\n    actorType: ${JSON.stringify(name)},\n    emittable: ${JSON.stringify(contract.emittable)},\n    validators: ${validators}\n}\n`
     return [
         [`${name}.actor.ts`, source],
         [`${name}.validators.js`, await validatorsSource(contract, kinds)],
@@ -34,12 +35,11 @@ async function actorFiles(contract: SocketContract): Promise<[string, string][]>
     ]
 }
 
-async function proxyFiles(contract: SocketContract): Promise<[string, string][]> {
+async function proxyFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
     const name = contract.actorType
     const kinds = ["Metadata"]
-    const declarations = await wireDeclarations(contract, kinds)
     const validators = validatorBinding(name, declarations)
-    const source = `import * as ${validators} from "./${name}.proxy-validators.js"\n\n${declarations}\nexport const ${name}: import("little-actors/proxy").ProxyActor<ActorTypes["metadata"]> = { metadata: ${validators}.metadata }\n`
+    const source = `import * as ${validators} from "./${name}.proxy-validators.js"\n\n${declarations}\nexport interface Authorization {\n    actorType: ${JSON.stringify(name)}\n    actorId: string\n    metadata: Metadata\n    authorizationLifetimeMs?: number\n}\n\nexport const ${name}: import("little-actors/proxy").ProxyActor<Metadata> = { metadata: ${validators}.metadata }\n`
     return [
         [`${name}.proxy.ts`, source],
         [`${name}.proxy-validators.js`, await validatorsSource(contract, kinds)],
@@ -47,7 +47,8 @@ async function proxyFiles(contract: SocketContract): Promise<[string, string][]>
     ]
 }
 
-async function wireDeclarations(contract: SocketContract, kinds: readonly string[]): Promise<string> {
+async function wireDeclarations(contract: SocketContract): Promise<string> {
+    const kinds = ["Metadata", "Incoming", "Outgoing", "State"]
     const properties = Object.fromEntries(
         kinds.map(kind => [
             kind.toLowerCase(),
@@ -56,16 +57,75 @@ async function wireDeclarations(contract: SocketContract, kinds: readonly string
                 : { $ref: `#/definitions/${kind}` }
         ])
     )
-    return compile(
-        {
-            ...contract.schema,
-            type: "object",
-            additionalProperties: false,
-            properties,
-            required: Object.keys(properties)
-        } as JSONSchema,
+    const code = await compile(
+        inlinePrimitiveReferences(
+            {
+                ...contract.schema,
+                type: "object",
+                additionalProperties: false,
+                properties,
+                required: Object.keys(properties)
+            },
+            contract.schema.definitions ?? {}
+        ) as JSONSchema,
         "ActorTypes",
-        { bannerComment: "", unknownAny: true, additionalProperties: false }
+        {
+            bannerComment: "",
+            unknownAny: true,
+            additionalProperties: false,
+            customName: (schema, key) => {
+                const name = schema.title || schema.$id || key
+                return name === "Connection" || name === "Authorization" ? `${name}Data` : undefined
+            }
+        }
+    )
+    const source = ts.createSourceFile("types.ts", code, ts.ScriptTarget.Latest, true)
+    const root = source.statements.find(
+        statement => ts.isInterfaceDeclaration(statement) && statement.name.text === "ActorTypes"
+    ) as ts.InterfaceDeclaration
+    const declarations = source.statements.filter(statement => statement !== root)
+    const named = new Map(
+        declarations
+            .filter(
+                (statement): statement is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+                    ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
+            )
+            .map(statement => [statement.name.text, statement])
+    )
+    const main = kinds.map(kind => {
+        const declaration = named.get(kind)
+        if (declaration) return declaration.getText(source)
+        const property = root.members.find(
+            member => ts.isPropertySignature(member) && member.name.getText(source) === kind.toLowerCase()
+        ) as ts.PropertySignature
+        return `export type ${kind} = ${property.type!.getText(source)}`
+    })
+    const helpers = declarations.filter(statement => !kinds.some(kind => named.get(kind) === statement))
+    return [...main, ...helpers.map(statement => statement.getText(source))].join("\n\n") + "\n"
+}
+
+function inlinePrimitiveReferences(
+    value: unknown,
+    definitions: NonNullable<SocketContract["schema"]["definitions"]>
+): unknown {
+    if (Array.isArray(value)) return value.map(item => inlinePrimitiveReferences(item, definitions))
+    if (!value || typeof value !== "object") return value
+    const node = value as Record<string, unknown>
+    const definition =
+        typeof node.$ref === "string" && node.$ref.startsWith("#/definitions/")
+            ? definitions[node.$ref.slice("#/definitions/".length)]
+            : undefined
+    if (
+        definition &&
+        typeof definition === "object" &&
+        typeof definition.type === "string" &&
+        ["string", "number", "integer", "boolean", "null"].includes(definition.type)
+    ) {
+        const { $ref, ...rest } = node
+        return { ...definition, ...rest }
+    }
+    return Object.fromEntries(
+        Object.entries(node).map(([key, child]) => [key, inlinePrimitiveReferences(child, definitions)])
     )
 }
 
@@ -102,21 +162,25 @@ async function validatorsSource(contract: SocketContract, kinds: readonly string
 
 function clientIndex(contracts: readonly SocketContract[]): string {
     const { imports, actors } = actorImports(contracts, "actor")
-    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport function ActorClient(options: ClientOptions = {}) {\n    return createClient({ ${actors} }, options)\n}\n`
+    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport interface Client {\n${contracts.map(({ actorType }) => `    ${JSON.stringify(actorType)}: { get(actorId: string): import("./${actorType}.actor.js").Connection }`).join("\n")}\n}\n\nexport function ActorClient(options: ClientOptions = {}): Client {\n    return createClient({ ${actors} }, options)\n}\n`
 }
 
 function proxyIndex(contracts: readonly SocketContract[]): string {
     const { imports, actors } = actorImports(contracts, "proxy")
     return `import { SocketProxy } from "little-actors/proxy"
-import type { SocketAuthorization, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "little-actors/proxy"
+import type { SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "little-actors/proxy"
 ${imports}
 
 const actors = { ${actors} }
-export type ActorAuthorization = SocketAuthorization<typeof actors>
+export type ActorAuthorization = ${contracts.map(({ actorType }) => `import("./${actorType}.proxy.js").Authorization`).join(" | ") || "never"}
 
 export class ActorProxy extends SocketProxy<typeof actors> {
     constructor(options: SocketProxyOptions = {}, dependencies: SocketProxyDependencies = {}) {
         super(actors, options, dependencies)
+    }
+
+    handle(authorization: ActorAuthorization): Promise<SocketGrant> {
+        return super.handle(authorization)
     }
 
     static handle(authorization: ActorAuthorization, options: SocketProxyOptions = {}): Promise<SocketGrant> {
