@@ -34,6 +34,19 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source once for
 npx little-actors generate
 ```
 
+Build tools can generate the same files in memory through the public compiler and codegen APIs:
+
+```ts
+import { ActorCompiler } from "little-actors/compiler"
+import { generateTypeScript } from "little-actors/codegen"
+
+const actors = new ActorCompiler().compile("src/durable-objects.ts")
+const files = await generateTypeScript(actors.map(actor => actor.contract))
+// files is a ReadonlyMap<string, string> of relative filenames to TypeScript source.
+```
+
+The caller chooses where to write the files. Generation does not execute actor code.
+
 The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
 
 `little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
