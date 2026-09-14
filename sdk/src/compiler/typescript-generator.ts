@@ -4,6 +4,7 @@ import ts from "typescript"
 
 import type { SocketContract } from "../wire/contract.js"
 
+/** Returns generated filenames and TypeScript source without writing files or executing actor code. */
 async function generateTypeScript(contracts: readonly SocketContract[]): Promise<ReadonlyMap<string, string>> {
     const artifacts = new Map<string, string>()
     for (const contract of contracts) {
@@ -152,3 +153,4 @@ function actorImports(contracts: readonly SocketContract[], suffix: string) {
 }
 
 export { generateTypeScript }
+export type { SocketContract }
