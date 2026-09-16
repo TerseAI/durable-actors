@@ -1,0 +1,9 @@
+{
+  "image": "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors-control-plane:replication-qa-65ba3dfb8574",
+  "sourceSha256": "65ba3dfb857412cb9dc08549de29c0c605a09e3846d052252b4f47a4ce2884d3",
+  "sourceCommit": "9075df09fca6d75f0fbc04559435b2454f5465fa",
+  "project": "fluid-analogy-473415-c2",
+  "region": "us-east4",
+  "imageDigest": "sha256:1eb38fa43d0a250d1110c0863bc6374a1e157e7ad830b600527c291c29bffd8f",
+  "buildId": "90230f0a-136b-4c1b-8feb-69e59c683c0e"
+}

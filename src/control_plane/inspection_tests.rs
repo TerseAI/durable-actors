@@ -92,6 +92,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
         )?
         .token;
     for path in [
+        "/v1/durability",
         "/v1/objects",
         "/v1/namespaces/team.prod/actors/Room.with.dots/one/state",
     ] {
@@ -108,6 +109,14 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             );
         }
     }
+    let policy: Value = fixture
+        .get("/v1/durability")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(policy["mode"], "object_storage");
+    assert_eq!(policy["replicaCount"], 0);
     for query in [
         "limit=0",
         "limit=501",

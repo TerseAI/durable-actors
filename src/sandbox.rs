@@ -39,6 +39,18 @@ pub struct EnsureHostRequest {
     pub host_idle_timeout_ms: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnsureReplicaRequest {
+    pub installation_id: String,
+    pub slot: usize,
+    pub canonical_region: String,
+    pub image_ref: String,
+    pub host_id: String,
+    pub secret: String,
+    pub control_plane_url: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
@@ -129,6 +141,27 @@ pub struct CommandSandboxProvider {
 }
 
 impl CommandSandboxProvider {
+    pub(crate) async fn ensure_replica(
+        &self,
+        request: &EnsureReplicaRequest,
+    ) -> Result<ActorHostHandle> {
+        let handle: ActorHostHandle = self.execute("ensure_replica", request).await?;
+        ensure!(
+            handle.canonical_region == request.canonical_region,
+            "replica provider returned the wrong region"
+        );
+        ensure!(
+            !handle.host_id.as_str().is_empty(),
+            "replica provider returned no host identity"
+        );
+        let route = reqwest::Url::parse(&handle.route)?;
+        ensure!(
+            route.scheme() == "https" && route.host_str().is_some(),
+            "replica route must be HTTPS"
+        );
+        Ok(handle)
+    }
+
     pub fn new(
         provider_name: String,
         command: String,

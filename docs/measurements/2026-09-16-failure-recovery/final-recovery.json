@@ -1,0 +1,35 @@
+{
+  "namespaceId": "qa-96c2897b-9553-4c9b-9adc-6d9fb6cbee3f",
+  "actorSandboxId": "sb-01M2NA8BHX17QHMY1RDSV4NCQT",
+  "startedAt": "2026-09-16T14:34:45.723Z",
+  "stage": "archival resumed and replacement accepted the next write",
+  "replicaSandboxIds": [
+    "sb-01M2NA8EDW4NQ2TQSHR7XQ7TR2",
+    "sb-01M2NA8EFQDDSNQM7GYS9VD3J4"
+  ],
+  "snapshot": {
+    "object": "snapshots/7d/7da9f1dc134249c9a09f2f50b4502d37/qa-96c2897b-9553-4c9b-9adc-6d9fb6cbee3f/QaCounter/replica-survivor/3.json",
+    "sha256": "104e14452968184da26e573f98b376c0649ac11d6457dc80f84694191de97182",
+    "count": 3,
+    "stateVersion": 3,
+    "ownerEpoch": 1
+  },
+  "gcsBeforeLoss": 404,
+  "terminated": {
+    "actorExitCode": 137,
+    "replicaExitCode": 137
+  },
+  "recovery": {
+    "durationMs": 5690.056041,
+    "actorSandboxId": "sb-01M2NA8K1SM8H63NKDRNAY73WT",
+    "ownerEpoch": 2,
+    "stateVersion": 3,
+    "count": 3,
+    "gcsStatus": 404
+  },
+  "archival": {
+    "gcsStatus": 200,
+    "exactBytes": true,
+    "pendingSnapshots": 0
+  }
+}

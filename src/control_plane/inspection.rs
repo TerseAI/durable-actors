@@ -27,6 +27,7 @@ use super::{
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
+        .route("/v1/durability", get(durability))
         .route("/v1/objects", get(list_objects))
         .route(
             "/v1/actors/{actor_type}/{actor_id}/state",
@@ -43,6 +44,14 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
 struct InspectionApi {
     inspector: ActorInspector,
     admin: AdminService,
+}
+
+async fn durability(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+) -> Result<Json<crate::replication::DurabilityPolicy>, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    Ok(Json(state.inspector.storage.durability()))
 }
 
 async fn list_objects(

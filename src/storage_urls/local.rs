@@ -90,6 +90,7 @@ impl StorageUrlSigner for LocalStorage {
         )?;
         let expires = self.clock.now_ms()?.saturating_add(60_000);
         Ok(StateWriteTicket {
+            replication: None,
             state_version,
             url: self.signed_url("PUT", &object_name, expires)?,
             object_name,

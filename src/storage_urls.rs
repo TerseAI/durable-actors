@@ -23,11 +23,20 @@ pub struct StateWriteTicket {
     pub object_name: String,
     pub url: String,
     pub expires_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication: Option<crate::replication::ReplicationTicket>,
 }
 
 #[async_trait]
 pub trait StorageUrlSigner: Send + Sync {
+    fn durability(&self) -> crate::replication::DurabilityPolicy {
+        crate::replication::DurabilityPolicy::new(0)
+    }
     async fn read_url(&self, region: &str, object_name: &str) -> Result<String>;
+
+    async fn archive_write_url(&self, _region: &str, _object_name: &str) -> Result<String> {
+        anyhow::bail!("archive URL renewal is not supported")
+    }
 
     async fn write_ticket(
         &self,
@@ -58,6 +67,17 @@ impl GcsStorageUrlSigner {
 
 #[async_trait]
 impl StorageUrlSigner for GcsStorageUrlSigner {
+    async fn archive_write_url(&self, region: &str, object_name: &str) -> Result<String> {
+        validate_object_name(object_name)?;
+        SignedUrlBuilder::for_object(self.bucket(region)?, object_name)
+            .with_method(Method::PUT)
+            .with_expiration(SIGNED_URL_TTL)
+            .with_header("content-type", STATE_CONTENT_TYPE)
+            .with_query_param("ifGenerationMatch", "0")
+            .sign_with(&self.signer)
+            .await
+            .context("sign GCS archive write URL")
+    }
     async fn read_url(&self, region: &str, object_name: &str) -> Result<String> {
         validate_object_name(object_name)?;
         SignedUrlBuilder::for_object(self.bucket(region)?, object_name)
@@ -81,15 +101,9 @@ impl StorageUrlSigner for GcsStorageUrlSigner {
         let expires_at_ms = unix_millis()?
             .checked_add(i64::try_from(SIGNED_URL_TTL.as_millis())?)
             .context("signed state-write URL expiration overflow")?;
-        let url = SignedUrlBuilder::for_object(self.bucket(region)?, &object_name)
-            .with_method(Method::PUT)
-            .with_expiration(SIGNED_URL_TTL)
-            .with_header("content-type", STATE_CONTENT_TYPE)
-            .with_query_param("ifGenerationMatch", "0")
-            .sign_with(&self.signer)
-            .await
-            .context("sign GCS actor-state write URL")?;
+        let url = self.archive_write_url(region, &object_name).await?;
         Ok(StateWriteTicket {
+            replication: None,
             state_version,
             object_name,
             url,

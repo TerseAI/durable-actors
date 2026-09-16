@@ -260,3 +260,20 @@ func (s *fakeSandbox) Terminate(context.Context) error {
 	return nil
 }
 func (s *fakeSandbox) Detach() { s.calls = append(s.calls, "detach") }
+
+func TestMutableNetworkIsOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		api := &fakeAPI{created: &fakeSandbox{}}
+		p := newTestProvider(&networkPolicyAPI{modalAPI: api, mutable: enabled})
+		if _, err := p.ensureHost(context.Background(), testRequest()); err != nil {
+			t.Fatal(err)
+		}
+		if !enabled {
+			if api.params.OutboundCIDRAllowlist != nil || api.params.OutboundDomainAllowlist != nil {
+				t.Fatal("ordinary hosts must retain default open networking")
+			}
+		} else if api.params.OutboundCIDRAllowlist == nil || api.params.OutboundDomainAllowlist == nil || !reflect.DeepEqual(api.params.OutboundCIDRAllowlist.Entries, []string{"0.0.0.0/0"}) || !reflect.DeepEqual(api.params.OutboundDomainAllowlist.Entries, []string{"*"}) {
+			t.Fatal("opted-in hosts must start with an allow-all policy")
+		}
+	}
+}

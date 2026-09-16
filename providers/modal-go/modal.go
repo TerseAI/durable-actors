@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	modal "github.com/modal-labs/modal-client/go"
@@ -14,6 +15,14 @@ import (
 type sdkAPI struct{ client *modal.Client }
 
 func newModalAPI() (modalAPI, func(), error) {
+	mutable := false
+	if value := os.Getenv("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"); value != "" {
+		var err error
+		mutable, err = strconv.ParseBool(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid mutable network configuration: %w", err)
+		}
+	}
 	// The Rust parent supplies credentials in a sanitized environment without HOME.
 	if err := os.Setenv("MODAL_CONFIG_PATH", os.DevNull); err != nil {
 		return nil, nil, err
@@ -22,7 +31,7 @@ func newModalAPI() (modalAPI, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &sdkAPI{client: client}, client.Close, nil
+	return &networkPolicyAPI{modalAPI: &sdkAPI{client: client}, mutable: mutable}, client.Close, nil
 }
 
 func (a *sdkAPI) Resolve(ctx context.Context, imageID string) (*modal.App, *modal.Image, error) {

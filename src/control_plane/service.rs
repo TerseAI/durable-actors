@@ -1262,6 +1262,7 @@ mod tests {
             state_version: u64,
         ) -> Result<StateWriteTicket> {
             Ok(StateWriteTicket {
+                replication: None,
                 state_version,
                 object_name: format!(
                     "snapshots/00/00000000000000000000000000000000/project-1/Counter/counter-1/{state_version}.json"

@@ -7,6 +7,7 @@ pub mod host;
 pub mod host_leases;
 pub mod placement;
 mod postgres;
+pub mod replication;
 pub mod sandbox;
 pub mod sqlite;
 pub mod state_log;

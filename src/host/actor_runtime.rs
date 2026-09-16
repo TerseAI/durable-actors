@@ -553,12 +553,16 @@ impl ActorRuntime {
         timings.snapshot_created_at_ms = Some(timings.elapsed_ms());
         let bytes = snapshot.encode()?;
         timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());
-        let write = self.state.write(&ticket.url, bytes).await?;
-        timings.snapshot_uploaded_at_ms = Some(timings.elapsed_ms());
-        ensure!(
-            matches!(write, StateWrite::Written | StateWrite::AlreadyExists),
-            "actor snapshot was not stored"
-        );
+        let write = self.state.write_ticket(&ticket, bytes).await?;
+        timings.snapshot_persisted_at_ms = Some(timings.elapsed_ms());
+        timings.durability_proof = Some(if write == StateWrite::Replicated {
+            "replicas"
+        } else {
+            "object_storage"
+        });
+        if write != StateWrite::Replicated {
+            timings.snapshot_uploaded_at_ms = timings.snapshot_persisted_at_ms;
+        }
         cached.pending = Some(PendingStateCommit { snapshot, ticket });
         self.finish_pending_commit(invocation, cached).await?;
         timings.commit_rpc_completed_at_ms = Some(timings.elapsed_ms());
@@ -591,6 +595,8 @@ impl ActorRuntime {
                 snapshot_created_at_ms = timings.snapshot_created_at_ms,
                 snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
                 snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
+                snapshot_persisted_at_ms = timings.snapshot_persisted_at_ms,
+                durability_proof = timings.durability_proof,
                 commit_rpc_completed_at_ms = timings.commit_rpc_completed_at_ms,
                 completed_at_ms = timings.elapsed_ms(),
                 outcome = "committed",
@@ -610,6 +616,8 @@ impl ActorRuntime {
                 snapshot_created_at_ms = timings.snapshot_created_at_ms,
                 snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
                 snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
+                snapshot_persisted_at_ms = timings.snapshot_persisted_at_ms,
+                durability_proof = timings.durability_proof,
                 commit_rpc_completed_at_ms = timings.commit_rpc_completed_at_ms,
                 completed_at_ms = timings.elapsed_ms(),
                 outcome = "failed",
@@ -826,6 +834,8 @@ struct StateWriteTimings {
     snapshot_created_at_ms: Option<f64>,
     snapshot_encoded_at_ms: Option<f64>,
     snapshot_uploaded_at_ms: Option<f64>,
+    snapshot_persisted_at_ms: Option<f64>,
+    durability_proof: Option<&'static str>,
     commit_rpc_completed_at_ms: Option<f64>,
 }
 
@@ -837,6 +847,8 @@ impl StateWriteTimings {
             snapshot_created_at_ms: None,
             snapshot_encoded_at_ms: None,
             snapshot_uploaded_at_ms: None,
+            snapshot_persisted_at_ms: None,
+            durability_proof: None,
             commit_rpc_completed_at_ms: None,
         }
     }

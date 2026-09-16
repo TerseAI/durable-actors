@@ -87,6 +87,7 @@ where
         lease,
         renewal,
         socket_publisher,
+        archive,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
@@ -124,6 +125,7 @@ where
     )
     .await;
     stop_host_tasks(&host, &stop, server, executor_task).await;
+    archive.cancel();
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
@@ -249,6 +251,7 @@ impl HostMetadataFile {
 }
 
 struct PreparedActorHost {
+    archive: CancellationToken,
     socket_publisher: Arc<dyn crate::actor::ActorSocketPublisher>,
     invocation_auth: ActorJwtVerifier,
     listener: TcpListener,
@@ -292,12 +295,25 @@ async fn prepare_actor_host(
         )
         .await?;
     let control_plane = Arc::new(control_plane.with_socket_gateway(&config.socket_gateway_url));
+    let local = Arc::new(
+        crate::replication::ReplicaStore::open(
+            std::env::temp_dir()
+                .join(format!("little-actors-{}", config.host_id))
+                .join("state.db"),
+            crate::replication::DEFAULT_SPOOL_BYTES,
+        )
+        .await?,
+    );
+    let archive = crate::replication::start_archiver(local.clone());
     let host = Arc::new(ActorHost::new(
         endpoint.clone(),
         config.namespace_id.clone(),
         executor_connection.executor(),
         control_plane.clone(),
-        Arc::new(HttpStateTransport::new()),
+        Arc::new(crate::replication::ReplicatedStateTransport::new(
+            Arc::new(HttpStateTransport::new()),
+            local,
+        )),
         control_plane.clone(),
         control_plane.clone(),
     ));
@@ -312,6 +328,7 @@ async fn prepare_actor_host(
     let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
+        archive,
         socket_publisher: control_plane,
         invocation_auth,
         listener,

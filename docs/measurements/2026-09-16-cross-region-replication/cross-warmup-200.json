@@ -1,0 +1,3838 @@
+{
+  "client": "modal",
+  "clientRegion": "us-east-1",
+  "platform": "linux",
+  "nodeVersion": "v22.19.0",
+  "commit": null,
+  "measurement": "client-observed end-to-end; includes network",
+  "policy": {
+    "mode": "cross_region_preview",
+    "replicaCount": 2,
+    "replicaRegions": [
+      "north-america-central",
+      "north-america-west"
+    ],
+    "runtimeVersion": "0.1.38"
+  },
+  "region": "eastus2",
+  "namespaceId": "qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25",
+  "concurrency": 1,
+  "workload": "resident counter; one warmup excluded from client samples; server diagnostics include warmup",
+  "clientWriteMs": {
+    "n": 200,
+    "maximum": 1448.786,
+    "mean": 987.889,
+    "minimum": 136.257,
+    "p50": 1218.424,
+    "p95": 1255.101,
+    "p99": 1308.596
+  },
+  "metrics": {
+    "proofs": {
+      "replicas": 9,
+      "objectStorage": 192
+    },
+    "persistenceMs": {
+      "n": 201,
+      "maximum": 301.624,
+      "mean": 76.859,
+      "minimum": 56.984,
+      "p50": 73.899,
+      "p95": 92.412,
+      "p99": 173.293
+    },
+    "commitRpcMs": {
+      "n": 201,
+      "maximum": 1153.129,
+      "mean": 836.513,
+      "minimum": 35.39,
+      "p50": 1068.769,
+      "p95": 1083.21,
+      "p99": 1092.098
+    },
+    "localSyncMs": {
+      "n": 46,
+      "maximum": 2.678,
+      "mean": 0.769,
+      "minimum": 0.485,
+      "p50": 0.736,
+      "p95": 0.966,
+      "p99": 2.678
+    },
+    "replicationAttempts": {
+      "succeeded": 46,
+      "failed": 0
+    },
+    "replicationMs": {
+      "n": 46,
+      "maximum": 304.147,
+      "mean": 83.486,
+      "minimum": 76.873,
+      "p50": 78.325,
+      "p95": 81.645,
+      "p99": 304.147
+    },
+    "replicaByRegionMs": {
+      "north-america-central": {
+        "n": 46,
+        "maximum": 126.399,
+        "mean": 35.081,
+        "minimum": 32.306,
+        "p50": 33.052,
+        "p95": 33.815,
+        "p99": 126.399
+      },
+      "north-america-west": {
+        "n": 46,
+        "maximum": 303.877,
+        "mean": 83.213,
+        "minimum": 76.537,
+        "p50": 78.105,
+        "p95": 81.28,
+        "p99": 303.877
+      }
+    },
+    "replicaMs": {
+      "n": 92,
+      "maximum": 303.877,
+      "mean": 59.147,
+      "minimum": 32.306,
+      "p50": 76.537,
+      "p95": 80.791,
+      "p99": 303.877
+    },
+    "archiveLagMs": {
+      "n": 57,
+      "maximum": 223,
+      "mean": 36.143,
+      "minimum": 0,
+      "p50": 0,
+      "p95": 195,
+      "p99": 223
+    },
+    "objectStorageUploadMs": {
+      "n": 46,
+      "maximum": 118.824,
+      "mean": 72.331,
+      "minimum": 58.784,
+      "p50": 69.858,
+      "p95": 94.858,
+      "p99": 118.824
+    }
+  },
+  "latencies": [
+    1227.9506380000003,
+    1247.6965410000012,
+    1255.5403860000006,
+    1226.3558580000008,
+    1241.2545949999985,
+    1224.1410459999988,
+    1250.0263049999994,
+    1220.866066999999,
+    1240.7554390000005,
+    1216.9819620000017,
+    1223.478289999999,
+    1230.0225509999982,
+    1448.7863089999992,
+    1239.1239999999998,
+    1242.7793599999968,
+    1233.4172560000006,
+    1220.6331999999966,
+    1231.6523320000015,
+    1249.0991759999997,
+    1257.832629000004,
+    1233.8259270000053,
+    1242.411831000005,
+    1228.9220700000005,
+    1226.632881000005,
+    1241.8622440000036,
+    1242.714506999997,
+    1227.8617650000015,
+    1227.8224960000007,
+    1240.931611,
+    1222.8768019999989,
+    1240.2098699999988,
+    1226.7325809999966,
+    1222.0311470000015,
+    1220.652114000004,
+    1218.093670000002,
+    1221.225572000003,
+    1213.513079999997,
+    1218.1596610000051,
+    1228.706726999997,
+    1220.002336999998,
+    1222.1171479999975,
+    1227.7747899999958,
+    1258.0094499999977,
+    1231.7022240000006,
+    1210.0487559999965,
+    1216.7954190000019,
+    1209.5095800000054,
+    1214.379965,
+    1217.7480979999964,
+    1249.0999750000046,
+    1242.9461310000042,
+    1228.0920650000044,
+    1237.701859000008,
+    1214.9363929999963,
+    1224.9178660000034,
+    1226.664831999995,
+    1233.2139949999982,
+    1227.3062729999947,
+    1223.8697680000041,
+    1221.5156459999998,
+    1275.1517779999995,
+    1212.876951000013,
+    1215.7302199999976,
+    1217.2455360000022,
+    1205.9043900000106,
+    1218.8601199999976,
+    1201.8981429999985,
+    1222.4625299999898,
+    1220.4711399999942,
+    1229.9298689999996,
+    1205.2549379999982,
+    1219.4803519999987,
+    1238.0228349999961,
+    1211.812976000001,
+    1348.9429360000067,
+    1226.7872780000034,
+    1226.1293420000002,
+    1209.873517,
+    1229.9252810000035,
+    1221.956977000009,
+    1208.1352119999938,
+    1308.5959330000042,
+    1245.0244950000051,
+    1249.190533999994,
+    1221.4173670000018,
+    1238.2375789999933,
+    1218.4244419999886,
+    1255.101177000004,
+    1179.8260020000016,
+    1210.1023609999975,
+    1207.8804260000034,
+    1217.041710999998,
+    1231.0012060000008,
+    1210.0174699999916,
+    1216.6644759999908,
+    664.7435229999974,
+    1215.0942860000068,
+    1288.0583530000004,
+    1260.9908649999998,
+    1201.7908650000027,
+    1215.773761000004,
+    1222.7924050000147,
+    1217.0899710000085,
+    1219.116486999992,
+    1214.231322000007,
+    1206.5805889999901,
+    1207.8944429999974,
+    1215.0764439999766,
+    1204.7454449999786,
+    1228.379997000011,
+    1229.2485079999897,
+    1207.703389000002,
+    1225.616749000008,
+    1222.1128800000006,
+    1244.6944549999898,
+    1204.8766539999924,
+    1211.159203999996,
+    1218.9328190000087,
+    1219.881091999996,
+    1221.6135800000047,
+    1227.0725939999975,
+    1222.0150209999993,
+    1207.293249999988,
+    1211.5303540000168,
+    1225.7567470000067,
+    1220.922568000009,
+    1224.1075840000121,
+    1216.732967000018,
+    1219.9771410000103,
+    1230.9096879999852,
+    1228.174372999987,
+    1214.5900599999877,
+    1242.5063709999959,
+    1201.5081820000196,
+    1198.8655379999836,
+    1213.1119729999918,
+    1222.631698000012,
+    1222.8506589999888,
+    1225.8172780000023,
+    1273.9941500000132,
+    1227.6880729999975,
+    1206.3908900000097,
+    1211.6224029999867,
+    1193.0991229999927,
+    1225.8120490000001,
+    1223.0822840000037,
+    1205.835179000016,
+    1223.0794709999755,
+    1226.8984880000062,
+    1203.0319110000273,
+    1220.6715219999896,
+    1210.059768999985,
+    1201.8464090000198,
+    1137.2095329999865,
+    224.46555100000114,
+    211.03190800000448,
+    208.91150099999504,
+    228.85761700000148,
+    217.10889000000316,
+    221.03201700001955,
+    223.5612329999858,
+    235.54199399999925,
+    194.6233540000103,
+    179.2909370000125,
+    184.46410800001468,
+    213.1590880000149,
+    190.70286099999794,
+    180.16067700000713,
+    204.9010389999894,
+    169.74330299999565,
+    207.97170200000983,
+    201.84937899999204,
+    196.28902200001176,
+    180.57662899998832,
+    203.9340009999869,
+    217.26078000001144,
+    225.94441399999778,
+    205.7242430000042,
+    136.2572930000024,
+    213.7327670000086,
+    205.9401010000147,
+    176.651721000002,
+    185.95643999997992,
+    208.99488199999905,
+    209.92488899998716,
+    220.3813450000016,
+    191.40498399999342,
+    179.30762700000196,
+    221.68195200001355,
+    172.9970649999741,
+    206.15819399998873,
+    196.58041400002548,
+    205.03221100001247,
+    179.82497299998067,
+    198.01232799998252,
+    194.08517800000845,
+    190.5506849999947,
+    215.45007600000827,
+    210.5257430000056,
+    169.01544499999727
+  ],
+  "events": [
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 1183.5880690000001,
+      "snapshot_persisted_at_ms": 1312.60632,
+      "snapshot_uploaded_at_ms": 1312.60632,
+      "commit_rpc_completed_at_ms": 2389.743453
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010570000000000001,
+      "snapshot_persisted_at_ms": 82.56465899999999,
+      "snapshot_uploaded_at_ms": 82.56465899999999,
+      "commit_rpc_completed_at_ms": 1151.302549
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.022130999999999998,
+      "snapshot_persisted_at_ms": 96.56513899999999,
+      "snapshot_uploaded_at_ms": 96.56513899999999,
+      "commit_rpc_completed_at_ms": 1168.3940989999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.00962,
+      "snapshot_persisted_at_ms": 107.284003,
+      "snapshot_uploaded_at_ms": 107.284003,
+      "commit_rpc_completed_at_ms": 1178.169019
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01379,
+      "snapshot_persisted_at_ms": 73.081406,
+      "snapshot_uploaded_at_ms": 73.081406,
+      "commit_rpc_completed_at_ms": 1150.783391
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0101,
+      "snapshot_persisted_at_ms": 87.888878,
+      "snapshot_uploaded_at_ms": 87.888878,
+      "commit_rpc_completed_at_ms": 1164.313339
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.009049,
+      "snapshot_persisted_at_ms": 73.907614,
+      "snapshot_uploaded_at_ms": 73.907614,
+      "commit_rpc_completed_at_ms": 1148.558057
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011090000000000001,
+      "snapshot_persisted_at_ms": 86.320075,
+      "snapshot_uploaded_at_ms": 86.320075,
+      "commit_rpc_completed_at_ms": 1172.894623
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01279,
+      "snapshot_persisted_at_ms": 76.82280800000001,
+      "snapshot_uploaded_at_ms": 76.82280800000001,
+      "commit_rpc_completed_at_ms": 1145.8907510000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.009300000000000001,
+      "snapshot_persisted_at_ms": 84.68382100000001,
+      "snapshot_uploaded_at_ms": 84.68382100000001,
+      "commit_rpc_completed_at_ms": 1164.4792459999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015451000000000001,
+      "snapshot_persisted_at_ms": 68.45362100000001,
+      "snapshot_uploaded_at_ms": 68.45362100000001,
+      "commit_rpc_completed_at_ms": 1141.872522
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01238,
+      "snapshot_persisted_at_ms": 79.254579,
+      "snapshot_uploaded_at_ms": 79.254579,
+      "commit_rpc_completed_at_ms": 1147.474563
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011331,
+      "snapshot_persisted_at_ms": 77.101793,
+      "snapshot_uploaded_at_ms": 77.101793,
+      "commit_rpc_completed_at_ms": 1147.596616
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02164,
+      "snapshot_persisted_at_ms": 301.645452,
+      "snapshot_uploaded_at_ms": 301.645452,
+      "commit_rpc_completed_at_ms": 1373.318437
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.022430000000000002,
+      "snapshot_persisted_at_ms": 78.737843,
+      "snapshot_uploaded_at_ms": 78.737843,
+      "commit_rpc_completed_at_ms": 1160.329304
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01747,
+      "snapshot_persisted_at_ms": 88.419752,
+      "snapshot_uploaded_at_ms": 88.419752,
+      "commit_rpc_completed_at_ms": 1164.7001930000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01306,
+      "snapshot_persisted_at_ms": 77.488425,
+      "snapshot_uploaded_at_ms": 77.488425,
+      "commit_rpc_completed_at_ms": 1157.806978
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0145,
+      "snapshot_persisted_at_ms": 70.616585,
+      "snapshot_uploaded_at_ms": 70.616585,
+      "commit_rpc_completed_at_ms": 1144.539225
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01864,
+      "snapshot_persisted_at_ms": 80.474815,
+      "snapshot_uploaded_at_ms": 80.474815,
+      "commit_rpc_completed_at_ms": 1156.384854
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01288,
+      "snapshot_persisted_at_ms": 79.656093,
+      "snapshot_uploaded_at_ms": 79.656093,
+      "commit_rpc_completed_at_ms": 1171.754492
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01252,
+      "snapshot_persisted_at_ms": 103.685782,
+      "snapshot_uploaded_at_ms": 103.685782,
+      "commit_rpc_completed_at_ms": 1182.870396
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011470000000000001,
+      "snapshot_persisted_at_ms": 81.30078999999999,
+      "snapshot_uploaded_at_ms": 81.30078999999999,
+      "commit_rpc_completed_at_ms": 1159.421982
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01111,
+      "snapshot_persisted_at_ms": 83.472216,
+      "snapshot_uploaded_at_ms": 83.472216,
+      "commit_rpc_completed_at_ms": 1168.1713220000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.009680000000000001,
+      "snapshot_persisted_at_ms": 80.64299299999999,
+      "snapshot_uploaded_at_ms": 80.64299299999999,
+      "commit_rpc_completed_at_ms": 1153.4552090000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01323,
+      "snapshot_persisted_at_ms": 79.91846199999999,
+      "snapshot_uploaded_at_ms": 79.91846199999999,
+      "commit_rpc_completed_at_ms": 1151.8252069999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01359,
+      "snapshot_persisted_at_ms": 94.35924299999999,
+      "snapshot_uploaded_at_ms": 94.35924299999999,
+      "commit_rpc_completed_at_ms": 1166.559559
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015771,
+      "snapshot_persisted_at_ms": 81.323013,
+      "snapshot_uploaded_at_ms": 81.323013,
+      "commit_rpc_completed_at_ms": 1165.062665
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01099,
+      "snapshot_persisted_at_ms": 79.057903,
+      "snapshot_uploaded_at_ms": 79.057903,
+      "commit_rpc_completed_at_ms": 1154.484601
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01162,
+      "snapshot_persisted_at_ms": 74.59612899999999,
+      "snapshot_uploaded_at_ms": 74.59612899999999,
+      "commit_rpc_completed_at_ms": 1151.249078
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.052160000000000005,
+      "snapshot_persisted_at_ms": 82.207169,
+      "snapshot_uploaded_at_ms": 82.207169,
+      "commit_rpc_completed_at_ms": 1165.416965
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02037,
+      "snapshot_persisted_at_ms": 75.20743200000001,
+      "snapshot_uploaded_at_ms": 75.20743200000001,
+      "commit_rpc_completed_at_ms": 1147.554875
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.020449000000000002,
+      "snapshot_persisted_at_ms": 87.786106,
+      "snapshot_uploaded_at_ms": 87.786106,
+      "commit_rpc_completed_at_ms": 1165.013651
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01013,
+      "snapshot_persisted_at_ms": 77.615156,
+      "snapshot_uploaded_at_ms": 77.615156,
+      "commit_rpc_completed_at_ms": 1151.971765
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0229,
+      "snapshot_persisted_at_ms": 70.381752,
+      "snapshot_uploaded_at_ms": 70.381752,
+      "commit_rpc_completed_at_ms": 1143.516378
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01061,
+      "snapshot_persisted_at_ms": 78.30711799999999,
+      "snapshot_uploaded_at_ms": 78.30711799999999,
+      "commit_rpc_completed_at_ms": 1144.61302
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.022531000000000002,
+      "snapshot_persisted_at_ms": 75.751633,
+      "snapshot_uploaded_at_ms": 75.751633,
+      "commit_rpc_completed_at_ms": 1145.3548019999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.03358,
+      "snapshot_persisted_at_ms": 68.619833,
+      "snapshot_uploaded_at_ms": 68.619833,
+      "commit_rpc_completed_at_ms": 1143.846187
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013139999999999999,
+      "snapshot_persisted_at_ms": 75.151982,
+      "snapshot_uploaded_at_ms": 75.151982,
+      "commit_rpc_completed_at_ms": 1139.106663
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01146,
+      "snapshot_persisted_at_ms": 69.34351,
+      "snapshot_uploaded_at_ms": 69.34351,
+      "commit_rpc_completed_at_ms": 1143.1249349999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01599,
+      "snapshot_persisted_at_ms": 86.677954,
+      "snapshot_uploaded_at_ms": 86.677954,
+      "commit_rpc_completed_at_ms": 1150.490014
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01313,
+      "snapshot_persisted_at_ms": 77.50850700000001,
+      "snapshot_uploaded_at_ms": 77.50850700000001,
+      "commit_rpc_completed_at_ms": 1146.277444
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01162,
+      "snapshot_persisted_at_ms": 72.840469,
+      "snapshot_uploaded_at_ms": 72.840469,
+      "commit_rpc_completed_at_ms": 1146.191294
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.017419999999999998,
+      "snapshot_persisted_at_ms": 70.350882,
+      "snapshot_uploaded_at_ms": 70.350882,
+      "commit_rpc_completed_at_ms": 1149.270531
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01715,
+      "snapshot_persisted_at_ms": 68.892494,
+      "snapshot_uploaded_at_ms": 68.892494,
+      "commit_rpc_completed_at_ms": 1143.776723
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01267,
+      "snapshot_persisted_at_ms": 75.024567,
+      "snapshot_uploaded_at_ms": 75.024567,
+      "commit_rpc_completed_at_ms": 1156.947716
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01541,
+      "snapshot_persisted_at_ms": 69.980361,
+      "snapshot_uploaded_at_ms": 69.980361,
+      "commit_rpc_completed_at_ms": 1133.096623
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011810000000000001,
+      "snapshot_persisted_at_ms": 73.695494,
+      "snapshot_uploaded_at_ms": 73.695494,
+      "commit_rpc_completed_at_ms": 1144.646597
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01055,
+      "snapshot_persisted_at_ms": 70.301181,
+      "snapshot_uploaded_at_ms": 70.301181,
+      "commit_rpc_completed_at_ms": 1135.6907190000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01866,
+      "snapshot_persisted_at_ms": 73.87347399999999,
+      "snapshot_uploaded_at_ms": 73.87347399999999,
+      "commit_rpc_completed_at_ms": 1140.459527
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014379999999999999,
+      "snapshot_persisted_at_ms": 69.55991999999999,
+      "snapshot_uploaded_at_ms": 69.55991999999999,
+      "commit_rpc_completed_at_ms": 1144.206141
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01892,
+      "snapshot_persisted_at_ms": 92.43075,
+      "snapshot_uploaded_at_ms": 92.43075,
+      "commit_rpc_completed_at_ms": 1171.5729829999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012629000000000001,
+      "snapshot_persisted_at_ms": 82.634421,
+      "snapshot_uploaded_at_ms": 82.634421,
+      "commit_rpc_completed_at_ms": 1166.993054
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01082,
+      "snapshot_persisted_at_ms": 77.976431,
+      "snapshot_uploaded_at_ms": 77.976431,
+      "commit_rpc_completed_at_ms": 1152.0130749999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01731,
+      "snapshot_persisted_at_ms": 86.28883599999999,
+      "snapshot_uploaded_at_ms": 86.28883599999999,
+      "commit_rpc_completed_at_ms": 1160.9996469999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.024579999999999998,
+      "snapshot_persisted_at_ms": 77.86827100000001,
+      "snapshot_uploaded_at_ms": 77.86827100000001,
+      "commit_rpc_completed_at_ms": 1140.706374
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0109,
+      "snapshot_persisted_at_ms": 73.122326,
+      "snapshot_uploaded_at_ms": 73.122326,
+      "commit_rpc_completed_at_ms": 1146.042607
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.018678999999999998,
+      "snapshot_persisted_at_ms": 70.373714,
+      "snapshot_uploaded_at_ms": 70.373714,
+      "commit_rpc_completed_at_ms": 1148.148139
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.034530000000000005,
+      "snapshot_persisted_at_ms": 77.351587,
+      "snapshot_uploaded_at_ms": 77.351587,
+      "commit_rpc_completed_at_ms": 1155.857578
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0124,
+      "snapshot_persisted_at_ms": 79.984113,
+      "snapshot_uploaded_at_ms": 79.984113,
+      "commit_rpc_completed_at_ms": 1149.664243
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011311,
+      "snapshot_persisted_at_ms": 78.248797,
+      "snapshot_uploaded_at_ms": 78.248797,
+      "commit_rpc_completed_at_ms": 1147.813308
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.03053,
+      "snapshot_persisted_at_ms": 76.791692,
+      "snapshot_uploaded_at_ms": 76.791692,
+      "commit_rpc_completed_at_ms": 1146.260922
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01649,
+      "snapshot_persisted_at_ms": 73.61583300000001,
+      "snapshot_uploaded_at_ms": 73.61583300000001,
+      "commit_rpc_completed_at_ms": 1137.701159
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01116,
+      "snapshot_persisted_at_ms": 69.53654200000001,
+      "snapshot_uploaded_at_ms": 69.53654200000001,
+      "commit_rpc_completed_at_ms": 1134.9312300000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01433,
+      "snapshot_persisted_at_ms": 75.845916,
+      "snapshot_uploaded_at_ms": 75.845916,
+      "commit_rpc_completed_at_ms": 1138.717609
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015880000000000002,
+      "snapshot_persisted_at_ms": 77.28583499999999,
+      "snapshot_uploaded_at_ms": 77.28583499999999,
+      "commit_rpc_completed_at_ms": 1141.704442
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01112,
+      "snapshot_persisted_at_ms": 66.611655,
+      "snapshot_uploaded_at_ms": 66.611655,
+      "commit_rpc_completed_at_ms": 1128.794276
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012191,
+      "snapshot_persisted_at_ms": 70.756,
+      "snapshot_uploaded_at_ms": 70.756,
+      "commit_rpc_completed_at_ms": 1141.786083
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02369,
+      "snapshot_persisted_at_ms": 59.558344,
+      "snapshot_uploaded_at_ms": 59.558344,
+      "commit_rpc_completed_at_ms": 1124.859247
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015891000000000002,
+      "snapshot_persisted_at_ms": 74.117347,
+      "snapshot_uploaded_at_ms": 74.117347,
+      "commit_rpc_completed_at_ms": 1146.213194
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02171,
+      "snapshot_persisted_at_ms": 71.547748,
+      "snapshot_uploaded_at_ms": 71.547748,
+      "commit_rpc_completed_at_ms": 1144.929177
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02006,
+      "snapshot_persisted_at_ms": 80.171108,
+      "snapshot_uploaded_at_ms": 80.171108,
+      "commit_rpc_completed_at_ms": 1153.578147
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014070000000000001,
+      "snapshot_persisted_at_ms": 64.274503,
+      "snapshot_uploaded_at_ms": 64.274503,
+      "commit_rpc_completed_at_ms": 1128.9120320000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01171,
+      "snapshot_persisted_at_ms": 65.505615,
+      "snapshot_uploaded_at_ms": 65.505615,
+      "commit_rpc_completed_at_ms": 1142.973942
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0177,
+      "snapshot_persisted_at_ms": 80.97675699999999,
+      "snapshot_uploaded_at_ms": 80.97675699999999,
+      "commit_rpc_completed_at_ms": 1160.980125
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0204,
+      "snapshot_persisted_at_ms": 65.438532,
+      "snapshot_uploaded_at_ms": 65.438532,
+      "commit_rpc_completed_at_ms": 1134.7519450000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01265,
+      "snapshot_persisted_at_ms": 198.90831500000002,
+      "snapshot_uploaded_at_ms": 198.90831500000002,
+      "commit_rpc_completed_at_ms": 1276.192277
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01506,
+      "snapshot_persisted_at_ms": 75.796413,
+      "snapshot_uploaded_at_ms": 75.796413,
+      "commit_rpc_completed_at_ms": 1150.4948669999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01366,
+      "snapshot_persisted_at_ms": 78.201708,
+      "snapshot_uploaded_at_ms": 78.201708,
+      "commit_rpc_completed_at_ms": 1151.4788700000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.026250000000000002,
+      "snapshot_persisted_at_ms": 64.611548,
+      "snapshot_uploaded_at_ms": 64.611548,
+      "commit_rpc_completed_at_ms": 1134.0270699999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01752,
+      "snapshot_persisted_at_ms": 78.63821999999999,
+      "snapshot_uploaded_at_ms": 78.63821999999999,
+      "commit_rpc_completed_at_ms": 1152.0272929999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.024541,
+      "snapshot_persisted_at_ms": 75.392063,
+      "snapshot_uploaded_at_ms": 75.392063,
+      "commit_rpc_completed_at_ms": 1145.661685
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01618,
+      "snapshot_persisted_at_ms": 64.310887,
+      "snapshot_uploaded_at_ms": 64.310887,
+      "commit_rpc_completed_at_ms": 1130.068057
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01284,
+      "snapshot_persisted_at_ms": 173.305413,
+      "snapshot_uploaded_at_ms": 173.305413,
+      "commit_rpc_completed_at_ms": 1232.773813
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0191,
+      "snapshot_persisted_at_ms": 106.14408,
+      "snapshot_uploaded_at_ms": 106.14408,
+      "commit_rpc_completed_at_ms": 1169.483615
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02266,
+      "snapshot_persisted_at_ms": 91.11565,
+      "snapshot_uploaded_at_ms": 91.11565,
+      "commit_rpc_completed_at_ms": 1171.465592
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.027869,
+      "snapshot_persisted_at_ms": 80.91034900000001,
+      "snapshot_uploaded_at_ms": 80.91034900000001,
+      "commit_rpc_completed_at_ms": 1145.479531
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015909999999999997,
+      "snapshot_persisted_at_ms": 87.207925,
+      "snapshot_uploaded_at_ms": 87.207925,
+      "commit_rpc_completed_at_ms": 1157.577182
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01234,
+      "snapshot_persisted_at_ms": 67.94074599999999,
+      "snapshot_uploaded_at_ms": 67.94074599999999,
+      "commit_rpc_completed_at_ms": 1144.496898
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01306,
+      "snapshot_persisted_at_ms": 77.981158,
+      "snapshot_uploaded_at_ms": 77.981158,
+      "commit_rpc_completed_at_ms": 1145.010552
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01205,
+      "snapshot_persisted_at_ms": 75.53040399999999,
+      "snapshot_uploaded_at_ms": 75.53040399999999,
+      "commit_rpc_completed_at_ms": 1136.1911300000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01391,
+      "snapshot_persisted_at_ms": 71.155251,
+      "snapshot_uploaded_at_ms": 71.155251,
+      "commit_rpc_completed_at_ms": 1133.797907
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02069,
+      "snapshot_persisted_at_ms": 62.26823,
+      "snapshot_uploaded_at_ms": 62.26823,
+      "commit_rpc_completed_at_ms": 1132.6742219999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01782,
+      "snapshot_persisted_at_ms": 70.598859,
+      "snapshot_uploaded_at_ms": 70.598859,
+      "commit_rpc_completed_at_ms": 1141.6015710000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014610000000000001,
+      "snapshot_persisted_at_ms": 81.29379,
+      "snapshot_uploaded_at_ms": 81.29379,
+      "commit_rpc_completed_at_ms": 1156.4367730000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0248,
+      "snapshot_persisted_at_ms": 67.268683,
+      "snapshot_uploaded_at_ms": 67.268683,
+      "commit_rpc_completed_at_ms": 1135.9580799999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01934,
+      "snapshot_persisted_at_ms": 70.191645,
+      "snapshot_uploaded_at_ms": 70.191645,
+      "commit_rpc_completed_at_ms": 1140.757081
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01492,
+      "snapshot_persisted_at_ms": 73.233483,
+      "snapshot_uploaded_at_ms": 73.233483,
+      "commit_rpc_completed_at_ms": 585.3424729999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.020210000000000002,
+      "snapshot_persisted_at_ms": 67.259425,
+      "snapshot_uploaded_at_ms": 67.259425,
+      "commit_rpc_completed_at_ms": 1137.1663110000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.018868999999999997,
+      "snapshot_persisted_at_ms": 59.220833999999996,
+      "snapshot_uploaded_at_ms": 59.220833999999996,
+      "commit_rpc_completed_at_ms": 1212.349706
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01675,
+      "snapshot_persisted_at_ms": 83.885598,
+      "snapshot_uploaded_at_ms": 83.885598,
+      "commit_rpc_completed_at_ms": 1183.5423620000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.017829,
+      "snapshot_persisted_at_ms": 62.175381,
+      "snapshot_uploaded_at_ms": 62.175381,
+      "commit_rpc_completed_at_ms": 1125.20112
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.032029,
+      "snapshot_persisted_at_ms": 61.919689,
+      "snapshot_uploaded_at_ms": 61.919689,
+      "commit_rpc_completed_at_ms": 1138.895537
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.03006,
+      "snapshot_persisted_at_ms": 74.56813,
+      "snapshot_uploaded_at_ms": 74.56813,
+      "commit_rpc_completed_at_ms": 1142.887507
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013519999999999999,
+      "snapshot_persisted_at_ms": 69.22539,
+      "snapshot_uploaded_at_ms": 69.22539,
+      "commit_rpc_completed_at_ms": 1139.6379610000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.028399999999999998,
+      "snapshot_persisted_at_ms": 78.58932200000001,
+      "snapshot_uploaded_at_ms": 78.58932200000001,
+      "commit_rpc_completed_at_ms": 1144.0306110000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012490000000000001,
+      "snapshot_persisted_at_ms": 74.060132,
+      "snapshot_uploaded_at_ms": 74.060132,
+      "commit_rpc_completed_at_ms": 1135.858806
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01504,
+      "snapshot_persisted_at_ms": 69.768661,
+      "snapshot_uploaded_at_ms": 69.768661,
+      "commit_rpc_completed_at_ms": 1133.9223519999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015400000000000002,
+      "snapshot_persisted_at_ms": 73.749595,
+      "snapshot_uploaded_at_ms": 73.749595,
+      "commit_rpc_completed_at_ms": 1134.466618
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.019700000000000002,
+      "snapshot_persisted_at_ms": 67.3386,
+      "snapshot_uploaded_at_ms": 67.3386,
+      "commit_rpc_completed_at_ms": 1141.089863
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01482,
+      "snapshot_persisted_at_ms": 70.71894200000001,
+      "snapshot_uploaded_at_ms": 70.71894200000001,
+      "commit_rpc_completed_at_ms": 1127.778706
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.018600000000000002,
+      "snapshot_persisted_at_ms": 79.508189,
+      "snapshot_uploaded_at_ms": 79.508189,
+      "commit_rpc_completed_at_ms": 1151.6111700000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012711,
+      "snapshot_persisted_at_ms": 84.265989,
+      "snapshot_uploaded_at_ms": 84.265989,
+      "commit_rpc_completed_at_ms": 1152.394245
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01575,
+      "snapshot_persisted_at_ms": 57.824854,
+      "snapshot_uploaded_at_ms": 57.824854,
+      "commit_rpc_completed_at_ms": 1130.308337
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012490000000000001,
+      "snapshot_persisted_at_ms": 63.220482,
+      "snapshot_uploaded_at_ms": 63.220482,
+      "commit_rpc_completed_at_ms": 1147.733699
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01856,
+      "snapshot_persisted_at_ms": 68.689707,
+      "snapshot_uploaded_at_ms": 68.689707,
+      "commit_rpc_completed_at_ms": 1144.2315970000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02486,
+      "snapshot_persisted_at_ms": 79.316373,
+      "snapshot_uploaded_at_ms": 79.316373,
+      "commit_rpc_completed_at_ms": 1170.232643
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01597,
+      "snapshot_persisted_at_ms": 64.46853499999999,
+      "snapshot_uploaded_at_ms": 64.46853499999999,
+      "commit_rpc_completed_at_ms": 1130.2073169999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01443,
+      "snapshot_persisted_at_ms": 69.970721,
+      "snapshot_uploaded_at_ms": 69.970721,
+      "commit_rpc_completed_at_ms": 1137.363441
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.05075,
+      "snapshot_persisted_at_ms": 68.71065499999999,
+      "snapshot_uploaded_at_ms": 68.71065499999999,
+      "commit_rpc_completed_at_ms": 1143.9366129999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02633,
+      "snapshot_persisted_at_ms": 83.356776,
+      "snapshot_uploaded_at_ms": 83.356776,
+      "commit_rpc_completed_at_ms": 1145.112954
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0155,
+      "snapshot_persisted_at_ms": 77.408005,
+      "snapshot_uploaded_at_ms": 77.408005,
+      "commit_rpc_completed_at_ms": 1145.785155
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01512,
+      "snapshot_persisted_at_ms": 85.715054,
+      "snapshot_uploaded_at_ms": 85.715054,
+      "commit_rpc_completed_at_ms": 1152.944672
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0295,
+      "snapshot_persisted_at_ms": 72.191342,
+      "snapshot_uploaded_at_ms": 72.191342,
+      "commit_rpc_completed_at_ms": 1145.286879
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0121,
+      "snapshot_persisted_at_ms": 67.931067,
+      "snapshot_uploaded_at_ms": 67.931067,
+      "commit_rpc_completed_at_ms": 1133.083585
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01643,
+      "snapshot_persisted_at_ms": 70.03883800000001,
+      "snapshot_uploaded_at_ms": 70.03883800000001,
+      "commit_rpc_completed_at_ms": 1137.5866560000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02232,
+      "snapshot_persisted_at_ms": 63.663641000000005,
+      "snapshot_uploaded_at_ms": 63.663641000000005,
+      "commit_rpc_completed_at_ms": 1144.60213
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01041,
+      "snapshot_persisted_at_ms": 82.772458,
+      "snapshot_uploaded_at_ms": 82.772458,
+      "commit_rpc_completed_at_ms": 1147.2060310000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01189,
+      "snapshot_persisted_at_ms": 79.53361000000001,
+      "snapshot_uploaded_at_ms": 79.53361000000001,
+      "commit_rpc_completed_at_ms": 1149.2761739999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.009840000000000002,
+      "snapshot_persisted_at_ms": 68.373409,
+      "snapshot_uploaded_at_ms": 68.373409,
+      "commit_rpc_completed_at_ms": 1142.9524410000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014419999999999999,
+      "snapshot_persisted_at_ms": 67.966147,
+      "snapshot_uploaded_at_ms": 67.966147,
+      "commit_rpc_completed_at_ms": 1145.933798
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012971,
+      "snapshot_persisted_at_ms": 74.03506399999999,
+      "snapshot_uploaded_at_ms": 74.03506399999999,
+      "commit_rpc_completed_at_ms": 1156.50457
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01128,
+      "snapshot_persisted_at_ms": 69.422297,
+      "snapshot_uploaded_at_ms": 69.422297,
+      "commit_rpc_completed_at_ms": 1152.955473
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01316,
+      "snapshot_persisted_at_ms": 70.30131,
+      "snapshot_uploaded_at_ms": 70.30131,
+      "commit_rpc_completed_at_ms": 1139.328843
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.015911,
+      "snapshot_persisted_at_ms": 74.097398,
+      "snapshot_uploaded_at_ms": 74.097398,
+      "commit_rpc_completed_at_ms": 1136.8162790000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010879999999999999,
+      "snapshot_persisted_at_ms": 65.474514,
+      "snapshot_uploaded_at_ms": 65.474514,
+      "commit_rpc_completed_at_ms": 1127.1169750000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.00841,
+      "snapshot_persisted_at_ms": 62.859514000000004,
+      "snapshot_uploaded_at_ms": 62.859514000000004,
+      "commit_rpc_completed_at_ms": 1124.9210249999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010869,
+      "snapshot_persisted_at_ms": 69.041095,
+      "snapshot_uploaded_at_ms": 69.041095,
+      "commit_rpc_completed_at_ms": 1138.2192499999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010740000000000001,
+      "snapshot_persisted_at_ms": 81.972448,
+      "snapshot_uploaded_at_ms": 81.972448,
+      "commit_rpc_completed_at_ms": 1148.204593
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01651,
+      "snapshot_persisted_at_ms": 74.534073,
+      "snapshot_uploaded_at_ms": 74.534073,
+      "commit_rpc_completed_at_ms": 1149.056071
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01295,
+      "snapshot_persisted_at_ms": 82.269024,
+      "snapshot_uploaded_at_ms": 82.269024,
+      "commit_rpc_completed_at_ms": 1150.2993470000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01602,
+      "snapshot_persisted_at_ms": 124.43415900000001,
+      "snapshot_uploaded_at_ms": 124.43415900000001,
+      "commit_rpc_completed_at_ms": 1193.998913
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02192,
+      "snapshot_persisted_at_ms": 73.290456,
+      "snapshot_uploaded_at_ms": 73.290456,
+      "commit_rpc_completed_at_ms": 1152.845436
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01468,
+      "snapshot_persisted_at_ms": 64.802076,
+      "snapshot_uploaded_at_ms": 64.802076,
+      "commit_rpc_completed_at_ms": 1131.27051
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013890000000000001,
+      "snapshot_persisted_at_ms": 70.772747,
+      "snapshot_uploaded_at_ms": 70.772747,
+      "commit_rpc_completed_at_ms": 1137.719723
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013600000000000001,
+      "snapshot_persisted_at_ms": 56.997114,
+      "snapshot_uploaded_at_ms": 56.997114,
+      "commit_rpc_completed_at_ms": 1120.2376430000002
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0408,
+      "snapshot_persisted_at_ms": 76.020961,
+      "snapshot_uploaded_at_ms": 76.020961,
+      "commit_rpc_completed_at_ms": 1150.7658199999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01392,
+      "snapshot_persisted_at_ms": 79.054402,
+      "snapshot_uploaded_at_ms": 79.054402,
+      "commit_rpc_completed_at_ms": 1149.539036
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.017830000000000002,
+      "snapshot_persisted_at_ms": 66.022206,
+      "snapshot_uploaded_at_ms": 66.022206,
+      "commit_rpc_completed_at_ms": 1132.771563
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014209999999999999,
+      "snapshot_persisted_at_ms": 78.04858200000001,
+      "snapshot_uploaded_at_ms": 78.04858200000001,
+      "commit_rpc_completed_at_ms": 1149.895771
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02476,
+      "snapshot_persisted_at_ms": 89.001703,
+      "snapshot_uploaded_at_ms": 89.001703,
+      "commit_rpc_completed_at_ms": 1153.43262
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01415,
+      "snapshot_persisted_at_ms": 64.33657600000001,
+      "snapshot_uploaded_at_ms": 64.33657600000001,
+      "commit_rpc_completed_at_ms": 1129.185406
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.00881,
+      "snapshot_persisted_at_ms": 66.37761400000001,
+      "snapshot_uploaded_at_ms": 66.37761400000001,
+      "commit_rpc_completed_at_ms": 1145.066988
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0189,
+      "snapshot_persisted_at_ms": 63.975368,
+      "snapshot_uploaded_at_ms": 63.975368,
+      "commit_rpc_completed_at_ms": 1136.4799859999998
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01383,
+      "snapshot_persisted_at_ms": 66.16261399999999,
+      "snapshot_uploaded_at_ms": 66.16261399999999,
+      "commit_rpc_completed_at_ms": 1128.334238
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01627,
+      "snapshot_persisted_at_ms": 74.871172,
+      "snapshot_uploaded_at_ms": 74.871172,
+      "commit_rpc_completed_at_ms": 1062.997055
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "local_sync_ms": 2.67792
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "uploaded": true,
+      "upload_ms": 73.245065
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "persistence_ms": 74.364686
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 126.399333
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010010000000000002,
+      "snapshot_persisted_at_ms": 74.437176,
+      "snapshot_uploaded_at_ms": 74.437176,
+      "commit_rpc_completed_at_ms": 151.212548
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "local_sync_ms": 0.812086
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.384836
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "uploaded": true,
+      "upload_ms": 71.54777700000001
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "persistence_ms": 72.436468
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 303.877343
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 81.55701499999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/ab/ab1741cff3274a2588b59f1d53e47a5f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/156.json",
+      "succeeded": true,
+      "replication_ms": 304.146708
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/a9/a95ccfcc04374494bf27e415fd104d78/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/157.json",
+      "succeeded": true,
+      "replication_ms": 81.83191099999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01316,
+      "snapshot_persisted_at_ms": 72.492649,
+      "snapshot_uploaded_at_ms": 72.492649,
+      "commit_rpc_completed_at_ms": 139.440393
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "local_sync_ms": 0.735596
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.010988
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.539285
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "succeeded": true,
+      "replication_ms": 78.864689
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "persistence_ms": 79.110565
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "uploaded": true,
+      "upload_ms": 88.995824
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.03136,
+      "snapshot_persisted_at_ms": 79.26640499999999,
+      "commit_rpc_completed_at_ms": 133.13870699999998
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "local_sync_ms": 0.8861570000000001
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/a6/a64dccbf03dc4fba852cf8c727bd0ff1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/158.json",
+      "archive_lag_ms": 223
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.694054
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 79.349226
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "succeeded": true,
+      "replication_ms": 79.59513
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "persistence_ms": 79.862966
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "uploaded": true,
+      "upload_ms": 118.82368
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.011600000000000001,
+      "snapshot_persisted_at_ms": 80.020161,
+      "commit_rpc_completed_at_ms": 155.806695
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/3e/3e36eeb6148a439f8cda6227f83251dc/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/159.json",
+      "archive_lag_ms": 219
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "local_sync_ms": 0.647011
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.877187
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.785014
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "succeeded": true,
+      "replication_ms": 79.04049
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "persistence_ms": 79.20349999999999
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/ba/ba9a608e09df4b13b71fd8b4f491a46b/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/160.json",
+      "uploaded": true,
+      "upload_ms": 86.514524
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.01399,
+      "snapshot_persisted_at_ms": 79.29641,
+      "commit_rpc_completed_at_ms": 142.52122
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "local_sync_ms": 0.716382
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.051838000000004
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "uploaded": true,
+      "upload_ms": 73.85483599999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "persistence_ms": 75.26768799999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.903135
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/88/882d43e57a0d415ba04377096af2d61c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/161.json",
+      "succeeded": true,
+      "replication_ms": 79.159091
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01168,
+      "snapshot_persisted_at_ms": 75.349568,
+      "snapshot_uploaded_at_ms": 75.349568,
+      "commit_rpc_completed_at_ms": 147.09669
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "local_sync_ms": 0.762717
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.662530000000004
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "uploaded": true,
+      "upload_ms": 76.580385
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "persistence_ms": 77.37974200000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.104654
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/44/4467a2f7e17941f5aa62f6829bad7c50/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/162.json",
+      "succeeded": true,
+      "replication_ms": 78.216643
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.014089,
+      "snapshot_persisted_at_ms": 77.46449199999999,
+      "snapshot_uploaded_at_ms": 77.46449199999999,
+      "commit_rpc_completed_at_ms": 150.655046
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "local_sync_ms": 0.548192
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.157858999999995
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.721074
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "succeeded": true,
+      "replication_ms": 78.05456400000001
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "persistence_ms": 78.324835
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/a9/a9db9b066677450a9613ad12d882eabf/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/163.json",
+      "uploaded": true,
+      "upload_ms": 94.85837699999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.012079999999999999,
+      "snapshot_persisted_at_ms": 78.41848499999999,
+      "commit_rpc_completed_at_ms": 149.099004
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "local_sync_ms": 0.754447
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.814559
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "uploaded": true,
+      "upload_ms": 78.69151500000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 79.263741
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "succeeded": true,
+      "replication_ms": 79.43971599999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/16/165dcfc8d37e455a8fa3cd93314b1966/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/164.json",
+      "persistence_ms": 79.62791600000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.014270999999999999,
+      "snapshot_persisted_at_ms": 79.75300200000001,
+      "commit_rpc_completed_at_ms": 119.10866200000001
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "local_sync_ms": 0.5643720000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.502522
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "uploaded": true,
+      "upload_ms": 66.28463099999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "persistence_ms": 67.037978
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.298319
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/d8/d8d8a8ab8d024415aada04933146dbe1/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/165.json",
+      "succeeded": true,
+      "replication_ms": 78.6099
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01267,
+      "snapshot_persisted_at_ms": 67.098488,
+      "snapshot_uploaded_at_ms": 67.098488,
+      "commit_rpc_completed_at_ms": 105.01983
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "local_sync_ms": 0.584066
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.476444
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "uploaded": true,
+      "upload_ms": 63.890992
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "persistence_ms": 65.11130399999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.997273
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/bb/bb2b53eeb43440d487e4daa22d0d97cd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/166.json",
+      "succeeded": true,
+      "replication_ms": 78.324658
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01307,
+      "snapshot_persisted_at_ms": 65.223744,
+      "snapshot_uploaded_at_ms": 65.223744,
+      "commit_rpc_completed_at_ms": 112.175728
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "local_sync_ms": 0.778252
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.115988
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "uploaded": true,
+      "upload_ms": 62.236858999999995
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "persistence_ms": 63.12122000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.791033
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/aa/aae7b8990e054efb8122776a08d7d8e5/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/167.json",
+      "succeeded": true,
+      "replication_ms": 78.063224
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.025130000000000003,
+      "snapshot_persisted_at_ms": 63.19655,
+      "snapshot_uploaded_at_ms": 63.19655,
+      "commit_rpc_completed_at_ms": 135.82949299999999
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "local_sync_ms": 0.908452
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.236883
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "uploaded": true,
+      "upload_ms": 76.88035699999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "persistence_ms": 78.14127
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.19377800000001
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/fd/fd7e2c738c0f42e798a34e02f9b405f4/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/168.json",
+      "succeeded": true,
+      "replication_ms": 78.38680000000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.021691,
+      "snapshot_persisted_at_ms": 78.30596,
+      "snapshot_uploaded_at_ms": 78.30596,
+      "commit_rpc_completed_at_ms": 118.008405
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "local_sync_ms": 0.929232
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.193993999999996
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "uploaded": true,
+      "upload_ms": 66.857527
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "persistence_ms": 67.691829
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.109949
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/1c/1c5f32bb07af4e3bad1039da0992a314/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/169.json",
+      "succeeded": true,
+      "replication_ms": 78.382904
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01178,
+      "snapshot_persisted_at_ms": 67.817939,
+      "snapshot_uploaded_at_ms": 67.817939,
+      "commit_rpc_completed_at_ms": 105.75812599999999
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "local_sync_ms": 0.748821
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 34.387511
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "uploaded": true,
+      "upload_ms": 66.43815599999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "persistence_ms": 67.269938
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.15085400000001
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "succeeded": true,
+      "replication_ms": 78.447929
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01312,
+      "snapshot_persisted_at_ms": 67.314678,
+      "snapshot_uploaded_at_ms": 67.314678,
+      "commit_rpc_completed_at_ms": 131.40656
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/30/307f386f70aa42eeab94dcd6c668c52f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/170.json",
+      "archive_lag_ms": 179
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "local_sync_ms": 0.737417
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.301944
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "uploaded": true,
+      "upload_ms": 60.234135
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "persistence_ms": 60.992121000000004
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.59966
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/01/01c6a0961a4244f0947ede9bffac9d12/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/171.json",
+      "succeeded": true,
+      "replication_ms": 78.829125
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0107,
+      "snapshot_persisted_at_ms": 61.136871,
+      "snapshot_uploaded_at_ms": 61.136871,
+      "commit_rpc_completed_at_ms": 96.716084
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "local_sync_ms": 0.718152
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.759167
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "uploaded": true,
+      "upload_ms": 67.218603
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "persistence_ms": 68.038819
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.057642
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/04/045f0a9a4fd34fb9aa3595952baf76da/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/172.json",
+      "succeeded": true,
+      "replication_ms": 77.336138
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.010329999999999999,
+      "snapshot_persisted_at_ms": 68.090699,
+      "snapshot_uploaded_at_ms": 68.090699,
+      "commit_rpc_completed_at_ms": 135.430472
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "local_sync_ms": 0.757472
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.292609
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "uploaded": true,
+      "upload_ms": 71.682761
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "persistence_ms": 72.298253
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.209152
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/16/16bcf7fa2c9843878e90a90e81db4c2c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/173.json",
+      "succeeded": true,
+      "replication_ms": 77.41994700000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01541,
+      "snapshot_persisted_at_ms": 72.411247,
+      "snapshot_uploaded_at_ms": 72.411247,
+      "commit_rpc_completed_at_ms": 128.297674
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "local_sync_ms": 0.767818
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.774173
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "uploaded": true,
+      "upload_ms": 70.715945
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "persistence_ms": 71.711292
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.806448
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "succeeded": true,
+      "replication_ms": 78.044219
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.016739999999999998,
+      "snapshot_persisted_at_ms": 71.79907200000001,
+      "snapshot_uploaded_at_ms": 71.79907200000001,
+      "commit_rpc_completed_at_ms": 121.16653600000001
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/3f/3fd7f56f098242b2a6342e056e1d9986/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/174.json",
+      "archive_lag_ms": 140
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "local_sync_ms": 0.6844210000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.900468000000004
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "uploaded": true,
+      "upload_ms": 66.636397
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "persistence_ms": 67.336138
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 81.279775
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "succeeded": true,
+      "replication_ms": 81.645011
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.027540000000000002,
+      "snapshot_persisted_at_ms": 67.432799,
+      "snapshot_uploaded_at_ms": 67.432799,
+      "commit_rpc_completed_at_ms": 104.076634
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "local_sync_ms": 0.746532
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/d3/d3fbff1f23124ba199b1fe6335fae7df/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/175.json",
+      "archive_lag_ms": 195
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.488519000000004
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "uploaded": true,
+      "upload_ms": 64.31076800000001
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "persistence_ms": 64.76862799999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 79.847442
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/e4/e477d96fabcf4e95811ea19144c1e464/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/176.json",
+      "succeeded": true,
+      "replication_ms": 80.282398
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011980000000000001,
+      "snapshot_persisted_at_ms": 64.85476799999999,
+      "snapshot_uploaded_at_ms": 64.85476799999999,
+      "commit_rpc_completed_at_ms": 128.82401
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "local_sync_ms": 0.625225
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.410168
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "uploaded": true,
+      "upload_ms": 69.102622
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "persistence_ms": 69.826093
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.30100399999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/83/83939e0484aa4b84ab034720793960fd/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/177.json",
+      "succeeded": true,
+      "replication_ms": 78.56049
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01243,
+      "snapshot_persisted_at_ms": 69.90101299999999,
+      "snapshot_uploaded_at_ms": 69.90101299999999,
+      "commit_rpc_completed_at_ms": 144.098464
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "local_sync_ms": 0.586751
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.861492
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "uploaded": true,
+      "upload_ms": 73.979791
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "persistence_ms": 75.181378
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 76.746786
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/43/4303149baa34418f89e7a0c43e64d226/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/178.json",
+      "succeeded": true,
+      "replication_ms": 76.99999100000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.012551000000000001,
+      "snapshot_persisted_at_ms": 75.279394,
+      "snapshot_uploaded_at_ms": 75.279394,
+      "commit_rpc_completed_at_ms": 153.60241399999998
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "local_sync_ms": 0.8421000000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.137516999999995
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "uploaded": true,
+      "upload_ms": 71.806782
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "persistence_ms": 72.859804
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 76.94405499999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/2f/2f6e02eec270400bb368401ab618659e/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/179.json",
+      "succeeded": true,
+      "replication_ms": 77.245712
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.02023,
+      "snapshot_persisted_at_ms": 73.039304,
+      "snapshot_uploaded_at_ms": 73.039304,
+      "commit_rpc_completed_at_ms": 131.968696
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "local_sync_ms": 0.713662
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.891391999999996
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "uploaded": true,
+      "upload_ms": 59.028692
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "persistence_ms": 59.625789
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.303793
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "succeeded": true,
+      "replication_ms": 77.596152
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01859,
+      "snapshot_persisted_at_ms": 59.688323000000004,
+      "snapshot_uploaded_at_ms": 59.688323000000004,
+      "commit_rpc_completed_at_ms": 97.794301
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "local_sync_ms": 0.768682
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.291814
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/27/27c68339a75c4bc1a913276d93eb3600/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/180.json",
+      "archive_lag_ms": 171
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 76.536831
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "succeeded": true,
+      "replication_ms": 76.872591
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "persistence_ms": 77.000602
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/6b/6b9a118df57743efbd54ce4400e9aefb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/181.json",
+      "uploaded": true,
+      "upload_ms": 96.89511900000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.012660000000000001,
+      "snapshot_persisted_at_ms": 77.037291,
+      "commit_rpc_completed_at_ms": 140.637648
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "local_sync_ms": 0.9699319999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.167808
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "uploaded": true,
+      "upload_ms": 63.040504
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "persistence_ms": 64.320407
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 80.69499400000001
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/9a/9a63019440514c3e81aa3b0ecdd3455f/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/182.json",
+      "succeeded": true,
+      "replication_ms": 81.080664
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013940000000000001,
+      "snapshot_persisted_at_ms": 64.403357,
+      "snapshot_uploaded_at_ms": 64.403357,
+      "commit_rpc_completed_at_ms": 130.876079
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "local_sync_ms": 0.9449919999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.074568
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "uploaded": true,
+      "upload_ms": 61.661803
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "persistence_ms": 63.179815
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.54354199999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/6b/6b3a6a2dfbc7405a91e3f1a79267a723/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/183.json",
+      "succeeded": true,
+      "replication_ms": 77.94081299999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0234,
+      "snapshot_persisted_at_ms": 63.353686,
+      "snapshot_uploaded_at_ms": 63.353686,
+      "commit_rpc_completed_at_ms": 104.79885399999999
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "local_sync_ms": 0.6618120000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.468649000000006
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "uploaded": true,
+      "upload_ms": 69.858258
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "persistence_ms": 70.62403400000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.542878
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "succeeded": true,
+      "replication_ms": 77.783563
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.013040000000000001,
+      "snapshot_persisted_at_ms": 70.71594,
+      "snapshot_uploaded_at_ms": 70.71594,
+      "commit_rpc_completed_at_ms": 111.849559
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/46/46a9a93439794593b6f43327a21603e6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/184.json",
+      "archive_lag_ms": 184
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "local_sync_ms": 0.5898410000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.344718
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.60684900000001
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "succeeded": true,
+      "replication_ms": 78.90021999999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "persistence_ms": 79.06398
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/72/722803a790e345a5a431097c277e8653/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/185.json",
+      "uploaded": true,
+      "upload_ms": 84.805902
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.0145,
+      "snapshot_persisted_at_ms": 79.21565,
+      "commit_rpc_completed_at_ms": 134.15596900000003
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "local_sync_ms": 0.5838650000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.087922
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "uploaded": true,
+      "upload_ms": 69.612842
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "persistence_ms": 70.33528899999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.423047
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/f1/f18be5ba06e04ef38daa6ad118d00588/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/186.json",
+      "succeeded": true,
+      "replication_ms": 77.592402
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01966,
+      "snapshot_persisted_at_ms": 70.45275400000001,
+      "snapshot_uploaded_at_ms": 70.45275400000001,
+      "commit_rpc_completed_at_ms": 132.753007
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "local_sync_ms": 0.8311609999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.939257
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "uploaded": true,
+      "upload_ms": 75.740043
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "persistence_ms": 76.97011099999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 80.157912
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/ea/ea2b53d1fc334561af86e1edad0f9e41/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/187.json",
+      "succeeded": true,
+      "replication_ms": 80.510472
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.00957,
+      "snapshot_persisted_at_ms": 77.097131,
+      "snapshot_uploaded_at_ms": 77.097131,
+      "commit_rpc_completed_at_ms": 146.686398
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "local_sync_ms": 0.7058719999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.489353
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "uploaded": true,
+      "upload_ms": 71.435807
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "persistence_ms": 72.411783
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.945919
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/16/16209e2bb7294314a974c2e3adf06cbb/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/188.json",
+      "succeeded": true,
+      "replication_ms": 78.11454900000001
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01298,
+      "snapshot_persisted_at_ms": 72.46843799999999,
+      "snapshot_uploaded_at_ms": 72.46843799999999,
+      "commit_rpc_completed_at_ms": 114.47375799999999
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "local_sync_ms": 0.658706
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.620122
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "uploaded": true,
+      "upload_ms": 65.03210299999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "persistence_ms": 66.129456
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.315932
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "succeeded": true,
+      "replication_ms": 77.647617
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.016050000000000002,
+      "snapshot_persisted_at_ms": 66.273031,
+      "snapshot_uploaded_at_ms": 66.273031,
+      "commit_rpc_completed_at_ms": 104.14933699999999
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/d1/d168bbe62f9940cdaee7c199d0830bc6/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/189.json",
+      "archive_lag_ms": 167
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "local_sync_ms": 0.755255
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 33.071692999999996
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "uploaded": true,
+      "upload_ms": 71.715116
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "persistence_ms": 72.922793
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.293803
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/28/28f60745128d456e947c78b7f6d82baa/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/190.json",
+      "succeeded": true,
+      "replication_ms": 78.508284
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01293,
+      "snapshot_persisted_at_ms": 72.98262299999999,
+      "snapshot_uploaded_at_ms": 72.98262299999999,
+      "commit_rpc_completed_at_ms": 146.003932
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "local_sync_ms": 0.6632009999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.844748
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "uploaded": true,
+      "upload_ms": 60.759391
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "persistence_ms": 61.152432
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 80.055047
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/94/9498117d819a484c9b34e64b5a643780/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/191.json",
+      "succeeded": true,
+      "replication_ms": 80.213243
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.0121,
+      "snapshot_persisted_at_ms": 61.207572,
+      "snapshot_uploaded_at_ms": 61.207572,
+      "commit_rpc_completed_at_ms": 97.280165
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "local_sync_ms": 0.485316
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.787613
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "uploaded": true,
+      "upload_ms": 67.549374
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "persistence_ms": 68.35088999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 76.776687
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/92/9272068157904f32805cbd40f2f2c549/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/192.json",
+      "succeeded": true,
+      "replication_ms": 77.010527
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01664,
+      "snapshot_persisted_at_ms": 68.48166599999999,
+      "snapshot_uploaded_at_ms": 68.48166599999999,
+      "commit_rpc_completed_at_ms": 131.911541
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "local_sync_ms": 0.7545959999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.631954
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "uploaded": true,
+      "upload_ms": 71.321466
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "persistence_ms": 72.101332
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.227031
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "succeeded": true,
+      "replication_ms": 77.511391
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/0a/0a3c6ca3425d4af4bbb5e55b9fbcdc92/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/193.json",
+      "archive_lag_ms": 118
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01241,
+      "snapshot_persisted_at_ms": 72.18432299999999,
+      "snapshot_uploaded_at_ms": 72.18432299999999,
+      "commit_rpc_completed_at_ms": 123.761075
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "local_sync_ms": 0.543081
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.885079
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "uploaded": true,
+      "upload_ms": 67.727222
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "persistence_ms": 68.217153
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 80.790865
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "succeeded": true,
+      "replication_ms": 80.992832
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.011711000000000001,
+      "snapshot_persisted_at_ms": 68.309658,
+      "snapshot_uploaded_at_ms": 68.309658,
+      "commit_rpc_completed_at_ms": 131.929553
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/5f/5f6889f15830472fa632749c20f9e39c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/194.json",
+      "archive_lag_ms": 180
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "local_sync_ms": 0.7927770000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.306283
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "uploaded": true,
+      "upload_ms": 69.94158999999999
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "persistence_ms": 70.801792
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.42597099999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/8c/8c51268029c84c23ac6bdb70be9d082d/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/195.json",
+      "succeeded": true,
+      "replication_ms": 77.708512
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.030549999999999997,
+      "snapshot_persisted_at_ms": 70.88963199999999,
+      "snapshot_uploaded_at_ms": 70.88963199999999,
+      "commit_rpc_completed_at_ms": 107.91094199999999
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "local_sync_ms": 0.695277
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.77666
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.36926700000001
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "succeeded": true,
+      "replication_ms": 77.708662
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "persistence_ms": 77.995192
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/07/078da7dd7f6a4ed8988899ad2e1d1106/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/196.json",
+      "uploaded": true,
+      "upload_ms": 80.736587
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.01062,
+      "snapshot_persisted_at_ms": 78.202868,
+      "commit_rpc_completed_at_ms": 123.36858000000001
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "local_sync_ms": 0.699981
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.569798
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.667411
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "succeeded": true,
+      "replication_ms": 77.96945600000001
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "persistence_ms": 78.343412
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/19/194532ff641b4df1a7aa4484471edfe8/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/197.json",
+      "uploaded": true,
+      "upload_ms": 85.404037
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "replicas",
+      "snapshot_encoded_at_ms": 0.018071,
+      "snapshot_persisted_at_ms": 78.473878,
+      "commit_rpc_completed_at_ms": 120.43150800000001
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "local_sync_ms": 0.9663160000000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.460606000000006
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "uploaded": true,
+      "upload_ms": 61.687222
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "persistence_ms": 62.56980299999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.94207
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "succeeded": true,
+      "replication_ms": 78.184816
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01137,
+      "snapshot_persisted_at_ms": 62.65343299999999,
+      "snapshot_uploaded_at_ms": 62.65343299999999,
+      "commit_rpc_completed_at_ms": 118.122333
+    },
+    {
+      "event": "replica_archived",
+      "object": "snapshots/67/672176a4d7f8432e8e5686e5af3f4242/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/198.json",
+      "archive_lag_ms": 176
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "local_sync_ms": 0.7564759999999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.716876
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "uploaded": true,
+      "upload_ms": 65.369788
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "persistence_ms": 66.70527399999999
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 79.347412
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/5e/5eca40027f3344bbbdf64eaf3e246b58/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/199.json",
+      "succeeded": true,
+      "replication_ms": 79.654958
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01292,
+      "snapshot_persisted_at_ms": 66.824545,
+      "snapshot_uploaded_at_ms": 66.824545,
+      "commit_rpc_completed_at_ms": 140.127379
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "local_sync_ms": 0.679301
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.717666
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "uploaded": true,
+      "upload_ms": 67.71921
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "persistence_ms": 68.38668100000001
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 78.31944
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/3a/3a6169dec47440409fd819114deeba83/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/200.json",
+      "succeeded": true,
+      "replication_ms": 78.567071
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01308,
+      "snapshot_persisted_at_ms": 68.431662,
+      "snapshot_uploaded_at_ms": 68.431662,
+      "commit_rpc_completed_at_ms": 137.359319
+    },
+    {
+      "event": "replica_local_sync",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "local_sync_ms": 0.642961
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "acknowledged": true,
+      "region": "north-america-central",
+      "replica_ms": 32.704606999999996
+    },
+    {
+      "event": "object_storage_upload",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "uploaded": true,
+      "upload_ms": 58.783859
+    },
+    {
+      "event": "actor_durability",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "persistence_ms": 59.817879999999995
+    },
+    {
+      "event": "replica_ack",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "acknowledged": true,
+      "region": "north-america-west",
+      "replica_ms": 77.07997399999999
+    },
+    {
+      "event": "replica_set_persisted",
+      "object": "snapshots/82/824bac7088504e1ab036937846efcb1c/qa-1990f6d3-7f29-45cc-8fed-531cf0c5de25/QaCounter/durability-floor/201.json",
+      "succeeded": true,
+      "replication_ms": 77.38222999999999
+    },
+    {
+      "event": "actor_state_write",
+      "outcome": "committed",
+      "durability_proof": "object_storage",
+      "snapshot_encoded_at_ms": 0.01932,
+      "snapshot_persisted_at_ms": 59.927910000000004,
+      "snapshot_uploaded_at_ms": 59.927910000000004,
+      "commit_rpc_completed_at_ms": 95.31744
+    }
+  ]
+}

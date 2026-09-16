@@ -1,0 +1,134 @@
+[
+  {
+    "run": "baseline-1000",
+    "client": "modal",
+    "clientRegion": "new-york",
+    "region": "us-east-1",
+    "policy": {
+      "mode": "object_storage",
+      "replicaCount": 0,
+      "runtimeVersion": "0.1.38"
+    },
+    "concurrency": 1,
+    "workload": "resident counter; one warmup excluded from client samples; server diagnostics include warmup",
+    "clientWriteMs": {
+      "n": 1000,
+      "maximum": 382.462,
+      "mean": 176.16,
+      "minimum": 120.424,
+      "p50": 172.66,
+      "p95": 210.7,
+      "p99": 230.065
+    },
+    "metrics": {
+      "proofs": {
+        "replicas": 0,
+        "objectStorage": 1001
+      },
+      "persistenceMs": {
+        "n": 1001,
+        "maximum": 129.083,
+        "mean": 61.292,
+        "minimum": 40.211,
+        "p50": 59.718,
+        "p95": 78.994,
+        "p99": 103.847
+      },
+      "commitRpcMs": {
+        "n": 1001,
+        "maximum": 80.59,
+        "mean": 43.694,
+        "minimum": 27.194,
+        "p50": 40.848,
+        "p95": 65.583,
+        "p99": 73.484
+      },
+      "localSyncMs": null,
+      "replicaMs": null,
+      "archiveLagMs": null,
+      "objectStorageUploadMs": null
+    }
+  },
+  {
+    "run": "zonal-1000",
+    "client": "modal",
+    "clientRegion": "new-york",
+    "region": "us-ashburn-1",
+    "policy": {
+      "mode": "zonal",
+      "replicaCount": 2,
+      "runtimeVersion": "0.1.38"
+    },
+    "concurrency": 1,
+    "workload": "resident counter; one warmup excluded from client samples; server diagnostics include warmup",
+    "clientWriteMs": {
+      "n": 1000,
+      "maximum": 452.977,
+      "mean": 129.157,
+      "minimum": 85.229,
+      "p50": 126.811,
+      "p95": 143.636,
+      "p99": 154.281
+    },
+    "metrics": {
+      "proofs": {
+        "replicas": 1001,
+        "objectStorage": 0
+      },
+      "persistenceMs": {
+        "n": 1001,
+        "maximum": 39.341,
+        "mean": 11.845,
+        "minimum": 7.934,
+        "p50": 11.388,
+        "p95": 15.157,
+        "p99": 18.166
+      },
+      "commitRpcMs": {
+        "n": 1001,
+        "maximum": 363.923,
+        "mean": 44.576,
+        "minimum": 33.27,
+        "p50": 41.774,
+        "p95": 57.81,
+        "p99": 69.106
+      },
+      "localSyncMs": {
+        "n": 1001,
+        "maximum": 18.889,
+        "mean": 2.826,
+        "minimum": 0.641,
+        "p50": 2.58,
+        "p95": 5.047,
+        "p99": 6.347
+      },
+      "replicaMs": {
+        "n": 2002,
+        "maximum": 38.89,
+        "mean": 10.245,
+        "minimum": 5,
+        "p50": 10.145,
+        "p95": 13.524,
+        "p99": 16.332
+      },
+      "archiveLagMs": {
+        "n": 1205,
+        "maximum": 234,
+        "mean": 62.498,
+        "minimum": 25.56,
+        "p50": 47.49,
+        "p95": 145,
+        "p99": 172
+      },
+      "objectStorageUploadMs": {
+        "n": 1001,
+        "maximum": 173.054,
+        "mean": 59.006,
+        "minimum": 38.817,
+        "p50": 57.395,
+        "p95": 73.776,
+        "p99": 97.791
+      }
+    }
+  }
+]

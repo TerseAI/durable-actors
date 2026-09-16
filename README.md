@@ -117,6 +117,7 @@ Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your bac
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](docs/reference/http.md): deployments, backend access, WebSockets, and callbacks.
 - [Advanced access configuration](docs/guides/advanced-access.md).
+- [Zonal replication performance preview](docs/guides/replication.md).
 
 ![Control plane, actor hosts, and persistent storage](docs/architecture.svg)
 

@@ -38,6 +38,8 @@ pub struct ControlPlaneProcessConfig {
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub standard_buckets: HashMap<String, String>,
+    pub replica_count: usize,
+    pub replica_regions: Vec<String>,
 }
 
 pub struct SandboxProviderConfig {
@@ -102,9 +104,20 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     let placements = Arc::new(PostgresObjectPlacementStore::from_database(
         database.clone(),
     ));
-    let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
-    let storage_urls =
+    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
+        database.clone(),
+    ));
+    let bucket_urls =
         Arc::new(GcsStorageUrlSigner::from_adc(config.storage.standard_buckets).await?);
+    let storage_urls = super::replication::coordinator(
+        bucket_urls,
+        database,
+        registry.clone(),
+        &config.sandbox_provider,
+        &config.jwt_signing_key,
+        config.storage.replica_count,
+        config.storage.replica_regions,
+    )?;
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
     let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
     let socket_events = config
@@ -128,11 +141,12 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         .with_socket_origin(&socket_origin)?;
     let inspector = super::inspection::ActorInspector::new(
         placements,
-        storage_urls,
+        storage_urls.clone(),
         Arc::new(crate::state_transport::HttpStateTransport::new()),
     );
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin));
+        .merge(super::inspection::router(inspector, admin))
+        .merge(storage_urls.router());
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -189,7 +203,10 @@ impl ControlPlaneProcessConfig {
             serde_json::from_str(&required(&mut get, "DURABLE_OBJECT_STANDARD_BUCKETS")?)
                 .context("DURABLE_OBJECT_STANDARD_BUCKETS must be a JSON region-to-bucket map")?;
         validate_buckets(&standard_buckets)?;
+        let replica_count = crate::replication::replica_count(&mut get)?;
         let storage = ControlPlaneStorageConfig {
+            replica_count,
+            replica_regions: crate::replication::replica_regions(&mut get, replica_count)?,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
             standard_buckets,
         };
@@ -234,7 +251,7 @@ fn sandbox_provider_config(
         provider_name == "modal",
         "unsupported sandbox provider {provider_name:?}"
     );
-    let environment = HashMap::from([
+    let mut environment = HashMap::from([
         (
             "MODAL_TOKEN_ID".into(),
             provider_credential(get, "MODAL_TOKEN_ID")?,
@@ -244,6 +261,15 @@ fn sandbox_provider_config(
             provider_credential(get, "MODAL_TOKEN_SECRET")?,
         ),
     ]);
+    if let Some(value) = get("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK") {
+        let enabled: bool = value
+            .parse()
+            .context("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK must be true or false")?;
+        environment.insert(
+            "DURABLE_OBJECT_MODAL_MUTABLE_NETWORK".into(),
+            enabled.to_string(),
+        );
+    }
     let control_plane_url = validated_http_url(
         &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
         "DURABLE_OBJECT_CONTROL_PLANE_URL",
@@ -370,6 +396,39 @@ mod tests {
             "actor-state-test"
         );
         assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
+        Ok(())
+    }
+
+    #[test]
+    fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
+        let mut values = HashMap::from([
+            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
+            (
+                "DURABLE_OBJECT_CONTROL_PLANE_URL",
+                "https://control.example",
+            ),
+            ("MODAL_TOKEN_ID", "id"),
+            ("MODAL_TOKEN_SECRET", "secret"),
+        ]);
+        let configure = |values: &HashMap<&str, &str>| {
+            sandbox_provider_config(
+                &mut |name| values.get(name).map(|v| (*v).into()),
+                "issuer",
+                "audience",
+            )
+        };
+        assert!(
+            !configure(&values)?
+                .environment
+                .contains_key("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK")
+        );
+        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "true");
+        assert_eq!(
+            configure(&values)?.environment["DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"],
+            "true"
+        );
+        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "yes");
+        assert!(configure(&values).is_err());
         Ok(())
     }
 

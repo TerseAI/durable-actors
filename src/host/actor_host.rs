@@ -973,6 +973,7 @@ mod tests {
     struct FakeStateTransport {
         writes: Mutex<Vec<Vec<u8>>>,
         reads: AtomicUsize,
+        replicated: bool,
     }
 
     #[async_trait]
@@ -983,9 +984,51 @@ mod tests {
         }
 
         async fn write(&self, _signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
+            anyhow::ensure!(
+                !self.replicated,
+                "replicated writes must use their complete ticket"
+            );
             self.writes.lock().unwrap().push(bytes);
             Ok(StateWrite::Written)
         }
+
+        async fn write_ticket(
+            &self,
+            ticket: &StateWriteTicket,
+            bytes: Vec<u8>,
+        ) -> Result<StateWrite> {
+            if !self.replicated {
+                return self.write(&ticket.url, bytes).await;
+            }
+            self.writes.lock().unwrap().push(bytes);
+            Ok(StateWrite::Replicated)
+        }
+    }
+
+    #[tokio::test]
+    async fn replicated_state_still_requires_the_authoritative_commit_before_success() -> Result<()>
+    {
+        let authority = Arc::new(FakeAuthority::default());
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            Arc::new(IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            }),
+            authority.clone(),
+            Arc::new(FakeStateTransport {
+                replicated: true,
+                ..Default::default()
+            }),
+            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
+        );
+        assert_eq!(invoke(&host, "request-1").await?, completed(1));
+        assert_eq!(*authority.commits.lock().unwrap(), [0]);
+        Ok(())
     }
 
     #[tokio::test]
@@ -1277,6 +1320,7 @@ mod tests {
 
     fn ticket(state_version: u64) -> StateWriteTicket {
         StateWriteTicket {
+            replication: None,
             state_version,
             object_name: format!("snapshots/{state_version}.json"),
             url: format!("https://state.invalid/{state_version}"),

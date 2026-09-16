@@ -1,0 +1,11 @@
+{
+  "image": "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors-control-plane:recovery-opt-in-edfc182b1b22",
+  "sourceSha256": "edfc182b1b223606c8404150e3726e40ee2133e1ac85021328011850eb84aad9",
+  "sourceCommit": "9075df09fca6d75f0fbc04559435b2454f5465fa",
+  "project": "fluid-analogy-473415-c2",
+  "region": "us-east4",
+  "baseImage": "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors-control-plane:cross-region-qa-277d8d5b3780",
+  "fixtureImage": "im-nx9nC3u2PCs85iXtKtJO5p",
+  "buildId": "a1fdc308-3a41-4eaa-9e74-e4fe8b114a96",
+  "digest": "sha256:b3f3c0628c750b697e91ed03b326dcb8aba54caf90b3cbb17b98accc6fdfb21d"
+}

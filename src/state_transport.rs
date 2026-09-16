@@ -8,15 +8,24 @@ use crate::storage_urls::STATE_CONTENT_TYPE;
 pub enum StateWrite {
     Written,
     AlreadyExists,
+    Replicated,
 }
 
 #[async_trait]
 pub trait StateTransport: Send + Sync {
     async fn read(&self, signed_url: &str) -> Result<Bytes>;
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite>;
+
+    async fn write_ticket(
+        &self,
+        ticket: &crate::storage_urls::StateWriteTicket,
+        bytes: Vec<u8>,
+    ) -> Result<StateWrite> {
+        self.write(&ticket.url, bytes).await
+    }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HttpStateTransport {
     client: reqwest::Client,
 }
@@ -24,8 +33,19 @@ pub struct HttpStateTransport {
 impl HttpStateTransport {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(25))
+                .build()
+                .expect("valid state transport client configuration"),
         }
+    }
+}
+
+impl Default for HttpStateTransport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
