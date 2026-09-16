@@ -18,13 +18,9 @@ See the sample apps:
 
 ## Run locally
 
-From your project directory, start the actor runtime:
-
 ```sh
 npx little-actors dev
 ```
-
-See [local development](docs/guides/local-development.md) for setup and [connection overrides](docs/reference/configuration.md) for a remote server.
 
 ## Define an Actor
 
