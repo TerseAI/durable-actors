@@ -6,7 +6,7 @@ Named actors with serial method calls and saved state. Requires Node.js 20+.
 npm install little-actors
 ```
 
-Start with the [quickstart](https://github.com/TerseAI/little-actors#quickstart) to create and run the Express + React chat app.
+Start with the [chat example](https://github.com/TerseAI/little-actors/tree/main/examples/chat) to create and run the Express + React chat app.
 
 ## Local CLI
 
@@ -28,7 +28,9 @@ Export actors from `src/durable-objects.ts`. Annotate every instance field with 
 npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source once for your backend and web app:
+Wait for `Local actors ready at http://127.0.0.1:7100`. The runtime generates an API key and saves it with the control plane URL in `.little-actors/runtime.json`. Backend actor calls and generated proxies discover both automatically from the working directory. Start your application backend from the same project directory; no environment variables are needed.
+
+Generate source once for your backend and web app:
 
 ```sh
 npx little-actors generate
@@ -58,24 +60,21 @@ await room.sendMessage({ text: "Hello" }) // Arguments and return types come fro
 
 The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
 
-Register your built actor image from its source project. The CLI extracts and publishes the public contract automatically:
+For a hosted deployment, configure the [remote connection](#hosted-backends) once, then register your built actor image from its source project. The CLI extracts and publishes the public contract automatically:
 
 ```sh
-export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
-export DURABLE_OBJECT_API_KEY='<your-api-key>'
 npx little-actors deploy --image im-chat --working-directory /app
 ```
 
-Then generate clients in another repository:
+Then generate clients in another repository using the same environment settings:
 
 ```sh
-export DURABLE_OBJECT_API_KEY='<your-api-key>'
-npx little-actors generate --url https://objects.example.com --namespace my-project
+npx little-actors generate --url
 ```
 
 Deploy assigns a revision automatically, and generation uses the latest deployment. The server stores only its active contract. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment and credentials.
 
-The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
+The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.little-actors/`.
 
 `little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
@@ -98,14 +97,9 @@ The launcher downloads the matching runtime and waits for readiness. It defaults
 
 ## Hosted backends
 
-Set these before the first actor call:
+Configure the [remote connection](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) once for your CLI and backend. Local development needs no connection configuration.
 
-```sh
-export DURABLE_OBJECT_API_KEY='<your-api-key>'
-export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
-```
-
-Keep the API key on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md#websocket-configuration).
+Keep the API key on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md#browser-connections).
 
 See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
 
@@ -129,7 +123,7 @@ Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. T
 
 `this.connections` lists connections during an invocation. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
 
-WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` is set.
+For a separate WebSocket gateway, see [gateway configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md).
 
 ## Browser clients
 
@@ -178,7 +172,7 @@ export async function POST(request: Request) {
 
 The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails before ticket issuance. `ActorProxy.handle(authorization)` returns `{ websocketUrl, key }`; it constructs the control-plane request internally and throws if authorization fails. Return the result as JSON with `Cache-Control: no-store`.
 
-With no configuration, the proxy reads `.little-actors/runtime.json` from the working directory. Set `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and optional `DURABLE_OBJECT_NAMESPACE_ID` for a remote server. The URL defaults to `http://127.0.0.1:7100` when no local runtime URL is available. An explicit URL or API key skips local-file credentials. An optional second argument overrides these settings. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
+The proxy discovers local connection settings automatically. See [configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) for remote connections and overrides. For an instance with explicit options or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
 
 The frontend uses the default application route:
 
@@ -207,11 +201,11 @@ Network failures use bounded exponential backoff with jitter. HTTP 401/403, prot
 
 ## Reference
 
-- [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands, options, and environment variables.
+- [Configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md): local defaults, environment variables, credentials, and server settings.
+- [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands and options.
 - [TypeScript API reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, backend access, connections, and callbacks.
 - [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): install from npm and run actors locally.
-- [Advanced access configuration](https://github.com/TerseAI/little-actors/blob/main/docs/guides/advanced-access.md).
 
 ## License
 

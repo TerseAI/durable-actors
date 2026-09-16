@@ -28,6 +28,6 @@ Open [the chat](http://127.0.0.1:3000) in two tabs. Send a message, then reload 
 
 Everyone is a guest in this demo. In your app, authenticate the request before `ActorProxy.handle` and derive metadata from the signed-in user.
 
-`ActorClient()` uses `/api/socket/{actorType}/{actorId}` on the current origin. `ActorProxy` reads local credentials automatically. For a remote actor server, set `DURABLE_OBJECT_CONTROL_PLANE_URL` and `DURABLE_OBJECT_API_KEY` on your backend.
+`ActorClient()` uses `/api/socket/{actorType}/{actorId}` on the current origin. `ActorProxy` discovers the generated API key and control plane URL automatically; no environment variables are needed locally. For a remote actor server, use the [connection overrides](../../docs/reference/configuration.md) on your backend.
 
 After changing the actor's types, rerun `npx little-actors generate` and restart the actor server.

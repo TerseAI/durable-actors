@@ -14,6 +14,53 @@ const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 const env = { ...process.env, DURABLE_OBJECT_API_KEY: "contract-key", DURABLE_OBJECT_NAMESPACE_ID: "" }
 
+test("generate discovers the local runtime and keeps explicit remote settings separate", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-local-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const contract = JSON.parse(await readFile(path.join(sdk, "fixtures/public-contract.json"), "utf8"))
+    const requests: string[] = []
+    const server = createServer((request, response) => {
+        requests.push(request.url!)
+        assert.equal(request.headers.authorization, "Bearer local-key")
+        response.end(
+            JSON.stringify({
+                namespaceId: "local",
+                codeRevision: "local-revision",
+                contractHash: `sha256:${"a".repeat(64)}`,
+                contract
+            })
+        )
+    })
+    t.after(() => server.close())
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    await mkdir(path.join(directory, ".little-actors"))
+    await writeFile(
+        path.join(directory, ".little-actors/runtime.json"),
+        JSON.stringify({
+            controlPlaneUrl: origin,
+            apiKey: "local-key",
+            namespaceId: "local"
+        })
+    )
+    const localEnv = { ...process.env }
+    for (const key of ["DURABLE_OBJECT_API_KEY", "DURABLE_OBJECT_CONTROL_PLANE_URL", "DURABLE_OBJECT_NAMESPACE_ID"])
+        delete localEnv[key]
+    const generate = (...args: string[]) =>
+        run(process.execPath, [cli, "generate", "--url", ...args], {
+            cwd: directory,
+            env: localEnv
+        })
+    const result = await generate()
+    assert.match(result.stdout, /local-revision/)
+    assert.ok((await readdir(path.join(directory, "generated"))).includes("backend.ts"))
+    assert.deepEqual(requests, ["/v1/namespaces/local/contract"])
+    await assert.rejects(generate(origin), /API key/)
+    await assert.rejects(generate("--api-key", "remote-key"), /--url/)
+    assert.equal(requests.length, 1)
+})
+
 test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))

@@ -16,6 +16,18 @@ See the sample apps:
 - [Collaborative documents](examples/documents)
 - [Chatroom](examples/chat)
 
+## Run locally
+
+From your project directory, start the actor runtime:
+
+```sh
+npx little-actors dev
+```
+
+The runtime generates an API key and saves it with the control plane URL in `.little-actors/runtime.json`. Backend actor calls and generated proxies read these settings automatically from the working directory. No environment variables are needed for local development. Start your application backend from the same project directory.
+
+See [local development](docs/guides/local-development.md) for setup and [connection overrides](docs/reference/configuration.md) for a remote server.
+
 ## Define an Actor
 
 ```ts
@@ -113,10 +125,10 @@ Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your bac
 
 ## Reference
 
-- [CLI reference](docs/reference/cli.md): running actors, generating SDKs, command options, and environment variables.
+- [Configuration](docs/reference/configuration.md): local defaults, environment variables, credentials, and server settings.
+- [CLI reference](docs/reference/cli.md): running actors, generating SDKs, and command options.
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](docs/reference/http.md): deployments, backend access, WebSockets, and callbacks.
-- [Advanced access configuration](docs/guides/advanced-access.md).
 
 ![Control plane, actor hosts, and persistent storage](docs/architecture.svg)
 

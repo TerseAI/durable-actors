@@ -21,7 +21,7 @@ Backend operations require:
 Authorization: Bearer <api-key>
 ```
 
-Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage deployments, call actors, and publish updates. Browser apps use the generated SDK and your authenticated proxy endpoint to obtain actor-scoped WebSocket tickets.
+The SDK and CLI discover local credentials automatically. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps use the generated SDK and your authenticated proxy endpoint to obtain actor-scoped WebSocket tickets.
 
 | Operation                      | Method and path                                       | Credential                                    |
 | ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
@@ -300,11 +300,11 @@ These are common runtime outcomes; WebSocket protocol and size failures may prod
 
 ## WebSocket callbacks
 
-The optional incoming-message callback is configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <DURABLE_OBJECT_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
+Enable incoming-message callbacks in the [server configuration](configuration.md). The server makes JSON `POST` requests with `Authorization: Bearer <api-key>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
 
 ### Incoming message events
 
-Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor handling:
+After successful actor handling, the callback receives:
 
 ```json
 {
@@ -334,11 +334,11 @@ Events cover successfully handled incoming messages. Connection changes and outg
 
 The default API requires no namespace setting. For explicit scopes, deployment, target, socket-effects, WebSocket, and session-token routes also accept `/v1/namespaces/{namespaceId}` in place of `/v1`. An API key can access all namespaces on its server. Session tokens are restricted to their own namespace and cannot manage deployments or issue credentials.
 
-Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](../guides/advanced-access.md).
+Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](configuration.md).
 
 ## Session tokens
 
-Session tokens are optional credentials for delegated workers or customer-provided code. See [advanced access configuration](../guides/advanced-access.md) for examples, including the local demo.
+Session tokens are optional credentials for delegated workers or customer-provided code. See [delegated credential configuration](configuration.md).
 
 ### POST /v1/session-scoped-token
 

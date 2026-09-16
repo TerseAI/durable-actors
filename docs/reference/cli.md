@@ -10,11 +10,11 @@ npx little-actors init chat-example
 
 - `--template <name>` — Template to copy. Defaults to `chat`.
 
-| Template                                | Description                                                                                                                                                       |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and generated WebSocket clients.                                                        |
-| `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires `OPENAI_API_KEY` in `.env`. Needs no generated WebSocket clients. |
-| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with generated WebSocket clients.                                                                          |
+| Template                                | Description                                                                                                                                                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and generated WebSocket clients.                                                                                          |
+| `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Needs no generated WebSocket clients. |
+| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with generated WebSocket clients.                                                                                                            |
 
 ## Run a development server
 
@@ -22,7 +22,7 @@ npx little-actors init chat-example
 npx little-actors dev
 ```
 
-Loads the actor entrypoint, registers your actors, and serves the development web server
+Loads the actor entrypoint, registers your actors, and serves the development web server. Uses [automatic local configuration](configuration.md).
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
@@ -43,7 +43,7 @@ npx little-actors objects inspect ChatRoom lobby
 - `--all` — Fetch every page. Cannot be combined with `--limit` or `--after`.
 - `--json` — Print a JSON array instead of a table, adding snapshot paths and request IDs.
 - `--data-dir <directory>` — State directory of the running local server. Defaults to `.little-actors`.
-- `--url <origin>`, `--api-key <key>` — [Cloud connection](#connect-to-a-cloud-control-plane) overrides.
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ## Deploy actors
 
@@ -61,7 +61,7 @@ Registers a built image plus the public API contract extracted from the TypeScri
 - `--secret <name>` — Provider secret reference. Repeatable.
 - `--socket-gateway-url <origin>` — Separate socket gateway.
 - `--warm-region <region>` — Background image warmup.
-- `--url <origin>`, `--api-key <key>`, `--namespace <id>` — [Cloud connection](#connect-to-a-cloud-control-plane) overrides.
+- `--url <origin>`, `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) overrides.
 
 ## Generate a client and proxy
 
@@ -81,9 +81,9 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 
 - `--out-dir <directory>` — Output location. Defaults to `generated/`.
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.
-- `--url [origin]` — Generate from a published contract instead of local source. Takes the [cloud connection](#connect-to-a-cloud-control-plane) origin when given no value. Cannot be combined with a source entrypoint or `--config`.
+- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses the running local runtime or [connection](configuration.md) overrides. Cannot be combined with a source entrypoint or `--config`.
 - `--revision <id>` — Optional check that the active deployment matches this revision. Defaults to the latest deployment's contract.
-- `--api-key <key>`, `--namespace <id>` — [Cloud connection](#connect-to-a-cloud-control-plane) overrides.
+- `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) overrides.
 
 ### Generate from the control plane
 
@@ -91,7 +91,7 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 npx little-actors generate --url
 ```
 
-Remote generation writes the same files as local generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
+With `little-actors dev` running, this reads the local runtime's URL and API key automatically. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
 
 ## Start a hosted server
 
@@ -99,29 +99,7 @@ Remote generation writes the same files as local generation and prints the activ
 npx little-actors start
 ```
 
-Starts the packaged server using self-hosting settings from the environment. It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
-
-## Environment variables
-
-| Variable                          | Default                            | Description                                                                                                                                          |
-| --------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_OBJECT_BINARY`           | Downloaded runtime                 | Path to an existing native executable for `dev` and `start`, bypassing runtime downloads. Relative paths resolve from the current working directory. |
-| `DURABLE_OBJECT_CACHE_DIR`        | `~/.cache/little-actors`           | Root directory for downloaded runtimes. Ignored when `DURABLE_OBJECT_BINARY` is set.                                                                 |
-| `DURABLE_OBJECT_STANDARD_BUCKETS` | none; required for `--storage gcs` | JSON object mapping storage regions to bucket names. See [GCS snapshots](#save-snapshots-in-gcs).                                                    |
-| `GOOGLE_APPLICATION_CREDENTIALS`  | ADC discovery                      | Service-account credentials file for GCS. An attached Google identity can also supply credentials.                                                   |
-| `RUST_LOG`                        | `info`                             | Runtime log filter, for example `warn` or `debug`.                                                                                                   |
-
-## Runtime installation
-
-```sh
-npm install little-actors
-```
-
-The package includes the SDK, CLI, templates, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached, verified against the release's SHA-256 checksum. `init`, `deploy`, `generate`, `token`, `objects`, and help do not download a runtime.
-
-Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Windows users can run the Linux distribution in WSL 2.
-
-Runtimes are cached at `~/.cache/little-actors/<version>/<platform>-<arch>/`.
+Starts the packaged server using the [hosted server configuration](configuration.md). It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
 
 ## Issue a local token
 
@@ -136,16 +114,3 @@ Requests a session token from the running local server, reading its origin from 
 The requested deadline is one hour in the future. Issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 
 The token grants application access throughout the `local` namespace: not an admin credential, and not restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules. `token` is a diagnostic command for trusted backend tools; browser SDKs obtain actor-scoped tickets through your authenticated proxy.
-
-### Connect with a WebSocket tool
-
-```sh
-TOKEN="$(npx little-actors token)"
-npx --yes wscat \
-    -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
-    -H "Authorization: Bearer $TOKEN" \
-    -x '{"type":"initialize","metadata":{}}' \
-    -w -1
-```
-
-Use the server's actual port. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.

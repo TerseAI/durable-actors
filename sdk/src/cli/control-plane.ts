@@ -1,4 +1,5 @@
 import { configuredSettings } from "../client/clientSettings.js"
+import { readLocalSettings } from "../client/localSettings.js"
 
 interface ControlPlaneOptions {
     url?: string | true
@@ -11,17 +12,21 @@ class ControlPlaneClient {
 
     constructor(
         options: ControlPlaneOptions,
-        private readonly request: typeof fetch
+        private readonly request: typeof fetch,
+        readLocal: typeof readLocalSettings = readLocalSettings
     ) {
-        const controlPlaneUrl =
-            typeof options.url === "string" ? options.url : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
-        const apiKey = options.apiKey || process.env.DURABLE_OBJECT_API_KEY
-        if (!controlPlaneUrl) throw new Error("Set --url or DURABLE_OBJECT_CONTROL_PLANE_URL.")
+        const url = typeof options.url === "string" ? options.url : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
+        const key = options.apiKey || process.env.DURABLE_OBJECT_API_KEY
+        const local = !url && !key ? readLocal() : {}
+        const controlPlaneUrl = url || local.controlPlaneUrl
+        const apiKey = key || local.apiKey
+        if (!controlPlaneUrl)
+            throw new Error("Start `npx little-actors dev` first, or set --url or DURABLE_OBJECT_CONTROL_PLANE_URL.")
         if (!apiKey) throw new Error("An admin API key is required. Set DURABLE_OBJECT_API_KEY or --api-key.")
         this.connection = configuredSettings({
             controlPlaneUrl,
             apiKey,
-            namespaceId: options.namespace || process.env.DURABLE_OBJECT_NAMESPACE_ID || undefined
+            namespaceId: options.namespace || process.env.DURABLE_OBJECT_NAMESPACE_ID || local.namespaceId
         })
     }
 

@@ -22,7 +22,7 @@ function registerGenerateCommand(program: Command): void {
         .description("Generate browser clients, authorization proxies, and backend RPC stubs")
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
-        .option("--url [origin]", "fetch a published contract (defaults to DURABLE_OBJECT_CONTROL_PLANE_URL)")
+        .option("--url [origin]", "fetch a published contract (defaults to the configured or local runtime URL)")
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option("--namespace <id>", "contract namespace (or DURABLE_OBJECT_NAMESPACE_ID)")
         .option("--revision <revision>", "require this active code revision (defaults to the latest deployment)")
