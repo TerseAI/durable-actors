@@ -70,6 +70,84 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn actor_types_must_be_typescript_identifiers() -> Result<()> {
+    let valid: Value =
+        serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
+    for name in [
+        "chat-room",
+        "chat.room",
+        "1ChatRoom",
+        "123",
+        "-",
+        ".",
+        "class",
+        "interface",
+        "constructor",
+        "type",
+        "async",
+        "await",
+        "using",
+        "satisfies",
+        "undefined",
+        "defer",
+    ] {
+        let mut document = valid.clone();
+        document["actors"][0]["actorType"] = json!(name);
+        document["actors"][0]["socket"]["actorType"] = json!(name);
+        let error = PublicActorContract::new(document).unwrap_err();
+        assert!(
+            error.to_string().contains("TypeScript identifier"),
+            "{name}: {error}"
+        );
+    }
+    for name in [
+        "ChatRoom",
+        "_",
+        "_chat2",
+        "chat_room",
+        "Class",
+        "class1",
+        "asyncActor",
+    ] {
+        let mut document = valid.clone();
+        document["actors"][0]["actorType"] = json!(name);
+        document["actors"][0]["socket"]["actorType"] = json!(name);
+        PublicActorContract::new(document)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn rest_parameters_require_array_schemas_without_tuple_items() -> Result<()> {
+    let valid: Value =
+        serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
+    for (schema, accepted) in [
+        (json!(true), false),
+        (json!(false), false),
+        (json!({"type": "string"}), false),
+        (json!({"items": {"type": "string"}}), false),
+        (json!({"type": ["array", "null"]}), false),
+        (json!({"type": "array", "items": []}), false),
+        (
+            json!({"type": "array", "items": [{"type": "string"}]}),
+            false,
+        ),
+        (json!({"type": "array", "items": {"type": "string"}}), true),
+        (json!({"type": "array", "items": true}), true),
+        (json!({"type": "array"}), true),
+    ] {
+        let mut document = valid.clone();
+        document["actors"][0]["rpc"]["schema"]["definitions"]["Method_sendMessage_Parameter_0"] =
+            schema.clone();
+        PublicActorContract::new(document.clone())?;
+        document["actors"][0]["rpc"]["methods"][1]["parameters"][0]["rest"] = json!(true);
+        let result = PublicActorContract::new(document);
+        assert_eq!(result.is_ok(), accepted, "{schema}: {result:?}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn in_memory_contract_keeps_only_the_active_revision() -> Result<()> {
     registry_behavior(Arc::new(LocalAdminRegistry::default())).await

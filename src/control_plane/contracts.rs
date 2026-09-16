@@ -101,7 +101,7 @@ impl ContractDocument {
         );
         let mut names = HashSet::new();
         for actor in &self.actors {
-            validate_component("actor type", &actor.actor_type, 255)?;
+            validate_actor_type(&actor.actor_type)?;
             ensure!(
                 names.insert(&actor.actor_type),
                 "duplicate actor type {}",
@@ -189,11 +189,14 @@ impl RpcContract {
                     !parameter.name.is_empty(),
                     "RPC parameter name must not be empty"
                 );
-                parameter.kind.validate(&self.schema)?;
+                let kind = parameter.kind.validate(&self.schema)?;
                 ensure!(
                     !parameter.rest
-                        || (!parameter.optional && index + 1 == method.parameters.len()),
-                    "rest parameter must be last and required"
+                        || (!parameter.optional
+                            && index + 1 == method.parameters.len()
+                            && kind["type"] == "array"
+                            && !kind["items"].is_array()),
+                    "rest parameter must be a final, required array parameter"
                 );
                 ensure!(
                     !optional_seen || parameter.optional || parameter.rest,
@@ -245,9 +248,114 @@ struct TypeReference {
 }
 
 impl TypeReference {
-    fn validate(&self, schema: &Value) -> Result<()> {
+    fn validate<'a>(&self, schema: &'a Value) -> Result<&'a Value> {
         validate_reference(&self.reference, schema)
     }
+}
+
+fn validate_actor_type(name: &str) -> Result<()> {
+    validate_component("actor type", name, 255)?;
+    ensure!(
+        name.bytes()
+            .enumerate()
+            .all(|(index, byte)| byte.is_ascii_alphabetic()
+                || byte == b'_'
+                || (index > 0 && byte.is_ascii_digit()))
+            && !is_typescript_keyword(name),
+        "actor name {name} cannot be emitted as a TypeScript identifier"
+    );
+    Ok(())
+}
+
+fn is_typescript_keyword(name: &str) -> bool {
+    // Match the SDK's TypeScript scanner, including contextual keywords.
+    [
+        "abstract",
+        "accessor",
+        "any",
+        "as",
+        "asserts",
+        "assert",
+        "bigint",
+        "boolean",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "continue",
+        "const",
+        "constructor",
+        "debugger",
+        "declare",
+        "default",
+        "defer",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "from",
+        "function",
+        "get",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "infer",
+        "instanceof",
+        "interface",
+        "intrinsic",
+        "is",
+        "keyof",
+        "let",
+        "module",
+        "namespace",
+        "never",
+        "new",
+        "null",
+        "number",
+        "object",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "override",
+        "out",
+        "readonly",
+        "require",
+        "global",
+        "return",
+        "satisfies",
+        "set",
+        "static",
+        "string",
+        "super",
+        "switch",
+        "symbol",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "undefined",
+        "unique",
+        "unknown",
+        "using",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+        "async",
+        "await",
+        "of",
+    ]
+    .contains(&name)
 }
 
 fn validate_schema(schema: &Value) -> Result<()> {
@@ -324,17 +432,14 @@ fn validate_schema_node(node: &Value, root: &Value) -> Result<()> {
     Ok(())
 }
 
-fn validate_reference(reference: &str, root: &Value) -> Result<()> {
+fn validate_reference<'a>(reference: &str, root: &'a Value) -> Result<&'a Value> {
     ensure!(
         reference.starts_with("#/definitions/"),
         "contract type references must be local definitions"
     );
-    ensure!(
-        root.pointer(&reference[1..])
-            .is_some_and(|target| target.is_object() || target.is_boolean()),
-        "contract type reference is missing: {reference}"
-    );
-    Ok(())
+    root.pointer(&reference[1..])
+        .filter(|target| target.is_object() || target.is_boolean())
+        .with_context(|| format!("contract type reference is missing: {reference}"))
 }
 
 fn canonical_json(value: Value) -> Value {
