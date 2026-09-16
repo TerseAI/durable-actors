@@ -11,6 +11,7 @@ use crate::{
     actor::ActorScope,
     actor_state::ActorStorageKey,
     control_plane::admin::{AdminRegistry, HostLaunchSpec},
+    control_plane::contracts::{PublicActorContract, PublishedContract, check_contract_hash},
     host::HostId,
     host_leases::{
         HostLease, HostLeaseRegistry, HostLeaseRequest, HostLeaseStatus, HostLeaseStore,
@@ -257,19 +258,60 @@ fn placement_from_row(
 
 #[async_trait]
 impl AdminRegistry for SqliteStore {
-    async fn ensure_namespace_and_register_deployment(
+    async fn register_deployment(
         &self,
         spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
     ) -> Result<bool> {
         spec.validate()?;
         let namespace = spec.namespace_id.clone();
         let body = serde_json::to_string(spec)?;
-        Ok(self.connection.call(move |connection| -> rusqlite::Result<_> {
-            Ok(connection.execute(
+        let revision = spec.code_revision.clone();
+        let contract = contract.cloned();
+        self.connection.call_raw(move |connection| -> Result<bool> {
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut published = false;
+            if let Some(contract) = contract {
+                let existing: Option<String> = transaction.query_row(
+                    "SELECT contract_hash FROM deployment_contracts WHERE namespace_id = ?1 AND code_revision = ?2",
+                    params![namespace, revision], |row| row.get(0),
+                ).optional()?;
+                check_contract_hash(existing.as_deref(), &contract)?;
+                if existing.is_none() {
+                    transaction.execute(
+                        "INSERT INTO deployment_contracts (namespace_id, code_revision, contract_hash, contract_json) VALUES (?1, ?2, ?3, ?4)",
+                        params![namespace, revision, contract.hash(), serde_json::to_string(contract.document())?],
+                    )?;
+                    published = true;
+                }
+            }
+            let changed = transaction.execute(
                 "INSERT INTO deployments (namespace_id, body) VALUES (?1, ?2) \
                  ON CONFLICT (namespace_id) DO UPDATE SET body = excluded.body WHERE deployments.body <> excluded.body", params![namespace, body],
-            )? == 1)
-        }).await?)
+            )? == 1;
+            transaction.commit()?;
+            Ok(changed || published)
+        }).await?
+    }
+
+    async fn deployment_contract(
+        &self,
+        namespace_id: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<PublishedContract>> {
+        let namespace = namespace_id.to_owned();
+        let revision = revision.map(str::to_owned);
+        self.connection.call_raw(move |connection| -> Result<_> {
+            let row: Option<(String, String, String)> = connection.query_row(
+                "SELECT code_revision, contract_hash, contract_json FROM deployment_contracts \
+                 WHERE namespace_id = ?1 AND code_revision = COALESCE(?2, \
+                   (SELECT json_extract(body, '$.codeRevision') FROM deployments WHERE namespace_id = ?1))",
+                params![namespace, revision], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional()?;
+            row.map(|(code_revision, contract_hash, body)| Ok(PublishedContract {
+                namespace_id: namespace, code_revision, contract_hash, contract: serde_json::from_str(&body)?,
+            })).transpose()
+        }).await?
     }
 
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>> {

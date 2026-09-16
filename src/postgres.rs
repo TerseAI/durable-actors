@@ -17,6 +17,13 @@ pub(crate) struct PostgresDatabase {
 }
 
 impl PostgresDatabase {
+    pub(crate) async fn connection(&self) -> Result<deadpool_postgres::Object> {
+        self.pool
+            .get()
+            .await
+            .context("acquire PostgreSQL connection")
+    }
+
     pub(crate) async fn connect(url: &str) -> Result<Self> {
         let pool = connection_pool(url)?;
         let mut client = pool.get().await.context("connect to PostgreSQL")?;

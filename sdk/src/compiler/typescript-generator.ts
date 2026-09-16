@@ -3,9 +3,20 @@ import type { JSONSchema } from "json-schema-to-typescript"
 import ts from "typescript"
 
 import type { SocketContract } from "../wire/contract.js"
+import type { PublicActorContract } from "../wire/public-contract.js"
+
+import { backendFiles } from "./backend-generator.js"
+import { parsePublicContract } from "./validate-public-contract.js"
 
 /** Returns generated filenames and TypeScript source without writing files or executing actor code. */
-async function generateTypeScript(contracts: readonly SocketContract[]): Promise<ReadonlyMap<string, string>> {
+async function generateTypeScript(
+    input: readonly SocketContract[] | PublicActorContract
+): Promise<ReadonlyMap<string, string>> {
+    const document = "actors" in input ? input : undefined
+    if (document && document.version !== 1)
+        throw new Error(`unsupported public actor contract version ${document.version}`)
+    if (document) parsePublicContract(document)
+    const contracts = "actors" in input ? input.actors.map(actor => actor.socket) : input
     const artifacts = new Map<string, string>()
     for (const contract of contracts) {
         if (!/^[A-Za-z_$][\w$]*$/u.test(contract.actorType))
@@ -16,6 +27,12 @@ async function generateTypeScript(contracts: readonly SocketContract[]): Promise
     }
     artifacts.set("index.ts", clientIndex(contracts))
     artifacts.set("proxy.ts", proxyIndex(contracts))
+    if (document) {
+        for (const actor of document.actors)
+            if (actor.actorType !== actor.socket.actorType)
+                throw new Error("actor and socket contract names must match")
+        for (const [file, contents] of await backendFiles(document.actors)) artifacts.set(file, contents)
+    }
     return artifacts
 }
 
@@ -55,6 +72,7 @@ async function wireDeclarations(contract: SocketContract): Promise<string> {
         ) as JSONSchema,
         "ActorTypes",
         {
+            $refOptions: { resolve: { file: false, http: false } },
             bannerComment: "",
             unknownAny: true,
             additionalProperties: false,
@@ -154,3 +172,4 @@ function actorImports(contracts: readonly SocketContract[], suffix: string) {
 
 export { generateTypeScript }
 export type { SocketContract }
+export type { PublicActorContract }

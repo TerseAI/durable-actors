@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
+import { registerDeployCommand } from "./cli/deploy.js"
+import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
 import { runtimeExecutable } from "./runtimeInstaller.js"
 
@@ -31,22 +33,8 @@ try {
             new Option("--template <name>", "example app").choices(["chat", "ai-chat", "documents"]).default("chat")
         )
         .action(initializeProject)
-    program
-        .command("generate [entrypoint]")
-        .description("Generate typed browser clients and backend proxies")
-        .option("--out-dir <directory>", "generated source directory", "generated")
-        .option("--config <file>", "TypeScript configuration file")
-        .action(async (entrypoint: string | undefined, options: { outDir: string; config?: string }) => {
-            const { ActorCompiler } = await import("./compiler/actor-compiler.js")
-            const { generateClient } = await import("./compiler/client-generator.js")
-            const actors = new ActorCompiler().compile(entrypoint ?? "src/durable-objects.ts", {
-                configFile: options.config
-            })
-            await generateClient(
-                actors.map(actor => actor.contract),
-                path.resolve(options.outDir)
-            )
-        })
+    registerGenerateCommand(program)
+    registerDeployCommand(program)
     program
         .command("dev")
         .description("Start local actors with automatic SQLite and file storage")

@@ -27,6 +27,7 @@ Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage depl
 | ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
 | Register or replace deployment | `PUT /v1/deployment`                                  | API key.                                      |
 | Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
+| Read public actor contract     | `GET /v1/contract`                                    | API key.                                      |
 | Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
 | List saved objects             | `GET /v1/objects`                                    | API key only.                                 |
 | Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}/state`          | API key only.                                 |
@@ -68,6 +69,7 @@ Registers actor code for your application. There is one active deployment. The J
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
+- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for an already published revision returns `409`. Omission preserves any contract already published for that revision. A new revision without a supplied contract has no contract.
 
 **Response:** `200 OK` with JSON:
 
@@ -77,9 +79,40 @@ Registers actor code for your application. There is one active deployment. The J
 
 An identical deployment returns `{"changed":false}`. Changing the specification stops its previous cloud hosts before registering the replacement. Saved actor state remains, so new code must support existing state. This is not a zero-downtime rollout guarantee.
 
-**Errors:** `400` for an invalid specification and `401` for a rejected admin credential. See [HTTP errors](#http-errors) for shared failure responses.
+Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
+
+**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on an existing revision. See [HTTP errors](#http-errors) for shared failure responses.
 
 Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
+
+### GET /v1/contract
+
+Returns the active deployment's public actor contract. Requires the API key; session tokens and socket tickets cannot read contracts. No actor host needs to be running.
+
+```text
+GET /v1/contract
+GET /v1/contract?revision=chat-v1
+GET /v1/namespaces/customer/contract?revision=chat-v1
+```
+
+The optional `revision` query selects a previously published code revision. Historical contracts remain available through this query after deployment replacement or deletion. Unknown query parameters are rejected.
+
+**Response:** `200 OK`, with `Cache-Control: no-store`:
+
+```json
+{
+    "namespaceId": "default",
+    "codeRevision": "chat-v1",
+    "contractHash": "sha256:<digest>",
+    "contract": { "version": 1, "actors": [] }
+}
+```
+
+The example represents an empty actor API; a missing contract returns `404` with error code `contract_not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
+
+`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
+
+**Errors:** `400` for an invalid namespace, revision, or query; `401` for a rejected admin credential; `404` when the selected revision has no published contract.
 
 ### GET /v1/deployment
 

@@ -34,6 +34,10 @@
         "little-actors": "dist/cli.js"
     },
     "exports": {
+        "./backend": {
+            "types": "./dist/backend.d.ts",
+            "import": "./dist/backend.js"
+        },
         "./dev": {
             "types": "./dist/localRuntime.d.ts",
             "import": "./dist/localRuntime.js"

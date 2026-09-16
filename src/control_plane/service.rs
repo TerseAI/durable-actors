@@ -133,15 +133,17 @@ impl ControlPlaneService {
         &self,
         admin: &AdminService,
         spec: &HostLaunchSpec,
+        contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
         let previous = admin.current_deployment(&spec.namespace_id).await?;
         spec.validate()?;
+        admin.validate_contract_registration(spec, contract).await?;
         if let Some(previous) = previous
             && previous != *spec
         {
             self.terminate_deployment_hosts(&previous).await?;
         }
-        admin.ensure_namespace_and_register_deployment(spec).await
+        admin.register_deployment(spec, contract).await
     }
 
     pub(super) async fn delete_deployment(
@@ -1381,11 +1383,11 @@ mod tests {
         replacement.code_revision = "revision-2".into();
         replacement.image_ref = "image-2".into();
 
-        assert!(service.register_deployment(&admin, &first).await?);
+        assert!(service.register_deployment(&admin, &first, None).await?);
         assert!(retired_rx.try_recv().is_err());
         assert!(
             service
-                .register_deployment(&admin, &replacement)
+                .register_deployment(&admin, &replacement, None)
                 .await
                 .is_err()
         );
@@ -1400,7 +1402,11 @@ mod tests {
         provisioner
             .fail
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(service.register_deployment(&admin, &replacement).await?);
+        assert!(
+            service
+                .register_deployment(&admin, &replacement, None)
+                .await?
+        );
         assert_eq!(
             retired_rx.recv().await,
             Some((first, vec!["us-east".into()]))
@@ -1409,11 +1415,19 @@ mod tests {
             admin.current_deployment("project-1").await?,
             Some(replacement.clone())
         );
-        assert!(!service.register_deployment(&admin, &replacement).await?);
+        assert!(
+            !service
+                .register_deployment(&admin, &replacement, None)
+                .await?
+        );
         assert!(retired_rx.try_recv().is_err());
         let mut secret_update = replacement.clone();
         secret_update.secret_refs = vec!["project-secrets-updated".into()];
-        assert!(service.register_deployment(&admin, &secret_update).await?);
+        assert!(
+            service
+                .register_deployment(&admin, &secret_update, None)
+                .await?
+        );
         assert_eq!(
             retired_rx.recv().await,
             Some((replacement, vec!["us-east".into()]))
@@ -2262,6 +2276,174 @@ mod tests {
             .json()
             .await?;
         assert!(deployment.is_null());
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn contract_api_publishes_with_deployments_and_reads_authenticated_revision_history()
+    -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        let session_token = admin
+            .issue_workflow_token(
+                "default",
+                "run",
+                "us-east",
+                i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?)? + 30_000,
+            )?
+            .token;
+        let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            Arc::new(LocalObjectPlacementStore::default()),
+            Arc::new(FakeStorageUrls(&["us-east"])),
+            auth,
+            registry,
+            issuer,
+            Arc::new(FakeRetiringProvisioner {
+                retired,
+                fail: std::sync::atomic::AtomicBool::new(false),
+            }),
+        );
+        let routes = super::super::public_api::router(service, admin);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async { axum::serve(listener, routes).await });
+        let client = reqwest::Client::new();
+        for path in ["/v1/contract", "/v1/namespaces/team/contract"] {
+            for credential in ["", "wrong", &session_token] {
+                assert_eq!(
+                    client
+                        .get(format!("{origin}{path}"))
+                        .bearer_auth(credential)
+                        .send()
+                        .await?
+                        .status(),
+                    reqwest::StatusCode::UNAUTHORIZED
+                );
+            }
+            let response = client
+                .get(format!("{origin}{path}"))
+                .bearer_auth("api-key")
+                .send()
+                .await?;
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+            assert_eq!(
+                response.json::<serde_json::Value>().await?["error"]["code"],
+                "contract_not_found"
+            );
+        }
+        let document: serde_json::Value =
+            serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
+        let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"image", "workingDirectory":"/app", "contract":document});
+        for scope in ["/v1", "/v1/namespaces/team"] {
+            for changed in [true, false] {
+                let reply: serde_json::Value = client
+                    .put(format!("{origin}{scope}/deployment"))
+                    .bearer_auth("api-key")
+                    .json(&deployment)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                assert_eq!(reply["changed"], changed);
+            }
+            let response = client
+                .get(format!("{origin}{scope}/contract"))
+                .bearer_auth("api-key")
+                .send()
+                .await?
+                .error_for_status()?;
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let reply: serde_json::Value = response.json().await?;
+            assert_eq!(reply["contract"], document);
+            assert_eq!(reply["codeRevision"], "r1");
+            assert!(
+                reply["contractHash"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("sha256:")
+            );
+        }
+        deployment["contract"] = serde_json::json!({"version":1,"actors":[]});
+        let response = client
+            .put(format!("{origin}/v1/deployment"))
+            .bearer_auth("api-key")
+            .json(&deployment)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        deployment["codeRevision"] = "r2".into();
+        client
+            .put(format!("{origin}/v1/deployment"))
+            .bearer_auth("api-key")
+            .json(&deployment)
+            .send()
+            .await?
+            .error_for_status()?;
+        let active: serde_json::Value = client
+            .get(format!("{origin}/v1/contract"))
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(active["codeRevision"], "r2");
+        assert_eq!(active["contract"]["actors"], serde_json::json!([]));
+        let pinned: serde_json::Value = client
+            .get(format!("{origin}/v1/contract?revision=r1"))
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(pinned["contract"], document);
+        for suffix in ["?revision=bad%2Frevision", "?unknown=1"] {
+            assert_eq!(
+                client
+                    .get(format!("{origin}/v1/contract{suffix}"))
+                    .bearer_auth("api-key")
+                    .send()
+                    .await?
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+        }
+        deployment["codeRevision"] = "r3".into();
+        deployment["contract"] = serde_json::json!({"version":2,"actors":[]});
+        assert_eq!(
+            client
+                .put(format!("{origin}/v1/deployment"))
+                .bearer_auth("api-key")
+                .json(&deployment)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+        let unchanged: serde_json::Value = client
+            .get(format!("{origin}/v1/deployment"))
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(unchanged["codeRevision"], "r2");
         server.abort();
         Ok(())
     }

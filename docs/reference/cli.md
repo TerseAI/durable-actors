@@ -4,6 +4,7 @@
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
 - [Inspect saved objects](#inspect-saved-objects)
+- [Deploy actors](#deploy-actors)
 - [Generate a client and proxy](#generate-a-client-and-proxy)
 - [Start a hosted server](#start-a-hosted-server)
 - [Environment variables](#environment-variables)
@@ -161,15 +162,62 @@ For inspection, `--namespace` overrides the connection's default: `local` for lo
 
 Inspection requires the admin API key. Session tokens and browser socket tickets cannot read saved internal state. These commands do not download a native runtime.
 
+## Deploy actors
+
+From the actor project, register an already-built provider image:
+
+```sh
+export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
+npx little-actors deploy --image im-chat --revision chat-v1 --working-directory /app
+```
+
+`deploy` extracts the public RPC and WebSocket API from local TypeScript and sends it with the deployment registration in one request. The control plane stores the contract with that revision. Extraction does not execute actor code, and the command creates no contract files. Invalid actor types fail before contacting the control plane. Repeating the same deployment is allowed; a different contract for an existing revision returns a conflict.
+
+The image must already be built and available to the configured provider. Run this command from the same source checkout used to build that image, with dependencies installed. The command registers the image; it does not build it or verify its contents against your local source.
+
+The source entrypoint defaults to `src/durable-objects.ts`. Pass another file as a positional argument and optionally use `--config <file>`. The entrypoint inside the image defaults to the local file's path relative to the current directory. Use `--actor-entrypoint <path>` if the image layout differs or the source lives outside that directory. `--working-directory` is the absolute project path inside the image.
+
+`--url`, `--api-key`, and `--namespace` override `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and `DURABLE_OBJECT_NAMESPACE_ID`. Without a namespace, the server uses its default. Use repeated `--secret <name>` options for provider secret references, `--socket-gateway-url <origin>` for a separate gateway, and `--warm-region <region>` for background image warmup. These options correspond to the [deployment registration API](http.md#put-v1deployment).
+
 ## Generate a client and proxy
 
 ```sh
 npx little-actors generate
 ```
 
-The entrypoint defaults to `src/durable-objects.ts`; output defaults to `generated/`. Pass a different entrypoint as a positional argument, `--out-dir <directory>` to change the output location, or `--config <file>` to select a TypeScript configuration. Generation checks the actor dependency graph without executing it and fails immediately on unsupported socket or public-state types.
+The entrypoint defaults to `src/durable-objects.ts`; output defaults to `generated/`. Pass a different entrypoint as a positional argument, `--out-dir <directory>` to change the output location, or `--config <file>` to select a TypeScript configuration. Generation checks the actor dependency graph without executing it and fails on unsupported public RPC, socket, or public-state types.
 
-Output contains TypeScript descriptors, `ActorClient` in `index.ts`, and `ActorProxy` in `proxy.ts`. Generate these source files once in a shared directory, or copy the output into separate projects. Each project needs `little-actors` installed. Import `index.ts` from the frontend and `proxy.ts` from the backend. The proxy restricts actor names at runtime and metadata types at compile time. Actor-specific runtime validation runs in the actor host. Regeneration removes obsolete validator files for the generated actors. This does not publish a separate SDK package. Regenerate when the actor contract changes. See [browser clients](../../sdk/README.md#browser-clients) for the proxy and frontend integration.
+Output includes:
+
+- `index.ts`: browser `ActorClient` and actor WebSocket descriptors.
+- `proxy.ts`: backend `ActorProxy` for authorizing browser connections.
+- `backend.ts`: typed RPC descriptors such as `ChatRoom.get("lobby").sendMessage(...)`.
+
+Each consumer project needs `little-actors` installed. Generated files import SDK runtime entrypoints and contain the public types; they do not import actor implementation code or its dependencies. You can compile and publish them as a separate npm package. Regeneration removes obsolete validator files for generated actors, but does not remove files belonging to actors that have been deleted. See [browser clients](../../sdk/README.md#browser-clients) for proxy and frontend integration.
+
+### Generate from the control plane
+
+`little-actors deploy` automatically publishes the public API with the deployment. `generate --url` fetches that API and generates the clients; there is no intermediate contract file to create or upload.
+
+In another repository:
+
+```sh
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
+npx little-actors generate --url https://objects.example.com --namespace my-project
+```
+
+`--url` without a value reads `DURABLE_OBJECT_CONTROL_PLANE_URL`. `--api-key` and `--namespace` override `DURABLE_OBJECT_API_KEY` and `DURABLE_OBJECT_NAMESPACE_ID`. Without a namespace, the server selects its default. Remote generation requires an admin API key; it does not use local runtime credentials or session tokens.
+
+By default, generation reads the active deployment's contract. To reproduce a particular published revision:
+
+```sh
+npx little-actors generate --url https://objects.example.com --namespace my-project --revision chat-v1
+```
+
+Remote generation writes the same TypeScript files as local generation and prints the selected revision. Commit generated clients and pin `--revision` in your generation command to reproduce a published API. Successful generation removes the obsolete `contract.json` and `contract-source.json` files produced by earlier versions of this workflow.
+
+`--url` cannot be combined with a source entrypoint or `--config`; `--out-dir` works in either mode. Invalid contracts and fetch errors leave existing output untouched. A missing contract returns an error: register the revision with `little-actors deploy` before generating from it. `little-actors dev` does not yet publish a contract automatically.
 
 ## Start a hosted server
 
@@ -224,7 +272,7 @@ npm install little-actors
 npx little-actors --help
 ```
 
-The package includes the SDK, CLI, chat template, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `init`, `generate`, `token`, `objects`, and help do not download a runtime.
+The package includes the SDK, CLI, chat template, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `init`, `deploy`, `generate`, `token`, `objects`, and help do not download a runtime.
 
 Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Windows users can run the Linux distribution in WSL 2.
 
@@ -281,7 +329,7 @@ npx little-actors --version
 
 Invoking the npm CLI without a command prints help. There is no separate `help` command.
 
-The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `init`, `generate`, `token`, `objects`, and `start` are npm CLI commands.
+The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `init`, `deploy`, `generate`, `token`, `objects`, and `start` are npm CLI commands.
 
 ## Output and exit codes
 

@@ -40,12 +40,40 @@ Build tools can generate the same files in memory through the public compiler an
 import { ActorCompiler } from "little-actors/compiler"
 import { generateTypeScript } from "little-actors/codegen"
 
-const actors = new ActorCompiler().compile("src/durable-objects.ts")
-const files = await generateTypeScript(actors.map(actor => actor.contract))
+const contract = new ActorCompiler().compileContract("src/durable-objects.ts")
+const files = await generateTypeScript(contract)
 // files is a ReadonlyMap<string, string> of relative filenames to TypeScript source.
 ```
 
-The caller chooses where to write the files. Generation does not execute actor code.
+The caller chooses where to write the files. Generation does not execute actor code. The CLI writes only generated TypeScript clients.
+
+Generated `backend.ts` exposes typed RPC stubs that work in a separate backend repository:
+
+```ts
+import { ChatRoom } from "./generated/backend.js"
+
+const room = ChatRoom.get("lobby")
+await room.sendMessage({ text: "Hello" }) // Arguments and return types come from your actor API.
+```
+
+The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
+
+Register your built actor image from its source project. The CLI extracts and publishes the public contract automatically:
+
+```sh
+export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
+npx little-actors deploy --image im-chat --revision chat-v1 --working-directory /app
+```
+
+Then generate clients in another repository:
+
+```sh
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
+npx little-actors generate --url https://objects.example.com --namespace my-project --revision chat-v1
+```
+
+Omit `--revision` to use the active deployment. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment, credentials, and selecting a published revision.
 
 The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
 
