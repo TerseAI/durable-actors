@@ -2,11 +2,28 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 import ts from "typescript"
+import { z } from "zod"
 
 import { generateTypeScript } from "./typescript-generator.js"
 import { parsePublicContract } from "./validate-public-contract.js"
 
 const fixture = JSON.parse(await readFile(new URL("../../../fixtures/public-contract.json", import.meta.url), "utf8"))
+
+test("contract parsing reports invalid embedded schemas at their contract paths", () => {
+    for (const kind of ["socket", "rpc"]) {
+        const document = structuredClone(fixture)
+        document.actors[0][kind].schema.definitions.Invalid = { type: "invalid" }
+        assert.throws(
+            () => parsePublicContract(document),
+            error => {
+                assert.ok(error instanceof z.ZodError)
+                assert.deepEqual(error.issues[0].path, ["actors", 0, kind, "schema"])
+                assert.match(error.issues[0].message, /invalid contract schema/)
+                return true
+            }
+        )
+    }
+})
 
 test("codegen rejects malformed contracts and unsafe type overrides", async () => {
     const cases: [string, (document: typeof fixture) => void, RegExp][] = [
@@ -86,7 +103,7 @@ test("contract validation permits schema-like property names and recursive local
     assert.deepEqual(parsePublicContract(document), document)
     const files = await generateTypeScript(document)
     const code = files.get("ChatRoom.backend.ts")!
-    assert.match(code, /next\?: MethodSendMessage_Result/)
+    assert.match(code, /next\?: SendMessageResult/)
     const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
     const variables = source.statements
         .filter(ts.isVariableStatement)

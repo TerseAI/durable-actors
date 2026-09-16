@@ -7,7 +7,7 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
-import { portableSchema } from "./portable-schema.js"
+import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
 import { Persistence } from "./types.js"
@@ -60,7 +60,7 @@ class ActorCompiler {
                         actorType: schema.actorType,
                         socket: {
                             ...socket,
-                            schema: portableSchema(socket.schema, ["Metadata", "Incoming", "Outgoing", "State"])
+                            schema: extractPublicSchema(socket.schema, ["Metadata", "Incoming", "Outgoing", "State"])
                         },
                         rpc: rpcContract(checker, actor)
                     }

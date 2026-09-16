@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { z } from "zod"
 
-import { ControlPlaneClient, type ControlPlaneOptions } from "./control-plane.js"
+import { type ControlPlaneOptions, createControlPlaneClient } from "./control-plane.js"
 
 interface DeployOptions extends ControlPlaneOptions {
     image: string
@@ -43,7 +43,7 @@ function registerDeployCommand(program: Command): void {
 }
 
 async function deploy(entrypoint = "src/durable-objects.ts", options: DeployOptions): Promise<void> {
-    const client = new ControlPlaneClient(options, fetch)
+    const client = createControlPlaneClient(options, fetch)
     const specification = deploymentSpecification(entrypoint, options)
     const { ActorCompiler } = await import("../compiler/actor-compiler.js")
     const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
@@ -52,7 +52,7 @@ async function deploy(entrypoint = "src/durable-objects.ts", options: DeployOpti
     )
     const reply = z
         .object({ changed: z.boolean() })
-        .parse(await client.json("PUT", "deployment", { ...specification, contract }))
+        .parse(await client.registerDeployment({ ...specification, contract }))
     console.log(
         `${reply.changed ? "Registered" : "Already registered"} revision ${specification.codeRevision} with ${contract.actors.length} public actor contract(s).`
     )

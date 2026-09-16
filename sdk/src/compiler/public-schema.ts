@@ -2,7 +2,7 @@ import type { JSONSchema7, JSONSchema7Definition } from "json-schema"
 
 import { ActorDefinitionError } from "../errors.js"
 
-function portableSchema(schema: JSONSchema7, roots: readonly string[]): JSONSchema7 {
+function extractPublicSchema(schema: JSONSchema7, roots: readonly string[]): JSONSchema7 {
     const definitions = schema.definitions ?? {}
     const names = new Map(roots.map(name => [name, name]))
     const pending = [...roots]
@@ -24,12 +24,15 @@ function portableSchema(schema: JSONSchema7, roots: readonly string[]): JSONSche
         }
         return `#/definitions/${names.get(original)!}`
     }
-    const portable: [string, JSONSchema7Definition][] = []
+    const publicDefinitions: [string, JSONSchema7Definition][] = []
     for (let index = 0; index < pending.length; index++) {
         const original = pending[index]
-        portable.push([names.get(original)!, rewriteReferences(definitions[original], rename) as JSONSchema7Definition])
+        publicDefinitions.push([
+            names.get(original)!,
+            rewriteReferences(definitions[original], rename) as JSONSchema7Definition
+        ])
     }
-    return { $schema: schema.$schema, definitions: Object.fromEntries(portable) }
+    return { $schema: schema.$schema, definitions: Object.fromEntries(publicDefinitions) }
 }
 
 function rewriteReferences(value: unknown, rename: (reference: string) => string): unknown {
@@ -43,4 +46,4 @@ function rewriteReferences(value: unknown, rename: (reference: string) => string
     )
 }
 
-export { portableSchema }
+export { extractPublicSchema }

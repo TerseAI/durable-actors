@@ -7,7 +7,7 @@ import type { SocketContract } from "../wire/contract.js"
 import type { ActorApi, PublicActorContract, RpcContract } from "../wire/public-contract.js"
 
 function parsePublicContract(input: unknown): PublicActorContract {
-    const document = documentSchema.parse(input) as PublicActorContract
+    const document = documentSchema.parse(input)
     const names = new Set<string>()
     for (const actor of document.actors) {
         unique(names, actor.actorType, "actor")
@@ -26,7 +26,6 @@ function validateActor(actor: ActorApi): void {
 }
 
 function validateSocket(socket: SocketContract): void {
-    validateSchema(socket.schema)
     for (const kind of ["Metadata", "Incoming", "Outgoing", "State"]) reference(socket.schema, `#/definitions/${kind}`)
     const fields = new Set<string>()
     const state = socket.schema.definitions!.State
@@ -38,7 +37,6 @@ function validateSocket(socket: SocketContract): void {
 }
 
 function validateRpc(rpc: RpcContract): void {
-    validateSchema(rpc.schema)
     const methods = new Set<string>()
     for (const method of rpc.methods) {
         unique(methods, method.name, "RPC method")
@@ -73,10 +71,13 @@ function unique(seen: Set<string>, value: string, kind: string): void {
     seen.add(value)
 }
 
-function validateSchema(schema: JSONSchema7): void {
-    const ajv = new Ajv({ strict: false, validateFormats: false })
-    if (!ajv.validateSchema(schema)) throw new Error(`invalid contract schema: ${ajv.errorsText()}`)
-    visit(schema, schema)
+function parseSchema(input: unknown, context: z.RefinementCtx): JSONSchema7 | typeof z.NEVER {
+    if (!ajv.validate<JSONSchema7>("http://json-schema.org/draft-07/schema#", input)) {
+        context.addIssue({ code: "custom", message: `invalid contract schema: ${ajv.errorsText()}` })
+        return z.NEVER
+    }
+    visit(input, input)
+    return input
 }
 
 function visit(node: JSONSchema7Definition, root: JSONSchema7): void {
@@ -121,7 +122,8 @@ function reference(schema: JSONSchema7, ref: string): JSONSchema7Definition {
     return target as JSONSchema7Definition
 }
 
-const schema = z.object({ definitions: z.record(z.string(), z.unknown()) }).passthrough()
+const ajv = new Ajv({ strict: false, validateFormats: false })
+const schema = z.looseObject({ definitions: z.record(z.string(), z.unknown()) }).transform(parseSchema)
 const typeReference = z.strictObject({ $ref: z.string() })
 const component = z
     .string()

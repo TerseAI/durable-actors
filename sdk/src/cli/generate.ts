@@ -3,9 +3,7 @@ import { rm } from "node:fs/promises"
 import path from "node:path"
 import { z } from "zod"
 
-import type { PublicActorContract } from "../wire/public-contract.js"
-
-import { ControlPlaneClient } from "./control-plane.js"
+import { createControlPlaneClient } from "./control-plane.js"
 
 interface GenerateOptions {
     outDir: string
@@ -62,21 +60,21 @@ async function localContract(entrypoint: string | undefined, configFile?: string
 }
 
 async function remoteContract(options: GenerateOptions) {
-    const client = new ControlPlaneClient(options, fetch)
-    const query = options.revision ? `?${new URLSearchParams({ revision: options.revision })}` : ""
-    const publication = publicationSchema.parse(await client.json("GET", `contract${query}`))
+    const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
+    const client = createControlPlaneClient(options, fetch)
+    const publication = publicationSchema.parse(await client.getContract(options.revision))
     if (client.connection.namespaceId && publication.namespaceId !== client.connection.namespaceId)
         throw new Error("Contract response namespace does not match the requested namespace.")
     if (options.revision && publication.codeRevision !== options.revision)
         throw new Error("Contract response revision does not match the requested revision.")
-    return { contract: publication.contract as PublicActorContract, codeRevision: publication.codeRevision }
+    return { contract: parsePublicContract(publication.contract), codeRevision: publication.codeRevision }
 }
 
 const publicationSchema = z.strictObject({
     namespaceId: z.string().regex(/^[A-Za-z0-9._-]{1,255}$/u),
     codeRevision: z.string().regex(/^[A-Za-z0-9._-]{1,255}$/u),
     contractHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-    contract: z.object({ version: z.number(), actors: z.array(z.unknown()) }).passthrough()
+    contract: z.unknown()
 })
 
 export { registerGenerateCommand }

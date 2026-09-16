@@ -17,37 +17,30 @@ async function backendFiles(actors: readonly ActorApi[]): Promise<ReadonlyMap<st
 }
 
 async function backendSource(actor: ActorApi): Promise<string> {
-    const { declarations, types } = await rpcDeclarations(actor.rpc)
+    const { declarations, types, stubName } = await rpcDeclarations(actor.rpc)
     const methods = actor.rpc.methods.map((method, index) => methodDeclaration(method, index, types)).join("\n")
     const descriptors = actor.rpc.methods.map(method => ({ name: method.name, result: method.result.kind }))
     return `import { createActorStub as $createActorStub } from "little-actors/backend"
 
 ${declarations}
-export interface Stub {
+export interface ${stubName} {
 ${methods}
 }
 
 export const ${actor.actorType} = {
-    get(actorId: string, transport?: import("little-actors/backend").ActorRpcTransport): Stub {
-        return $createActorStub<Stub>(${JSON.stringify(actor.actorType)}, actorId, ${JSON.stringify(descriptors)}, transport)
+    get(actorId: string, transport?: import("little-actors/backend").ActorRpcTransport): ${stubName} {
+        return $createActorStub<${stubName}>(${JSON.stringify(actor.actorType)}, actorId, ${JSON.stringify(descriptors)}, transport)
     }
 }
 `
 }
 
 async function rpcDeclarations(rpc: RpcContract) {
-    const properties: Record<string, TypeReference | boolean> = Object.create(null)
-    const add = (name: string, type: TypeReference) => {
-        const definition = rpc.schema.definitions?.[type.$ref.slice("#/definitions/".length)]
-        properties[name] = typeof definition === "boolean" ? definition : type
-    }
-    rpc.methods.forEach((method, methodIndex) => {
-        method.parameters.forEach((parameter, index) => add(`m${methodIndex}p${index}`, parameter.type))
-        if (method.result.kind === "value") add(`m${methodIndex}result`, method.result.type)
-    })
+    const { properties, definitions } = rpcSchemaTypes(rpc)
     const code = await compile(
         {
             ...rpc.schema,
+            definitions,
             type: "object",
             properties,
             required: Object.keys(properties),
@@ -61,6 +54,29 @@ async function rpcDeclarations(rpc: RpcContract) {
             additionalProperties: false
         }
     )
+    return readRpcDeclarations(code)
+}
+
+function rpcSchemaTypes(rpc: RpcContract) {
+    const properties: Record<string, TypeReference | boolean> = Object.create(null)
+    const definitions = { ...rpc.schema.definitions }
+    const add = (name: string, type: TypeReference, displayName: string) => {
+        const key = type.$ref.slice("#/definitions/".length)
+        const definition = definitions[key]
+        properties[name] = typeof definition === "boolean" ? definition : type
+        if (definition && typeof definition === "object" && !definition.title && !definition.$ref)
+            definitions[key] = { ...definition, title: displayName }
+    }
+    rpc.methods.forEach((method, methodIndex) => {
+        method.parameters.forEach((parameter, index) =>
+            add(`m${methodIndex}p${index}`, parameter.type, `${method.name} ${parameter.name}`)
+        )
+        if (method.result.kind === "value") add(`m${methodIndex}result`, method.result.type, `${method.name} result`)
+    })
+    return { properties, definitions }
+}
+
+function readRpcDeclarations(code: string) {
     const source = ts.createSourceFile("types.ts", code, ts.ScriptTarget.Latest, true)
     const root = source.statements.find(
         statement => ts.isInterfaceDeclaration(statement) && statement.name.text === "RpcTypes"
@@ -70,11 +86,24 @@ async function rpcDeclarations(rpc: RpcContract) {
             .filter(ts.isPropertySignature)
             .map(property => [(property.name as ts.Identifier).text, property.type!.getText(source)])
     )
-    const declarations = source.statements
-        .filter(statement => statement !== root)
-        .map(statement => statement.getText(source))
-        .join("\n\n")
-    return { declarations, types }
+    const statements = source.statements.filter(statement => statement !== root)
+    const declarations = statements.map(statement => statement.getText(source)).join("\n\n")
+    return { declarations, types, stubName: stubTypeName(statements) }
+}
+
+function stubTypeName(statements: readonly ts.Statement[]): string {
+    const declarationNames = new Set(
+        statements.flatMap(statement =>
+            ts.isInterfaceDeclaration(statement) ||
+            ts.isTypeAliasDeclaration(statement) ||
+            ts.isEnumDeclaration(statement)
+                ? [statement.name.text]
+                : []
+        )
+    )
+    let stubName = "Stub"
+    while (declarationNames.has(stubName)) stubName += "_"
+    return stubName
 }
 
 function methodDeclaration(method: RpcMethod, index: number, types: ReadonlyMap<string, string>): string {

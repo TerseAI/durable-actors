@@ -5,9 +5,11 @@ import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
+import { ControlPlaneClient } from "./cli/control-plane.js"
 import { registerDeployCommand } from "./cli/deploy.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
+import { configuredSettings } from "./client/clientSettings.js"
 import { runtimeExecutable } from "./runtimeInstaller.js"
 
 interface DevOptions {
@@ -141,26 +143,12 @@ async function runRuntime(args: string[]): Promise<number> {
 
 async function localSession(directory: string) {
     const connection = await localConnection(directory)
-    const response = await fetch(
-        `${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`,
-        {
-            method: "POST",
-            headers: { authorization: `Bearer ${connection.apiKey}`, "content-type": "application/json" },
-            body: JSON.stringify({
-                executionId: `local-${randomUUID()}`,
-                deadlineUnixMs: Date.now() + 3_600_000,
-                storageRegion: connection.storageRegion
-            }),
-            signal: AbortSignal.timeout(10_000)
-        }
-    ).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
-    })
-    if (!response.ok)
-        throw new Error(
-            `Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`
-        )
-    const { token } = (await response.json()) as { token: string }
+    const client = new ControlPlaneClient(configuredSettings(connection), fetch)
+    const { token } = (await client.issueSessionToken({
+        executionId: `local-${randomUUID()}`,
+        deadlineUnixMs: Date.now() + 3_600_000,
+        storageRegion: connection.storageRegion
+    })) as { token: string }
     return { connection, token }
 }
 

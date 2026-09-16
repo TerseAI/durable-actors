@@ -12,6 +12,52 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../dist/cli.js", import.meta.url))
 
+test("token uses the saved namespace and reports server errors without following redirects", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-token-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    let status = 200
+    const requests: string[] = []
+    const server = createServer(async (request, response) => {
+        requests.push(request.url!)
+        assert.equal(request.method, "POST")
+        assert.equal(request.headers.authorization, "Bearer local-key")
+        const chunks: Buffer[] = []
+        for await (const chunk of request) chunks.push(Buffer.from(chunk))
+        const body = JSON.parse(Buffer.concat(chunks).toString())
+        assert.equal(body.storageRegion, "us-east")
+        assert.match(body.executionId, /^local-/u)
+        assert.ok(body.deadlineUnixMs > Date.now())
+        response.writeHead(status, {
+            "content-type": "application/json",
+            ...(status === 307 ? { location: "/redirected" } : {})
+        })
+        response.end(
+            JSON.stringify(
+                status === 200 ? { token: "execution-token" } : { error: { message: "No deployment registered" } }
+            )
+        )
+    })
+    t.after(() => server.close())
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    await writeFile(
+        path.join(directory, "runtime.json"),
+        JSON.stringify({
+            controlPlaneUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+            apiKey: "local-key",
+            namespaceId: "team.prod",
+            storageRegion: "us-east"
+        })
+    )
+    const args = [cli, "token", "--data-dir", directory]
+    assert.equal((await run(process.execPath, args)).stdout.trim(), "execution-token")
+    status = 409
+    await assert.rejects(run(process.execPath, args), /HTTP 409.*No deployment registered/u)
+    status = 307
+    await assert.rejects(run(process.execPath, args), /Cannot complete POST/u)
+    assert.deepEqual(requests, Array(3).fill("/v1/namespaces/team.prod/session-scoped-token"))
+})
+
 test("init creates a complete chat app using the installed SDK version", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))

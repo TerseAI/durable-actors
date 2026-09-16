@@ -1,6 +1,6 @@
 import { build } from "esbuild"
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -9,6 +9,95 @@ import ts from "typescript"
 
 import { ActorCompiler } from "./actor-compiler.js"
 import { generateTypeScript } from "./typescript-generator.js"
+
+test("preserves named RPC types and their dependencies in clients generated from stored contracts", async t => {
+    const author = await project(t)
+    const entrypoint = path.join(author, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor } from "little-actors"
+        interface Author { name: string }
+        interface Message { text: string; author: Author; reply?: Message }
+        type SendMessageInput = { text: string }
+        export class ChatRoom extends Actor<{}, never, never> {
+            async sendMessage(input: SendMessageInput): Promise<Message> {
+                return { text: input.text, author: { name: "Ada" } }
+            }
+            async latest(): Promise<Message> { return this.sendMessage({ text: "hi" }) }
+        }
+    `
+    )
+    const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
+    await rm(author, { recursive: true, force: true })
+    const files = await generateTypeScript(contract)
+    const code = files.get("ChatRoom.backend.ts")!
+    assert.match(code, /export interface SendMessageInput\b/)
+    assert.match(code, /export interface Message\b/)
+    assert.match(code, /export interface Author\b/)
+    assert.match(code, /"sendMessage"\(input: SendMessageInput\): Promise<Message>/)
+    assert.match(code, /"latest"\(\): Promise<Message>/)
+    assert.match(code, /reply\?: Message/)
+    const consumer = await project(t)
+    for (const [file, content] of files) await writeFile(path.join(consumer, file), content)
+    checkTypes(path.join(consumer, "backend.ts"))
+})
+
+test("names anonymous RPC types from methods and parameters in existing published contracts", async t => {
+    const contract = JSON.parse(
+        await readFile(new URL("../../../fixtures/public-contract.json", import.meta.url), "utf8")
+    )
+    const files = await generateTypeScript(contract)
+    const code = files.get("ChatRoom.backend.ts")!
+    assert.match(code, /export interface SendMessageInput\b/)
+    assert.match(code, /export interface SendMessageResult\b/)
+    assert.match(code, /"sendMessage"\(input: SendMessageInput\): Promise<SendMessageResult>/)
+    const consumer = await project(t)
+    for (const [file, content] of files) await writeFile(path.join(consumer, file), content)
+    checkTypes(path.join(consumer, "backend.ts"))
+})
+
+test("disambiguates source type names without merging distinct RPC types or generated helpers", async t => {
+    const root = await project(t)
+    await writeFile(path.join(root, "first.ts"), "export interface Item { value: string }")
+    await writeFile(path.join(root, "second.ts"), "export interface Item { value: number }")
+    const entrypoint = path.join(root, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor } from "little-actors"
+        import type { Item as First } from "./first.js"
+        import type { Item as Second } from "./second.js"
+        type Stub = { stub: boolean }
+        type RpcTypes = { rpc: boolean }
+        export class Room extends Actor<{}, never, never> {
+            async first(input: First): Promise<First> { return input }
+            async second(input: Second): Promise<Second> { return input }
+            async helpers(input: Stub): Promise<RpcTypes> { return { rpc: input.stub } }
+        }
+    `
+    )
+    const files = await generateTypeScript(JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint))))
+    const code = files.get("Room.backend.ts")!
+    assert.match(code, /export interface Item\b/)
+    assert.match(code, /"first"\(input: Item\): Promise<Item>/)
+    for (const [file, content] of files) await writeFile(path.join(root, file), content)
+    await writeFile(
+        path.join(root, "consumer.ts"),
+        `
+        import { Room } from "./backend.js"
+        const room = Room.get("one")
+        const first: Promise<{ value: string }> = room.first({ value: "one" })
+        const second: Promise<{ value: number }> = room.second({ value: 1 })
+        const helpers: Promise<{ rpc: boolean }> = room.helpers({ stub: true })
+        // @ts-expect-error distinct types with the same source name
+        room.first({ value: 1 })
+        // @ts-expect-error distinct types with the same source name
+        room.second({ value: "one" })
+    `
+    )
+    checkTypes(path.join(root, "consumer.ts"))
+})
 
 test("generates callable typed backend stubs in a consumer without actor source or private dependencies", async t => {
     const author = await project(t)

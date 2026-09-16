@@ -2283,6 +2283,7 @@ mod tests {
     #[tokio::test]
     async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revision()
     -> Result<()> {
+        // Set up an HTTP server with an in-memory registry and fake infrastructure.
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -2293,6 +2294,7 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        // This execution credential should be rejected by the admin-only contract endpoint.
         let session_token = admin
             .issue_workflow_token(
                 "default",
@@ -2321,6 +2323,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
+        // 1. Both namespace routes reject invalid or non-admin credentials.
         for path in ["/v1/contract", "/v1/namespaces/team/contract"] {
             for credential in ["", "wrong", &session_token] {
                 assert_eq!(
@@ -2333,6 +2336,7 @@ mod tests {
                     reqwest::StatusCode::UNAUTHORIZED
                 );
             }
+            // Authorized reads return contract_not_found before anything is published.
             let response = client
                 .get(format!("{origin}{path}"))
                 .bearer_auth("api-key")
@@ -2344,10 +2348,12 @@ mod tests {
                 "contract_not_found"
             );
         }
+        // 2. Publish r1 in both namespaces; repeating the same deployment is a no-op.
         let document: serde_json::Value =
             serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
         let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"image", "workingDirectory":"/app", "contract":document});
         for scope in ["/v1", "/v1/namespaces/team"] {
+            // These are expected responses, not changes to the request.
             for changed in [true, false] {
                 let reply: serde_json::Value = client
                     .put(format!("{origin}{scope}/deployment"))
@@ -2360,6 +2366,7 @@ mod tests {
                     .await?;
                 assert_eq!(reply["changed"], changed);
             }
+            // Read back the published document, revision, and hash without HTTP caching.
             let response = client
                 .get(format!("{origin}{scope}/contract"))
                 .bearer_auth("api-key")
@@ -2377,6 +2384,7 @@ mod tests {
                     .starts_with("sha256:")
             );
         }
+        // 3. In the default namespace, changing the contract while keeping r1 conflicts.
         deployment["contract"] = serde_json::json!({"version":1,"actors":[]});
         let response = client
             .put(format!("{origin}/v1/deployment"))
@@ -2385,6 +2393,7 @@ mod tests {
             .send()
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        // 4. The changed contract is accepted under r2 and becomes the active contract.
         deployment["codeRevision"] = "r2".into();
         client
             .put(format!("{origin}/v1/deployment"))
@@ -2403,6 +2412,7 @@ mod tests {
             .await?;
         assert_eq!(active["codeRevision"], "r2");
         assert_eq!(active["contract"]["actors"], serde_json::json!([]));
+        // 5. Explicit revision reads find r2, but the previous r1 contract is gone.
         assert_eq!(
             client
                 .get(format!("{origin}/v1/contract?revision=r1"))
@@ -2421,6 +2431,7 @@ mod tests {
             .json()
             .await?;
         assert_eq!(pinned, active);
+        // 6. Reject a revision containing '/' and an unsupported query parameter.
         for suffix in ["?revision=bad%2Frevision", "?unknown=1"] {
             assert_eq!(
                 client
@@ -2432,6 +2443,7 @@ mod tests {
                 reqwest::StatusCode::BAD_REQUEST
             );
         }
+        // 7. Reject r3's unsupported contract format version and leave r2 deployed.
         deployment["codeRevision"] = "r3".into();
         deployment["contract"] = serde_json::json!({"version":2,"actors":[]});
         assert_eq!(

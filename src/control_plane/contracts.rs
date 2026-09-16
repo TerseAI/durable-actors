@@ -92,47 +92,47 @@ struct ContractDocument {
     actors: Vec<ActorApi>,
 }
 
-impl ContractDocument {
-    fn validate(&self) -> Result<()> {
-        ensure!(
-            self.version == 1,
-            "unsupported public actor contract version {}",
-            self.version
-        );
-        let mut names = HashSet::new();
-        for actor in &self.actors {
-            validate_actor_type(&actor.actor_type)?;
-            ensure!(
-                names.insert(&actor.actor_type),
-                "duplicate actor type {}",
-                actor.actor_type
-            );
-            ensure!(
-                actor.socket.version == 1 && actor.socket.actor_type == actor.actor_type,
-                "actor and socket contract must match"
-            );
-            validate_schema(&actor.socket.schema)?;
-            for kind in ["Metadata", "Incoming", "Outgoing", "State"] {
-                ensure!(
-                    actor.socket.schema["definitions"].get(kind).is_some(),
-                    "missing socket type {kind}"
-                );
-            }
-            let mut fields = HashSet::new();
-            for field in &actor.socket.emittable {
-                ensure!(fields.insert(field), "duplicate emittable field {field}");
-                ensure!(
-                    actor.socket.schema["definitions"]["State"]["properties"]
-                        .get(field)
-                        .is_some(),
-                    "emittable field {field} is not public state"
-                );
-            }
-            actor.rpc.validate()?;
-        }
-        Ok(())
-    }
-}
+// impl ContractDocument {
+//     fn validate(&self) -> Result<()> {
+//         ensure!(
+//             self.version == 1,
+//             "unsupported public actor contract version {}",
+//             self.version
+//         );
+//         let mut names = HashSet::new();
+//         for actor in &self.actors {
+//             validate_actor_type(&actor.actor_type)?;
+//             ensure!(
+//                 names.insert(&actor.actor_type),
+//                 "duplicate actor type {}",
+//                 actor.actor_type
+//             );
+//             ensure!(
+//                 actor.socket.version == 1 && actor.socket.actor_type == actor.actor_type,
+//                 "actor and socket contract must match"
+//             );
+//             validate_schema(&actor.socket.schema)?;
+//             for kind in ["Metadata", "Incoming", "Outgoing", "State"] {
+//                 ensure!(
+//                     actor.socket.schema["definitions"].get(kind).is_some(),
+//                     "missing socket type {kind}"
+//                 );
+//             }
+//             let mut fields = HashSet::new();
+//             for field in &actor.socket.emittable {
+//                 ensure!(fields.insert(field), "duplicate emittable field {field}");
+//                 ensure!(
+//                     actor.socket.schema["definitions"]["State"]["properties"]
+//                         .get(field)
+//                         .is_some(),
+//                     "emittable field {field} is not public state"
+//                 );
+//             }
+//             actor.rpc.validate()?;
+//         }
+//         Ok(())
+//     }
+// }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

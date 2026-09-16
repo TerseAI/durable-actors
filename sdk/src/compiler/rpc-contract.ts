@@ -5,14 +5,37 @@ import { ActorDefinitionError } from "../errors.js"
 import type { RpcContract, RpcMethod, RpcParameter, TypeReference } from "../wire/public-contract.js"
 
 import { assertJsonType, jsonSchema } from "./json-schema.js"
-import { portableSchema } from "./portable-schema.js"
+import { extractPublicSchema } from "./public-schema.js"
 
 function rpcContract(checker: ts.TypeChecker, actor: ts.ClassDeclaration): RpcContract {
     const types: Record<string, ts.Type> = Object.create(null)
     const methods = publicMethods(checker, actor).map(({ name, declaration }) =>
         readMethod(checker, declaration, `${actor.name!.text}.${name}`, name, types)
     )
-    return { schema: portableSchema(jsonSchema(checker, types), Object.keys(types)), methods }
+    return { schema: rpcSchema(checker, types), methods }
+}
+
+function rpcSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>) {
+    const schema = jsonSchema(checker, types)
+    for (const [name, definition] of Object.entries(schema.definitions ?? {})) {
+        if (typeof definition === "boolean" || definition.$ref) continue
+        const title = types[name] ? sourceTypeName(types[name]) : /^[A-Za-z_$][\w$]*$/u.test(name) ? name : undefined
+        if (title) definition.title ??= title
+    }
+    return extractPublicSchema(schema, Object.keys(types))
+}
+
+function sourceTypeName(type: ts.Type): string | undefined {
+    const symbol = type.aliasSymbol ?? type.getSymbol()
+    return symbol?.declarations?.some(
+        declaration =>
+            !declaration.getSourceFile().hasNoDefaultLib &&
+            (ts.isInterfaceDeclaration(declaration) ||
+                ts.isTypeAliasDeclaration(declaration) ||
+                ts.isEnumDeclaration(declaration))
+    )
+        ? symbol.name
+        : undefined
 }
 
 function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
@@ -99,8 +122,10 @@ function readParameter(
 }
 
 function registerType(types: Record<string, ts.Type>, name: string, type: ts.Type): TypeReference {
-    types[name] = type
-    return { $ref: `#/definitions/${name}` }
+    const existing = sourceTypeName(type) ? Object.keys(types).find(key => types[key] === type) : undefined
+    const key = existing ?? name
+    types[key] = type
+    return { $ref: `#/definitions/${key}` }
 }
 
 export { rpcContract }

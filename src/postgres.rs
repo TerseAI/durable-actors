@@ -111,6 +111,19 @@ fn connection_pool(url: &str) -> Result<Pool> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn embedded_migrations_have_no_version_gaps() {
+        let runner = embedded::migrations::runner();
+        let mut versions: Vec<_> = runner
+            .get_migrations()
+            .iter()
+            .map(|migration| migration.version())
+            .collect();
+        versions.sort_unstable();
+        let expected: Vec<_> = (1..=versions.len() as i32).collect();
+        assert_eq!(versions, expected);
+    }
+
     #[tokio::test]
     async fn independent_queries_can_use_different_database_connections() -> Result<()> {
         let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
