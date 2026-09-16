@@ -63,17 +63,17 @@ Register your built actor image from its source project. The CLI extracts and pu
 ```sh
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 export DURABLE_OBJECT_API_KEY='<your-api-key>'
-npx little-actors deploy --image im-chat --revision chat-v1 --working-directory /app
+npx little-actors deploy --image im-chat --working-directory /app
 ```
 
 Then generate clients in another repository:
 
 ```sh
 export DURABLE_OBJECT_API_KEY='<your-api-key>'
-npx little-actors generate --url https://objects.example.com --namespace my-project --revision chat-v1
+npx little-actors generate --url https://objects.example.com --namespace my-project
 ```
 
-Omit `--revision` to use the active deployment. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment, credentials, and selecting a published revision.
+Deploy assigns a revision automatically, and generation uses the latest deployment. The server stores only its active contract. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment and credentials.
 
 The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
 

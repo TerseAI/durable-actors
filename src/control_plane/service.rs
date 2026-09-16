@@ -2281,7 +2281,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contract_api_publishes_with_deployments_and_reads_authenticated_revision_history()
+    async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revision()
     -> Result<()> {
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
@@ -2403,15 +2403,24 @@ mod tests {
             .await?;
         assert_eq!(active["codeRevision"], "r2");
         assert_eq!(active["contract"]["actors"], serde_json::json!([]));
+        assert_eq!(
+            client
+                .get(format!("{origin}/v1/contract?revision=r1"))
+                .bearer_auth("api-key")
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
         let pinned: serde_json::Value = client
-            .get(format!("{origin}/v1/contract?revision=r1"))
+            .get(format!("{origin}/v1/contract?revision=r2"))
             .bearer_auth("api-key")
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?;
-        assert_eq!(pinned["contract"], document);
+        assert_eq!(pinned, active);
         for suffix in ["?revision=bad%2Frevision", "?unknown=1"] {
             assert_eq!(
                 client

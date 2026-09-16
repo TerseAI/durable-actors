@@ -270,6 +270,10 @@ impl AdminRegistry for SqliteStore {
         let contract = contract.cloned();
         self.connection.call_raw(move |connection| -> Result<bool> {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "DELETE FROM deployment_contracts WHERE namespace_id = ?1 AND code_revision <> ?2",
+                params![namespace, revision],
+            )?;
             let mut published = false;
             if let Some(contract) = contract {
                 let existing: Option<String> = transaction.query_row(
@@ -344,10 +348,17 @@ impl AdminRegistry for SqliteStore {
         let namespace = namespace_id.to_owned();
         self.connection
             .call(move |connection| -> rusqlite::Result<_> {
-                connection.execute(
+                let transaction =
+                    connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                transaction.execute(
+                    "DELETE FROM deployment_contracts WHERE namespace_id = ?1",
+                    [&namespace],
+                )?;
+                transaction.execute(
                     "DELETE FROM deployments WHERE namespace_id = ?1",
                     [namespace],
                 )?;
+                transaction.commit()?;
                 Ok(())
             })
             .await?;

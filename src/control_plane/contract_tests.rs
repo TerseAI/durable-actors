@@ -71,12 +71,12 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
 }
 
 #[tokio::test]
-async fn in_memory_contract_history_follows_deployment_revisions() -> Result<()> {
+async fn in_memory_contract_keeps_only_the_active_revision() -> Result<()> {
     registry_behavior(Arc::new(LocalAdminRegistry::default())).await
 }
 
 #[tokio::test]
-async fn sqlite_contract_history_is_atomic_and_survives_reopening() -> Result<()> {
+async fn sqlite_latest_contract_is_atomic_and_survives_reopening() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("runtime.sqlite");
     let store = Arc::new(SqliteStore::open(&path).await?);
@@ -110,7 +110,46 @@ async fn sqlite_contract_history_is_atomic_and_survives_reopening() -> Result<()
 }
 
 #[tokio::test]
-async fn postgres_contract_history_is_atomic_and_survives_reconnection() -> Result<()> {
+async fn sqlite_discards_legacy_contract_history_on_open() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("legacy.sqlite");
+    {
+        let connection = tokio_rusqlite::rusqlite::Connection::open(&path)?;
+        connection.execute_batch(
+            r#"CREATE TABLE deployments (namespace_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+             CREATE TABLE deployment_contracts (
+                 namespace_id TEXT NOT NULL, code_revision TEXT NOT NULL,
+                 contract_hash TEXT NOT NULL, contract_json TEXT NOT NULL,
+                 PRIMARY KEY (namespace_id, code_revision));
+             INSERT INTO deployment_contracts VALUES
+                 ('active', 'revision-1', 'hash', '{"version":1,"actors":[]}'),
+                 ('active', 'old', 'hash', '{"version":1,"actors":[]}'),
+                 ('deleted', 'old', 'hash', '{"version":1,"actors":[]}');"#,
+        )?;
+        connection.execute(
+            "INSERT INTO deployments VALUES (?1, ?2)",
+            tokio_rusqlite::rusqlite::params!["active", serde_json::to_string(&spec("active"))?],
+        )?;
+    }
+    let store = SqliteStore::open(&path).await?;
+    assert!(store.deployment_contract("active", None).await?.is_some());
+    let connection = tokio_rusqlite::rusqlite::Connection::open(&path)?;
+    let count: i64 =
+        connection.query_row("SELECT count(*) FROM deployment_contracts", [], |row| {
+            row.get(0)
+        })?;
+    assert_eq!(count, 1);
+    store.remove_deployment("active").await?;
+    let count: i64 =
+        connection.query_row("SELECT count(*) FROM deployment_contracts", [], |row| {
+            row.get(0)
+        })?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Result<()> {
     let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
         return Ok(());
     };
@@ -200,7 +239,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
         registry
             .deployment_contract(&namespace, Some("revision-1"))
             .await?,
-        Some(first.clone())
+        None
     );
     assert!(
         registry
@@ -218,10 +257,10 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     );
     deployment.code_revision = "revision-1".into();
     registry.register_deployment(&deployment, None).await?;
-    assert_eq!(
-        registry.deployment_contract(&namespace, None).await?,
-        Some(first.clone())
-    );
+    assert_eq!(registry.deployment_contract(&namespace, None).await?, None);
+    registry
+        .register_deployment(&deployment, Some(&full))
+        .await?;
     registry.remove_deployment(&namespace).await?;
     assert!(
         registry
@@ -233,7 +272,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
         registry
             .deployment_contract(&namespace, Some("revision-1"))
             .await?,
-        Some(first)
+        None
     );
     deployment.code_revision = "race".into();
     let (left, right) = tokio::join!(

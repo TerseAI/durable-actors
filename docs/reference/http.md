@@ -15,7 +15,7 @@ This page documents deployment management, backend access, WebSocket connections
 
 ## Authentication
 
-Use your configured server origin as the base URL. JSON requests use `Content-Type: application/json`. Backend operations require:
+Backend operations require:
 
 ```http
 Authorization: Bearer <api-key>
@@ -29,7 +29,7 @@ Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage depl
 | Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
 | Read public actor contract     | `GET /v1/contract`                                    | API key.                                      |
 | Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
-| List saved objects             | `GET /v1/objects`                                    | API key only.                                 |
+| List saved objects             | `GET /v1/objects`                                     | API key only.                                 |
 | Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}/state`          | API key only.                                 |
 | Read public signing keys       | `GET /.well-known/jwks.json`                          | None.                                         |
 | Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket`      | API key; WebSocket upgrade.                   |
@@ -69,7 +69,7 @@ Registers actor code for your application. There is one active deployment. The J
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
-- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for an already published revision returns `409`. Omission preserves any contract already published for that revision. A new revision without a supplied contract has no contract.
+- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
 
 **Response:** `200 OK` with JSON:
 
@@ -81,7 +81,7 @@ An identical deployment returns `{"changed":false}`. Changing the specification 
 
 Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
 
-**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on an existing revision. See [HTTP errors](#http-errors) for shared failure responses.
+**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
 
 Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
 
@@ -95,7 +95,7 @@ GET /v1/contract?revision=chat-v1
 GET /v1/namespaces/customer/contract?revision=chat-v1
 ```
 
-The optional `revision` query selects a previously published code revision. Historical contracts remain available through this query after deployment replacement or deletion. Unknown query parameters are rejected.
+Omit `revision` to get the latest deployment's contract. The optional `revision` query checks that this revision is active and returns `404` otherwise. Only the active contract is stored; historical contracts are discarded on replacement or deletion. Unknown query parameters are rejected.
 
 **Response:** `200 OK`, with `Cache-Control: no-store`:
 
@@ -112,7 +112,7 @@ The example represents an empty actor API; a missing contract returns `404` with
 
 `little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
 
-**Errors:** `400` for an invalid namespace, revision, or query; `401` for a rejected admin credential; `404` when the selected revision has no published contract.
+**Errors:** `400` for an invalid namespace, revision, or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
 ### GET /v1/deployment
 
@@ -243,9 +243,9 @@ Within 10 seconds of opening, send this as the first text frame:
 { "type": "initialize", "metadata": { "userId": "alice" } }
 ```
 
-The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling [`onMessage`](api.md#actoronmessage). It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
+The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling `[onMessage](api.md#actoronmessage)`. It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
 
-The SDK performs this handshake for [`reference.connect()`](api.md#referenceconnect). The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
+The SDK performs this handshake for `[reference.connect()](api.md#referenceconnect)`. The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
 
 ### External connections
 

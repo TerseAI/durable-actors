@@ -147,11 +147,10 @@ export ACTOR_IMAGE_ID='<the-im-prefixed-image-id-from-step-3>'
 
 npx little-actors deploy \
     --image "$ACTOR_IMAGE_ID" \
-    --revision chat-v1 \
     --working-directory /app
 ```
 
-The command extracts the contract directly from `src/durable-objects.ts` and sends it with the deployment registration; no contract file is needed. It prints whether the revision was registered or already present. The first actor call starts a host. After code changes, rebuild and import the image, then deploy its ID with a new `--revision`.
+The command extracts the contract directly from `src/durable-objects.ts` and sends it with the deployment registration; no contract file is needed. It prints whether the revision was registered or already present. The first actor call starts a host. After code changes, rebuild and import the image, then deploy its ID again. Each deploy assigns a new revision automatically; `--revision` optionally supplies your own label. The server retains only the latest deployment and its contract.
 
 ## 5. Connect your web app
 
@@ -162,7 +161,7 @@ export DURABLE_OBJECT_API_KEY='<the-api-key-from-step-1>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Use the generated `ActorProxy` as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url "$DURABLE_OBJECT_CONTROL_PLANE_URL" --revision chat-v1`, and point the frontend client at that application route.
+Use the generated `ActorProxy` as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url "$DURABLE_OBJECT_CONTROL_PLANE_URL"`, and point the frontend client at that application route.
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session updates both histories after persistence. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 

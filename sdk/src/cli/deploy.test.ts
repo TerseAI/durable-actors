@@ -36,6 +36,7 @@ test("deploy validates source before publication, handles conflicts, and maps lo
         source,
         'import { Actor } from "little-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
     )
+    const revisions: string[] = []
     let requests = 0
     let status = 409
     const server = createServer(async (request, response) => {
@@ -46,6 +47,7 @@ test("deploy validates source before publication, handles conflicts, and maps lo
         const chunks: Buffer[] = []
         for await (const chunk of request) chunks.push(Buffer.from(chunk))
         const body = JSON.parse(Buffer.concat(chunks).toString())
+        revisions.push(body.codeRevision)
         assert.equal(body.actorEntrypoint, "lib/actors.ts")
         assert.deepEqual(
             body.contract.actors[0].rpc.methods.map((method: { name: string }) => method.name),
@@ -111,6 +113,14 @@ test("deploy validates source before publication, handles conflicts, and maps lo
     const result = await run(process.execPath, args, { cwd: project, env })
     assert.match(result.stdout, /Already registered revision r1/)
     assert.equal(requests, 3)
+    const automaticArgs = args.filter((value, index) => value !== "--revision" && args[index - 1] !== "--revision")
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const automatic = await run(process.execPath, automaticArgs, { cwd: project, env })
+        const revision = revisions.at(-1)!
+        assert.match(revision, /^[A-Za-z0-9._-]{1,128}$/u)
+        assert.ok(automatic.stdout.includes(revision))
+    }
+    assert.notEqual(revisions.at(-1), revisions.at(-2))
     assert.deepEqual((await readdir(project)).sort(), [
         "actor-config.json",
         "actors.ts",

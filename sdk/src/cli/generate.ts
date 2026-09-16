@@ -25,7 +25,7 @@ function registerGenerateCommand(program: Command): void {
         .option("--url [origin]", "fetch a published contract (defaults to DURABLE_OBJECT_CONTROL_PLANE_URL)")
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option("--namespace <id>", "contract namespace (or DURABLE_OBJECT_NAMESPACE_ID)")
-        .option("--revision <revision>", "published code revision (defaults to the active deployment)")
+        .option("--revision <revision>", "require this active code revision (defaults to the latest deployment)")
         .action(generate)
 }
 
@@ -49,8 +49,8 @@ function validateOptions(entrypoint: string | undefined, options: GenerateOption
         throw new Error("--url cannot be combined with a source entrypoint or --config.")
     if (!options.url && (options.apiKey || options.namespace || options.revision))
         throw new Error("--api-key, --namespace, and --revision require --url.")
-    if (options.revision && !/^[A-Za-z0-9._-]{1,255}$/u.test(options.revision))
-        throw new Error("Invalid code revision; use 1–255 letters, digits, dots, underscores, or hyphens.")
+    if (options.revision && !/^[A-Za-z0-9._-]{1,128}$/u.test(options.revision))
+        throw new Error("Invalid code revision; use 1–128 letters, digits, dots, underscores, or hyphens.")
 }
 
 async function localContract(entrypoint: string | undefined, configFile?: string) {

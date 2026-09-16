@@ -1,4 +1,5 @@
 import { Command } from "commander"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { z } from "zod"
 
@@ -6,7 +7,7 @@ import { ControlPlaneClient, type ControlPlaneOptions } from "./control-plane.js
 
 interface DeployOptions extends ControlPlaneOptions {
     image: string
-    revision: string
+    revision?: string
     workingDirectory: string
     config?: string
     actorEntrypoint?: string
@@ -20,7 +21,7 @@ function registerDeployCommand(program: Command): void {
         .command("deploy [entrypoint]")
         .description("Register a built actor image and automatically publish its public API")
         .requiredOption("--image <reference>", "already-built provider image reference")
-        .requiredOption("--revision <revision>", "code revision corresponding to the image and local source")
+        .option("--revision <revision>", "code revision (defaults to a new generated ID)")
         .requiredOption("--working-directory <path>", "absolute actor project directory inside the image")
         .option(
             "--actor-entrypoint <path>",
@@ -62,7 +63,7 @@ function deploymentSpecification(entrypoint: string, options: DeployOptions) {
     if (!options.actorEntrypoint && (relative === ".." || relative.startsWith(`..${path.sep}`)))
         throw new Error("Source outside the project requires --actor-entrypoint to specify its path inside the image.")
     return deploymentSchema.parse({
-        codeRevision: options.revision,
+        codeRevision: options.revision ?? randomUUID(),
         imageRef: options.image,
         workingDirectory: options.workingDirectory,
         actorEntrypoint: options.actorEntrypoint ?? relative.split(path.sep).join("/"),

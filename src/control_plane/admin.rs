@@ -283,18 +283,19 @@ pub(crate) struct LocalAdminRegistry {
 struct LocalAdminState {
     namespaces: HashSet<String>,
     launch_specs: HashMap<String, HostLaunchSpec>,
-    contracts: HashMap<(String, String), PublishedContract>,
+    contracts: HashMap<String, PublishedContract>,
 }
 
 #[cfg(test)]
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
     async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
-            .launch_specs
-            .remove(namespace_id);
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        state.launch_specs.remove(namespace_id);
+        state.contracts.remove(namespace_id);
         Ok(())
     }
 
@@ -310,17 +311,26 @@ impl AdminRegistry for LocalAdminRegistry {
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
         let mut changed = state.launch_specs.get(&spec.namespace_id) != Some(spec);
         if let Some(contract) = contract {
-            let key = (spec.namespace_id.clone(), spec.code_revision.clone());
-            let existing = state.contracts.get(&key);
+            let existing = state
+                .contracts
+                .get(&spec.namespace_id)
+                .filter(|record| record.code_revision == spec.code_revision);
             check_contract_hash(
                 existing.map(|record| record.contract_hash.as_str()),
                 contract,
             )?;
             changed |= existing.is_none();
             state.contracts.insert(
-                key,
+                spec.namespace_id.clone(),
                 PublishedContract::new(&spec.namespace_id, &spec.code_revision, contract),
             );
+        }
+        if state
+            .contracts
+            .get(&spec.namespace_id)
+            .is_some_and(|record| record.code_revision != spec.code_revision)
+        {
+            state.contracts.remove(&spec.namespace_id);
         }
         state.namespaces.insert(spec.namespace_id.clone());
         state
@@ -338,18 +348,11 @@ impl AdminRegistry for LocalAdminRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
-        let revision = revision.or_else(|| {
-            state
-                .launch_specs
-                .get(namespace_id)
-                .map(|spec| spec.code_revision.as_str())
-        });
-        Ok(revision.and_then(|revision| {
-            state
-                .contracts
-                .get(&(namespace_id.into(), revision.into()))
-                .cloned()
-        }))
+        Ok(state
+            .contracts
+            .get(namespace_id)
+            .filter(|record| revision.is_none_or(|revision| record.code_revision == revision))
+            .cloned())
     }
 
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>> {
@@ -430,6 +433,10 @@ impl AdminRegistry for PostgresAdminRegistry {
             )
             .await
             .context("ensure PostgreSQL namespace and register project deployment")? == 1;
+        transaction.execute(
+            "DELETE FROM durable_object_contracts WHERE namespace_id = $1 AND code_revision <> $2",
+            &[&spec.namespace_id, &spec.code_revision],
+        ).await?;
         let mut published = false;
         if let Some(contract) = contract {
             let existing = transaction.query_opt(
