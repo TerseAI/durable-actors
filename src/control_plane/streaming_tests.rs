@@ -102,7 +102,7 @@ import {{ build }} from 'esbuild';
 const directory = {directory};
 const actors = new ActorCompiler().compile(directory + '/actors.ts');
 await generateClient(actors.map(actor => actor.contract), directory + '/generated');
-await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/browser.mjs',
+await build({{entryPoints:[directory + '/generated/frontend.ts'],outfile:directory + '/browser.mjs',
     bundle:true,platform:'browser',format:'esm',alias:{{'little-actors/browser':{browser}}}}});
 await build({{entryPoints:[directory + '/generated/proxy.ts'],outfile:directory + '/proxy.mjs',
     bundle:true,platform:'node',format:'esm',external:['little-actors/proxy']}});

@@ -18,7 +18,7 @@ Export your actor classes from `src/durable-objects.ts`, as shown in the [README
 npx little-actors generate
 ```
 
-Both sides use this output: the frontend imports `ActorClient` from `generated/index.ts`, and the backend imports `ActorProxy` from `generated/proxy.ts`.
+Both sides use this output: the frontend imports `ActorClient` from `generated/frontend.ts`, and the backend imports `ActorProxy` from `generated/proxy.ts`.
 
 ## Start the actor server
 

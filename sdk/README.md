@@ -133,7 +133,9 @@ Generate a browser client and backend proxy from your actor entrypoint:
 npx little-actors generate
 ```
 
-This writes typed actor descriptors and client/proxy entrypoints. The frontend imports `ActorClient` from the generated `index.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Share this directory between your frontend and backend, or copy the generated files into separate projects. Regenerate when the actor contract changes. The actor host validates metadata, incoming and outgoing messages, and persisted public state against the contract; browser and proxy descriptors contain no actor-specific runtime validators. Invalid socket operations fail at the host rather than throwing synchronously from the browser’s `send()`. Compatible added fields are accepted at runtime.
+The generated filenames describe their roles: `ChatRoom.frontend.ts` contains the frontend WebSocket descriptor and connection types, `ChatRoom.backend.ts` contains the RPC client, and `ChatRoom.proxy.ts` contains authorization metadata types and the proxy descriptor.
+
+The frontend imports `ActorClient` from the generated `frontend.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Share this directory between your frontend and backend, or copy the generated files into separate projects. Regenerate when the actor contract changes. The actor host validates metadata, incoming and outgoing messages, and persisted public state against the contract; browser and proxy descriptors contain no actor-specific runtime validators. Invalid socket operations fail at the host rather than throwing synchronously from the browser’s `send()`. Compatible added fields are accepted at runtime.
 
 Stack `@Emittable` with `@Persisted` to publish a field's final value after each successful operation commits:
 
@@ -177,7 +179,7 @@ The proxy discovers local connection settings automatically. See [configuration]
 The frontend uses the default application route:
 
 ```ts
-import { ActorClient } from "./generated/index.js"
+import { ActorClient } from "./generated/frontend.js"
 
 const client = ActorClient()
 const room = client.ChatRoom.get("lobby")

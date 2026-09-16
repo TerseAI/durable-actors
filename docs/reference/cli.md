@@ -71,11 +71,13 @@ npx little-actors generate
 
 Checks the actor dependency graph without executing it and writes TypeScript clients.
 
-| File         | Contents                                                                |
-| ------------ | ----------------------------------------------------------------------- |
-| `index.ts`   | Browser `ActorClient` and actor WebSocket descriptors.                  |
-| `proxy.ts`   | Backend `ActorProxy` for authorizing browser connections.               |
-| `backend.ts` | Typed RPC descriptors such as `ChatRoom.get("lobby").sendMessage(...)`. |
+| Entrypoint    | Per-actor file         | Contents                                                           |
+| ------------- | ---------------------- | ------------------------------------------------------------------ |
+| `frontend.ts` | `ChatRoom.frontend.ts` | Frontend WebSocket client, connection types, and public state.     |
+| `backend.ts`  | `ChatRoom.backend.ts`  | Typed RPC client such as `ChatRoom.get("lobby").sendMessage(...)`. |
+| `proxy.ts`    | `ChatRoom.proxy.ts`    | Authorization proxy and metadata types for browser connections.    |
+
+Regenerating replaces the former `index.ts` and `*.actor.ts` files with `frontend.ts` and `*.frontend.ts`. Update frontend imports to use these names.
 
 The source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
 

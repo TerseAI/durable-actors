@@ -2,7 +2,7 @@ import { fromBase64, toBase64 } from "lib0/buffer"
 import type { ConnectionStatus } from "little-actors/browser"
 import * as Y from "yjs"
 
-import { ActorClient } from "../generated/index.js"
+import { ActorClient } from "../generated/frontend.js"
 
 export function openDocument(id: string, onStatus: (status: ConnectionStatus) => void) {
     const room = ActorClient().Document.get(id)

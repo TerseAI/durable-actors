@@ -14,8 +14,17 @@ async function generateClient(
     const contracts = "actors" in input ? input.actors.map(actor => actor.socket) : input
     await mkdir(directory, { recursive: true })
     for (const [file, contents] of artifacts) await writeFile(path.join(directory, file), contents)
+    for (const file of ["index.ts", "socket.ts", "rpc.ts"]) await rm(path.join(directory, file), { force: true })
     for (const { actorType } of contracts)
-        for (const suffix of ["validators.js", "validators.d.ts", "proxy-validators.js", "proxy-validators.d.ts"])
+        for (const suffix of [
+            "actor.ts",
+            "socket.ts",
+            "rpc.ts",
+            "validators.js",
+            "validators.d.ts",
+            "proxy-validators.js",
+            "proxy-validators.d.ts"
+        ])
             await rm(path.join(directory, `${actorType}.${suffix}`), { force: true })
 }
 

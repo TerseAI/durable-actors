@@ -22,10 +22,10 @@ async function generateTypeScript(
         if (!/^[A-Za-z_$][\w$]*$/u.test(contract.actorType))
             throw new Error(`actor name ${contract.actorType} cannot be emitted as a TypeScript identifier`)
         const declarations = await wireDeclarations(contract)
-        for (const [file, contents] of await actorFiles(contract, declarations)) artifacts.set(file, contents)
+        for (const [file, contents] of await frontendFiles(contract, declarations)) artifacts.set(file, contents)
         for (const [file, contents] of await proxyFiles(contract, declarations)) artifacts.set(file, contents)
     }
-    artifacts.set("index.ts", clientIndex(contracts))
+    artifacts.set("frontend.ts", clientIndex(contracts))
     artifacts.set("proxy.ts", proxyIndex(contracts))
     if (document) {
         for (const actor of document.actors)
@@ -36,11 +36,11 @@ async function generateTypeScript(
     return artifacts
 }
 
-async function actorFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
+async function frontendFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
     const name = contract.actorType
     const fields = contract.emittable.map(field => JSON.stringify(field)).join(" | ") || "never"
     const source = `${declarations}\nexport type Connection = import("little-actors/browser").ActorConnection<Incoming, Outgoing, State, ${fields}>\n\nexport const ${name}: import("little-actors/browser").ActorDescriptor<Incoming, Outgoing, State, ${fields}> = {\n    actorType: ${JSON.stringify(name)},\n    emittable: ${JSON.stringify(contract.emittable)}\n}\n`
-    return [[`${name}.actor.ts`, source]]
+    return [[`${name}.frontend.ts`, source]]
 }
 
 async function proxyFiles(contract: SocketContract, declarations: string): Promise<[string, string][]> {
@@ -133,8 +133,8 @@ function inlinePrimitiveReferences(
 }
 
 function clientIndex(contracts: readonly SocketContract[]): string {
-    const { imports, actors } = actorImports(contracts, "actor")
-    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport interface Client {\n${contracts.map(({ actorType }) => `    ${JSON.stringify(actorType)}: { get(actorId: string): import("./${actorType}.actor.js").Connection }`).join("\n")}\n}\n\nexport function ActorClient(options: ClientOptions = {}): Client {\n    return createClient({ ${actors} }, options)\n}\n`
+    const { imports, actors } = actorImports(contracts, "frontend")
+    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport interface Client {\n${contracts.map(({ actorType }) => `    ${JSON.stringify(actorType)}: { get(actorId: string): import("./${actorType}.frontend.js").Connection }`).join("\n")}\n}\n\nexport function ActorClient(options: ClientOptions = {}): Client {\n    return createClient({ ${actors} }, options)\n}\n`
 }
 
 function proxyIndex(contracts: readonly SocketContract[]): string {

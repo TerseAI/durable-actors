@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import type { State } from "../generated/Workspace.actor.js"
-import { ActorClient } from "../generated/index.js"
+import type { State } from "../generated/Workspace.frontend.js"
+import { ActorClient } from "../generated/frontend.js"
 
 import { DocumentEditor } from "./Editor.js"
 import "./style.css"

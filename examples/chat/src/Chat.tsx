@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import type { State } from "../generated/ChatRoom.actor.js"
-import { ActorClient } from "../generated/index.js"
+import type { State } from "../generated/ChatRoom.frontend.js"
+import { ActorClient } from "../generated/frontend.js"
 
 const room = ActorClient().ChatRoom.get("lobby")
 

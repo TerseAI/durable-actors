@@ -37,7 +37,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         consumer,
         `import { ActorProxy } from "./proxy.js"
         import type { ActorAuthorization } from "./proxy.js"
-        import { ActorClient } from "./index.js"
+        import { ActorClient } from "./frontend.js"
         ActorProxy.handle({ actorType: "Room", actorId: "lobby", metadata: { userId: "alice" } })
         ActorProxy.handle({ actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         const proxy = new ActorProxy({ controlPlaneUrl: "https://actors.example.com", apiKey: "secret" })
@@ -151,7 +151,10 @@ test("generates subscription-only clients whose actor has no outgoing applicatio
             ],
             directory
         )
-        assert.match(await readFile(path.join(directory, "Counter.actor.ts"), "utf8"), /export type Outgoing = never/)
+        assert.match(
+            await readFile(path.join(directory, "Counter.frontend.ts"), "utf8"),
+            /export type Outgoing = never/
+        )
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -162,7 +165,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
     try {
         const { generateClient } = await import("./client-generator.js")
         const names = [
-            "index",
+            "frontend",
             "proxy",
             "ActorClient",
             "ActorProxy",
@@ -196,7 +199,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             directory
         )
         await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "frontend.ts")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -246,17 +249,22 @@ test("regenerates typed descriptors without stale validators or server imports",
             ],
             directory
         )
-        const source = await readFile(path.join(directory, "Room.actor.ts"), "utf8")
+        const source = await readFile(path.join(directory, "Room.frontend.ts"), "utf8")
         assert.match(source, /little-actors\/browser/)
         assert.match(source, /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler|durable-objects/)
-        assert.deepEqual((await readdir(directory)).sort(), ["Room.actor.ts", "Room.proxy.ts", "index.ts", "proxy.ts"])
+        assert.deepEqual((await readdir(directory)).sort(), [
+            "Room.frontend.ts",
+            "Room.proxy.ts",
+            "frontend.ts",
+            "proxy.ts"
+        ])
         assert.doesNotMatch(source, /validators/)
-        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /ActorClient/)
+        assert.match(await readFile(path.join(directory, "frontend.ts"), "utf8"), /ActorClient/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(
             consumer,
-            `import { ActorClient } from "./index.js"
+            `import { ActorClient } from "./frontend.js"
             const room = ActorClient().Room.get("lobby")
             room.send({amount: 1})
             room.subscribe("count", value => value.toFixed())
@@ -273,7 +281,7 @@ test("regenerates typed descriptors without stale validators or server imports",
         const browser = fileURLToPath(new URL("../../../src/browser.ts", import.meta.url))
         checkTypes(consumer)
         const bundle = await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "frontend.ts")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -318,7 +326,7 @@ test("each actor module exposes complete unprefixed contract types", async t => 
         directory
     )
     for (const name of ["Counter", "Room"]) {
-        for (const suffix of ["actor", "proxy"]) {
+        for (const suffix of ["frontend", "proxy"]) {
             const source = await readFile(path.join(directory, `${name}.${suffix}.ts`), "utf8")
             for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) {
                 assert.ok(source.includes(`export interface ${type} {`))
@@ -328,7 +336,7 @@ test("each actor module exposes complete unprefixed contract types", async t => 
             assert.doesNotMatch(source, /ActorTypes|FieldCount/)
         }
         assert.match(
-            await readFile(path.join(directory, `${name}.actor.ts`), "utf8"),
+            await readFile(path.join(directory, `${name}.frontend.ts`), "utf8"),
             /ActorConnection<Incoming, Outgoing, State, "count">/
         )
         assert.match(await readFile(path.join(directory, `${name}.proxy.ts`), "utf8"), /metadata: Metadata/)
@@ -337,7 +345,7 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     await writeFile(
         consumer,
         `
-        import type { Metadata, Incoming, Outgoing, State, Connection } from "./Counter.actor.js"
+        import type { Metadata, Incoming, Outgoing, State, Connection } from "./Counter.frontend.js"
         import type { Metadata as RoomMetadata, Authorization } from "./Room.proxy.js"
         const metadata: Metadata = { userId: "alice" }
         const other: RoomMetadata = metadata
@@ -392,7 +400,7 @@ test("readable contract types preserve recursive metadata and helper-name collis
     await writeFile(
         consumer,
         `
-        import type { Metadata, Incoming, Outgoing, Connection } from "./Room.actor.js"
+        import type { Metadata, Incoming, Outgoing, Connection } from "./Room.frontend.js"
         import type { Authorization } from "./Room.proxy.js"
         const metadata: Metadata = { connection: { id: "a", parent: { id: "b" } } }
         const authorization: Authorization = { actorType: "Room", actorId: "one", metadata }

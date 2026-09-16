@@ -104,7 +104,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await run(process.execPath, [cli, "generate"], { cwd: author, env })
     const local = path.join(author, "generated")
     const files = await readdir(local)
-    for (const file of ["index.ts", "proxy.ts", "backend.ts", "ChatRoom.backend.ts"])
+    for (const file of ["frontend.ts", "proxy.ts", "backend.ts", "ChatRoom.backend.ts"])
         assert.ok(files.includes(file), `missing ${file}`)
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))

@@ -185,7 +185,7 @@ test("generates callable typed backend stubs in a consumer without actor source 
     assert.equal(await room.nullable(), null)
     assert.deepEqual(calls[0], ["ChatRoom", "room-123", "sendMessage", [{ text: "hi" }]])
     const browser = await build({
-        entryPoints: [path.join(consumer, "index.ts")],
+        entryPoints: [path.join(consumer, "frontend.ts")],
         bundle: true,
         platform: "browser",
         format: "esm",
