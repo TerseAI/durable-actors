@@ -52,7 +52,7 @@ Registers actor code for your application. There is one active deployment. The J
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "dist/actors.mjs",
     "secretRefs": [],
     "socketGatewayUrl": null,
     "warmRegion": "north-america-east"
@@ -64,7 +64,7 @@ Registers actor code for your application. There is one active deployment. The J
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
 - `imageRef` (`string`, required) — Provider image reference containing the actor project, 1–255 bytes. Registration does not upload or build the image.
 - `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
-- `actorEntrypoint` (`string | null`, default `null`) — TypeScript actor source file, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `src/durable-objects.ts`. Loading validates actor definitions and [field annotations](api.md#saved-state-and-serialization).
+- `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
@@ -93,7 +93,7 @@ Reads the active deployment.
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "dist/actors.mjs",
     "secretRefs": [],
     "socketGatewayUrl": null
 }

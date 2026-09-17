@@ -124,7 +124,7 @@ interface EvictedReply {
 
 interface ActorWorkerData {
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[]
+    readonly schemas: readonly ActorSchema[] | undefined
 }
 
 type ActorWorkerRequest =

@@ -11,7 +11,7 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-The commands below show the published `0.1.27` image layout. For bucket authority, substitute an image built from this source tree; both control-plane and actor images must contain the new runtime. Published older runtimes use the previous PostgreSQL authority.
+The commands below use `YOUR_VERSION` for matching SDK and runtime builds from this source tree. Published older versions do not support the actor build artifact or bucket authority described here.
 
 ## 1. Configure storage and credentials
 
@@ -60,7 +60,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION
 ```
 
 For an attached Google service account, omit the credential variable and mount.
@@ -81,23 +81,31 @@ Expect JSON with a `keys` array. Your first actor call will also exercise host p
 In the chat project from the local tutorial, pin the SDK to the runtime version:
 
 ```sh
-npm install --save-exact little-actors@0.1.27
+npm install --save-exact little-actors@YOUR_VERSION
 ```
 
 Create a `Dockerfile` in your chat project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27 AS runtime
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION AS runtime
+
+FROM node:22-bookworm AS actors
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npx little-actors build
 
 FROM node:22-bookworm
 COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY src ./src
+COPY --from=actors /app/dist/actors.mjs ./dist/actors.mjs
 ```
 
-The image combines the prebuilt runtime, Node.js, and your source.
+The image combines the runtime, Node.js, production dependencies, and the built actor artifact. Actor checks and schema generation happen during the image build. Startup imports the artifact inside an actor Worker without running the TypeScript compiler or `tsx`.
 
 Build and push an amd64 image to a registry you control:
 
@@ -155,7 +163,7 @@ curl --fail --silent --show-error \
     "codeRevision": "chat-v1",
     "imageRef": "$ACTOR_IMAGE_ID",
     "workingDirectory": "/app",
-    "actorEntrypoint": "src/durable-objects.ts"
+    "actorEntrypoint": "dist/actors.mjs"
 }
 EOF
 ```

@@ -73,7 +73,7 @@
         "generate:proto": "proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_object.proto",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node scripts/check-package.mjs && node --test scripts/codegen-api.test.mjs",
+        "package:check": "node scripts/check-package.mjs && node --test scripts/codegen-api.test.mjs scripts/build-artifact.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
         "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
@@ -86,6 +86,7 @@
         "@types/json-schema": "^7.0.15",
         "ajv": "^8.20.0",
         "commander": "^14.0.3",
+        "esbuild": "^0.28.2",
         "json-schema-to-typescript": "^16.0.0",
         "tar": "^7.5.22",
         "tsx": "^4.0.0",
@@ -96,7 +97,6 @@
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
-        "@types/ws": "^8.18.1",
-        "esbuild": "^0.28.2"
+        "@types/ws": "^8.18.1"
     }
 }

@@ -31,7 +31,7 @@ const MAX_RESIDENT_ACTORS = 32
 
 class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
-    private readonly actorSchemas: readonly ActorSchema[]
+    private readonly actorSchemas: readonly ActorSchema[] | undefined
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
     private readonly actors = new Map<string, ResidentActorWorker>()
@@ -183,7 +183,7 @@ class ActorWorkerSupervisor {
 
 class ResidentActorWorker {
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[]
+    readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
     readonly createWorker: ActorWorkerFactory
     readonly onIdle: (actor: ResidentActorWorker) => void

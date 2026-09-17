@@ -2,6 +2,7 @@
 
 - [Create a chat app](#create-a-chat-app)
 - [Find your actors](#find-your-actors)
+- [Build actors for deployment](#build-actors-for-deployment)
 - [Run the development server](#run-the-development-server)
 - [Inspect saved objects](#inspect-saved-objects)
 - [Generate a client and proxy](#generate-a-client-and-proxy)
@@ -50,6 +51,19 @@ npx little-actors dev --project ./chat-example --entrypoint src/actors.ts
 ```
 
 The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have `little-actors` installed. Source loading validates field annotations automatically; see [explicit persistence](api.md#saved-state-and-serialization).
+
+## Build actors for deployment
+
+```sh
+npx little-actors build
+```
+
+`build [entrypoint]` checks the TypeScript source and actor definitions, generates persistence and socket schemas, and bundles the actor code and local imports into one JavaScript artifact. It does not execute actor code. The input defaults to `src/durable-objects.ts`; the output defaults to `dist/actors.mjs`.
+
+- `--out-file <file>` — Output artifact, with a `.mjs` extension.
+- `--config <file>` — TypeScript configuration; otherwise discovered from the source directory.
+
+Include the artifact and installed production dependencies in the deployment image. Package imports, including `little-actors`, remain external. Hosted actors load `dist/actors.mjs` by default; for custom output paths, set the deployment's `actorEntrypoint` to that file. Runtime loading uses the embedded schemas and does not compile or type-check source. Rebuild the artifact when actor code changes. Local `dev` still loads TypeScript source.
 
 ## Run the development server
 

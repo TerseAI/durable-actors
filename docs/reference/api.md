@@ -294,7 +294,7 @@ const compiler = new ActorCompiler()
 compiler.check("src/durable-objects.ts")
 ```
 
-Actor entrypoints must be TypeScript source files. `compiler.check(entrypoint)` reads `tsconfig.json`, checks TypeScript and actor definitions, and returns persistence schemas. Pass `{ configFile: "path/to/tsconfig.json" }` as the second argument to select another configuration. Compiler tooling is loaded separately from the normal actor API.
+Compiler entrypoints must be TypeScript source files. `compiler.check(entrypoint)` reads `tsconfig.json`, checks TypeScript and actor definitions, and returns persistence schemas. Pass `{ configFile: "path/to/tsconfig.json" }` as the second argument to select another configuration. Compiler tooling is loaded separately from the normal actor API. For hosted execution, `little-actors build` embeds the generated schemas with compiled actor code in `dist/actors.mjs`; hosts load that artifact without compiling source.
 
 Returned field schemas use `Persistence.Persisted` or `Persistence.Ephemeral`. Import the `Persistence` enum from `little-actors/compiler` when inspecting those schemas.
 

@@ -32,6 +32,17 @@ try {
         )
         .action(initializeProject)
     program
+        .command("build [entrypoint]")
+        .description("Build an actor runtime artifact with embedded persistence and socket schemas")
+        .option("--out-file <file>", "actor runtime artifact", "dist/actors.mjs")
+        .option("--config <file>", "TypeScript configuration file")
+        .action(async (entrypoint: string | undefined, options: { outFile: string; config?: string }) => {
+            const { buildActor } = await import("./compiler/actor-build.js")
+            await buildActor(entrypoint ?? "src/durable-objects.ts", path.resolve(options.outFile), {
+                configFile: options.config
+            })
+        })
+    program
         .command("generate [entrypoint]")
         .description("Generate typed browser clients and backend proxies")
         .option("--out-dir <directory>", "generated source directory", "generated")

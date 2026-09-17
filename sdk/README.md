@@ -34,6 +34,14 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source once for
 npx little-actors generate
 ```
 
+For hosted actors, build the runtime artifact before packaging your image:
+
+```sh
+npx little-actors build
+```
+
+This writes `dist/actors.mjs`, bundling the actor code and its local imports with persistence and socket schemas. Include this file and your production dependencies in the image. Hosted actors load it by default, without running the TypeScript compiler or `tsx`. `dev` continues to load TypeScript source. Use `build src/actors.ts --out-file dist/custom-actors.mjs` for a custom entrypoint, and register that output as the deployment's `actorEntrypoint`.
+
 Build tools can generate the same files in memory through the public compiler and codegen APIs:
 
 ```ts

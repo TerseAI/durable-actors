@@ -32,14 +32,14 @@ type ActorWorkerSupervisorFactory = (
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
-    readonly actorSchemas: readonly ActorSchema[]
+    readonly actorSchemas: readonly ActorSchema[] | undefined
     readonly actorIdleTimeoutMs?: number
     readonly createWorker?: ActorWorkerFactory
 }
 
 interface ResidentActorWorkerOptions {
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[]
+    readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
     readonly worker?: ActorWorkerHandle
     readonly createWorker: ActorWorkerFactory

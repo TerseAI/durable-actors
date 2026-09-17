@@ -48,7 +48,9 @@ class ActorSession {
 
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
-        const actorSchemas = await prepareActorEntrypoint(actorEntrypointUrl)
+        const actorSchemas = actorEntrypointUrl.endsWith(".mjs")
+            ? undefined
+            : await prepareActorEntrypoint(actorEntrypointUrl)
         const supervisor = this.createSupervisor({
             actorEntrypointUrl,
             actorSchemas,
@@ -344,7 +346,7 @@ function sessionError(error: unknown): Error {
 
 async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
     const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
-    requireTypeScriptSource(entrypointPath)
+    if (!entrypointPath.endsWith(".mjs")) requireTypeScriptSource(entrypointPath)
     await requireFile(
         entrypointPath,
         configured === undefined
@@ -415,7 +417,7 @@ const actorSessionSettingsSchema = z.object({
     DURABLE_OBJECT_ENTRYPOINT: z.string().trim().min(1).optional()
 })
 
-const DEFAULT_ACTOR_ENTRYPOINT = "src/durable-objects.ts"
+const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
 export {
     ActorSession,
