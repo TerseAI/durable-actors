@@ -76,8 +76,8 @@ async fn check_listing(
     }
     let objects = store.list_committed(Some(&namespace), None, 10).await?;
     assert_eq!(objects.len(), 2);
-    assert!(objects[0].object.as_str().ends_with(".a"));
-    assert!(objects[1].object.as_str().ends_with(".b.with.dots"));
+    assert!(objects[0].object.as_str().ends_with(":a"));
+    assert!(objects[1].object.as_str().ends_with(":b.with.dots"));
     assert_eq!(
         store.list_committed(Some(&namespace), None, 1).await?,
         objects[..1]
@@ -95,7 +95,7 @@ async fn check_listing(
             .is_empty()
     );
     let global = store
-        .list_committed(None, Some(objects[0].object.as_str()), 100)
+        .list_committed(None, Some(&format!("object.v2.{namespace}")), 100)
         .await?;
     assert!(global.contains(&objects[1]));
     assert!(global.iter().any(|object| {

@@ -7,6 +7,7 @@ import (
 )
 
 type ensureRequest struct {
+	RuntimeConfig         string   `json:"runtimeConfig"`
 	NamespaceID           string   `json:"namespaceId"`
 	CodeRevision          string   `json:"codeRevision"`
 	CanonicalRegion       string   `json:"canonicalRegion"`
@@ -66,7 +67,7 @@ type hostTermination struct {
 }
 
 func validateEnsure(request ensureRequest) error {
-	if request.NamespaceID == "" || request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v1."+request.NamespaceID+".") {
+	if request.NamespaceID == "" || request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v2."+request.NamespaceID+":") {
 		return fmt.Errorf("invalid host identity or image")
 	}
 	for _, timeout := range []int64{request.ActorIdleTimeoutMS, request.HostIdleTimeoutMS} {
@@ -94,7 +95,7 @@ func modalCloud(region string) string {
 
 func resourceName(namespace, revision, region string) string {
 	digest := sha256.Sum256([]byte(namespace + "\x00" + revision + "\x00" + region))
-	return fmt.Sprintf("do-host-%x", digest[:16])
+	return fmt.Sprintf("do-host-v2-%x", digest[:16])
 }
 
 func hostEnvironment(r ensureRequest) map[string]string {
@@ -108,6 +109,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 		"DURABLE_OBJECT_HOST_READY_FILE": readyFile, "DURABLE_OBJECT_HOST_METADATA_FILE": metadataFile,
 		"DURABLE_OBJECT_HOST_BIND": "0.0.0.0:7101", "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE": routeFile,
 		"DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS": fmt.Sprint(r.ActorIdleTimeoutMS), "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+	}
+	if r.RuntimeConfig != "" {
+		env["DURABLE_OBJECT_RUNTIME_CONFIG"] = r.RuntimeConfig
 	}
 	if r.ActorEntrypoint != "" {
 		env["DURABLE_OBJECT_ENTRYPOINT"] = r.ActorEntrypoint

@@ -329,7 +329,7 @@ async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             })
             .await
     });
-    let object = "snapshots/01/0123456789abcdef0123456789abcdef/project/Counter/one/1.json";
+    let object = "snapshots/project/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
     let grant = ReplicaGrant {
         stream: None,
         operation: "PUT".into(),

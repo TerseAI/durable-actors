@@ -18,7 +18,9 @@ use crate::{
 
 use super::{
     HostEndpoint,
-    actor_runtime::{ActorRuntime, InvocationTimings, StateCommitAuthority, socket_event_name},
+    actor_runtime::{
+        ActorActivation, ActorRuntime, InvocationTimings, StateCommitAuthority, socket_event_name,
+    },
 };
 
 const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
@@ -64,6 +66,18 @@ impl ActorHost {
 
     pub(crate) fn id(&self) -> &super::HostId {
         &self.endpoint.id
+    }
+
+    pub(crate) async fn activate_actor(&self, actor: ActorKey) -> Result<ActorActivation> {
+        let (reply, result) = oneshot::channel();
+        self.submit(
+            ActorOperation::Activate { actor, reply },
+            0,
+            0,
+            String::new(),
+        )
+        .await?;
+        result.await.context("actor activation was not completed")?
     }
 
     pub(crate) async fn invoke_actor(
@@ -339,6 +353,14 @@ async fn run_actor(
             result
         } else {
             match request.operation {
+                ActorOperation::Activate { actor, reply } => {
+                    let _ = reply.send(runtime.activate_actor(&actor).await);
+                    Ok(ActorExecutionResult::Completed {
+                        result: serde_json::Value::Null,
+                        effects: vec![],
+                    })
+                }
+
                 ActorOperation::Method(invocation) => {
                     runtime
                         .invoke_actor(
@@ -416,6 +438,10 @@ impl ActorRequest {
 }
 
 enum ActorOperation {
+    Activate {
+        actor: ActorKey,
+        reply: oneshot::Sender<Result<ActorActivation>>,
+    },
     Method(ActorInvocation),
     Socket(ActorSocketInvocation),
 }
@@ -423,6 +449,7 @@ enum ActorOperation {
 impl ActorOperation {
     fn actor(&self) -> &ActorKey {
         match self {
+            Self::Activate { actor, .. } => actor,
             Self::Method(invocation) => &invocation.actor,
             Self::Socket(invocation) => &invocation.actor,
         }
@@ -448,6 +475,12 @@ impl ActorOperation {
 
     fn invocation(&self) -> Cow<'_, ActorInvocation> {
         match self {
+            Self::Activate { actor, .. } => Cow::Owned(ActorInvocation {
+                request_id: "activate".into(),
+                actor: actor.clone(),
+                method: "activate".into(),
+                args: vec![],
+            }),
             Self::Method(invocation) => Cow::Borrowed(invocation),
             Self::Socket(invocation) => Cow::Owned(ActorInvocation {
                 request_id: invocation.request_id.clone(),
@@ -885,11 +918,115 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
+        let authority = Arc::new(FakeAuthority {
+            streams: true,
+            ..Default::default()
+        });
+        let actor = ActorKey {
+            namespace_id: "project-1".into(),
+            actor_type: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host".into(),
+            },
+            "project-1".into(),
+            Arc::new(IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            }),
+            authority.clone(),
+            Arc::new(FakeStateTransport::default()),
+            Arc::new(EmptySocketPublisher),
+        );
+        let activation = host.activate_actor(actor.clone()).await?;
+        assert_eq!(activation.owner_epoch, 7);
+        assert!(authority.preparations.lock().unwrap().is_empty());
+        let invoke = |request_id: &str| ActorInvocation {
+            request_id: request_id.into(),
+            actor: actor.clone(),
+            method: "increment".into(),
+            args: vec![],
+        };
+        assert_eq!(
+            host.invoke_actor(invoke("one"), 7, 0, String::new())
+                .await?,
+            completed(1)
+        );
+        host.activate_actor(actor.clone()).await?;
+        assert_eq!(
+            host.invoke_actor(invoke("two"), 7, 0, String::new())
+                .await?,
+            completed(2)
+        );
+        assert_eq!(*authority.preparations.lock().unwrap(), vec![0]);
+        assert!(authority.commits.lock().unwrap().is_empty());
+        authority.fenced.store(true, Ordering::SeqCst);
+        assert!(host.activate_actor(actor).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_write_ticket()
+    -> Result<()> {
+        let snapshot =
+            StateSnapshot::new(3, 6, "previous".into(), json!({"count": 41}), json!(41))?
+                .encode()?;
+        let authority = Arc::new(FakeAuthority {
+            streams: true,
+            activation_state: Some(snapshot),
+            ..Default::default()
+        });
+        let transport = Arc::new(FakeStateTransport::default());
+        let actor = ActorKey {
+            namespace_id: "project-1".into(),
+            actor_type: "Counter".into(),
+            actor_id: "restored".into(),
+        };
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host"),
+                route: "http://host".into(),
+            },
+            "project-1".into(),
+            Arc::new(IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            }),
+            authority.clone(),
+            transport.clone(),
+            Arc::new(EmptySocketPublisher),
+        );
+        let activation = host.activate_actor(actor.clone()).await?;
+        assert_eq!(activation.state_version, 3);
+        assert!(authority.preparations.lock().unwrap().is_empty());
+        let result = host
+            .invoke_actor(
+                ActorInvocation {
+                    actor,
+                    request_id: "next".into(),
+                    method: "increment".into(),
+                    args: vec![],
+                },
+                7,
+                0,
+                String::new(),
+            )
+            .await?;
+        assert_eq!(result, completed(42));
+        assert_eq!(transport.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(*authority.preparations.lock().unwrap(), vec![3]);
+        Ok(())
+    }
+
     #[derive(Default)]
     struct FakeAuthority {
         fenced: std::sync::atomic::AtomicBool,
         streams: bool,
         initial_state: Option<(u64, String)>,
+        activation_state: Option<Vec<u8>>,
         preparations: Mutex<Vec<u64>>,
         commits: Mutex<Vec<u64>>,
         commit_failures: AtomicUsize,
@@ -898,6 +1035,24 @@ mod tests {
 
     #[async_trait]
     impl StateCommitAuthority for FakeAuthority {
+        async fn acquire_actor(
+            &self,
+            _actor: &ActorKey,
+            _host: &super::super::HostId,
+        ) -> Result<ActorActivation> {
+            Ok(ActorActivation {
+                state_object: self.activation_state.as_ref().map(|_| "recovered".into()),
+                owner_epoch: 7,
+                state_version: self
+                    .activation_state
+                    .as_ref()
+                    .map(|bytes| StateSnapshot::decode(bytes).map(|s| s.state_version))
+                    .transpose()?
+                    .unwrap_or(0),
+                state: self.activation_state.clone().map(Into::into),
+            })
+        }
+
         fn ensure_authority(&self) -> Result<()> {
             anyhow::ensure!(!self.fenced.load(Ordering::SeqCst), "host lease expired");
             Ok(())
@@ -907,8 +1062,10 @@ mod tests {
             _: &ActorKey,
             _: &super::super::HostId,
             _: u64,
-        ) -> Result<Option<(u64, String)>> {
-            Ok(self.initial_state.clone())
+        ) -> Result<Option<(u64, super::super::actor_runtime::StateSource)>> {
+            Ok(self.initial_state.clone().map(|(version, url)| {
+                (version, super::super::actor_runtime::StateSource::Url(url))
+            }))
         }
         async fn prepare_state_write(
             &self,
@@ -922,6 +1079,7 @@ mod tests {
             if self.streams {
                 let stream = crate::replication::ReplicaStream {
                     prefix: "snapshots/epoch/".into(),
+                    session: "snapshots/epoch/sessions/one/".into(),
                     owner_epoch: _owner_epoch,
                     base_version: 0,
                 };

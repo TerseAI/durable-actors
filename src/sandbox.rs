@@ -20,6 +20,7 @@ const MAX_PROVIDER_OUTPUT_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
+    pub runtime_config: Option<String>,
     pub namespace_id: String,
     pub code_revision: String,
     pub canonical_region: String,
@@ -326,7 +327,7 @@ mod tests {
     #[test]
     fn decodes_provider_provisioning_timings() {
         let handle: ActorHostHandle = serde_json::from_value(serde_json::json!({
-            "hostId": "host.v1.namespace.revision.session",
+            "hostId": "host.v2.namespace:revision.session",
             "route": "https://host.example.com",
             "canonicalRegion": "north-america-east",
             "provisioning": {

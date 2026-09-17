@@ -473,7 +473,7 @@ mod tests {
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v1.project-1.revision-1.host-1");
+        let host_id = HostId::new("host.v2.project-1:revision-1.host-1");
         let issued = issuer.issue_invocation_target(
             &actor,
             &host_id,

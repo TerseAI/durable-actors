@@ -117,6 +117,13 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         &config.jwt_signing_key,
         config.storage.replica_regions,
     )?;
+    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
+        config.storage.coordination_bucket.clone(),
+        config.storage.standard_buckets.clone(),
+        fleet.clone(),
+        access.clone(),
+        config.storage.replica_count,
+    )?);
     let mut states = HashMap::new();
     for (region, bucket) in config.storage.standard_buckets {
         states.insert(
@@ -136,7 +143,12 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )?);
     let placements = storage_urls.clone();
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
-    let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
+    let provisioner = sandbox_provisioner(
+        config.sandbox_provider,
+        &issuer,
+        &leases,
+        runtime_access.clone(),
+    )?;
     let socket_events = config
         .socket_event_sink
         .map(|sink| {
@@ -153,6 +165,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         issuer.clone(),
         provisioner,
     )
+    .with_runtime_access(runtime_access)
     .with_socket_event_sink(socket_events);
     let admin = super::admin::AdminService::new(config.api_key, registry.admin_view(), issuer)?
         .with_socket_origin(&socket_origin)?;
@@ -172,18 +185,22 @@ fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     leases: &Arc<dyn HostLeaseStore>,
+    access: Arc<crate::bucket::access::RuntimeAccess>,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(CommandSandboxProvider::new(
         config.provider_name,
         config.command,
         config.environment,
     )?);
-    Ok(Arc::new(super::service::SandboxHostProvisioner::new(
-        provider,
-        config.runtime,
-        issuer.clone(),
-        leases.clone(),
-    )))
+    Ok(Arc::new(
+        super::service::SandboxHostProvisioner::new(
+            provider,
+            config.runtime,
+            issuer.clone(),
+            leases.clone(),
+        )
+        .with_runtime_access(access),
+    ))
 }
 
 impl ControlPlaneProcessConfig {

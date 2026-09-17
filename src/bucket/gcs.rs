@@ -12,14 +12,31 @@ pub struct GcsBucket {
 
 impl GcsBucket {
     pub async fn new(bucket: &str) -> Result<Self> {
+        Self::with_credentials(
+            bucket,
+            google_cloud_auth::credentials::Builder::default().build()?,
+        )
+        .await
+    }
+
+    pub async fn with_credentials(
+        bucket: &str,
+        credentials: google_cloud_auth::credentials::Credentials,
+    ) -> Result<Self> {
         anyhow::ensure!(
             !bucket.is_empty() && !bucket.contains('/'),
             "invalid coordination bucket"
         );
         Ok(Self {
             bucket: format!("projects/_/buckets/{bucket}"),
-            storage: Storage::builder().build().await?,
-            control: StorageControl::builder().build().await?,
+            storage: Storage::builder()
+                .with_credentials(credentials.clone())
+                .build()
+                .await?,
+            control: StorageControl::builder()
+                .with_credentials(credentials)
+                .build()
+                .await?,
         })
     }
 }

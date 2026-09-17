@@ -99,7 +99,7 @@ async fn postgres_state_commit_is_fenced_by_owner_version_and_active_lease() -> 
         session_id: session_id.clone(),
         owner_epoch: placement.owner_epoch,
         expected_version: 0,
-        state_object: "snapshots/01/0123456789abcdef0123456789abcdef/test/Counter/one/1.json"
+        state_object: "snapshots/test/01/0123456789abcdef0123456789abcdef/Counter/one/1.json"
             .into(),
         request_id: "request-1".into(),
     };
@@ -117,7 +117,7 @@ async fn postgres_state_commit_is_fenced_by_owner_version_and_active_lease() -> 
     let mut after_expiry = commit;
     after_expiry.expected_version = 1;
     after_expiry.state_object =
-        "snapshots/02/023456789abcdef0123456789abcdef0/test/Counter/one/2.json".into();
+        "snapshots/test/02/023456789abcdef0123456789abcdef0/Counter/one/2.json".into();
     after_expiry.request_id = "request-2".into();
     assert!(matches!(
         placements.commit_state(&after_expiry).await?,

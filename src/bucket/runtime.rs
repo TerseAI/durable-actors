@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -24,12 +28,16 @@ use crate::{
         ArchiveTicket, ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaStream,
         ReplicaTarget, ReplicationTicket, SnapshotRef, access::AccessQuery,
     },
-    storage_urls::{StateWriteTicket, StorageUrlSigner, snapshot_object_name},
+    storage_urls::{StateWriteTicket, StorageUrlSigner, snapshot_object_name, snapshot_prefix},
 };
 
 use super::{Bucket, ReplicaPeers, component, peers::grant, replace};
 
+mod session;
+
 pub struct RuntimeStorage {
+    owned: Mutex<HashMap<String, Ownership>>,
+    sessions: tokio::sync::Mutex<HashMap<String, session::Session>>,
     authority: Arc<dyn Bucket>,
     states: HashMap<String, Arc<dyn Bucket>>,
     leases: Arc<dyn HostLeaseStore>,
@@ -38,19 +46,54 @@ pub struct RuntimeStorage {
     access: ReplicaAccess,
     origin: String,
     count: usize,
+    http: crate::state_transport::HttpStateTransport,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
     actor: ActorKey,
-    placement: ObjectPlacement,
+    owner: HostId,
     session: String,
-    stream: ReplicaStream,
-    replicas: Vec<ReplicaTarget>,
+    epoch: u64,
+    region: String,
     base: Option<SnapshotRef>,
-    active: bool,
-    predecessor: Option<Box<Ownership>>,
-    mutation: String,
+}
+
+pub(crate) struct LoadedActor {
+    pub placement: ObjectPlacement,
+    pub state: Option<Bytes>,
+    acquired: bool,
+}
+
+struct LoadedSnapshot {
+    reference: SnapshotRef,
+    bytes: Bytes,
+}
+
+impl Ownership {
+    fn placement(&self) -> ObjectPlacement {
+        let mut placement = ObjectPlacement {
+            object: self.actor.storage_key(),
+            owner: self.owner.clone(),
+            owner_epoch: self.epoch,
+            home_region: self.region.clone(),
+            state_version: 0,
+            state_object: None,
+            last_request_id: None,
+        };
+        apply_snapshot(&mut placement, self.base.as_ref());
+        placement
+    }
+
+    fn stream(&self) -> Result<ReplicaStream> {
+        let name = snapshot_object_name(&self.actor, 1, &format!("{:032x}", self.epoch))?;
+        Ok(ReplicaStream {
+            session: session::identity(&self.actor.namespace_id, &self.owner, &self.session),
+            prefix: name.strip_suffix("1.json").unwrap().into(),
+            owner_epoch: self.epoch,
+            base_version: self.base.as_ref().map_or(0, |base| base.state_version),
+        })
+    }
 }
 
 impl RuntimeStorage {
@@ -70,6 +113,8 @@ impl RuntimeStorage {
             "invalid runtime storage configuration"
         );
         Ok(Self {
+            owned: Mutex::new(HashMap::new()),
+            sessions: tokio::sync::Mutex::new(HashMap::new()),
             authority,
             states,
             leases,
@@ -78,6 +123,7 @@ impl RuntimeStorage {
             access,
             origin,
             count,
+            http: crate::state_transport::HttpStateTransport::new(),
         })
     }
 
@@ -93,7 +139,10 @@ impl RuntimeStorage {
 #[async_trait]
 impl ObjectPlacementStore for RuntimeStorage {
     async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        Ok(self.load(object).await?.map(|(_, record)| record.placement))
+        Ok(self
+            .load(object)
+            .await?
+            .map(|(_, record)| record.placement()))
     }
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         match self.load(object).await? {
@@ -112,15 +161,14 @@ impl ObjectPlacementStore for RuntimeStorage {
         for key in self.authority.list("runtime/owners/").await? {
             if let Some(object) = self.authority.get(&key).await? {
                 let record: Ownership = serde_json::from_slice(&object.bytes)?;
-                if record.active
-                    && namespace.is_none_or(|id| id == record.actor.namespace_id)
-                    && after.is_none_or(|id| record.placement.object.as_str() > id)
+                if namespace.is_none_or(|id| id == record.actor.namespace_id)
+                    && after.is_none_or(|id| record.actor.storage_key().as_str() > id)
                 {
                     records.push(record);
                 }
             }
         }
-        records.sort_by(|a, b| a.placement.object.as_str().cmp(b.placement.object.as_str()));
+        records.sort_by_key(|record| record.actor.storage_key().as_str().to_owned());
         let mut placements = Vec::new();
         for record in records {
             let placement = self.current_placement(&record).await?;
@@ -141,7 +189,16 @@ impl ObjectPlacementStore for RuntimeStorage {
         owner: &HostId,
         region: &str,
     ) -> Result<PlacementClaim> {
-        self.acquire(actor, expected, owner, region).await
+        let status = self.leases.lease_status(owner).await?;
+        ensure!(status.is_active(), "new owner has no active lease");
+        let loaded = self
+            .acquire(actor, Some(expected), &status.lease.unwrap(), region)
+            .await?;
+        Ok(if loaded.acquired {
+            PlacementClaim::Acquired(loaded.placement)
+        } else {
+            PlacementClaim::Current(loaded.placement)
+        })
     }
 
     async fn claim(
@@ -159,9 +216,8 @@ impl ObjectPlacementStore for RuntimeStorage {
             .load(&placement.object)
             .await?
             .is_some_and(|(_, record)| {
-                record.active
-                    && record.placement.owner_epoch == placement.owner_epoch
-                    && record.placement.owner == lease.id
+                record.epoch == placement.owner_epoch
+                    && record.owner == lease.id
                     && record.session == lease.session_id
             }))
     }
@@ -210,14 +266,185 @@ impl StorageUrlSigner for RuntimeStorage {
             .await?
             .context("actor has no ownership")?;
         ensure!(
-            record.actor == *actor
-                && record.active
-                && record.placement.home_region == region
-                && version > record.stream.base_version,
-            "ownership is not ready for writes"
+            record.actor == *actor && record.region == region,
+            "actor scope mismatch"
         );
-        let mut capability = grant("RUNTIME_WRITE", region, &record.stream.prefix, 60_000)?;
-        capability.stream = Some(record.stream.clone());
+        let lease = self.live_lease(&record).await?;
+        let replicas = self
+            .prepare_session(&actor.namespace_id, &lease, region)
+            .await?;
+        self.sign_write(&record, version, &replicas)
+    }
+}
+
+impl RuntimeStorage {
+    pub(crate) async fn activate_actor(
+        &self,
+        actor: &ActorKey,
+        lease: &HostLease,
+        region: &str,
+    ) -> Result<LoadedActor> {
+        self.acquire(actor, None, lease, region).await
+    }
+
+    pub(crate) async fn load_owned_actor(
+        &self,
+        actor: &ActorKey,
+        lease: &HostLease,
+        epoch: u64,
+    ) -> Result<LoadedActor> {
+        let (_, record) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("actor has no ownership")?;
+        ensure!(
+            record.owner == lease.id && record.session == lease.session_id && record.epoch == epoch,
+            "actor ownership changed"
+        );
+        self.load_actor(record, None).await
+    }
+
+    pub(crate) async fn prepare_actor_write(
+        &self,
+        actor: &ActorKey,
+        lease: &HostLease,
+        epoch: u64,
+        version: u64,
+    ) -> Result<StateWriteTicket> {
+        let record = self
+            .owned
+            .lock()
+            .unwrap()
+            .get(actor.storage_key().as_str())
+            .cloned()
+            .context("actor is not locally activated")?;
+        ensure!(
+            record.owner == lease.id && record.session == lease.session_id && record.epoch == epoch,
+            "actor ownership changed"
+        );
+        let replicas = self
+            .prepare_session(&actor.namespace_id, lease, &record.region)
+            .await?;
+        self.sign_write(&record, version, &replicas)
+    }
+
+    async fn acquire(
+        &self,
+        actor: &ActorKey,
+        expected: Option<Option<&ObjectPlacement>>,
+        lease: &HostLease,
+        region: &str,
+    ) -> Result<LoadedActor> {
+        actor.validate()?;
+        self.bucket(region)?;
+        let current = self.load(&actor.storage_key()).await?;
+        if let Some(expected) = expected {
+            ensure!(
+                expected.is_none_or(|p| p.object == actor.storage_key()),
+                "expected placement belongs to another actor"
+            );
+            ensure!(
+                current.as_ref().map(|(_, r)| (&r.owner, r.epoch))
+                    == expected.map(|p| (&p.owner, p.owner_epoch)),
+                "ownership changed concurrently"
+            );
+        }
+        let mut recovered = None;
+        if let Some((_, record)) = &current {
+            ensure!(
+                record.actor == *actor && record.region == region,
+                "ownership scope cannot change"
+            );
+            if record.owner == lease.id && record.session == lease.session_id {
+                return self.load_actor(record.clone(), None).await;
+            }
+            self.ensure_previous_owner_stopped(record).await?;
+            let known = self.recover_session(record).await?;
+            recovered = self.latest(record, known).await?;
+        }
+        let epoch = current
+            .as_ref()
+            .map_or(Some(1), |(_, record)| record.epoch.checked_add(1))
+            .context("owner epoch overflow")?;
+        let record = Ownership {
+            actor: actor.clone(),
+            owner: lease.id.clone(),
+            session: lease.session_id.clone(),
+            epoch,
+            region: region.into(),
+            base: recovered.as_ref().map(|s| s.reference.clone()),
+        };
+        ensure!(
+            replace(
+                self.authority.as_ref(),
+                &ownership_key(&actor.storage_key()),
+                current.map(|(generation, _)| generation),
+                serde_json::to_vec(&record)?
+            )
+            .await?,
+            "ownership claim lost"
+        );
+        Ok(self.remember(record, recovered, true))
+    }
+
+    async fn ensure_previous_owner_stopped(&self, record: &Ownership) -> Result<()> {
+        let status = self.leases.lease_status(&record.owner).await?;
+        ensure!(
+            !status.is_active()
+                || status
+                    .lease
+                    .is_none_or(|lease| lease.session_id != record.session),
+            "previous owner lease is still active"
+        );
+        Ok(())
+    }
+
+    async fn live_lease(&self, record: &Ownership) -> Result<HostLease> {
+        let status = self.leases.lease_status(&record.owner).await?;
+        ensure!(status.is_active(), "owner lease expired");
+        let lease = status.lease.unwrap();
+        ensure!(lease.session_id == record.session, "owner session changed");
+        Ok(lease)
+    }
+
+    async fn load_actor(
+        &self,
+        record: Ownership,
+        recovered: Option<LoadedSnapshot>,
+    ) -> Result<LoadedActor> {
+        let snapshot = self.latest(&record, recovered).await?;
+        Ok(self.remember(record, snapshot, false))
+    }
+
+    fn remember(
+        &self,
+        record: Ownership,
+        snapshot: Option<LoadedSnapshot>,
+        acquired: bool,
+    ) -> LoadedActor {
+        let mut placement = record.placement();
+        apply_snapshot(&mut placement, snapshot.as_ref().map(|s| &s.reference));
+        self.owned
+            .lock()
+            .unwrap()
+            .insert(record.actor.storage_key().as_str().into(), record);
+        LoadedActor {
+            placement,
+            state: snapshot.map(|s| s.bytes),
+            acquired,
+        }
+    }
+
+    fn sign_write(
+        &self,
+        record: &Ownership,
+        version: u64,
+        replicas: &[ReplicaTarget],
+    ) -> Result<StateWriteTicket> {
+        ensure!(version > 0, "state version must be positive");
+        let stream = record.stream()?;
+        let mut capability = grant("RUNTIME_WRITE", &record.region, &stream.prefix, 60_000)?;
+        capability.stream = Some(stream.clone());
         let url = self.access.url(&self.origin, "runtime", &capability)?;
         let expires_at_ms = i64::try_from(capability.expires_at_ms)?;
         capability.operation = "RUNTIME_ARCHIVE".into();
@@ -225,320 +452,117 @@ impl StorageUrlSigner for RuntimeStorage {
         let archive_url = self
             .access
             .url(&self.origin, "runtime-archive", &capability)?;
-        let mut targets = Vec::new();
-        for peer in &record.replicas {
-            let target = ReplicaGrant {
-                operation: "APPEND".into(),
-                host_id: peer.host_id.clone(),
-                archive_url: archive_url.clone(),
-                expires_at_ms: expires_at_ms as u64,
-                ..capability.clone()
-            };
-            targets.push(ReplicaTarget {
-                host_id: peer.host_id.clone(),
-                region: peer.region.clone(),
-                url: self.access.url(&peer.url, "stream", &target)?,
-            });
-        }
+        let targets = replicas
+            .iter()
+            .map(|peer| {
+                Ok(ReplicaTarget {
+                    host_id: peer.host_id.clone(),
+                    region: peer.region.clone(),
+                    url: self.access.url(
+                        &peer.url,
+                        "stream",
+                        &ReplicaGrant {
+                            operation: "APPEND".into(),
+                            host_id: peer.host_id.clone(),
+                            archive_url: archive_url.clone(),
+                            expires_at_ms: expires_at_ms as u64,
+                            ..capability.clone()
+                        },
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(StateWriteTicket {
             state_version: version,
-            object_name: record.stream.object(version),
+            object_name: stream.object(version),
             url,
             expires_at_ms,
-            stream: Some(record.stream),
-            replication: if targets.is_empty() {
-                None
-            } else {
-                Some(ReplicationTicket {
-                    required_replicas: targets.len(),
-                    replicas: targets,
-                    archive_url,
-                })
-            },
-        })
-    }
-}
-
-impl RuntimeStorage {
-    async fn acquire(
-        &self,
-        actor: &ActorKey,
-        expected: Option<&ObjectPlacement>,
-        owner: &HostId,
-        region: &str,
-    ) -> Result<PlacementClaim> {
-        actor.validate()?;
-        ensure!(
-            expected.is_none_or(|placement| placement.object == actor.storage_key()),
-            "expected placement belongs to another actor"
-        );
-        self.bucket(region)?;
-        let status = self.leases.lease_status(owner).await?;
-        ensure!(status.is_active(), "new owner has no active lease");
-        let lease = status.lease.context("new owner lease is missing")?;
-        let current = self.load(&actor.storage_key()).await?;
-        ensure!(
-            current
-                .as_ref()
-                .map(|(_, record)| (record.placement.owner.clone(), record.placement.owner_epoch))
-                == expected.map(|p| (p.owner.clone(), p.owner_epoch)),
-            "ownership changed concurrently"
-        );
-        if let Some((_, record)) = &current {
-            ensure!(record.actor == *actor, "ownership belongs to another actor");
-            ensure!(
-                record.placement.home_region == region,
-                "ownership region cannot change"
-            );
-            if record.active
-                && record.placement.owner == *owner
-                && record.session == lease.session_id
-            {
-                return Ok(PlacementClaim::Current(
-                    self.current_placement(record).await?,
-                ));
-            }
-            self.ensure_previous_owner_stopped(record, &lease).await?;
-        }
-        let record = self.pending_ownership(
-            actor,
-            current.as_ref().map(|(_, record)| record),
-            &lease,
-            region,
-        )?;
-        let key = ownership_key(&actor.storage_key());
-        ensure!(
-            replace(
-                self.authority.as_ref(),
-                &key,
-                current.map(|(generation, _)| generation),
-                serde_json::to_vec(&record)?
-            )
-            .await?,
-            "ownership claim lost"
-        );
-        self.activate(record).await.map(PlacementClaim::Acquired)
-    }
-
-    async fn ensure_previous_owner_stopped(
-        &self,
-        previous: &Ownership,
-        next: &HostLease,
-    ) -> Result<()> {
-        if !previous.active
-            && previous.placement.owner == next.id
-            && previous.session == next.session_id
-        {
-            return Ok(());
-        }
-        let status = self.leases.lease_status(&previous.placement.owner).await?;
-        ensure!(
-            !status.is_active()
-                || status
-                    .lease
-                    .is_none_or(|lease| lease.session_id != previous.session),
-            "previous owner lease is still active"
-        );
-        Ok(())
-    }
-
-    fn pending_ownership(
-        &self,
-        actor: &ActorKey,
-        previous: Option<&Ownership>,
-        lease: &HostLease,
-        region: &str,
-    ) -> Result<Ownership> {
-        let epoch = previous.map_or(Ok(1), |record| {
-            record
-                .placement
-                .owner_epoch
-                .checked_add(1)
-                .context("owner epoch overflow")
-        })?;
-        let nonce = uuid::Uuid::new_v4().simple().to_string();
-        let name = snapshot_object_name(actor, 1, &nonce)?;
-        let predecessor = previous.and_then(|record| {
-            if record.active {
-                Some(Box::new(record.clone()))
-            } else {
-                record.predecessor.clone()
-            }
-        });
-        Ok(Ownership {
-            actor: actor.clone(),
-            session: lease.session_id.clone(),
-            placement: ObjectPlacement {
-                object: actor.storage_key(),
-                owner: lease.id.clone(),
-                owner_epoch: epoch,
-                home_region: region.into(),
-                state_version: 0,
-                state_object: None,
-                last_request_id: None,
-            },
-            stream: ReplicaStream {
-                prefix: name.strip_suffix("1.json").unwrap().into(),
-                owner_epoch: epoch,
-                base_version: 0,
-            },
-            replicas: Vec::new(),
-            base: None,
-            active: false,
-            predecessor,
-            mutation: uuid::Uuid::new_v4().to_string(),
+            stream: Some(stream),
+            replication: (!targets.is_empty()).then_some(ReplicationTicket {
+                required_replicas: targets.len(),
+                replicas: targets,
+                archive_url,
+            }),
         })
     }
 
-    async fn activate(&self, mut record: Ownership) -> Result<ObjectPlacement> {
-        if let Some(previous) = &record.predecessor {
-            record.base = self.latest(previous, true).await?;
-            if let Some(snapshot) = &record.base {
-                let bytes = self.recover(previous, snapshot).await?;
-                self.persist(&record.placement.home_region, &snapshot.object, bytes)
-                    .await?;
-            }
-        }
-        apply_snapshot(&mut record.placement, record.base.as_ref());
-        record.stream.base_version = record.placement.state_version;
-        record.replicas = self.initialize_replicas(&record).await;
-        let (generation, current) = self
-            .load(&record.actor.storage_key())
+    async fn latest(
+        &self,
+        record: &Ownership,
+        known: Option<LoadedSnapshot>,
+    ) -> Result<Option<LoadedSnapshot>> {
+        let bucket = self.bucket(&record.region)?;
+        let stream = record.stream()?;
+        let newest = bucket
+            .list(&stream.prefix)
             .await?
-            .context("pending ownership disappeared")?;
-        ensure!(
-            current.mutation == record.mutation,
-            "recovery claimant was replaced"
-        );
-        record.predecessor = None;
-        record.active = true;
-        record.mutation = uuid::Uuid::new_v4().to_string();
-        ensure!(
-            replace(
-                self.authority.as_ref(),
-                &ownership_key(&record.actor.storage_key()),
-                Some(generation),
-                serde_json::to_vec(&record)?
-            )
-            .await?,
-            "ownership activation lost"
-        );
-        Ok(record.placement)
-    }
-
-    async fn initialize_replicas(&self, record: &Ownership) -> Vec<ReplicaTarget> {
-        if self.count == 0 {
-            return Vec::new();
-        }
-        let result = async {
-            let replicas = self
-                .fleet
-                .ensure(&record.actor, &record.placement.home_region, self.count)
-                .await?;
-            ReplicationTicket {
-                required_replicas: self.count,
-                replicas: replicas.clone(),
-                archive_url: "initialization".into(),
+            .into_iter()
+            .filter_map(|key| {
+                snapshot_position(&key)
+                    .filter(|(epoch, _)| *epoch == record.epoch)
+                    .map(|position| (position, key))
+            })
+            .max_by_key(|(position, _)| *position);
+        let mut loaded = match newest {
+            Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => known,
+            Some((_, key)) => {
+                let object = bucket
+                    .get(&key)
+                    .await?
+                    .context("listed snapshot disappeared")?;
+                Some(decode_snapshot(key, object.bytes)?)
             }
-            .validate()?;
-            let mut pending = JoinSet::new();
-            for peer in &replicas {
-                let peers = self.peers.clone();
-                let target = peer.clone();
-                let stream = record.stream.clone();
-                pending.spawn(async move { peers.initialize(&target, &stream).await });
-            }
-            while let Some(result) = pending.join_next().await {
-                result??;
-            }
-            anyhow::Ok(replicas)
+            None => known,
         };
-        match tokio::time::timeout(Duration::from_secs(20), result).await {
-            Ok(Ok(replicas)) => replicas,
-            error => {
-                tracing::warn!(?error, "new ownership epoch will use object storage");
-                Vec::new()
-            }
-        }
-    }
-
-    async fn latest(&self, record: &Ownership, seal: bool) -> Result<Option<SnapshotRef>> {
-        let mut latest = record.base.clone();
+        let mut candidate = record.base.clone();
+        advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
+        let replicas = self.session_replicas(record).await?;
         let mut pending = JoinSet::new();
-        for target in &record.replicas {
-            let peers = self.peers.clone();
-            let target = target.clone();
-            let stream = record.stream.clone();
-            pending.spawn(async move {
-                if seal {
-                    peers.seal(&target, &stream).await
-                } else {
-                    peers.head(&target, &stream).await
-                }
-            });
+        for target in &replicas {
+            let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
+            pending.spawn(async move { peers.head(&target, &stream).await });
         }
         let mut witnesses = 0;
         while let Some(result) = pending.join_next().await {
             if let Ok(Ok(head)) = result {
-                ensure!(
-                    head.stream == record.stream,
-                    "replica returned another stream"
-                );
-                if head.initialized && (!seal || head.sealed) {
-                    witnesses += 1;
-                    advance(&mut latest, head.latest)?;
-                }
+                ensure!(head.stream == stream, "replica returned another stream");
+                witnesses += 1;
+                advance(&mut candidate, head.latest)?;
             }
         }
         ensure!(
-            record.replicas.is_empty() || witnesses > 0,
+            replicas.is_empty() || witnesses > 0,
             "no complete replica witness; refusing to lose acknowledged state"
         );
-        let bucket = self.bucket(&record.placement.home_region)?;
-        let newest = bucket
-            .list(&record.stream.prefix)
-            .await?
-            .into_iter()
-            .filter_map(|key| {
-                let version = key
-                    .strip_prefix(&record.stream.prefix)?
-                    .strip_suffix(".json")?
-                    .parse::<u64>()
-                    .ok()?;
-                Some((version, key))
-            })
-            .max_by_key(|(version, _)| *version);
-        if let Some((version, key)) = newest
-            && latest
-                .as_ref()
-                .is_none_or(|snapshot| version >= snapshot.state_version)
-        {
-            let object = bucket
-                .get(&key)
-                .await?
-                .context("listed snapshot disappeared")?;
-            let snapshot = record.stream.snapshot(&object.bytes)?;
-            ensure!(
-                snapshot.object == key,
-                "snapshot version does not match its object"
-            );
-            advance(&mut latest, Some(snapshot))?;
+        if let Some(snapshot) = candidate {
+            if loaded.as_ref().is_none_or(|s| s.reference != snapshot) {
+                let bytes = self
+                    .recover_snapshot(&record.region, &replicas, &snapshot)
+                    .await?;
+                loaded = Some(LoadedSnapshot {
+                    reference: snapshot,
+                    bytes: bytes.into(),
+                });
+            }
         }
-        Ok(latest)
+        Ok(loaded)
     }
 
-    async fn recover(&self, record: &Ownership, snapshot: &SnapshotRef) -> Result<Vec<u8>> {
-        if let Some(object) = self
-            .bucket(&record.placement.home_region)?
-            .get(&snapshot.object)
-            .await?
-        {
+    async fn recover_snapshot(
+        &self,
+        region: &str,
+        replicas: &[ReplicaTarget],
+        snapshot: &SnapshotRef,
+    ) -> Result<Vec<u8>> {
+        if let Some(object) = self.bucket(region)?.get(&snapshot.object).await? {
             snapshot.verify(&object.bytes)?;
             return Ok(object.bytes);
         }
-        for peer in &record.replicas {
+        for peer in replicas {
             if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
                 snapshot.verify(&bytes)?;
+                self.persist(region, &snapshot.object, bytes.clone())
+                    .await?;
                 return Ok(bytes);
             }
         }
@@ -554,10 +578,14 @@ impl RuntimeStorage {
     }
 
     async fn current_placement(&self, record: &Ownership) -> Result<ObjectPlacement> {
-        let mut placement = record.placement.clone();
-        if record.active {
-            apply_snapshot(&mut placement, self.latest(record, false).await?.as_ref());
-        }
+        let mut placement = record.placement();
+        apply_snapshot(
+            &mut placement,
+            self.latest(record, None)
+                .await?
+                .as_ref()
+                .map(|s| &s.reference),
+        );
         Ok(placement)
     }
 
@@ -572,7 +600,7 @@ impl RuntimeStorage {
                 .await?
                 .context("actor ownership is missing")?;
             ensure!(
-                record.active && record.stream == *stream,
+                record.stream()? == *stream,
                 "snapshot writer has been fenced"
             );
         }
@@ -585,6 +613,29 @@ impl RuntimeStorage {
             .await?
             .map(|value| Ok((value.generation, serde_json::from_slice(&value.bytes)?)))
             .transpose()
+    }
+
+    async fn read_snapshot(&self, grant: &ReplicaGrant) -> Result<Bytes> {
+        if let Some(object) = self.bucket(&grant.region)?.get(&grant.object).await? {
+            return Ok(Bytes::from(object.bytes));
+        }
+        let actor = actor_from_object(&grant.object)?;
+        let (_, record) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("missing ownership")?;
+        let mut pending = JoinSet::new();
+        for peer in self.session_replicas(&record).await? {
+            let peers = self.peers.clone();
+            let object = grant.object.clone();
+            pending.spawn(async move { peers.read(&peer, &object).await });
+        }
+        while let Some(result) = pending.join_next().await {
+            if let Ok(Ok(bytes)) = result {
+                return Ok(Bytes::from(bytes));
+            }
+        }
+        anyhow::bail!("snapshot unavailable")
     }
 
     fn bucket(&self, region: &str) -> Result<&Arc<dyn Bucket>> {
@@ -602,30 +653,7 @@ async fn read(
         .access
         .verify(&query.token, "RUNTIME_READ")
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    let result = async {
-        if let Some(object) = runtime.bucket(&grant.region)?.get(&grant.object).await? {
-            return Ok(Bytes::from(object.bytes));
-        }
-        let actor = actor_from_object(&grant.object)?;
-        let (_, record) = runtime
-            .load(&actor.storage_key())
-            .await?
-            .context("missing ownership")?;
-        let mut pending = JoinSet::new();
-        for peer in record.replicas {
-            let peers = runtime.peers.clone();
-            let object = grant.object.clone();
-            pending.spawn(async move { peers.read(&peer, &object).await });
-        }
-        while let Some(result) = pending.join_next().await {
-            if let Ok(Ok(bytes)) = result {
-                return Ok(Bytes::from(bytes));
-            }
-        }
-        anyhow::bail!("snapshot unavailable")
-    }
-    .await;
-    result.map_err(unavailable)
+    runtime.read_snapshot(&grant).await.map_err(unavailable)
 }
 
 async fn write(
@@ -682,7 +710,17 @@ async fn archive(
 }
 
 fn ownership_key(object: &ActorStorageKey) -> String {
-    format!("runtime/owners/{}.json", component(object.as_str()))
+    format!(
+        "runtime/owners/{}/{}.json",
+        component(
+            object
+                .as_str()
+                .strip_prefix("object.v2.")
+                .and_then(|key| key.split_once(':'))
+                .map_or("", |(ns, _)| ns)
+        ),
+        component(object.as_str())
+    )
 }
 
 fn apply_snapshot(placement: &mut ObjectPlacement, snapshot: Option<&SnapshotRef>) {
@@ -697,18 +735,37 @@ fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) ->
     if let Some(candidate) = candidate {
         if let Some(current) = current.as_ref() {
             ensure!(
-                current.state_version != candidate.state_version || current == &candidate,
+                snapshot_position(&current.object) != snapshot_position(&candidate.object)
+                    || current == &candidate,
                 "conflicting snapshot witnesses"
             );
         }
-        if current
-            .as_ref()
-            .is_none_or(|current| candidate.state_version > current.state_version)
-        {
+        if current.as_ref().is_none_or(|current| {
+            snapshot_position(&candidate.object) > snapshot_position(&current.object)
+        }) {
             *current = Some(candidate);
         }
     }
     Ok(())
+}
+
+fn snapshot_position(object: &str) -> Option<(u64, u64)> {
+    let mut parts = object.rsplit('/');
+    let version = parts.next()?.strip_suffix(".json")?.parse().ok()?;
+    let epoch = u64::from_str_radix(parts.next()?, 16).ok()?;
+    Some((epoch, version))
+}
+
+fn decode_snapshot(object: String, bytes: Vec<u8>) -> Result<LoadedSnapshot> {
+    let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
+    ensure!(
+        snapshot_position(&object) == Some((snapshot.owner_epoch, snapshot.state_version)),
+        "snapshot identity does not match its object"
+    );
+    Ok(LoadedSnapshot {
+        reference: SnapshotRef::new(object, &snapshot, &bytes),
+        bytes: bytes.into(),
+    })
 }
 
 fn actor_from_object(object: &str) -> Result<ActorKey> {
@@ -718,9 +775,9 @@ fn actor_from_object(object: &str) -> Result<ActorKey> {
         "invalid snapshot object"
     );
     let actor = ActorKey {
-        namespace_id: parts[3].into(),
-        actor_type: parts[4].into(),
-        actor_id: parts[5].into(),
+        namespace_id: parts[1].into(),
+        actor_type: parts[3].into(),
+        actor_id: parts[4].into(),
     };
     actor.validate()?;
     Ok(actor)
@@ -729,4 +786,35 @@ fn actor_from_object(object: &str) -> Result<ActorKey> {
 fn unavailable(error: anyhow::Error) -> StatusCode {
     tracing::warn!(%error, "bucket runtime operation failed");
     StatusCode::SERVICE_UNAVAILABLE
+}
+
+#[async_trait]
+impl crate::state_transport::StateTransport for RuntimeStorage {
+    async fn read(&self, url: &str) -> Result<Bytes> {
+        let parsed = reqwest::Url::parse(url)?;
+        let token = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .context("state capability missing")?
+            .1
+            .into_owned();
+        let grant = self.access.verify(&token, "RUNTIME_READ")?;
+        self.read_snapshot(&grant).await
+    }
+
+    async fn write(&self, url: &str, bytes: Vec<u8>) -> Result<crate::state_transport::StateWrite> {
+        let parsed = reqwest::Url::parse(url)?;
+        if parsed.path() != "/_replica/runtime" {
+            return self.http.write(url, bytes).await;
+        }
+        let token = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .context("state capability missing")?
+            .1
+            .into_owned();
+        let grant = self.access.verify(&token, "RUNTIME_WRITE")?;
+        self.write_snapshot(&grant, bytes).await?;
+        Ok(crate::state_transport::StateWrite::Written)
+    }
 }

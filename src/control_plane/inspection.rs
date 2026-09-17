@@ -177,14 +177,14 @@ fn actor_from_placement(placement: &ObjectPlacement) -> Result<ActorKey> {
         .state_object
         .as_deref()
         .context("committed state object is missing")?;
-    let mut components = object.split('/').skip(3);
+    let mut components = object.split('/').skip(1);
     let actor = ActorKey {
         namespace_id: components
             .next()
             .context("snapshot namespace is missing")?
             .to_owned(),
         actor_type: components
-            .next()
+            .nth(1)
             .context("snapshot actor type is missing")?
             .to_owned(),
         actor_id: components

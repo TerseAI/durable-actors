@@ -507,7 +507,7 @@ impl Stack {
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v1.project-1.revision.session");
+        let host_id = HostId::new("host.v2.project-1:revision.session");
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
         let leases = Arc::new(FakeLeaseStore {
@@ -618,7 +618,14 @@ impl Stack {
         let serving_host = host.clone();
         tasks.spawn(async move {
             let _ = tonic::transport::Server::builder()
-                .add_service(ActorHostGrpcService::new(serving_host, auth).into_service())
+                .add_service(
+                    ActorHostGrpcService::new(
+                        serving_host,
+                        "00000000-0000-4000-8000-000000000001".into(),
+                        auth,
+                    )
+                    .into_service(),
+                )
                 .serve_with_incoming(TcpListenerStream::new(host_listener))
                 .await;
         });

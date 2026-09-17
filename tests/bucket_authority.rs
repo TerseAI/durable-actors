@@ -21,7 +21,7 @@ use little_actors::{
     placement::{ObjectPlacementStore, PlacementClaim},
     replication::{
         FileReplicaStore, ReplicaAccess, ReplicaProvisioner, ReplicaStore, ReplicaStream,
-        ReplicaTarget, StreamHead,
+        ReplicaTarget, SessionHead, StreamHead,
     },
     state_log::StateSnapshot,
     storage_urls::StorageUrlSigner,
@@ -38,6 +38,9 @@ impl ReplicaProvisioner for Fleet {
 struct Peers {
     stores: BTreeMap<String, Arc<FileReplicaStore>>,
     unavailable: Mutex<Vec<String>>,
+    seals: AtomicU64,
+    initializations: AtomicU64,
+    initialization_gate: Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>,
 }
 impl Peers {
     fn store(&self, peer: &ReplicaTarget) -> Result<&Arc<FileReplicaStore>> {
@@ -50,14 +53,20 @@ impl Peers {
 }
 #[async_trait]
 impl ReplicaPeers for Peers {
-    async fn initialize(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<()> {
-        self.store(peer)?.initialize_stream(stream).await
+    async fn initialize(&self, peer: &ReplicaTarget, session: &str) -> Result<()> {
+        self.initializations.fetch_add(1, Ordering::SeqCst);
+        if let Some((entered, resume)) = &self.initialization_gate {
+            entered.add_permits(1);
+            resume.acquire().await?.forget();
+        }
+        self.store(peer)?.initialize_session(session).await
     }
     async fn head(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead> {
         self.store(peer)?.stream_head(stream).await
     }
-    async fn seal(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead> {
-        self.store(peer)?.seal(stream).await
+    async fn seal(&self, peer: &ReplicaTarget, session: &str) -> Result<SessionHead> {
+        self.seals.fetch_add(1, Ordering::SeqCst);
+        self.store(peer)?.seal_session(session).await
     }
     async fn read(&self, peer: &ReplicaTarget, object: &str) -> Result<Vec<u8>> {
         self.store(peer)?
@@ -92,6 +101,9 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     let peers = Arc::new(Peers {
         stores,
         unavailable: Mutex::new(vec![]),
+        seals: AtomicU64::new(0),
+        initializations: AtomicU64::new(0),
+        initialization_gate: None,
     });
     let runtime = RuntimeStorage::new(
         bucket.clone(),
@@ -136,8 +148,12 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
             .await
             .is_err()
     );
+    assert_eq!(
+        runtime.get_owner(&actor.storage_key()).await?,
+        Some(first.clone())
+    );
     assert!(runtime.write_ticket("us-east", &actor, 2).await.is_err());
-    let pending = runtime.get(&actor.storage_key()).await?.unwrap();
+    let pending = runtime.get_owner(&actor.storage_key()).await?.unwrap();
     *peers.unavailable.lock().unwrap() = vec!["a".into()];
     let PlacementClaim::Acquired(next) = runtime
         .claim_actor(&actor, Some(&pending), &HostId::new("host"), "us-east")
@@ -155,6 +171,15 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
             .bytes,
         bytes
     );
+    let read_url = runtime
+        .read_url("us-east", next.state_object.as_ref().unwrap())
+        .await?;
+    assert_eq!(
+        little_actors::state_transport::StateTransport::read(&runtime, &read_url)
+            .await?
+            .as_ref(),
+        bytes.as_slice()
+    );
     assert!(
         peers.stores["b"]
             .append(stream, "archive", &bytes)
@@ -164,16 +189,67 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     Ok(())
 }
 
+#[tokio::test]
+async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()> {
+    struct UnavailableFleet(AtomicU64);
+    #[async_trait]
+    impl ReplicaProvisioner for UnavailableFleet {
+        async fn ensure(&self, _: &ActorKey, _: &str, _: usize) -> Result<Vec<ReplicaTarget>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("replica provisioning must not block a cold read")
+        }
+    }
+    let bucket = Arc::new(MemoryBucket::default());
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), clock.clone()));
+    leases.register(&request("session")).await?;
+    let fleet = Arc::new(UnavailableFleet(AtomicU64::new(0)));
+    let runtime = RuntimeStorage::new(
+        bucket.clone(),
+        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
+        leases,
+        fleet.clone(),
+        Arc::new(Peers {
+            stores: BTreeMap::new(),
+            unavailable: Mutex::new(vec![]),
+            seals: AtomicU64::new(0),
+            initializations: AtomicU64::new(0),
+            initialization_gate: None,
+        }),
+        ReplicaAccess::new("secret", clock),
+        "http://control".into(),
+        1,
+    )?;
+    let actor = ActorKey {
+        namespace_id: "project".into(),
+        actor_type: "Counter".into(),
+        actor_id: "new".into(),
+    };
+    let PlacementClaim::Acquired(placement) = runtime
+        .claim_actor(&actor, None, &HostId::new("host"), "us-east")
+        .await?
+    else {
+        panic!("actor was not acquired");
+    };
+    assert_eq!(placement.state_version, 0);
+    assert_eq!(bucket.owner_writes.load(Ordering::SeqCst), 1);
+    assert_eq!(fleet.0.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 #[derive(Default)]
 struct MemoryBucket {
     objects: Mutex<BTreeMap<String, BucketObject>>,
     lose_reply: AtomicBool,
     reject_snapshots: AtomicBool,
+    owner_writes: AtomicU64,
+    reads: Mutex<Vec<String>>,
 }
 
 #[async_trait]
 impl Bucket for MemoryBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        self.reads.lock().unwrap().push(key.into());
         Ok(self.objects.lock().unwrap().get(key).cloned())
     }
 
@@ -191,6 +267,9 @@ impl Bucket for MemoryBucket {
         let current = objects.get(key).map(|object| object.generation);
         if current != generation {
             return Ok(false);
+        }
+        if key.starts_with("runtime/owners/") {
+            self.owner_writes.fetch_add(1, Ordering::SeqCst);
         }
         objects.insert(
             key.into(),
@@ -344,6 +423,9 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         Arc::new(Peers {
             stores: BTreeMap::new(),
             unavailable: Mutex::new(vec![]),
+            seals: AtomicU64::new(0),
+            initializations: AtomicU64::new(0),
+            initialization_gate: None,
         }),
         ReplicaAccess::new("secret", clock),
         "http://control".into(),
@@ -395,6 +477,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let access = access.for_namespace("project")?;
     let runtime = Arc::new(RuntimeStorage::new(
         bucket.clone(),
         std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
@@ -429,7 +512,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     else {
         panic!("claim lost")
     };
-    let ticket = runtime.write_ticket("us-east", &actor, 1).await?;
+    let ticket = StorageUrlSigner::write_ticket(runtime.as_ref(), "us-east", &actor, 1).await?;
     let snapshot = StateSnapshot::new(
         1,
         first.owner_epoch,
@@ -500,5 +583,233 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     peer_stop.cancel();
     server.await??;
     peer_server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let bucket = Arc::new(MemoryBucket::default());
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), clock.clone()));
+    leases.register(&request("old")).await?;
+    let peers = Arc::new(Peers {
+        stores: BTreeMap::from([
+            (
+                "a".into(),
+                Arc::new(FileReplicaStore::open(directory.path().join("a"), 4096).await?),
+            ),
+            (
+                "b".into(),
+                Arc::new(FileReplicaStore::open(directory.path().join("b"), 4096).await?),
+            ),
+        ]),
+        unavailable: Mutex::new(Vec::new()),
+        seals: AtomicU64::new(0),
+        initializations: AtomicU64::new(0),
+        initialization_gate: None,
+    });
+    let runtime = || {
+        RuntimeStorage::new(
+            bucket.clone(),
+            std::collections::HashMap::from([(
+                "us-east".into(),
+                bucket.clone() as Arc<dyn Bucket>,
+            )]),
+            leases.clone(),
+            Arc::new(Fleet(
+                peers
+                    .stores
+                    .keys()
+                    .map(|id| ReplicaTarget {
+                        host_id: id.clone(),
+                        url: format!("http://{id}"),
+                        region: "us-east".into(),
+                    })
+                    .collect(),
+            )),
+            peers.clone(),
+            ReplicaAccess::new("secret", clock.clone()),
+            "http://control".into(),
+            2,
+        )
+    };
+    let old = runtime()?;
+    let first = ActorKey {
+        namespace_id: "project".into(),
+        actor_type: "Counter".into(),
+        actor_id: "first".into(),
+    };
+    let second = ActorKey {
+        actor_id: "second".into(),
+        ..first.clone()
+    };
+    let mut placements = Vec::new();
+    let mut tickets = Vec::new();
+    for (actor, version) in [(&first, 1), (&second, 3)] {
+        let PlacementClaim::Acquired(placement) = old
+            .claim_actor(actor, None, &HostId::new("host"), "us-east")
+            .await?
+        else {
+            panic!("claim lost")
+        };
+        let ticket = old.write_ticket("us-east", actor, version).await?;
+        let bytes = StateSnapshot::new(
+            version,
+            placement.owner_epoch,
+            "acknowledged".into(),
+            serde_json::json!({"count":version}),
+            serde_json::json!(version),
+        )?
+        .encode()?;
+        for store in peers.stores.values() {
+            store
+                .append(ticket.stream.as_ref().unwrap(), "archive", &bytes)
+                .await?;
+        }
+        placements.push(placement);
+        tickets.push(ticket);
+    }
+    assert_eq!(
+        peers.initializations.load(Ordering::SeqCst),
+        2,
+        "initialize once per replica, not once per actor"
+    );
+    clock.0.store(20_000, Ordering::SeqCst);
+    leases.register(&request("new")).await?;
+    bucket.reject_snapshots.store(true, Ordering::SeqCst);
+    assert!(
+        old.claim_actor(
+            &first,
+            Some(&placements[0]),
+            &HostId::new("host"),
+            "us-east"
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        old.get_owner(&first.storage_key()).await?,
+        Some(placements[0].clone())
+    );
+    assert_eq!(bucket.owner_writes.load(Ordering::SeqCst), 2);
+    drop(old);
+
+    bucket.reject_snapshots.store(false, Ordering::SeqCst);
+    bucket.reads.lock().unwrap().clear();
+    let next = runtime()?;
+    let PlacementClaim::Acquired(restored) = next
+        .claim_actor(
+            &first,
+            Some(&placements[0]),
+            &HostId::new("host"),
+            "us-east",
+        )
+        .await?
+    else {
+        panic!("claim lost")
+    };
+    assert_eq!(restored.state_version, 1);
+    assert_eq!(
+        bucket
+            .reads
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|key| **key == tickets[0].object_name)
+            .count(),
+        1,
+        "reuse recovered bytes instead of downloading the snapshot again"
+    );
+    for ticket in &tickets {
+        assert!(bucket.get(&ticket.object_name).await?.is_some());
+    }
+    let seals = peers.seals.load(Ordering::SeqCst);
+    *peers.unavailable.lock().unwrap() = vec!["a".into(), "b".into()];
+    let PlacementClaim::Acquired(restored) = next
+        .claim_actor(
+            &second,
+            Some(&placements[1]),
+            &HostId::new("host"),
+            "us-east",
+        )
+        .await?
+    else {
+        panic!("claim lost")
+    };
+    assert_eq!(restored.state_version, 3);
+    assert_eq!(
+        peers.seals.load(Ordering::SeqCst),
+        seals,
+        "the second actor reuses completed session recovery"
+    );
+    assert_eq!(bucket.owner_writes.load(Ordering::SeqCst), 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_expiry()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let bucket = Arc::new(MemoryBucket::default());
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), clock.clone()));
+    leases.register(&request("old")).await?;
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    let store = Arc::new(FileReplicaStore::open(directory.path().join("replica"), 4096).await?);
+    let peers = Arc::new(Peers {
+        stores: BTreeMap::from([("peer".into(), store)]),
+        unavailable: Mutex::new(Vec::new()),
+        seals: AtomicU64::new(0),
+        initializations: AtomicU64::new(0),
+        initialization_gate: Some((entered.clone(), resume.clone())),
+    });
+    let runtime = Arc::new(RuntimeStorage::new(
+        bucket.clone(),
+        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
+        leases.clone(),
+        Arc::new(Fleet(vec![ReplicaTarget {
+            host_id: "peer".into(),
+            url: "http://peer".into(),
+            region: "us-east".into(),
+        }])),
+        peers,
+        ReplicaAccess::new("secret", clock.clone()),
+        "http://control".into(),
+        1,
+    )?);
+    let actor = ActorKey {
+        namespace_id: "project".into(),
+        actor_type: "Counter".into(),
+        actor_id: "delayed".into(),
+    };
+    let PlacementClaim::Acquired(first) = runtime
+        .claim_actor(&actor, None, &HostId::new("host"), "us-east")
+        .await?
+    else {
+        panic!("claim lost")
+    };
+    let task = {
+        let (runtime, actor) = (runtime.clone(), actor.clone());
+        tokio::spawn(async move { runtime.write_ticket("us-east", &actor, 1).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.acquire())
+        .await??
+        .forget();
+    clock.0.store(20_000, Ordering::SeqCst);
+    leases.register(&request("new")).await?;
+    let PlacementClaim::Acquired(next) = runtime
+        .claim_actor(&actor, Some(&first), &HostId::new("host"), "us-east")
+        .await?
+    else {
+        panic!("claim lost")
+    };
+    assert_eq!(next.owner_epoch, 2);
+    resume.add_permits(1);
+    assert!(
+        task.await?.is_err(),
+        "old session must never receive replication authority after takeover"
+    );
     Ok(())
 }

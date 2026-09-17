@@ -44,7 +44,7 @@ impl ActorKey {
     /// Stable, readable identity used for coordination records.
     pub fn storage_key(&self) -> ActorStorageKey {
         ActorStorageKey::new(format!(
-            "object.v1.{}.{}.{}",
+            "object.v2.{}:{}:{}",
             self.namespace_id, self.actor_type, self.actor_id
         ))
     }
@@ -130,7 +130,7 @@ mod tests {
         key.validate().expect("actor key");
         assert_eq!(
             key.storage_key().as_str(),
-            "object.v1.namespace-1.counter.customer.123"
+            "object.v2.namespace-1:counter:customer.123"
         );
     }
 

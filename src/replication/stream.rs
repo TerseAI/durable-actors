@@ -7,6 +7,7 @@ use crate::state_log::StateSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicaStream {
+    pub session: String,
     pub prefix: String,
     pub owner_epoch: u64,
     pub base_version: u64,
@@ -15,9 +16,15 @@ pub struct ReplicaStream {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamHead {
     pub stream: ReplicaStream,
+    pub latest: Option<SnapshotRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHead {
+    pub session: String,
     pub initialized: bool,
     pub sealed: bool,
-    pub latest: Option<SnapshotRef>,
+    pub streams: Vec<StreamHead>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

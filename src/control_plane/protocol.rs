@@ -12,6 +12,7 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
+    RefreshStorageAccess,
     LoadActorState {
         actor: ActorKey,
         host_id: HostId,
@@ -42,6 +43,10 @@ pub(crate) enum ControlPlaneCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommandReply {
+    StorageAccess {
+        token: crate::bucket::access::StorageToken,
+        replacement_token: String,
+    },
     ActorState {
         state_version: u64,
         state_read_url: String,
@@ -93,11 +98,11 @@ mod tests {
                 actor_type: "counter".into(),
                 actor_id: "counter-1".into(),
             },
-            host_id: HostId::new("host.v1.project-1.revision-1.host-1"),
+            host_id: HostId::new("host.v2.project-1:revision-1.host-1"),
             owner_epoch: 3,
             expected_version: 6,
             state_object:
-                "snapshots/01/0123456789abcdef0123456789abcdef/project-1/counter/counter-1/7.json"
+                "snapshots/project-1/01/0123456789abcdef0123456789abcdef/counter/counter-1/7.json"
                     .into(),
             request_id: "request-7".into(),
         })?;

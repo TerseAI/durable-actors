@@ -101,7 +101,7 @@ impl ModalReplicaFleet {
         for (slot, destination) in destinations.into_iter().enumerate() {
             let request = EnsureReplicaRequest {
                 installation_id: format!(
-                    "{}:{}:epochs-v1",
+                    "{}:{}:epochs-v2",
                     self.installation,
                     env!("CARGO_PKG_VERSION")
                 ),

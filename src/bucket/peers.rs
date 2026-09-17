@@ -5,14 +5,16 @@ use async_trait::async_trait;
 
 use crate::{
     clock::{Clock, SystemClock},
-    replication::{ReplicaAccess, ReplicaGrant, ReplicaStream, ReplicaTarget, StreamHead},
+    replication::{
+        ReplicaAccess, ReplicaGrant, ReplicaStream, ReplicaTarget, SessionHead, StreamHead,
+    },
 };
 
 #[async_trait]
 pub trait ReplicaPeers: Send + Sync {
-    async fn initialize(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<()>;
+    async fn initialize(&self, peer: &ReplicaTarget, session: &str) -> Result<()>;
     async fn head(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead>;
-    async fn seal(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead>;
+    async fn seal(&self, peer: &ReplicaTarget, session: &str) -> Result<SessionHead>;
     async fn read(&self, peer: &ReplicaTarget, object: &str) -> Result<Vec<u8>>;
 }
 
@@ -30,6 +32,23 @@ impl HttpReplicaPeers {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
         })
+    }
+
+    fn session_url(
+        &self,
+        peer: &ReplicaTarget,
+        session: &str,
+        operation: &str,
+        resource: &str,
+    ) -> Result<String> {
+        self.access.url(
+            &peer.url,
+            resource,
+            &ReplicaGrant {
+                host_id: peer.host_id.clone(),
+                ..grant(operation, &peer.region, session, 60_000)?
+            },
+        )
     }
 
     fn url(
@@ -53,9 +72,9 @@ impl HttpReplicaPeers {
 
 #[async_trait]
 impl ReplicaPeers for HttpReplicaPeers {
-    async fn initialize(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<()> {
+    async fn initialize(&self, peer: &ReplicaTarget, session: &str) -> Result<()> {
         self.http
-            .post(self.url(peer, stream, "INITIALIZE", "stream")?)
+            .post(self.session_url(peer, session, "INITIALIZE_SESSION", "session")?)
             .send()
             .await?
             .error_for_status()?;
@@ -73,10 +92,10 @@ impl ReplicaPeers for HttpReplicaPeers {
             .await?)
     }
 
-    async fn seal(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead> {
+    async fn seal(&self, peer: &ReplicaTarget, session: &str) -> Result<SessionHead> {
         Ok(self
             .http
-            .post(self.url(peer, stream, "SEAL", "seal")?)
+            .post(self.session_url(peer, session, "SEAL_SESSION", "seal")?)
             .send()
             .await?
             .error_for_status()?

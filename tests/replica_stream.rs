@@ -8,6 +8,7 @@ use serde_json::json;
 fn stream() -> ReplicaStream {
     ReplicaStream {
         prefix: "snapshots/epochs/actor/1/".into(),
+        session: "snapshots/epochs/sessions/host/one/".into(),
         owner_epoch: 1,
         base_version: 0,
     }
@@ -31,11 +32,11 @@ async fn a_seal_survives_restart_and_rejects_delayed_writes_and_reinitialization
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     let stream = stream();
-    store.initialize_stream(&stream).await?;
+    store.initialize_session(&stream.session).await?;
     store.append(&stream, "archive", &snapshot(1)).await?;
-    let sealed = store.seal(&stream).await?;
+    let sealed = store.seal_session(&stream.session).await?;
     assert!(sealed.initialized && sealed.sealed);
-    assert_eq!(sealed.latest.as_ref().unwrap().state_version, 1);
+    assert_eq!(sealed.streams[0].latest.as_ref().unwrap().state_version, 1);
     drop(store);
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     assert!(
@@ -50,8 +51,8 @@ async fn a_seal_survives_restart_and_rejects_delayed_writes_and_reinitialization
             .await
             .is_err()
     );
-    assert!(store.initialize_stream(&stream).await.is_err());
-    assert_eq!(store.seal(&stream).await?, sealed);
+    assert!(store.initialize_session(&stream.session).await.is_err());
+    assert_eq!(store.seal_session(&stream.session).await?, sealed);
     Ok(())
 }
 
@@ -67,8 +68,9 @@ async fn missing_streams_are_not_recovery_witnesses_and_cannot_be_initialized_af
             .await
             .is_err()
     );
-    assert!(!store.seal(&stream).await?.initialized);
-    assert!(store.initialize_stream(&stream).await.is_err());
+    assert!(store.stream_head(&stream).await.is_err());
+    assert!(!store.seal_session(&stream.session).await?.initialized);
+    assert!(store.initialize_session(&stream.session).await.is_err());
     Ok(())
 }
 
@@ -77,7 +79,7 @@ async fn archived_snapshots_keep_the_recovery_head_and_conflicting_retries_fail(
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     let stream = stream();
-    store.initialize_stream(&stream).await?;
+    store.initialize_session(&stream.session).await?;
     store.append(&stream, "archive", &snapshot(1)).await?;
     store.append(&stream, "archive", &snapshot(1)).await?;
     let conflicting =
@@ -101,5 +103,34 @@ async fn archived_snapshots_keep_the_recovery_head_and_conflicting_retries_fail(
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_session_initialization_covers_multiple_actors_and_a_seal_fences_them_all() -> Result<()>
+{
+    let directory = tempfile::tempdir()?;
+    let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
+    let first = stream();
+    let second = ReplicaStream {
+        prefix: "snapshots/epochs/other/1/".into(),
+        ..first.clone()
+    };
+    store.initialize_session(&first.session).await?;
+    store.append(&first, "archive", &snapshot(1)).await?;
+    store.append(&second, "archive", &snapshot(2)).await?;
+    let sealed = store.seal_session(&first.session).await?;
+    assert_eq!(sealed.streams.len(), 2);
+    assert!(
+        store
+            .append(&second, "archive", &snapshot(3))
+            .await
+            .is_err()
+    );
+    let later = ReplicaStream {
+        prefix: "snapshots/epochs/later/1/".into(),
+        ..first
+    };
+    assert!(store.append(&later, "archive", &snapshot(1)).await.is_err());
     Ok(())
 }

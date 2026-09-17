@@ -12,15 +12,15 @@ use aws_lc_rs::digest::{SHA256, digest};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use super::{ReplicaStream, StreamHead};
+use super::{ReplicaStream, SessionHead, StreamHead};
 use crate::clock::{Clock, SystemClock};
 
 #[async_trait]
 pub trait ReplicaStore: Send + Sync {
-    async fn initialize_stream(&self, stream: &ReplicaStream) -> Result<()>;
+    async fn initialize_session(&self, session: &str) -> Result<()>;
     async fn append(&self, stream: &ReplicaStream, archive_url: &str, bytes: &[u8]) -> Result<()>;
     async fn stream_head(&self, stream: &ReplicaStream) -> Result<StreamHead>;
-    async fn seal(&self, stream: &ReplicaStream) -> Result<StreamHead>;
+    async fn seal_session(&self, session: &str) -> Result<SessionHead>;
     async fn put(&self, object: &str, archive_url: &str, bytes: &[u8]) -> Result<()>;
     async fn read(&self, object: &str) -> Result<Option<Vec<u8>>>;
     async fn pending(&self, limit: u32) -> Result<Vec<PendingSnapshot>>;
@@ -46,6 +46,7 @@ struct StoreState {
     attempts: u64,
     snapshots: HashMap<String, Metadata>,
     streams: HashMap<String, StreamHead>,
+    sessions: HashMap<String, SessionHead>,
     _lock: File,
 }
 
@@ -87,13 +88,13 @@ impl FileReplicaStore {
 
 #[async_trait]
 impl ReplicaStore for FileReplicaStore {
-    async fn initialize_stream(&self, stream: &ReplicaStream) -> Result<()> {
-        let stream = stream.clone();
+    async fn initialize_session(&self, session: &str) -> Result<()> {
+        let session = session.to_owned();
         self.run(move |state| {
-            let mut head = state.head(&stream)?;
-            ensure!(!head.sealed, "replica stream is sealed");
+            let mut head = state.session(&session);
+            ensure!(!head.sealed, "replica session is sealed");
             head.initialized = true;
-            state.save_head(head)
+            state.save_session(head)
         })
         .await
     }
@@ -108,15 +109,30 @@ impl ReplicaStore for FileReplicaStore {
 
     async fn stream_head(&self, stream: &ReplicaStream) -> Result<StreamHead> {
         let stream = stream.clone();
-        self.run(move |state| state.head(&stream)).await
+        self.run(move |state| {
+            ensure!(
+                state.session(&stream.session).initialized,
+                "replica session is absent"
+            );
+            state.head(&stream)
+        })
+        .await
     }
 
-    async fn seal(&self, stream: &ReplicaStream) -> Result<StreamHead> {
-        let stream = stream.clone();
+    async fn seal_session(&self, session: &str) -> Result<SessionHead> {
+        let session = session.to_owned();
         self.run(move |state| {
-            let mut head = state.head(&stream)?;
+            let mut head = state.session(&session);
             head.sealed = true;
-            state.save_head(head.clone())?;
+            state.save_session(head.clone())?;
+            head.streams = state
+                .streams
+                .values()
+                .filter(|head| head.stream.session == session)
+                .cloned()
+                .collect();
+            head.streams
+                .sort_by(|a, b| a.stream.prefix.cmp(&b.stream.prefix));
             Ok(head)
         })
         .await
@@ -185,6 +201,7 @@ impl StoreState {
             attempts: 0,
             snapshots: HashMap::new(),
             streams: HashMap::new(),
+            sessions: HashMap::new(),
             _lock: lock,
         };
         state.restore()?;
@@ -199,6 +216,18 @@ impl StoreState {
                 .is_some_and(|name| name.to_string_lossy().starts_with(".pending-"))
             {
                 fs::remove_file(path)?;
+                continue;
+            }
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "session")
+            {
+                let head: SessionHead = serde_json::from_reader(File::open(&path)?)?;
+                ensure!(
+                    path == self.path(&head.session).with_extension("session"),
+                    "invalid session metadata"
+                );
+                self.sessions.insert(head.session.clone(), head);
                 continue;
             }
             if path.extension().is_none_or(|extension| extension != "blob") {
@@ -271,17 +300,16 @@ impl StoreState {
         }
         Ok(StreamHead {
             stream: stream.clone(),
-            initialized: false,
-            sealed: false,
             latest: None,
         })
     }
 
     fn append(&mut self, stream: &ReplicaStream, archive_url: String, bytes: &[u8]) -> Result<()> {
         let mut head = self.head(stream)?;
+        let session = self.session(&stream.session);
         ensure!(
-            head.initialized && !head.sealed,
-            "replica stream is absent or sealed"
+            session.initialized && !session.sealed,
+            "replica session is absent or sealed"
         );
         let snapshot = stream.snapshot(bytes)?;
         if let Some(latest) = &head.latest {
@@ -307,6 +335,30 @@ impl StoreState {
         )?;
         head.latest = Some(snapshot);
         self.save_head(head)
+    }
+
+    fn session(&self, session: &str) -> SessionHead {
+        self.sessions
+            .get(session)
+            .cloned()
+            .unwrap_or_else(|| SessionHead {
+                session: session.into(),
+                initialized: false,
+                sealed: false,
+                streams: Vec::new(),
+            })
+    }
+
+    fn save_session(&mut self, head: SessionHead) -> Result<()> {
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".pending-")
+            .tempfile_in(&self.directory)?;
+        serde_json::to_writer(&mut temporary, &head)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(self.path(&head.session).with_extension("session"))?;
+        self.sessions.insert(head.session.clone(), head);
+        File::open(&self.directory)?.sync_all()?;
+        Ok(())
     }
 
     fn save_head(&mut self, head: StreamHead) -> Result<()> {

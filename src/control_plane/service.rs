@@ -45,6 +45,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     pub(super) sockets: super::websocket::SocketRegistry,
+    runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     leases: Arc<dyn HostLeaseStore>,
     placements: Arc<dyn ObjectPlacementStore>,
     storage_urls: Arc<dyn StorageUrlSigner>,
@@ -58,6 +59,14 @@ pub struct ControlPlaneService {
 }
 
 impl ControlPlaneService {
+    pub(crate) fn with_runtime_access(
+        mut self,
+        access: Arc<crate::bucket::access::RuntimeAccess>,
+    ) -> Self {
+        self.runtime_access = Some(access);
+        self
+    }
+
     pub(crate) fn new(
         leases: Arc<dyn HostLeaseStore>,
         placements: Arc<dyn ObjectPlacementStore>,
@@ -68,6 +77,7 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            runtime_access: None,
             sockets: super::websocket::SocketRegistry::default(),
             leases,
             placements,
@@ -517,7 +527,39 @@ impl ControlPlaneService {
             principal.process_role == ActorProcessRole::Host,
             "only hosts may use the internal control-plane API"
         );
+        ensure!(
+            !self.storage_urls.uses_epoch_streams()
+                || matches!(command, ControlPlaneCommand::RefreshStorageAccess),
+            "GCS hosts manage their own leases and state authority"
+        );
         match command {
+            ControlPlaneCommand::RefreshStorageAccess => {
+                self.require_active_host(principal).await?;
+                let token = self
+                    .runtime_access
+                    .as_ref()
+                    .context("direct storage is not configured")?
+                    .issue(&principal.scope.namespace_id)
+                    .await?;
+                let replacement_token = self
+                    .host_token_issuer
+                    .issue_host(
+                        &principal.scope.namespace_id,
+                        &principal.host_id,
+                        &principal.session_id,
+                        principal
+                            .code_revision
+                            .as_deref()
+                            .context("host revision missing")?,
+                        &principal.region,
+                    )?
+                    .token;
+                Ok(ControlPlaneCommandReply::StorageAccess {
+                    token,
+                    replacement_token,
+                })
+            }
+
             ControlPlaneCommand::LoadActorState {
                 actor,
                 host_id,
@@ -832,6 +874,17 @@ impl ControlPlaneService {
             if let Some(timings) = timings.as_deref_mut() {
                 timings.host_ensured_at_ms = Some(timings.elapsed_ms());
             }
+            if self.storage_urls.uses_epoch_streams() {
+                let placement = self.activate_host(actor, &spec, &lease, &region).await?;
+                if let Some(timings) = timings.as_deref_mut() {
+                    timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
+                }
+                return Ok(RoutedActor {
+                    placement,
+                    lease,
+                    spec,
+                });
+            }
             match self
                 .placements
                 .claim_actor(actor, current.as_ref(), &lease.id, &region)
@@ -856,6 +909,65 @@ impl ControlPlaneService {
                 PlacementClaim::Acquired(_) | PlacementClaim::Current(_) => continue,
             }
         }
+    }
+
+    async fn activate_host(
+        &self,
+        actor: &ActorKey,
+        spec: &HostLaunchSpec,
+        lease: &HostLease,
+        region: &str,
+    ) -> Result<ObjectPlacement> {
+        let token = self.host_token_issuer.issue_host(
+            &actor.namespace_id,
+            &lease.id,
+            &lease.session_id,
+            &spec.host_revision(),
+            region,
+        )?;
+        let channel = self
+            .host_channels
+            .try_get_with(lease.route.clone(), async {
+                Endpoint::new(lease.route.clone())?
+                    .connect_timeout(Duration::from_secs(5))
+                    .connect()
+                    .await
+                    .context("connect to actor host")
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        let mut request = Request::new(crate::grpc::proto::ActivateActorRequest {
+            actor: Some(actor.clone().into()),
+        });
+        request.set_timeout(super::CONTROL_PLANE_REQUEST_TIMEOUT);
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {}", token.token).parse()?);
+        let activated = ActorHostServiceClient::new(channel)
+            .activate(request)
+            .await?
+            .into_inner();
+        ensure!(
+            activated.owner_epoch > 0,
+            "host activation returned no ownership epoch"
+        );
+        if activated.state_version > 0 {
+            validate_snapshot_object_name(actor, activated.state_version, &activated.state_object)?;
+        } else {
+            ensure!(
+                activated.state_object.is_empty(),
+                "uninitialized activation has a snapshot"
+            );
+        }
+        Ok(ObjectPlacement {
+            object: actor.storage_key(),
+            owner: lease.id.clone(),
+            owner_epoch: activated.owner_epoch,
+            home_region: region.into(),
+            state_version: activated.state_version,
+            state_object: (!activated.state_object.is_empty()).then_some(activated.state_object),
+            last_request_id: None,
+        })
     }
 
     async fn ensure_actor_host(
@@ -1024,6 +1136,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
+    runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
     runtime: HostSandboxRuntimeConfig,
     issuer: ActorJwtIssuer,
@@ -1031,6 +1144,13 @@ pub(crate) struct SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
+    pub(crate) fn with_runtime_access(
+        mut self,
+        access: Arc<crate::bucket::access::RuntimeAccess>,
+    ) -> Self {
+        self.runtime_access = Some(access);
+        self
+    }
     pub(crate) fn new(
         provider: Arc<dyn SandboxProvider>,
         runtime: HostSandboxRuntimeConfig,
@@ -1038,6 +1158,7 @@ impl SandboxHostProvisioner {
         leases: Arc<dyn HostLeaseStore>,
     ) -> Self {
         Self {
+            runtime_access: None,
             provider,
             runtime,
             issuer,
@@ -1050,7 +1171,10 @@ impl SandboxHostProvisioner {
 impl HostProvisioner for SandboxHostProvisioner {
     async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
         let started_at = Instant::now();
-        let request = self.request(spec, region)?;
+        let mut request = self.request(spec, region)?;
+        if let Some(access) = &self.runtime_access {
+            request.runtime_config = Some(access.bootstrap(&spec.namespace_id, region).await?);
+        }
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -1139,7 +1263,7 @@ impl SandboxHostProvisioner {
     fn request(&self, spec: &HostLaunchSpec, region: &str) -> Result<EnsureHostRequest> {
         let revision = spec.host_revision();
         let host_id = HostId::new(format!(
-            "host.v1.{}.{}.{}",
+            "host.v2.{}:{}.{}",
             spec.namespace_id,
             revision,
             uuid::Uuid::new_v4()
@@ -1150,6 +1274,7 @@ impl SandboxHostProvisioner {
             .issue_host(&spec.namespace_id, &host_id, &session_id, &revision, region)?
             .token;
         Ok(EnsureHostRequest {
+            runtime_config: None,
             namespace_id: spec.namespace_id.clone(),
             code_revision: revision,
             canonical_region: region.to_owned(),
@@ -1224,7 +1349,7 @@ fn validate_state_owner(
 
 fn host_matches_revision(host: &HostId, namespace: &str, revision: &str) -> bool {
     host.as_str()
-        .starts_with(&format!("host.v1.{namespace}.{revision}."))
+        .starts_with(&format!("host.v2.{namespace}:{revision}."))
 }
 
 fn validate_host_route(route: &str) -> Result<()> {
@@ -1345,9 +1470,11 @@ mod tests {
                 stream: None,
                 replication: None,
                 state_version,
-                object_name: format!(
-                    "snapshots/00/00000000000000000000000000000000/project-1/Counter/counter-1/{state_version}.json"
-                ),
+                object_name: crate::storage_urls::snapshot_object_name(
+                    _actor,
+                    state_version,
+                    "00000000000000000000000000000000",
+                )?,
                 url: "https://storage.example.com/write".into(),
                 expires_at_ms: i64::MAX,
             })
@@ -1416,6 +1543,155 @@ mod tests {
                 resource_ids: vec!["sandbox-1".into()],
             })
         }
+    }
+
+    #[tokio::test]
+    async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
+    -> Result<()> {
+        use crate::grpc::proto::{
+            self,
+            actor_host_service_server::{ActorHostService, ActorHostServiceServer},
+        };
+        use tokio_stream::wrappers::TcpListenerStream;
+
+        struct Host {
+            auth: ActorJwtVerifier,
+        }
+        #[tonic::async_trait]
+        impl ActorHostService for Host {
+            async fn activate(
+                &self,
+                request: Request<proto::ActivateActorRequest>,
+            ) -> Result<Response<proto::ActivateActorReply>, Status> {
+                let principal = self.auth.authenticate(&request).await?;
+                assert!(principal.invocation.is_none());
+                assert_eq!(principal.scope.namespace_id, "project-1");
+                assert_eq!(request.get_ref().actor.as_ref().unwrap().actor_id, "one");
+                Ok(Response::new(proto::ActivateActorReply {
+                    owner_epoch: 42,
+                    state_version: 0,
+                    state_object: String::new(),
+                }))
+            }
+            async fn invoke(
+                &self,
+                _: Request<proto::HostInvokeActorRequest>,
+            ) -> Result<Response<proto::InvokeActorReply>, Status> {
+                Err(Status::unimplemented("unused"))
+            }
+            async fn handle_socket(
+                &self,
+                _: Request<proto::HostSocketEventRequest>,
+            ) -> Result<Response<proto::InvokeActorReply>, Status> {
+                Err(Status::unimplemented("unused"))
+            }
+        }
+        struct Provisioner(HostLease);
+        #[async_trait]
+        impl HostProvisioner for Provisioner {
+            async fn ensure_host(&self, _: &HostLaunchSpec, _: &str) -> Result<HostLease> {
+                Ok(self.0.clone())
+            }
+            async fn warm_image(&self, _: &HostLaunchSpec, _: &str) -> Result<ImageWarmup> {
+                anyhow::bail!("unused")
+            }
+            async fn terminate_hosts(
+                &self,
+                _: &HostLaunchSpec,
+                _: &[String],
+            ) -> Result<HostTermination> {
+                anyhow::bail!("unused")
+            }
+        }
+        struct HostOwnedUrls;
+        #[async_trait]
+        impl StorageUrlSigner for HostOwnedUrls {
+            fn uses_epoch_streams(&self) -> bool {
+                true
+            }
+            fn regions(&self) -> Vec<String> {
+                vec!["us-east".into()]
+            }
+            async fn read_url(&self, _: &str, _: &str) -> Result<String> {
+                anyhow::bail!("no snapshot")
+            }
+            async fn write_ticket(
+                &self,
+                _: &str,
+                _: &ActorKey,
+                _: u64,
+            ) -> Result<StateWriteTicket> {
+                panic!("control plane prepared a write")
+            }
+        }
+        let issuer = test_issuer()?;
+        let invocation_auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "invocation",
+            ActorTokenPurpose::Invocation,
+            Duration::from_secs(60),
+        )?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let route = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(ActorHostServiceServer::new(Host {
+                    auth: invocation_auth,
+                }))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+        });
+        let registry = Arc::new(LocalAdminRegistry::default());
+        registry
+            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
+                namespace_id: "project-1".into(),
+                code_revision: "revision".into(),
+                image_ref: "image".into(),
+                working_directory: "/app".into(),
+                actor_entrypoint: None,
+                secret_refs: vec![],
+                socket_gateway_url: None,
+            })
+            .await?;
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            placements.clone(),
+            Arc::new(HostOwnedUrls),
+            ActorJwtVerifier::for_scope(
+                issuer.verifier_keys_json()?,
+                "issuer",
+                "authority",
+                ActorTokenPurpose::ControlPlane,
+                Duration::from_secs(60),
+            )?,
+            registry,
+            issuer.clone(),
+            Arc::new(Provisioner(HostLease {
+                id: HostId::new("host.v2.project-1:revision.host"),
+                session_id: uuid::Uuid::new_v4().to_string(),
+                route: route.clone(),
+                expires_at_ms: u64::MAX,
+            })),
+        );
+        let actor = ActorKey {
+            namespace_id: "project-1".into(),
+            actor_type: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let principal =
+            ActorPrincipal::for_application("project-1", "us-east".into(), unix_seconds()? + 60);
+        let target = service
+            .resolve_workflow_route(&principal, &actor, None)
+            .await?;
+        assert_eq!(target.route, route);
+        assert_eq!(target.owner_epoch, 42);
+        assert!(placements.get(&actor.storage_key()).await?.is_none());
+        server.abort();
+        Ok(())
     }
 
     #[tokio::test]
@@ -1640,6 +1916,13 @@ mod tests {
         }
         #[tonic::async_trait]
         impl ActorHostService for Host {
+            async fn activate(
+                &self,
+                _: Request<proto::ActivateActorRequest>,
+            ) -> Result<Response<proto::ActivateActorReply>, Status> {
+                Err(Status::unimplemented("outside this test"))
+            }
+
             async fn invoke(
                 &self,
                 _: Request<proto::HostInvokeActorRequest>,
@@ -1793,7 +2076,7 @@ mod tests {
         let actor = ActorStorageKey::new("object.v1.project.Counter.one");
         let current = ObjectPlacement {
             object: actor,
-            owner: HostId::new("host.v1.project.revision.host"),
+            owner: HostId::new("host.v2.project:revision.host"),
             owner_epoch: 1,
             home_region: "north-america-east".into(),
             state_version: 0,
@@ -1888,7 +2171,7 @@ mod tests {
             );
             Ok(HostLease {
                 id: HostId::new(format!(
-                    "host.v1.{}.{}.{region}",
+                    "host.v2.{}:{}.{region}",
                     spec.namespace_id,
                     spec.host_revision()
                 )),

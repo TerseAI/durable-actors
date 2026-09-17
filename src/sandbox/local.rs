@@ -286,6 +286,7 @@ mod tests {
         );
         provider.shutdown().await;
         let request = EnsureHostRequest {
+            runtime_config: None,
             namespace_id: "local".into(),
             code_revision: "local".into(),
             canonical_region: "north-america-east".into(),

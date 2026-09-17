@@ -139,8 +139,7 @@ impl ObjectPlacementStore for SqliteStore {
             }
             .validate()?;
         }
-        let pattern =
-            namespace.map(|namespace| format!("snapshots/??/{}/{namespace}/*", "?".repeat(32)));
+        let pattern = namespace.map(|namespace| format!("snapshots/{namespace}/*"));
         let after = after.map(str::to_owned);
         Ok(self.connection.call(move |connection| -> rusqlite::Result<_> {
             let mut statement = connection.prepare(

@@ -1,3 +1,4 @@
+pub(crate) mod access;
 mod gcs;
 mod leases;
 mod peers;

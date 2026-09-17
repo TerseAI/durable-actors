@@ -26,12 +26,20 @@ const STATE_WRITE_TICKET_SAFETY: Duration = Duration::from_secs(5);
 
 #[async_trait]
 pub(crate) trait StateCommitAuthority: Send + Sync {
+    async fn acquire_actor(
+        &self,
+        _actor: &crate::actor::ActorKey,
+        _host: &super::HostId,
+    ) -> Result<ActorActivation> {
+        anyhow::bail!("host-owned activation requires bucket storage")
+    }
+
     async fn load_actor_state(
         &self,
         _actor: &crate::actor::ActorKey,
         _host: &super::HostId,
         _epoch: u64,
-    ) -> Result<Option<(u64, String)>> {
+    ) -> Result<Option<(u64, StateSource)>> {
         Ok(None)
     }
     fn ensure_authority(&self) -> Result<()> {
@@ -57,6 +65,19 @@ pub(crate) trait StateCommitAuthority: Send + Sync {
     ) -> Result<CommittedState>;
 }
 
+pub(crate) enum StateSource {
+    Url(String),
+    Bytes(bytes::Bytes),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ActorActivation {
+    pub state_object: Option<String>,
+    pub owner_epoch: u64,
+    pub state_version: u64,
+    pub state: Option<bytes::Bytes>,
+}
+
 #[derive(Debug)]
 pub(crate) struct CommittedState {
     pub(super) state_version: u64,
@@ -70,10 +91,10 @@ impl StateCommitAuthority for ControlPlaneClient {
         actor: &crate::actor::ActorKey,
         host: &super::HostId,
         epoch: u64,
-    ) -> Result<Option<(u64, String)>> {
+    ) -> Result<Option<(u64, StateSource)>> {
         ControlPlaneClient::load_actor_state(self, actor, host, epoch)
             .await
-            .map(Some)
+            .map(|(version, url)| Some((version, StateSource::Url(url))))
     }
     fn ensure_authority(&self) -> Result<()> {
         self.ensure_live_lease()
@@ -122,6 +143,7 @@ pub(super) struct ActorRuntime {
     state: Arc<dyn StateTransport>,
     publisher: Arc<dyn ActorSocketPublisher>,
     cached_state: Option<CachedActorState>,
+    activation: Option<ActorActivation>,
 }
 
 impl ActorRuntime {
@@ -139,11 +161,42 @@ impl ActorRuntime {
             state,
             publisher,
             cached_state: None,
+            activation: None,
         }
     }
 
     pub(super) fn endpoint(&self) -> &HostEndpoint {
         &self.endpoint
+    }
+
+    pub(super) async fn activate_actor(
+        &mut self,
+        actor: &crate::actor::ActorKey,
+    ) -> Result<ActorActivation> {
+        self.commits.ensure_authority()?;
+        if let Some(activation) = &self.activation {
+            return Ok(activation.clone());
+        }
+        let mut activation = self.commits.acquire_actor(actor, &self.endpoint.id).await?;
+        if self.cached_state.is_none() {
+            let cached = if activation.state_version == 0 {
+                CachedActorState::new(activation.owner_epoch)
+            } else {
+                let bytes = activation
+                    .state
+                    .take()
+                    .context("activation has no recovered state")?;
+                CachedActorState::from_loaded(
+                    activation.owner_epoch,
+                    activation.state_version,
+                    &bytes,
+                )?
+            };
+            self.cached_state = Some(cached);
+        }
+        self.commits.ensure_authority()?;
+        self.activation = Some(activation.clone());
+        Ok(activation)
     }
 
     pub(super) async fn invoke_actor(
@@ -406,26 +459,23 @@ impl ActorRuntime {
             .commits
             .load_actor_state(actor, &self.endpoint.id, owner_epoch)
             .await?;
-        let (state_version, state_read_url) = refreshed
-            .as_ref()
-            .map(|(version, url)| (*version, url.as_str()))
-            .unwrap_or((state_version, state_read_url));
+        let (state_version, source) =
+            refreshed.unwrap_or_else(|| (state_version, StateSource::Url(state_read_url.into())));
         if state_version == 0 {
-            ensure!(
-                state_read_url.is_empty(),
-                "uninitialized actor has a state URL"
-            );
+            let empty = match &source {
+                StateSource::Url(url) => url.is_empty(),
+                StateSource::Bytes(bytes) => bytes.is_empty(),
+            };
+            ensure!(empty, "uninitialized actor has state");
             return Ok(CachedActorState::new(owner_epoch));
         }
-        ensure!(
-            !state_read_url.is_empty(),
-            "initialized actor has no state URL"
-        );
-        let loaded = self
-            .state
-            .read(state_read_url)
-            .await
-            .context("load actor state")?;
+        let loaded = match source {
+            StateSource::Url(url) => {
+                ensure!(!url.is_empty(), "initialized actor has no state URL");
+                self.state.read(&url).await.context("load actor state")?
+            }
+            StateSource::Bytes(bytes) => bytes,
+        };
         timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
         let cached = CachedActorState::from_loaded(owner_epoch, state_version, &loaded)?;
         timings.state_decoded_at_ms = Some(timings.elapsed_ms());

@@ -38,6 +38,44 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
+        use base64::Engine;
+        let authorization = self
+            .authorization
+            .read()
+            .map_err(|_| anyhow::anyhow!("authorization lock poisoned"))?;
+        let payload = authorization
+            .to_str()?
+            .split('.')
+            .nth(1)
+            .context("host JWT has no payload")?;
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)?,
+        )?;
+        claims["exp"]
+            .as_u64()
+            .and_then(|value| value.checked_mul(1000))
+            .context("host JWT has no expiration")
+    }
+
+    pub(crate) async fn refresh_storage_access(
+        &self,
+    ) -> Result<crate::bucket::access::StorageToken> {
+        match self
+            .execute(ControlPlaneCommand::RefreshStorageAccess)
+            .await?
+        {
+            ControlPlaneCommandReply::StorageAccess {
+                token,
+                replacement_token,
+            } => {
+                self.replace_token(&replacement_token)?;
+                Ok(token)
+            }
+            _ => anyhow::bail!("unexpected storage credentials response"),
+        }
+    }
+
     pub(crate) async fn load_actor_state(
         &self,
         actor: &ActorKey,
@@ -66,9 +104,7 @@ impl ControlPlaneClient {
             .context("parse actor control-plane endpoint")?
             .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
             .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
-            .connect()
-            .await
-            .context("connect to actor control plane")?;
+            .connect_lazy();
         Ok(Self {
             lease_fence: Arc::new(Mutex::new(LeaseFence::default())),
             socket_gateway: endpoint,
@@ -235,13 +271,13 @@ impl HostLeaseRegistry for ControlPlaneClient {
 }
 
 #[derive(Default)]
-struct LeaseFence {
+pub(crate) struct LeaseFence {
     deadline: Option<Instant>,
-    fenced: bool,
+    pub(crate) fenced: bool,
 }
 
 impl LeaseFence {
-    fn begin(&mut self, now: Instant) -> Result<()> {
+    pub(crate) fn begin(&mut self, now: Instant) -> Result<()> {
         if self.deadline.is_some() {
             self.check(now)?;
         }
@@ -249,7 +285,12 @@ impl LeaseFence {
         Ok(())
     }
 
-    fn confirm(&mut self, started: Instant, duration: Duration, now: Instant) -> Result<()> {
+    pub(crate) fn confirm(
+        &mut self,
+        started: Instant,
+        duration: Duration,
+        now: Instant,
+    ) -> Result<()> {
         self.begin(now)?;
         let window = duration.saturating_sub(Duration::from_secs(5));
         let deadline = started + window;
@@ -264,7 +305,7 @@ impl LeaseFence {
         Ok(())
     }
 
-    fn check(&mut self, now: Instant) -> Result<()> {
+    pub(crate) fn check(&mut self, now: Instant) -> Result<()> {
         let deadline = self.deadline.context("host lease is not confirmed yet")?;
         if deadline <= now {
             self.fenced = true;

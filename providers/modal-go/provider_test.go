@@ -58,13 +58,13 @@ func TestHostAttachesNamedSecretsAndSocketGateway(t *testing.T) {
 
 func TestExistingHostKeepsItsIdentity(t *testing.T) {
 	r := testRequest()
-	existing := &fakeSandbox{metadata: `{"hostId":"host.v1.qa.existing","route":"https://existing.test","canonicalRegion":"north-america-east"}`}
+	existing := &fakeSandbox{metadata: `{"hostId":"host.v2.qa:existing","route":"https://existing.test","canonicalRegion":"north-america-east"}`}
 	api := &fakeAPI{createErr: modal.AlreadyExistsError{}, found: existing}
 	handle, err := newTestProvider(api).ensureHost(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handle.HostID != "host.v1.qa.existing" || !handle.Provisioning.Reused {
+	if handle.HostID != "host.v2.qa:existing" || !handle.Provisioning.Reused {
 		t.Fatalf("unexpected handle: %+v", handle)
 	}
 	if !reflect.DeepEqual(existing.calls, []string{"poll", "metadata", "detach"}) {
@@ -184,7 +184,7 @@ func TestTerminateUsesExactNamesAndIgnoresMissingHosts(t *testing.T) {
 }
 
 func TestResourceNamesMatchJavaScript(t *testing.T) {
-	if got := resourceName("qa", "r1", "north-america-east"); got != "do-host-a4e56f1e61a3a5e94383080204b7bd4c" {
+	if got := resourceName("qa", "r1", "north-america-east"); got != "do-host-v2-a4e56f1e61a3a5e94383080204b7bd4c" {
 		t.Fatal(got)
 	}
 }
@@ -193,7 +193,7 @@ func newTestProvider(api modalAPI) *provider {
 	return &provider{api: api, now: time.Now, started: time.Now()}
 }
 func testRequest() ensureRequest {
-	return ensureRequest{NamespaceID: "qa", CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v1.qa.new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutMS: 60000, HostIdleTimeoutMS: 300000}
+	return ensureRequest{NamespaceID: "qa", CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v2.qa:new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutMS: 60000, HostIdleTimeoutMS: 300000}
 }
 
 type fakeAPI struct {

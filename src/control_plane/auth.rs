@@ -82,7 +82,7 @@ impl ActorPrincipal {
     }
 
     pub(crate) fn host_id_prefix(&self) -> String {
-        format!("host.v1.{}.", self.scope.namespace_id)
+        format!("host.v2.{}:", self.scope.namespace_id)
     }
 }
 
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(principal.scope.namespace_id, "namespace-1");
         assert_eq!(
             principal.host_id,
-            HostId::new("host.v1.namespace-1.00000000-0000-4000-8000-000000000001")
+            HostId::new("host.v2.namespace-1:00000000-0000-4000-8000-000000000001")
         );
         assert_eq!(principal.session_id, "00000000-0000-4000-8000-000000000002");
         Ok(())
@@ -452,9 +452,9 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
-                "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "processRole": "host",
                 "storageRegion": "us-east",
@@ -489,9 +489,9 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "somewhere-else",
-                "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
-                "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now,
@@ -507,9 +507,9 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
-                "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now - 60,
@@ -532,9 +532,9 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
-                "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now,
@@ -590,9 +590,9 @@ mod tests {
         json!({
             "iss": "durable-object-control-plane",
             "aud": "durable-object-authority",
-            "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+            "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
             "namespaceId": "namespace-1",
-            "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
+            "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
             "sessionId": "00000000-0000-4000-8000-000000000002",
             "processRole": "host",
             "storageRegion": "default",

@@ -3,6 +3,7 @@ syntax = "proto3";
 package durable_object.v1;
 
 service ActorHostService {
+  rpc Activate(ActivateActorRequest) returns (ActivateActorReply);
   rpc Invoke(HostInvokeActorRequest) returns (InvokeActorReply);
   rpc HandleSocket(HostSocketEventRequest) returns (InvokeActorReply);
 }
@@ -70,3 +71,10 @@ message ActorFailed {
 }
 
 message Reroute {}
+
+message ActivateActorRequest { ActorKey actor = 1; }
+message ActivateActorReply {
+  uint64 owner_epoch = 1;
+  uint64 state_version = 2;
+  string state_object = 3;
+}

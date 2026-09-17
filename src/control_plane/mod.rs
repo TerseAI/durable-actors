@@ -2,6 +2,7 @@ pub(crate) mod admin;
 mod auth;
 mod browser_socket;
 mod client;
+pub(crate) use client::LeaseFence;
 mod event_sink;
 mod inspection;
 #[cfg(test)]

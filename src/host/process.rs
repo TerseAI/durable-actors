@@ -32,6 +32,7 @@ const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
+    runtime_config: Option<crate::bucket::access::HostStorageConfig>,
     pub control_plane_url: String,
     pub socket_gateway_url: String,
     pub host_token: String,
@@ -92,7 +93,9 @@ where
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
 
-    let service = ActorHostGrpcService::new(host.clone(), invocation_auth).into_service();
+    let service =
+        ActorHostGrpcService::new(host.clone(), config.session_id.clone(), invocation_auth)
+            .into_service();
     if let Err(error) = executor_connection
         .mark_ready(Some(socket_gateway.clone()), Some(socket_gateway))
         .await
@@ -155,7 +158,7 @@ impl ActorHostConfig {
         ensure!(
             host_id
                 .as_str()
-                .starts_with(&format!("host.v1.{namespace_id}.")),
+                .starts_with(&format!("host.v2.{namespace_id}:")),
             "DURABLE_OBJECT_HOST_ID does not belong to DURABLE_OBJECT_NAMESPACE_ID"
         );
         let session_id = required(&mut get, "DURABLE_OBJECT_SESSION_ID")?;
@@ -210,7 +213,13 @@ impl ActorHostConfig {
             renew_every < lease_duration,
             "DURABLE_OBJECT_RENEW_MS must be shorter than DURABLE_OBJECT_LEASE_MS"
         );
+        let runtime_config = get("DURABLE_OBJECT_RUNTIME_CONFIG")
+            .filter(|value| !value.is_empty())
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .context("parse host runtime configuration")?;
         Ok(Self {
+            runtime_config,
             socket_gateway_url,
             control_plane_url,
             host_token,
@@ -277,7 +286,7 @@ async fn prepare_actor_host(
         connect_host_dependencies(
             timed_connection(
                 started_at,
-                &mut timings.control_plane_connected_at_ms,
+                &mut timings.control_plane_client_ready_at_ms,
                 ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
             ),
             bind_host(
@@ -308,21 +317,45 @@ async fn prepare_actor_host(
         .await?,
     );
     let archive = crate::replication::start_archiver(local.clone());
+    let (commits, registry, state): (
+        Arc<dyn super::actor_runtime::StateCommitAuthority>,
+        Arc<dyn HostLeaseRegistry>,
+        Arc<dyn crate::state_transport::StateTransport>,
+    ) = if let Some(storage) = config.runtime_config.clone() {
+        let storage = Arc::new(
+            super::storage::HostStorage::new(
+                storage,
+                config.host_id.clone(),
+                config.session_id.clone(),
+                config.namespace_id.clone(),
+                config.control_plane_url.clone(),
+                control_plane.clone(),
+                archive.child_token(),
+            )
+            .await?,
+        );
+        (storage.clone(), storage.clone(), storage.runtime.clone())
+    } else {
+        (
+            control_plane.clone(),
+            control_plane.clone(),
+            Arc::new(HttpStateTransport::new()),
+        )
+    };
     let host = Arc::new(ActorHost::new(
         endpoint.clone(),
         config.namespace_id.clone(),
         executor_connection.executor(),
-        control_plane.clone(),
+        commits,
         Arc::new(crate::replication::ReplicatedStateTransport::new(
-            Arc::new(HttpStateTransport::new()),
-            local,
+            state, local,
         )),
         control_plane.clone(),
     ));
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,
         config.session_id.clone(),
-        control_plane.clone() as Arc<dyn HostLeaseRegistry>,
+        registry,
         Arc::new(SystemClock),
         config.lease_duration,
         config.renew_every,
@@ -415,7 +448,7 @@ struct HostStartupTimings {
     started_at: Instant,
     configuration_loaded_at_ms: f64,
     authentication_ready_at_ms: Option<f64>,
-    control_plane_connected_at_ms: Option<f64>,
+    control_plane_client_ready_at_ms: Option<f64>,
     listener_bound_at_ms: Option<f64>,
     route_resolved_at_ms: Option<f64>,
     executor_attached_at_ms: Option<f64>,
@@ -430,7 +463,7 @@ impl HostStartupTimings {
             started_at: config.startup_started_at,
             configuration_loaded_at_ms: config.configuration_loaded_at_ms,
             authentication_ready_at_ms: None,
-            control_plane_connected_at_ms: None,
+            control_plane_client_ready_at_ms: None,
             listener_bound_at_ms: None,
             route_resolved_at_ms: None,
             executor_attached_at_ms: None,
@@ -458,7 +491,7 @@ fn log_startup(
         started_at_ms = 0,
         configuration_loaded_at_ms = timings.configuration_loaded_at_ms,
         authentication_ready_at_ms = timings.authentication_ready_at_ms,
-        control_plane_connected_at_ms = timings.control_plane_connected_at_ms,
+        control_plane_client_ready_at_ms = timings.control_plane_client_ready_at_ms,
         listener_bound_at_ms = timings.listener_bound_at_ms,
         route_resolved_at_ms = timings.route_resolved_at_ms,
         executor_attached_at_ms = timings.executor_attached_at_ms,
@@ -764,7 +797,7 @@ mod tests {
         let timings = HostStartupTimings::new(&config);
 
         assert!(timings.configuration_loaded_at_ms <= timings.elapsed_ms());
-        assert!(timings.control_plane_connected_at_ms.is_none());
+        assert!(timings.control_plane_client_ready_at_ms.is_none());
         assert!(timings.javascript_spawned_at_ms.is_none());
         assert!(timings.executor_notified_at_ms.is_none());
     }
@@ -780,7 +813,7 @@ mod tests {
             ("DURABLE_OBJECT_NAMESPACE_ID".into(), "project-1".into()),
             (
                 "DURABLE_OBJECT_HOST_ID".into(),
-                "host.v1.project-1.revision-1.host-1".into(),
+                "host.v2.project-1:revision-1.host-1".into(),
             ),
             (
                 "DURABLE_OBJECT_SESSION_ID".into(),

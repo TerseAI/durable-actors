@@ -26,7 +26,8 @@ pub fn replica_router(
 ) -> Router {
     Router::new()
         .route("/_replica/state", get(read).put(write))
-        .route("/_replica/stream", post(initialize).get(head).put(append))
+        .route("/_replica/session", post(initialize))
+        .route("/_replica/stream", get(head).put(append))
         .route("/_replica/seal", post(seal))
         .route("/health", get(|| async { StatusCode::OK }))
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -38,6 +39,21 @@ pub fn replica_router(
 }
 
 impl ReplicaServer {
+    fn session_grant(
+        &self,
+        query: &AccessQuery,
+        operation: &str,
+    ) -> Result<super::ReplicaGrant, StatusCode> {
+        let grant = self
+            .access
+            .verify(&query.token, operation)
+            .map_err(|_| StatusCode::FORBIDDEN)?;
+        if grant.host_id != self.host_id || grant.stream.is_some() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        Ok(grant)
+    }
+
     fn stream_grant(
         &self,
         query: &AccessQuery,
@@ -63,10 +79,10 @@ async fn initialize(
     State(server): State<ReplicaServer>,
     Query(query): Query<AccessQuery>,
 ) -> Result<StatusCode, StatusCode> {
-    let grant = server.stream_grant(&query, "INITIALIZE")?;
+    let grant = server.session_grant(&query, "INITIALIZE_SESSION")?;
     server
         .store
-        .initialize_stream(grant.stream.as_ref().unwrap())
+        .initialize_session(&grant.object)
         .await
         .map_err(unavailable)?;
     Ok(StatusCode::CREATED)
@@ -88,11 +104,11 @@ async fn head(
 async fn seal(
     State(server): State<ReplicaServer>,
     Query(query): Query<AccessQuery>,
-) -> Result<Json<super::StreamHead>, StatusCode> {
-    let grant = server.stream_grant(&query, "SEAL")?;
+) -> Result<Json<super::SessionHead>, StatusCode> {
+    let grant = server.session_grant(&query, "SEAL_SESSION")?;
     server
         .store
-        .seal(grant.stream.as_ref().unwrap())
+        .seal_session(&grant.object)
         .await
         .map(Json)
         .map_err(unavailable)

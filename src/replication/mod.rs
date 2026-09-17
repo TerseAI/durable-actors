@@ -16,7 +16,7 @@ pub use archive::{ArchiveTicket, archive_pending, start_archiver};
 pub use process::serve_replica_host;
 pub use server::replica_router;
 pub use store::{FileReplicaStore, PendingSnapshot, ReplicaStore};
-pub use stream::{ReplicaStream, SnapshotRef, StreamHead};
+pub use stream::{ReplicaStream, SessionHead, SnapshotRef, StreamHead};
 pub use transport::ReplicatedStateTransport;
 
 pub const MAX_REPLICAS: usize = 8;
