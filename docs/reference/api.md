@@ -154,7 +154,7 @@ Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`
 
 ### Saved state and serialization
 
-Stack `@Emittable` with `@Persisted` on a public field to publish its final value after each successful operation commits. Nested mutations are detected and coalesced once per operation. Private and protected fields are never included in automatic socket state. See [generated browser clients](../../sdk/README.md#browser-clients) for typed subscriptions.
+For backend SDK connections, stack `@Emittable` with `@Persisted` on a public field to publish its final value after each successful operation commits. Nested mutations are detected and coalesced once per operation. Private and protected fields are never included in automatic socket state. Native browser connections receive explicit application messages only; use `socket.send()` and `this.broadcast()` for them.
 
 Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `little-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
 
@@ -193,7 +193,7 @@ A method returning `undefined` produces `null` at runtime. TypeScript return ann
 
 When an actor method throws, its state changes are not saved. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
-Every accepted connection automatically receives only the actor's persisted properties, including TypeScript private fields. Those fields must not contain secrets that its connected clients are not authorized to read.
+Backend SDK connections receive automatic public persisted state, excluding private and protected fields. Signed browser connections receive only explicit application messages.
 
 Saved state is limited to 16 MiB of JSON. Method requests and responses must fit 32 MiB, including encoded state, arguments or results, and message overhead. Individual limits do not guarantee that a near-limit combination fits in one request.
 

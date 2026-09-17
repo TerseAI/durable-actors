@@ -11,12 +11,14 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
-use axum::Router;
+use axum::{Router, extract::Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tracing::{Level, info_span};
 
 use crate::{
     clock::SystemClock,
@@ -28,6 +30,7 @@ use crate::{
 use super::{
     ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, ControlPlaneService,
     admin::{AdminRegistry, AdminService, HostLaunchSpec},
+    contracts::PublicActorContract,
     public_api,
     service::SandboxHostProvisioner,
 };
@@ -48,6 +51,8 @@ pub struct DevOptions {
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
     pub sdk_host: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    pub contract: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -108,7 +113,7 @@ pub async fn serve_local(
     );
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx little-actors generate\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate\nRestart this command after changing actor code.",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {
@@ -137,7 +142,7 @@ impl LocalServer {
         let stop = CancellationToken::new();
         let stopped = stop.clone();
         let server = tokio::spawn(async move {
-            axum::serve(listener, routes.into_axum_router())
+            axum::serve(listener, logged_routes(routes))
                 .with_graceful_shutdown(stopped.cancelled_owned())
                 .await
         });
@@ -174,6 +179,20 @@ impl LocalServer {
         }
         result
     }
+}
+
+fn logged_routes(routes: tonic::service::Routes) -> Router {
+    routes.into_axum_router().layer(
+        TraceLayer::new_for_http()
+            .make_span_with(|request: &Request| {
+                info_span!(
+                    "control_plane_request",
+                    method = %request.method(),
+                    path = request.uri().path(),
+                )
+            })
+            .on_response(DefaultOnResponse::new().level(Level::INFO)),
+    )
 }
 
 fn prepare_directory(directory: &Path) -> Result<File> {
@@ -252,6 +271,7 @@ async fn local_routes(
     provider: Arc<LocalSandboxProvider>,
     api_key: &str,
 ) -> Result<tonic::service::Routes> {
+    let contract = options.contract.as_deref().map(read_contract).transpose()?;
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -262,7 +282,7 @@ async fn local_routes(
     )?;
     let spec = HostLaunchSpec {
         namespace_id: "local".into(),
-        code_revision: "local".into(),
+        code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
         actor_entrypoint: Some(options.entrypoint.clone()),
@@ -270,7 +290,7 @@ async fn local_routes(
         socket_gateway_url: None,
     };
     database
-        .ensure_namespace_and_register_deployment(&spec)
+        .register_deployment(&spec, contract.as_ref())
         .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
@@ -306,6 +326,11 @@ async fn local_routes(
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.routes.clone());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
+}
+
+fn read_contract(path: &Path) -> Result<PublicActorContract> {
+    let bytes = std::fs::read(path).context("read local actor contract")?;
+    PublicActorContract::new(serde_json::from_slice(&bytes).context("parse local actor contract")?)
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

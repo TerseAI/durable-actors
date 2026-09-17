@@ -21,7 +21,7 @@ Backend operations require:
 Authorization: Bearer <api-key>
 ```
 
-The SDK and CLI discover local credentials automatically. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps use the generated SDK and your authenticated proxy endpoint to obtain actor-scoped WebSocket tickets.
+The SDK and CLI discover local credentials automatically. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped URLs and keys from your authenticated backend and use native WebSockets.
 
 | Operation                      | Method and path                                       | Credential                                    |
 | ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
@@ -249,7 +249,7 @@ The SDK performs this handshake for `[reference.connect()](api.md#referenceconne
 
 ### External connections
 
-Use the [generated browser SDK and proxy helper](../../sdk/README.md#browser-clients) to manage this exchange automatically. Your proxy authenticates requests and checks actor access before asking the control plane for authorization.
+Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
 POST /v1/actors/{actorType}/{actorId}/socket-ticket
@@ -261,21 +261,27 @@ Content-Type: application/json
 { "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Only the API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. An optional `connectionId` requests a renewal ticket bound to that connection. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
+Only the backend API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
 
 ```json
-{ "websocketUrl": "wss://objects.example.com/v1/socket", "key": "<signed-ticket>" }
+{ "websocketUrl": "wss://objects.example.com/v1/socket?key=<signed-ticket>", "key": "<signed-ticket>" }
 ```
 
-The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Tickets authorize socket operations on exactly one actor instance; they do not authorize backend RPCs or administration. Admission expires after at most 60 seconds.
+The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Its key authorizes socket operations on exactly one actor instance; it does not authorize backend RPCs or administration. Open the URL within 60 seconds. Both the URL and key are credentials; omit the key from access logs.
 
-Connect with WebSocket subprotocol `little-actors.v1`. Within 10 seconds, send `{"type":"authorize","key":"<signed-ticket>"}`. Credentials are carried in the frame, not the URL. A renewal ticket cannot open a new connection.
+Pass the URL directly to a native WebSocket:
 
-After successful `onConnect` and persistence, the server sends `{"type":"state","state":{...},"version":1}` containing public persisted fields, then `{"type":"ready","protocol":1,"connectionId":"...","expiresInMs":900000}`. Explicit actor messages may also arrive before readiness. Application traffic uses `{"type":"message","data":...}` in both directions. Automatic changes use `{"type":"state_update","changes":{...},"removed":[],"version":2}` and contain changed `@Emittable` fields only.
+```js
+const socket = new WebSocket(grant.websocketUrl)
+socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }))
+socket.onmessage = event => console.log(JSON.parse(event.data))
+```
 
-Renew by obtaining a fresh ticket and sending `{"type":"renew","key":"<signed-ticket>"}` on the existing connection. The acknowledgment is `{"type":"renewed","expiresInMs":900000}`. Lifetimes are relative milliseconds. Renewal requires the same actor and, if the ticket specifies a `connectionId`, the same connection. Unchanged authorized metadata preserves actor-modified metadata and tags; changed metadata closes with `4409`, causing the SDK to reconnect and rerun `onConnect`.
+The gateway verifies the key before upgrading. Missing, invalid, or expired keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
 
-Expiry is enforced while idle, receiving messages, and running handlers. Reconnect fetches a new ticket and initial snapshot. Live events have no replay, and the SDK never resends application messages.
+Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Actors send initial data explicitly from `onConnect`, and call `socket.send()` or `this.broadcast()` for subsequent messages. Signed browser connections do not receive automatic state snapshots or updates.
+
+Authorization expires even while idle or running a handler; the gateway closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
 
 ### Message limits
 
@@ -290,10 +296,8 @@ Each actor supports up to 128 connections per gateway process. Application messa
 | `1006`              | An observed abnormal disconnect; not a close frame sent by the server. |
 | `1011`              | Connection handling or an actor socket handler failed.                 |
 | `1013`              | Actor connection limit reached.                                        |
-| `4400`              | Invalid browser protocol or actor handler failure; terminal.           |
-| `4401`, `4403`      | Rejected authorization or renewal target mismatch; terminal.           |
+| `4400`              | Invalid application message or actor handler failure.                 |
 | `4408`              | Authorization expired; reconnect with fresh authorization.             |
-| `4409`              | Authorized metadata changed; reconnect.                                |
 | Other `3000`–`4999` | Application close or rejection; terminal.                              |
 
 These are common runtime outcomes; WebSocket protocol and size failures may produce other standard codes. Receiving output is not an acknowledgment that a message was saved. The runtime does not replay transient broadcasts on reconnect.

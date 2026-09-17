@@ -20,7 +20,7 @@ The command copies the template and prints setup instructions. Its dependencies 
 
 For Vercel AI SDK with durable chat history, use `npx little-actors init ai-chat-example --template ai-chat`. The [AI chat example](https://github.com/TerseAI/little-actors/tree/main/examples/ai-chat) uses `useChat`, HTTP streaming, and backend actor calls; it needs an OpenAI API key and no generated clients.
 
-For a collaborative Tiptap editor, use `npx little-actors init documents-example --template documents`. The [documents example](https://github.com/TerseAI/little-actors/tree/main/examples/documents) uses Yjs, generated WebSocket clients, and one durable actor per document.
+For a collaborative Tiptap editor, use `npx little-actors init documents-example --template documents`. The [documents example](https://github.com/TerseAI/little-actors/tree/main/examples/documents) uses Yjs, native WebSockets, and one durable actor per document.
 
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
@@ -76,7 +76,7 @@ Deploy assigns a revision automatically, and generation uses the latest deployme
 
 The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.little-actors/`.
 
-`little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
+`little-actors dev --help` lists options. There is no CLI client runner; browser applications use native WebSockets as shown below.
 
 ## Test runners
 
@@ -105,9 +105,9 @@ See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guide
 
 ## WebSocket API
 
-The gateway keeps connections while actors hibernate. Each accepted connection receives the public persisted fields automatically. Private and protected fields stay in durable storage and are excluded from socket state.
+The gateway keeps connections while actors hibernate. Actors use `onConnect`, `onMessage`, and `onDisconnect` to manage application messages. Browser connections receive only explicit actor messages. Backend connections opened with `Actor.get(id).connect()` also receive automatic public persisted state; private and protected fields are excluded.
 
-Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. The SDK encodes outgoing messages and parses incoming messages, including the initial state.
+Inside actor hooks and backend SDK connections, send JSON values with `socket.send({ type: "chat", text: "Hello" })`. The backend SDK encodes and parses these values. Native browser sockets use `JSON.stringify` and `JSON.parse`.
 
 `Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).
 
@@ -127,44 +127,24 @@ For a separate WebSocket gateway, see [gateway configuration](https://github.com
 
 ## Browser clients
 
-Generate a browser client and backend proxy from your actor entrypoint:
+Generate backend helpers from your actor entrypoint:
 
 ```sh
 npx little-actors generate
 ```
 
-The generated `index.ts` contains frontend WebSocket clients and connection types under `clients`, backend RPC clients under `actors`, and the authorization proxy `ActorProxy`.
+The generated `index.ts` exposes typed backend RPC stubs and WebSocket grants under `actors`. Your frontend uses the browser's native `WebSocket`; it needs no generated client or SDK import.
 
-The frontend imports `clients` and the backend imports `ActorProxy` from the generated `index.ts`. The generated file does not import the actor implementation, and browser builds exclude server dependencies. Share this file between your frontend and backend, or copy it into separate projects. Regenerate when the actor contract changes. The actor host validates metadata, incoming and outgoing messages, and persisted public state against the contract; browser and proxy descriptors contain no actor-specific runtime validators. Invalid socket operations fail at the host rather than throwing synchronously from the browser’s `send()`. Compatible added fields are accepted at runtime.
-
-Stack `@Emittable` with `@Persisted` to publish a field's final value after each successful operation commits:
+Your backend authenticates the user and checks actor access before issuing a grant:
 
 ```ts
-import { Actor, type ActorMessageOf, Emittable, Persisted } from "little-actors"
-
-export class ChatRoom extends Actor<{ userId: string }, { type: "post"; text: string }> {
-    @Persisted @Emittable messages: string[] = []
-    @Persisted private moderationNotes: string[] = []
-
-    async onMessage(_socket: unknown, message: ActorMessageOf<ChatRoom>) {
-        this.messages.push(message.text)
-    }
-}
-```
-
-`@Emittable` supplements persistence; it requires a public persisted field. Nested mutations are detected. Repeated assignments within one method produce one final update; unchanged values and failed methods produce none. Socket payloads, metadata, and public persisted state must use JSON-compatible types. Generation rejects unsupported types such as `any`, `Date`, functions, and `bigint`; optional properties are supported.
-
-Your backend authenticates the user and checks access before calling the proxy helper:
-
-```ts
-import { ActorProxy } from "./generated/index.js"
+import { actors } from "./generated/index.js"
 
 export async function POST(request: Request) {
-    const user = await requireUser(request) // Your application's authentication.
+    const user = await requireUser(request)
     const roomId = "lobby"
-    await requireRoomAccess(user, roomId) // Runs on every connection and renewal.
-    const grant = await ActorProxy.handle({
-        actorType: "ChatRoom",
+    await requireRoomAccess(user, roomId)
+    const grant = await actors.ChatRoom.prepareWebsocket({
         actorId: roomId,
         metadata: { userId: user.id }
     })
@@ -172,33 +152,29 @@ export async function POST(request: Request) {
 }
 ```
 
-The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails before ticket issuance. `ActorProxy.handle(authorization)` returns `{ websocketUrl, key }`; it constructs the control-plane request internally and throws if authorization fails. Return the result as JSON with `Cache-Control: no-store`.
+`prepareWebsocket` returns `{ websocketUrl, key }`. The URL already includes the signed key and can be passed directly to `new WebSocket()`. The key grants socket access to one actor; it cannot invoke backend RPC methods or issue other keys. Metadata comes from your backend and is validated by the actor host.
 
-The proxy discovers local connection settings automatically. See [configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) for remote connections and overrides. For an instance with explicit options or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
+The helper discovers local settings automatically. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorType, actorId, metadata })` remains available for dynamic actor selection.
 
-The frontend uses the default application route:
+The frontend fetches your application endpoint and opens the returned URL:
 
-```ts
-import { clients } from "./generated/index.js"
+```js
+const response = await fetch("/api/socket/ChatRoom/lobby", { method: "POST" })
+if (!response.ok) throw new Error("Connection denied")
+const { websocketUrl } = await response.json()
+const socket = new WebSocket(websocketUrl)
 
-const room = clients.ChatRoom.get("lobby")
-const unsubscribe = room.subscribe("messages", messages => renderMessages(messages))
-room.on("error", error => console.error(error.message))
-await room.connect()
-room.send({ type: "post", text: "Hello" })
-
-// When this view is finished:
-unsubscribe()
-room.close()
+socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }))
+socket.onmessage = event => renderMessage(JSON.parse(event.data))
+socket.onclose = event => showDisconnected(event.code)
+socket.onerror = () => showConnectionError()
 ```
 
-`clients.ChatRoom.get(id)` creates a connection that posts to `/api/socket/{actorType}/{actorId}` on the current origin without a request body. Mount your application handler at that route; it authenticates the user and supplies the actor and metadata to `ActorProxy`. Override the route with `clients.ChatRoom.get(id, { endpoint })`, where `endpoint` is a URL or a function of `{ actorType, actorId }`.
+Messages are application JSON in text frames, with no SDK envelopes, initialization frames, or special subprotocol. Actors send initial application data explicitly from `onConnect` and use `socket.send()` or `this.broadcast()` for updates. Browser connections have no automatic state snapshots, subscriptions, reconnection, replay, or renewal.
 
-Use `room.on("message", handler)` for explicit actor messages. `room.state` holds the latest snapshot; `subscribe` immediately supplies a cached field value to late listeners. Reconnect supplies a fresh snapshot. `room.on("status", handler)` observes `idle`, `connecting`, `open`, `reconnecting`, `closed`, and `error`.
+Open a grant within 60 seconds. Connection authorization defaults to 15 minutes; set `authorizationLifetimeMs` in `prepareWebsocket` to change it, subject to the server's maximum. The server closes expired connections with code `4408`, including while idle or running a handler. Your application decides whether to request a fresh grant and open another socket.
 
-The SDK obtains and renews credentials automatically through your endpoint, normally every 12 minutes of a 15-minute authorization. Set `authorizationLifetimeMs` in the proxy authorization to change that duration; the server's issuer maximum still applies. Unchanged authorization renews over the existing socket and preserves actor-modified metadata and tags. Changed authorized metadata reconnects through `onConnect`.
-
-Network failures use bounded exponential backoff with jitter. HTTP 401/403, protocol errors, and explicit close stop retries. Live events are not replayed, and `send` throws immediately while disconnected; messages are never queued or resent. Use the optional `fetch` client option to integrate your application's request authentication.
+Treat both the URL and key as credentials. Keep the backend API key on the server and omit signed URL query strings from logs. Call `socket.close()` when the view is finished.
 
 ## Reference
 

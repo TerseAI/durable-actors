@@ -130,7 +130,6 @@ impl ActorJwtIssuer {
             metadata: grant.metadata,
             authorized_until_ms,
             connect_by_ms,
-            connection_id: grant.connection_id,
         };
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
@@ -347,8 +346,7 @@ mod tests {
     use crate::control_plane::{ActorJwtVerifier, ActorTokenPurpose};
 
     #[test]
-    fn socket_tickets_bind_actor_metadata_and_renewal_connection_with_short_admission() -> Result<()>
-    {
+    fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
         let issuer = socket_issuer()?;
         let now = 1_700_000_000_000;
         let grant = || SocketGrant {
@@ -360,26 +358,14 @@ mod tests {
             region: "us-east".into(),
             metadata: serde_json::json!({"userId":"alice"}),
             authorization_lifetime_ms: 900_000,
-            connection_id: None,
         };
         let token = issuer.issue_socket_at(grant(), now)?;
         let claims = issuer.verify_socket_at(&token, now + 1)?;
         assert_eq!(claims.actor, grant().actor);
         assert_eq!(claims.metadata, grant().metadata);
         assert_eq!(claims.authorized_until_ms, now + 900_000);
-        assert!(claims.connection_id.is_none());
         assert!(issuer.verify_socket_at(&token, now + 60_000).is_err());
         assert!(issuer.verify_socket_at(&token, now - 1_000).is_err());
-        let mut renewal = grant();
-        renewal.connection_id = Some("connection-1".into());
-        let renewed = issuer.issue_socket_at(renewal, now)?;
-        assert_eq!(
-            issuer
-                .verify_socket_at(&renewed, now)?
-                .connection_id
-                .as_deref(),
-            Some("connection-1")
-        );
         assert!(socket_issuer()?.verify_socket_at(&token, now).is_err());
         let workflow =
             issuer.issue_workflow("project", "execution", "us-east", unix_millis()? + 30_000)?;

@@ -12,7 +12,6 @@ pub(super) struct SocketGrant {
     pub region: String,
     pub metadata: Value,
     pub authorization_lifetime_ms: i64,
-    pub connection_id: Option<String>,
 }
 
 impl SocketGrant {
@@ -24,18 +23,12 @@ impl SocketGrant {
             (1_000..=86_400_000).contains(&self.authorization_lifetime_ms),
             "socket authorization lifetime must be between one second and one day"
         );
-        if let Some(id) = &self.connection_id {
-            ensure!(
-                !id.is_empty() && id.len() <= 128,
-                "invalid socket connection ID"
-            );
-        }
         Ok(())
     }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct SocketTicket {
     pub iss: String,
     pub aud: String,
@@ -48,7 +41,6 @@ pub(super) struct SocketTicket {
     pub metadata: Value,
     pub connect_by_ms: i64,
     pub authorized_until_ms: i64,
-    pub connection_id: Option<String>,
 }
 
 impl SocketTicket {
@@ -74,12 +66,6 @@ impl SocketTicket {
             self.authorized_until_ms - self.iat * 1000 <= 86_401_000,
             "invalid socket authorization lifetime"
         );
-        if let Some(id) = &self.connection_id {
-            ensure!(
-                !id.is_empty() && id.len() <= 128,
-                "invalid socket connection ID"
-            );
-        }
         Ok(())
     }
 }

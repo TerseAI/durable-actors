@@ -13,12 +13,18 @@ async function backendSource(
     wireNames: ReadonlyMap<string, readonly string[]>
 ): Promise<string> {
     const sources = []
-    for (const actor of actors) sources.push(await actorSource(actor, wireNames.get(actor.actorType) ?? []))
+    for (const { actorType } of contracts) {
+        const actor = actors.find(actor => actor.actorType === actorType)
+        sources.push(
+            actor
+                ? await actorSource(actor, wireNames.get(actorType) ?? [])
+                : { declarations: "", descriptor: actorDescriptor(actorType) }
+        )
+    }
     const exampleType = contracts[0]?.actorType
     const exampleActor = actors[0]?.actorType
     return `${usageComment("Types for actor state and methods.", exampleType && `type State = actors.${exampleType}.State`)}
 export declare namespace actors {
-${contracts.map(contract => stateDeclarations(contract, wireNames.get(contract.actorType) ?? [])).join("\n")}
 ${sources.map(source => source.declarations).join("\n")}
 }
 
@@ -27,12 +33,6 @@ export const actors = {
 ${sources.map(source => source.descriptor).join(",\n")}
 }
 `
-}
-
-function stateDeclarations(contract: SocketContract, names: readonly string[]): string {
-    return `export namespace ${contract.actorType} {
-${names.map(name => `export type ${name} = import("./index.js").clients.${contract.actorType}.${name}`).join("\n")}
-}`
 }
 
 async function actorSource(actor: ActorApi, wireNames: readonly string[]) {
@@ -48,12 +48,27 @@ ${methods}
 }
 ${methodTypes(actor.actorType, actor.rpc.methods, stubName, methodsName)}
 }`,
-        descriptor: `[${JSON.stringify(actor.actorType)}]: {
-    get(actorId: string, transport?: import("little-actors/backend").ActorRpcTransport): ${stub} {
+        descriptor: actorDescriptor(
+            actor.actorType,
+            `get(actorId: string, transport?: import("little-actors/backend").ActorRpcTransport): ${stub} {
         return $createActorStub<${stub}>(${JSON.stringify(actor.actorType)}, actorId, ${JSON.stringify(descriptors)}, transport)
+    }`
+        )
+    }
+}
+
+function actorDescriptor(actorType: string, rpc?: string): string {
+    return `[${JSON.stringify(actorType)}]: {
+    ${rpc ? `${rpc},` : ""}
+    ${usageComment("Allow a frontend connection after your backend checks the user's access.", `const grant = await actors.${actorType}.prepareWebsocket({ actorId: "actor-id", metadata })`)}
+    prepareWebsocket(
+        authorization: Omit<actors.${actorType}.Authorization, "actorType">,
+        options: import("little-actors/proxy").SocketProxyOptions = {},
+        dependencies: import("little-actors/proxy").SocketProxyDependencies = {}
+    ): Promise<import("little-actors/proxy").SocketGrant> {
+        return new ActorProxy(options, dependencies).handle({ ...authorization, actorType: ${JSON.stringify(actorType)} })
     }
 }`
-    }
 }
 
 function methodTypes(actorType: string, methods: readonly RpcMethod[], stubName: string, methodsName: string): string {

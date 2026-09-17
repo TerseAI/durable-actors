@@ -1,36 +1,53 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
-
-import { type actors, clients } from "../generated/index.js"
 
 import { DocumentEditor } from "./Editor.js"
 import "./style.css"
 
-const workspace = clients.Workspace.get("demo")
-
 function App() {
-    const [documents, setDocuments] = useState<actors.Workspace.State["documents"]>([])
+    const workspace = useRef<WebSocket | undefined>(undefined)
+    const [documents, setDocuments] = useState<{ id: string; title: string }[]>([])
     const [selected, select] = useState("welcome")
-    const [status, setStatus] = useState(workspace.status)
+    const [status, setStatus] = useState("connecting")
 
     useEffect(() => {
-        const unsubscribe = workspace.subscribe("documents", setDocuments)
-        const stopStatus = workspace.on("status", setStatus)
-        workspace.connect().catch(error => {
-            if (workspace.status !== "closed") console.error(error)
+        let disposed = false
+        async function open() {
+            const response = await fetch("/api/socket/Workspace/demo", { method: "POST" })
+            if (!response.ok) throw new Error(`Connection denied (${response.status})`)
+            const { websocketUrl } = await response.json()
+            if (disposed) return
+            const socket = new WebSocket(websocketUrl)
+            workspace.current = socket
+            socket.onopen = () => {
+                if (!disposed) setStatus("open")
+            }
+            socket.onmessage = event => {
+                if (!disposed) setDocuments(JSON.parse(event.data))
+            }
+            socket.onclose = () => {
+                if (!disposed) setStatus("closed")
+            }
+            socket.onerror = () => {
+                if (!disposed) setStatus("error")
+            }
+        }
+        void open().catch(error => {
+            if (disposed) return
+            setStatus("error")
+            console.error(error)
         })
         return () => {
-            unsubscribe()
-            stopStatus()
-            workspace.close()
+            disposed = true
+            workspace.current?.close()
         }
     }, [])
 
     function create(form: FormData) {
         const title = String(form.get("title")).trim()
-        if (!title) return
+        if (!title || workspace.current?.readyState !== WebSocket.OPEN) return
         const id = crypto.randomUUID()
-        workspace.send({ id, title })
+        workspace.current.send(JSON.stringify({ id, title }))
         select(id)
     }
 
@@ -53,7 +70,7 @@ function App() {
                             </button>
                         ))}
                     </nav>
-                    {status === "error" && <p role="alert">Could not connect. Reload to retry.</p>}
+                    {(status === "error" || status === "closed") && <p role="alert">Disconnected. Reload to retry.</p>}
                 </aside>
                 <DocumentEditor key={selected} id={selected} title={documents.find(document => document.id === selected)?.title ?? "New document"} />
             </main>

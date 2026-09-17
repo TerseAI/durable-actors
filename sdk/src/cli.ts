@@ -2,7 +2,8 @@
 import { Command, InvalidArgumentError, Option } from "commander"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 
 import { ControlPlaneClient } from "./cli/control-plane.js"
@@ -50,7 +51,7 @@ try {
                 .default("local")
         )
         .action(async options => {
-            process.exitCode = await runRuntime(devArguments(options))
+            process.exitCode = await runDev(options)
         })
     program
         .command("token")
@@ -108,6 +109,22 @@ function portNumber(value: string): number {
     if (!/^\d+$/u.test(value) || !Number.isSafeInteger(port) || port < 0 || port > 65535)
         throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
     return port
+}
+
+async function runDev(options: DevOptions): Promise<number> {
+    const { ActorCompiler } = await import("./compiler/actor-compiler.js")
+    const { parsePublicContract } = await import("./compiler/validate-public-contract.js")
+    const contract = parsePublicContract(
+        new ActorCompiler().compileContract(path.resolve(options.project, options.entrypoint))
+    )
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-contract-"))
+    try {
+        const file = path.join(directory, "contract.json")
+        await writeFile(file, JSON.stringify(contract))
+        return await runRuntime([...devArguments(options), "--contract", file])
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
 }
 
 function devArguments(options: DevOptions): string[] {

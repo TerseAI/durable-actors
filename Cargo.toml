@@ -22,6 +22,7 @@ prost = "0.14"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tower-http = { version = "0.6", features = ["trace"] }
 tonic = { version = "0.14", features = ["tls-aws-lc", "tls-webpki-roots"] }
 tonic-prost = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

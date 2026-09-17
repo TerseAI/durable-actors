@@ -17,7 +17,10 @@ test("proxy issues socket authorization using only server-selected target and me
                     headers: new Headers(init?.headers),
                     body: JSON.parse(init!.body as string)
                 })
-                return Response.json({ websocketUrl: "wss://actors.example.com/v1/socket", key: "socket-ticket" })
+                return Response.json({
+                    websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
+                    key: "socket-ticket"
+                })
             }
         }
     )
@@ -27,7 +30,7 @@ test("proxy issues socket authorization using only server-selected target and me
         metadata: { userId: "trusted" }
     })
     assert.deepEqual(grant, {
-        websocketUrl: "wss://actors.example.com/v1/socket",
+        websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
         key: "socket-ticket"
     })
     assert.equal(requests[0]!.headers.get("authorization"), "Bearer backend-secret")

@@ -94,7 +94,6 @@ async fn issue_socket_ticket(
         region: principal.region,
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
-        connection_id: request.connection_id,
     };
     grant.validate().map_err(ApiError::bad_request)?;
     let issued = state
@@ -111,8 +110,6 @@ struct IssueSocketTicketRequest {
     metadata: Value,
     #[serde(default = "socket_authorization_lifetime")]
     authorization_lifetime_ms: i64,
-    #[serde(default)]
-    connection_id: Option<String>,
 }
 
 fn socket_authorization_lifetime() -> i64 {

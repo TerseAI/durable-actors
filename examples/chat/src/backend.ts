@@ -1,17 +1,16 @@
 import express from "express"
 import { createServer } from "vite"
 
-import { ActorProxy } from "../generated/index.js"
+import { actors } from "../generated/index.js"
 
 const app = express()
 
 app.post("/api/socket/ChatRoom/:actorId", async (request, response) => {
-    const grant = await ActorProxy.handle({
-        actorType: "ChatRoom",
+    const grant = await actors.ChatRoom.prepareWebsocket({
         actorId: request.params.actorId,
         metadata: { name: "Guest" }
     })
-    response.json(grant)
+    response.set("Cache-Control", "no-store").json(grant)
 })
 
 const vite = await createServer({

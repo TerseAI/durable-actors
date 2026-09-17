@@ -41,7 +41,7 @@ test("public codegen supports projects without actors", async () => {
     assert.deepEqual([...files.keys()].sort(), ["index.ts"])
 })
 
-test("public contract generation writes one module for actors, clients and ActorProxy and removes legacy files", async t => {
+test("public contract generation writes one backend module for actors and ActorProxy and removes legacy files", async t => {
     const { generateTypeScript } = await import("little-actors/codegen")
     const { createActorStub } = await import("little-actors/backend")
     const { generateClient } = await import("../dist/compiler/generators/client-generator.js")
@@ -76,7 +76,7 @@ test("public contract generation writes one module for actors, clients and Actor
     const files = await generateTypeScript(contract)
     assert.deepEqual([...files.keys()], ["index.ts"])
     assert.match(files.get("index.ts"), /export const actors/)
-    assert.match(files.get("index.ts"), /export const clients/)
+    assert.doesNotMatch(files.get("index.ts"), /export const clients|createClient/)
     assert.match(files.get("index.ts"), /export class ActorProxy/)
     for (const file of [
         "Room.actor.ts",

@@ -84,6 +84,7 @@ impl HostLaunchSpec {
 
 #[async_trait]
 pub(crate) trait AdminRegistry: Send + Sync {
+    #[cfg(test)]
     async fn ensure_namespace_and_register_deployment(
         &self,
         spec: &HostLaunchSpec,
@@ -170,9 +171,9 @@ impl AdminService {
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme)
             .map_err(|_| anyhow::anyhow!("invalid socket URL"))?;
-        Ok(
-            serde_json::json!({ "websocketUrl": url.as_str(), "key": self.issuer.issue_socket(grant)? }),
-        )
+        let key = self.issuer.issue_socket(grant)?;
+        url.query_pairs_mut().append_pair("key", &key);
+        Ok(serde_json::json!({ "websocketUrl": url.as_str(), "key": key }))
     }
 
     pub(super) fn verify_socket(&self, token: &str) -> Result<super::socket_ticket::SocketTicket> {

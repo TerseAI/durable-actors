@@ -110,5 +110,5 @@ test("contract validation permits schema-like property names and recursive local
         .flatMap(statement =>
             statement.declarationList.declarations.map(declaration => declaration.name.getText(source))
         )
-    assert.deepEqual(variables, ["clients", "actors"])
+    assert.deepEqual(variables, ["actors"])
 })

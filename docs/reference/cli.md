@@ -12,9 +12,9 @@ npx little-actors init chat-example
 
 | Template                                | Description                                                                                                                                                                                         |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and generated WebSocket clients.                                                                                          |
-| `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Needs no generated WebSocket clients. |
-| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with generated WebSocket clients.                                                                                                            |
+| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and native WebSockets.                                                                                          |
+| `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
+| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                            |
 
 ## Run a development server
 
@@ -22,7 +22,7 @@ npx little-actors init chat-example
 npx little-actors dev
 ```
 
-Loads the actor entrypoint, registers your actors, and serves the development web server. Uses [automatic local configuration](configuration.md).
+Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. The contract is available to `generate --url` once the server is ready. Uses [automatic local configuration](configuration.md).
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
@@ -69,15 +69,14 @@ Registers a built image plus the public API contract extracted from the TypeScri
 npx little-actors generate
 ```
 
-Checks the actor dependency graph without executing it and writes TypeScript clients.
+Checks the actor dependency graph without executing it and writes TypeScript backend helpers.
 
 | Entrypoint | Export             | Contents                                                                    |
 | ---------- | ------------------ | --------------------------------------------------------------------------- |
-| `index.ts` | `clients.ChatRoom` | Frontend WebSocket client, connection types, and public state.              |
-| `index.ts` | `actors.ChatRoom`  | Typed RPC client such as `actors.ChatRoom.get("lobby").sendMessage(...)`. |
+| `index.ts` | `actors.ChatRoom`  | Typed RPC client via `.get(id)` and WebSocket grants via `.prepareWebsocket({ actorId, metadata })`. |
 | `index.ts` | `ActorProxy`       | Authorization proxy and metadata types for browser connections.             |
 
-Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import everything from `generated/index.js`.
+Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import backend helpers from `generated/index.js`. Frontends use native `WebSocket` without generated imports.
 
 The source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
 
@@ -115,4 +114,4 @@ Requests a session token from the running local server, reading its origin from 
 
 The requested deadline is one hour in the future. Issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 
-The token grants application access throughout the `local` namespace: not an admin credential, and not restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules. `token` is a diagnostic command for trusted backend tools; browser SDKs obtain actor-scoped tickets through your authenticated proxy.
+The token grants application access throughout the `local` namespace: not an admin credential, and not restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules. `token` is a diagnostic command for trusted backend tools; browsers obtain actor-scoped URLs and keys through your authenticated backend.

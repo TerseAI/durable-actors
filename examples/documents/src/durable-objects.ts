@@ -1,25 +1,35 @@
 import { fromBase64, toBase64 } from "lib0/buffer"
-import { Actor, Emittable, Persisted } from "little-actors"
+import { Actor, Persisted } from "little-actors"
 import type { ActorSocket } from "little-actors"
 import * as Y from "yjs"
 
-export class Workspace extends Actor<null, DocumentInfo, never> {
-    @Persisted @Emittable documents: DocumentInfo[] = [{ id: "welcome", title: "Welcome" }]
+export class Workspace extends Actor<null, DocumentInfo, DocumentInfo[]> {
+    @Persisted documents: DocumentInfo[] = [{ id: "welcome", title: "Welcome" }]
 
-    async onMessage(_socket: ActorSocket<null, never>, document: DocumentInfo) {
+    async onConnect(socket: ActorSocket<null, DocumentInfo[]>) {
+        socket.send(this.documents)
+    }
+
+    async onMessage(_socket: ActorSocket<null, DocumentInfo[]>, document: DocumentInfo) {
         if (!this.documents.some(item => item.id === document.id)) this.documents.push(document)
+        this.broadcast(this.documents)
     }
 }
 
-export class Document extends Actor<null, string, never> {
-    @Persisted @Emittable content = emptyDocument()
+export class Document extends Actor<null, string, string> {
+    @Persisted content = emptyDocument()
 
-    async onMessage(_socket: ActorSocket<null, never>, update: string) {
+    async onConnect(socket: ActorSocket<null, string>) {
+        socket.send(this.content)
+    }
+
+    async onMessage(_socket: ActorSocket<null, string>, update: string) {
         const document = new Y.Doc()
         try {
             Y.applyUpdate(document, fromBase64(this.content))
             Y.applyUpdate(document, fromBase64(update))
             this.content = toBase64(Y.encodeStateAsUpdate(document))
+            this.broadcast(this.content)
         } finally {
             document.destroy()
         }

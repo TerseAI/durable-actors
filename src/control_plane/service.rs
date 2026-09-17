@@ -2013,8 +2013,15 @@ mod tests {
             .error_for_status()?;
         assert_eq!(issued.headers().get("cache-control").unwrap(), "no-store");
         let issued: serde_json::Value = issued.json().await?;
-        assert_eq!(issued["websocketUrl"], "wss://gateway.example/v1/socket");
         let key = issued["key"].as_str().unwrap();
+        let socket_url = reqwest::Url::parse(issued["websocketUrl"].as_str().unwrap())?;
+        assert_eq!(socket_url.scheme(), "wss");
+        assert_eq!(socket_url.host_str(), Some("gateway.example"));
+        assert_eq!(socket_url.path(), "/v1/socket");
+        assert_eq!(
+            socket_url.query_pairs().collect::<Vec<_>>(),
+            vec![("key".into(), key.into())]
+        );
         assert_ne!(key, "api-key");
         assert_eq!(
             client

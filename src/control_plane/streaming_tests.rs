@@ -22,69 +22,115 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn browser_ticket_connects_renews_without_resetting_metadata_and_expires() -> Result<()> {
+async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain_json() -> Result<()>
+{
     let mut stack = Stack::start().await?;
     let grant = stack
-        .grant(None, serde_json::json!({"user":"one"}), 3_000)
+        .grant(serde_json::json!({"user":"one"}), 5_000)
         .await?;
-    let mut socket = browser_connect(&grant).await?;
-    let snapshot = receive(&mut socket).await?;
-    assert_eq!(snapshot["type"], "state");
-    let ready = receive(&mut socket).await?;
-    assert_eq!(ready["type"], "ready");
-    let id = ready["connectionId"].as_str().context("connection ID")?;
-    let renewal = stack
-        .grant(Some(id), serde_json::json!({"user":"one"}), 1_000)
-        .await?;
+    let url = grant["websocketUrl"].as_str().context("socket URL")?;
+    assert_eq!(
+        reqwest::Url::parse(url)?
+            .query_pairs()
+            .find(|(name, _)| name == "key")
+            .map(|(_, key)| key.into_owned()),
+        grant["key"].as_str().map(str::to_owned)
+    );
+    let (mut socket, response) = tokio_tungstenite::connect_async(url).await?;
+    assert!(response.headers().get("sec-websocket-protocol").is_none());
     socket
-        .send(Message::Text(
-            serde_json::json!({"type":"renew", "key":renewal["key"]})
-                .to_string()
-                .into(),
-        ))
+        .send(Message::Text(r#"{"type":"start"}"#.into()))
         .await?;
-    assert_eq!(receive(&mut socket).await?["type"], "renewed");
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"delta":"first"})
+    );
+    std::fs::write(stack.directory.path().join("release"), "")?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"delta":"last"})
+    );
     assert_eq!(
         stack.invoke("clients", vec![]).await?[0]["metadata"]["name"],
         "member"
     );
-    assert_eq!(
-        stack.invoke("clients", vec![]).await?[0]["tags"],
-        serde_json::json!(["member"])
-    );
-    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
-        .await?
-        .context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4408));
-    let mut invalid = browser_connect(&renewal).await?;
-    let frame = invalid.next().await.context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4401));
+    socket.close(None).await?;
     stack.child.kill().await?;
     Ok(())
 }
 
-async fn browser_connect(grant: &serde_json::Value) -> Result<Socket> {
-    let mut request = grant["websocketUrl"]
-        .as_str()
-        .context("socket URL")?
-        .into_client_request()?;
-    request
-        .headers_mut()
-        .insert("sec-websocket-protocol", "little-actors.v1".parse()?);
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"authorize", "key":grant["key"]})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    Ok(socket)
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let grant = stack.grant(serde_json::json!({}), 3_000).await?;
+    let mut url = reqwest::Url::parse(grant["websocketUrl"].as_str().context("socket URL")?)?;
+    for key in [
+        "",
+        "test-api-key",
+        &stack.workflow_token,
+        &format!("{}tampered", grant["key"].as_str().unwrap()),
+    ] {
+        url.set_query(None);
+        if !key.is_empty() {
+            url.query_pairs_mut().append_pair("key", key);
+        }
+        let error = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 401)
+        );
+    }
+    assert_eq!(
+        stack.invoke("clients", vec![]).await?,
+        serde_json::json!([])
+    );
+    stack.child.kill().await?;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn generated_browser_sdk_connects_through_proxy_and_renews_automatically() -> Result<()> {
+async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_invalid_messages()
+-> Result<()> {
+    let mut stack = Stack::start().await?;
+    for active in [false, true] {
+        let grant = stack.grant(serde_json::json!({}), 1_000).await?;
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+        if active {
+            socket
+                .send(Message::Text(r#"{"type":"start"}"#.into()))
+                .await?;
+            assert_eq!(
+                receive(&mut socket).await?,
+                serde_json::json!({"delta":"first"})
+            );
+        }
+        let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+            .await?
+            .context("close")??;
+        assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4408));
+    }
+    std::fs::write(stack.directory.path().join("release"), "")?;
+    let grant = stack.grant(serde_json::json!({}), 3_000).await?;
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+    socket
+        .send(Message::Text(r#"{"type":"invalid"}"#.into()))
+        .await?;
+    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .context("close")??;
+    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4400));
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn generated_backend_grant_works_with_a_native_websocket() -> Result<()> {
     let mut stack = Stack::start().await?;
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
     let script = stack.directory.path().join("browser-test.mjs");
@@ -94,44 +140,31 @@ async fn generated_browser_sdk_connects_through_proxy_and_renews_automatically()
             r#"
 import assert from 'node:assert/strict';
 import {{ writeFile }} from 'node:fs/promises';
-import {{ setTimeout }} from 'node:timers/promises';
 import {{ ActorCompiler }} from {compiler};
 import {{ generateClient }} from {generator};
 import {{ build }} from 'esbuild';
 
 const directory = {directory};
-const actors = new ActorCompiler().compile(directory + '/actors.ts');
-await generateClient(actors.map(actor => actor.contract), directory + '/generated');
-await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/browser.mjs',
-    bundle:true,platform:'browser',format:'esm',alias:{{'little-actors/generated':{browser}}}}});
-await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/proxy.mjs',
+await generateClient(new ActorCompiler().compileContract(directory + '/actors.ts'), directory + '/generated');
+await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/backend.mjs',
     bundle:true,platform:'node',format:'esm',external:['little-actors/generated']}});
-const {{ clients }} = await import(directory + '/browser.mjs');
-const {{ ActorProxy }} = await import(directory + '/proxy.mjs');
-let authorizations = 0;
-const room = clients.Counter.get('counter-1', {{ fetch: async () => {{
-    authorizations++;
-    return Response.json(await ActorProxy.handle({{actorType:'Counter',actorId:'counter-1',metadata:{{user:'one'}},authorizationLifetimeMs:1000}},
-        {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}}));
-}} }});
-const values = [];
-room.subscribe('count', value => values.push(value));
-const errors = [];
-room.on('error', error => errors.push(error));
-await room.connect();
-assert.deepEqual(values, [0]);
-assert.equal(room.state.secret, undefined);
-const last = new Promise(resolve => room.on('message', message => {{ if (message.delta === 'last') resolve(); }}));
-room.send({{type:'start'}});
-while (authorizations < 2) await setTimeout(10);
-await setTimeout(250);
+const {{ actors }} = await import(directory + '/backend.mjs');
+const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
+    {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}});
+assert.equal(new URL(grant.websocketUrl).searchParams.get('key'), grant.key);
 await writeFile(directory + '/release', '');
-await last;
-assert.equal(room.status, 'open');
-assert.equal(authorizations, 2);
-assert.deepEqual(errors, []);
-room.close();
-assert.throws(() => room.send({{type:'start'}}), /not open/i);
+const socket = new WebSocket(grant.websocketUrl);
+const messages = [];
+await new Promise((resolve, reject) => {{
+    socket.onopen = () => socket.send(JSON.stringify({{type:'start'}}));
+    socket.onerror = reject;
+    socket.onmessage = event => {{
+        messages.push(JSON.parse(event.data));
+        if (messages.length === 2) resolve();
+    }};
+}});
+assert.deepEqual(messages, [{{delta:'first'}}, {{delta:'last'}}]);
+socket.close();
 "#,
             compiler = serde_json::to_string(&format!(
                 "file://{}",
@@ -142,135 +175,23 @@ assert.throws(() => room.send({{type:'start'}}), /not open/i);
                 sdk.join("compiler/generators/client-generator.js")
                     .display()
             ))?,
-            browser = serde_json::to_string(&sdk.join("generated.browser.js"))?,
             directory = serde_json::to_string(stack.directory.path())?,
             gateway = serde_json::to_string(&stack.gateway)?,
         ),
     )?;
-    let mut command = tokio::process::Command::new("node");
-    command.arg(script).kill_on_drop(true);
-    let result = tokio::time::timeout(Duration::from_secs(15), command.output()).await??;
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new("node")
+            .arg(script)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
     ensure!(
         result.status.success(),
-        "browser SDK integration failed: {}",
+        "native WebSocket integration failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    stack.child.kill().await?;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
-async fn browser_receives_committed_public_updates_and_renews_during_handlers() -> Result<()> {
-    let mut stack = Stack::start().await?;
-    let grant = stack
-        .grant(None, serde_json::json!({"user":"one"}), 1_000)
-        .await?;
-    let mut socket = browser_connect(&grant).await?;
-    let snapshot = receive(&mut socket).await?;
-    assert!(snapshot["state"].get("secret").is_none());
-    assert!(snapshot["state"].get("internal").is_none());
-    let ready = receive(&mut socket).await?;
-    let id = ready["connectionId"].as_str().context("connection ID")?;
-    stack.invoke("change", vec![]).await?;
-    let update = receive(&mut socket).await?;
-    assert_eq!(update["type"], "state_update");
-    assert_eq!(update["changes"], serde_json::json!({"count":2}));
-    assert!(update["version"].as_u64() > snapshot["version"].as_u64());
-    assert!(stack.invoke("fail", vec![]).await.is_err());
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), socket.next())
-            .await
-            .is_err()
-    );
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"message","data":{"type":"start"}})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    assert_eq!(receive(&mut socket).await?["data"]["delta"], "first");
-    let renewal = stack
-        .grant(Some(id), serde_json::json!({"user":"one"}), 3_000)
-        .await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"renew","key":renewal["key"]})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    assert_eq!(receive(&mut socket).await?["type"], "renewed");
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    std::fs::write(stack.directory.path().join("release"), "")?;
-    assert_eq!(receive(&mut socket).await?["data"]["delta"], "last");
-    let changed = stack
-        .grant(Some(id), serde_json::json!({"user":"two"}), 3_000)
-        .await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"renew","key":changed["key"]})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    let frame = socket.next().await.context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4409));
-    stack.child.kill().await?;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
-async fn browser_rejects_wrong_renewal_and_expires_during_pending_actor_execution() -> Result<()> {
-    let mut stack = Stack::start().await?;
-    let grant = stack.grant(None, serde_json::json!({}), 3_000).await?;
-    let mut socket = browser_connect(&grant).await?;
-    receive(&mut socket).await?;
-    receive(&mut socket).await?;
-    let wrong = stack
-        .grant(Some("another-connection"), serde_json::json!({}), 3_000)
-        .await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"renew","key":wrong["key"]})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    let frame = socket.next().await.context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4403));
-    let grant = stack.grant(None, serde_json::json!({}), 1_000).await?;
-    let mut socket = browser_connect(&grant).await?;
-    receive(&mut socket).await?;
-    receive(&mut socket).await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"message","data":{"type":"start"}})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    assert_eq!(receive(&mut socket).await?["data"]["delta"], "first");
-    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
-        .await?
-        .context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4408));
-    std::fs::write(stack.directory.path().join("release"), "")?;
-    let grant = stack.grant(None, serde_json::json!({}), 3_000).await?;
-    let mut socket = browser_connect(&grant).await?;
-    receive(&mut socket).await?;
-    receive(&mut socket).await?;
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"message","data":{"type":"invalid"}})
-                .to_string()
-                .into(),
-        ))
-        .await?;
-    let frame = socket.next().await.context("close")??;
-    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 4400));
     stack.child.kill().await?;
     Ok(())
 }
@@ -451,16 +372,20 @@ struct Stack {
 }
 
 impl Stack {
-    async fn grant(
-        &self,
-        connection_id: Option<&str>,
-        metadata: serde_json::Value,
-        lifetime: u64,
-    ) -> Result<serde_json::Value> {
-        reqwest::Client::new().post(format!("{}/v1/namespaces/project-1/actors/Counter/counter-1/socket-ticket", self.gateway))
+    async fn grant(&self, metadata: serde_json::Value, lifetime: u64) -> Result<serde_json::Value> {
+        reqwest::Client::new()
+            .post(format!(
+                "{}/v1/namespaces/project-1/actors/Counter/counter-1/socket-ticket",
+                self.gateway
+            ))
             .bearer_auth("test-api-key")
-            .json(&serde_json::json!({"metadata":metadata,"connectionId":connection_id,"authorizationLifetimeMs":lifetime}))
-            .send().await?.error_for_status()?.json().await.map_err(Into::into)
+            .json(&serde_json::json!({"metadata":metadata,"authorizationLifetimeMs":lifetime}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .map_err(Into::into)
     }
     async fn start() -> Result<Self> {
         let directory = tempfile::TempDir::new_in(

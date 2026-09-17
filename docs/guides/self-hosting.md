@@ -115,9 +115,9 @@ npx little-actors deploy \
 
 Start the application backend with the [client connection](../reference/configuration.md) configured in step 1.
 
-Use the generated `ActorProxy` as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url`, and point the frontend client at that application route.
+Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url`, and have the frontend fetch a grant from that application route.
 
-Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session updates both histories after persistence. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
+Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session broadcasts the updated history to both sessions. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
 The proxy checks user access and obtains connection credentials. Application messages travel directly over WebSockets to the actor gateway. Keep the API key on the backend. See [gateway configuration](../reference/configuration.md) for a separate gateway origin.
 
@@ -135,8 +135,8 @@ Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy 
 
 For a separate gateway, see [client gateway configuration](../reference/configuration.md) and the [deployment request](../reference/http.md#put-v1deployment).
 
-For browser clients, generate the typed client and proxy with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `index.ts`. Keep the API key on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
+For browser connections, generate the backend helpers with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` from the generated `index.ts`. Keep the API key on that backend. The helper obtains an actor-scoped ticket from the control plane, and the frontend calls `new WebSocket(grant.websocketUrl)` to connect directly to the gateway.
 
-Connection and renewal use the same application endpoint. The SDK renews authorization over the existing socket; unchanged authorized metadata preserves actor-modified metadata and tags. Changed metadata reconnects through `onConnect`. The gateway enforces expiration even while idle or running a handler.
+The returned URL contains its signed key. There is no browser SDK, custom handshake, state subscription, or automatic renewal. The gateway enforces expiration even while idle or running a handler. Your application handles closure and requests a new grant if it wants to reconnect.
 
 See the [browser example](../../sdk/README.md#browser-clients) and [wire protocol](../reference/http.md#external-connections). The optional incoming-message event callback remains independent of authorization.

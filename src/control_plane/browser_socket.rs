@@ -2,13 +2,13 @@ use std::{collections::VecDeque, time::Duration};
 
 use axum::{
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
+    http::StatusCode,
     response::Response,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use super::{
@@ -21,32 +21,28 @@ use crate::actor::{
 };
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum ClientFrame {
-    Authorize { key: String },
-    Renew { key: String },
-    Message { data: Value },
+pub(super) struct SocketQuery {
+    key: Option<String>,
 }
 
 type Closed = (u16, &'static str);
 
 pub(super) async fn connect(
     State(state): State<SocketServerState>,
+    Query(query): Query<SocketQuery>,
     upgrade: WebSocketUpgrade,
-) -> Response {
-    upgrade
-        .protocols(["little-actors.v1"])
+) -> Result<Response, StatusCode> {
+    let ticket = state
+        .admin
+        .verify_socket(query.key.as_deref().unwrap_or_default())
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(upgrade
         .max_frame_size(MAX_SOCKET_MESSAGE_BYTES)
         .max_message_size(MAX_SOCKET_MESSAGE_BYTES)
-        .on_upgrade(move |socket| authorize(socket, state))
+        .on_upgrade(move |socket| run(socket, state, ticket)))
 }
 
-async fn authorize(mut socket: WebSocket, state: SocketServerState) {
-    let ticket = receive_ticket(&mut socket, &state).await;
-    let Some(ticket) = ticket else {
-        close(&mut socket, (4401, "socket authorization rejected")).await;
-        return;
-    };
+async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
     let connection = ActorSocketConnection {
         id: uuid::Uuid::new_v4().to_string(),
         metadata: ticket.metadata.clone(),
@@ -74,7 +70,6 @@ async fn authorize(mut socket: WebSocket, state: SocketServerState) {
         outbound: receiver,
         pending: VecDeque::new(),
         handler: None,
-        ready: false,
     };
     session.start(ActorSocketEvent::Connect {
         connection: session.connection.clone(),
@@ -87,39 +82,14 @@ async fn authorize(mut socket: WebSocket, state: SocketServerState) {
     session.disconnect(closed).await;
 }
 
-async fn receive_ticket(socket: &mut WebSocket, state: &SocketServerState) -> Option<SocketTicket> {
-    if socket.protocol().map(|value| value.as_bytes()) != Some(b"little-actors.v1".as_slice()) {
-        return None;
-    }
-    let frame = tokio::time::timeout(Duration::from_secs(10), socket.recv())
-        .await
-        .ok()??
-        .ok()?;
-    let Message::Text(text) = frame else {
-        return None;
-    };
-    if text.len() > 128 * 1024 + 128 {
-        return None;
-    }
-    let ClientFrame::Authorize { key } = serde_json::from_str(&text).ok()? else {
-        return None;
-    };
-    let ticket = state.admin.verify_socket(&key).ok()?;
-    if ticket.connection_id.is_some() {
-        return None;
-    }
-    Some(ticket)
-}
-
 struct Session {
     state: SocketServerState,
     ticket: SocketTicket,
     principal: ActorPrincipal,
     connection: ActorSocketConnection,
     outbound: mpsc::UnboundedReceiver<OutboundMessage>,
-    pending: VecDeque<Value>,
+    pending: VecDeque<String>,
     handler: Option<JoinHandle<bool>>,
-    ready: bool,
 }
 
 impl Session {
@@ -132,11 +102,6 @@ impl Session {
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
                     if !result.unwrap_or(false) { return Err((4400, "actor socket handler failed")); }
-                    if !self.ready {
-                        while let Ok(outbound) = self.outbound.try_recv() { self.send_outbound(socket, outbound).await?; }
-                        self.send(socket, json!({"type":"ready", "protocol":1, "connectionId":self.connection.id, "expiresInMs":self.remaining()?.as_millis()})).await?;
-                        self.ready = true;
-                    }
                     if let Some(data) = self.pending.pop_front() { self.start_message(data); }
                 }
                 inbound = socket.recv() => self.receive(socket, inbound).await?,
@@ -152,22 +117,14 @@ impl Session {
     ) -> Result<(), Closed> {
         match inbound {
             Some(Ok(Message::Text(text))) => {
-                let frame: ClientFrame =
-                    serde_json::from_str(&text).map_err(|_| (4400, "invalid socket frame"))?;
-                match frame {
-                    ClientFrame::Renew { key } if self.ready => self.renew(socket, &key).await,
-                    ClientFrame::Message { data } if self.ready => {
-                        if self.handler.is_none() {
-                            self.start_message(data);
-                        } else if self.pending.len() < 32 {
-                            self.pending.push_back(data);
-                        } else {
-                            return Err((1013, "socket operation queue is full"));
-                        }
-                        Ok(())
-                    }
-                    _ => Err((4400, "unexpected socket frame")),
+                if self.handler.is_none() {
+                    self.start_message(text.to_string());
+                } else if self.pending.len() < 32 {
+                    self.pending.push_back(text.to_string());
+                } else {
+                    return Err((1013, "socket operation queue is full"));
                 }
+                Ok(())
             }
             Some(Ok(Message::Ping(data))) => self.send_frame(socket, Message::Pong(data)).await,
             Some(Ok(Message::Pong(_))) => Ok(()),
@@ -177,38 +134,10 @@ impl Session {
         }
     }
 
-    async fn renew(&mut self, socket: &mut WebSocket, key: &str) -> Result<(), Closed> {
-        let ticket = self
-            .state
-            .admin
-            .verify_socket(key)
-            .map_err(|_| (4401, "socket renewal rejected"))?;
-        if ticket.actor != self.ticket.actor
-            || ticket
-                .connection_id
-                .as_deref()
-                .is_some_and(|id| id != self.connection.id)
-        {
-            return Err((4403, "socket renewal target mismatch"));
-        }
-        if ticket.metadata != self.ticket.metadata || ticket.region != self.ticket.region {
-            return Err((4409, "socket authorization changed"));
-        }
-        self.ticket = ticket;
-        self.principal.expires_at = self.ticket.authorized_until_ms.div_euclid(1000) + 1;
-        self.send(
-            socket,
-            json!({"type":"renewed", "expiresInMs":self.remaining()?.as_millis()}),
-        )
-        .await
-    }
-
-    fn start_message(&mut self, data: Value) {
+    fn start_message(&mut self, data: String) {
         self.start(ActorSocketEvent::Message {
             connection_id: self.connection.id.clone(),
-            message: ActorSocketMessage::Text {
-                data: data.to_string(),
-            },
+            message: ActorSocketMessage::Text { data },
         });
     }
 
@@ -228,12 +157,9 @@ impl Session {
         outbound: OutboundMessage,
     ) -> Result<(), Closed> {
         match outbound {
-            OutboundMessage::Control(value) => self.send(socket, value).await,
+            OutboundMessage::Control(_) => Ok(()),
             OutboundMessage::Message(ActorSocketMessage::Text { data }) => {
-                let value: Value = serde_json::from_str(&data)
-                    .map_err(|_| (4400, "actor produced invalid JSON"))?;
-                self.send(socket, json!({"type":"message", "data":value}))
-                    .await
+                self.send_frame(socket, Message::Text(data.into())).await
             }
             OutboundMessage::Message(_) => Err((4400, "actor produced a binary message")),
             OutboundMessage::Close { code, reason } => {
@@ -249,14 +175,6 @@ impl Session {
                 Err((code, "actor closed connection"))
             }
         }
-    }
-
-    async fn send(&self, socket: &mut WebSocket, value: Value) -> Result<(), Closed> {
-        let text = value.to_string();
-        if text.len() > MAX_SOCKET_MESSAGE_BYTES {
-            return Err((4400, "socket frame too large"));
-        }
-        self.send_frame(socket, Message::Text(text.into())).await
     }
 
     async fn send_frame(&self, socket: &mut WebSocket, frame: Message) -> Result<(), Closed> {
