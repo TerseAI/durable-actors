@@ -47,7 +47,7 @@ The development server looks for `src/durable-objects.ts` in the current directo
 Select a different project or actor file with `--project` and `--entrypoint`:
 
 ```sh
-npx little-actors dev --project ./chat-example --entrypoint src/actors.ts
+npx little-actors dev --project ./chat-example --entrypoint src/actors.ts --api-key local-dev-key
 ```
 
 The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have `little-actors` installed. Source loading validates field annotations automatically; see [explicit persistence](api.md#saved-state-and-serialization).
@@ -68,6 +68,7 @@ Include the artifact and installed production dependencies in the deployment ima
 ## Run the development server
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
@@ -85,10 +86,11 @@ Local mode needs no cloud credentials, database URL, bucket, or signing key. Own
 little-actors dev [options]
 ```
 
+- `--api-key <key>` — Required API key for local clients, or set `DURABLE_OBJECT_API_KEY`.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Loopback port, an integer from `0` through `65535`. Defaults to `7100`; `0` selects an available port.
-- `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-actors`. An explicit relative path resolves from the shell's working directory.
+- `--data-dir <directory>` — Persistent actor state. Defaults to `<project>/.little-actors`. An explicit relative path resolves from the shell's working directory.
 - `--storage <backend>` — Storage for ownership, leases, and snapshots: `local` (default) or `gcs`.
 - `-h`, `--help` — Print command help.
 
@@ -98,13 +100,14 @@ Each startup option has an environment equivalent. Explicit flags take precedenc
 
 | Flag | Environment variable |
 | --- | --- |
+| `--api-key` | `DURABLE_OBJECT_API_KEY` |
 | `--project` | `DURABLE_OBJECT_PROJECT` |
 | `--entrypoint` | `DURABLE_OBJECT_ENTRYPOINT` |
 | `--port` | `DURABLE_OBJECT_PORT` |
 | `--data-dir` | `DURABLE_OBJECT_DATA_DIR` |
 | `--storage` | `DURABLE_OBJECT_STORAGE` |
 
-Set `DURABLE_OBJECT_API_KEY` to choose a stable local API key; otherwise startup generates one. For example:
+Set the same API key on the server and its clients. For example:
 
 ```sh
 export DURABLE_OBJECT_PORT=7200
@@ -112,7 +115,7 @@ export DURABLE_OBJECT_API_KEY=local-development-key
 npx little-actors dev
 ```
 
-Your backend can connect using `DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.1:7200`, the same API key, and `DURABLE_OBJECT_NAMESPACE_ID=local`. Explicit client settings bypass `.little-actors/runtime.json`. That file contains connection details for automatic discovery, including a randomly chosen port or generated key; it is not a deployment manifest. Launch configuration stays in memory.
+Your backend can connect using `DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.1:7200` and the same `DURABLE_OBJECT_API_KEY`. The server chooses its default namespace; set `DURABLE_OBJECT_NAMESPACE_ID` to select one explicitly. No connection settings are read from or written to a file.
 
 ### Choose a port
 
@@ -120,7 +123,7 @@ Your backend can connect using `DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.
 npx little-actors dev --port 7200
 ```
 
-Use `--port 0` to select an available port. The ready message prints the selected origin; `token` reads it automatically from the data directory. Configure your application proxy using `.little-actors/runtime.json`.
+Use `--port 0` to select an available port. The ready message prints the selected origin. Pass it to clients through `DURABLE_OBJECT_CONTROL_PLANE_URL`, or use `--url` for CLI commands.
 
 ### Keep state across restarts
 
@@ -130,7 +133,7 @@ npx little-actors dev --data-dir ./chat-state
 
 Keep the entire data directory to preserve actors across restarts. Only one `dev` process can use it at a time. Separate projects can run with different data directories and ports.
 
-Stop with Ctrl-C. Actor code changes require restarting `dev`; there is no file watcher. Connection settings and local credentials are refreshed at startup, so refresh the proxy credentials and reconnect the web app after restarting.
+Stop with Ctrl-C. Actor code changes require restarting `dev`; there is no file watcher. Reuse the same API key and reconnect the web app after restarting.
 
 Local storage is intended for development. Deleting the directory or losing its machine loses the saved actors. A fresh directory starts a fresh local environment.
 
@@ -165,19 +168,19 @@ npx little-actors objects list --namespace local --limit 20 --after 'CURSOR_FROM
 
 `--all` fetches every page automatically. It cannot be combined with `--limit` or `--after`. Pagination hints stay on stderr so `--json` output remains a valid JSON array. To scroll the full table in a terminal pager, use `npx little-actors objects list --all | less -S`; press `q` to exit.
 
-`objects inspect <actor-type> <actor-id>` prints JSON containing the object's identity, committed version, snapshot path, last request ID, and `state`. This includes all `@Persisted` fields, including internal fields. `@Ephemeral` fields are not stored. Inspection reads the snapshot referenced by the committed database record, without starting the actor or running its code. Concurrent writes may commit a newer version after that record is read.
+`objects inspect <actor-type> <actor-id>` prints JSON containing the object's identity, committed version, snapshot path, last request ID, and `state`. This includes all `@Persisted` fields, including internal fields. `@Ephemeral` fields are not stored. Inspection reads persisted snapshots without starting the actor or running its code. Concurrent writes may persist a newer version during inspection.
 
 An existing object with no committed snapshot returns `stateVersion: 0` and `state: null`. An unknown object returns an error.
 
 ### Local inspection
 
-Keep `little-actors dev` running. The commands read its URL, API key, and default namespace from `.little-actors/runtime.json`. Use `--data-dir <directory>` for a custom state directory:
+Keep `little-actors dev` running and pass its API key. The URL defaults to `http://127.0.0.1:7100`:
 
 ```sh
-npx little-actors objects inspect ChatRoom lobby --data-dir ./chat-state
+npx little-actors objects inspect ChatRoom lobby --api-key local-dev-key
 ```
 
-This works with both local snapshots and `dev --storage gcs`.
+Use `--url` for another port. This works with local files and `dev --storage gcs`.
 
 ### Cloud inspection
 
@@ -191,9 +194,9 @@ npx little-actors objects list --namespace my-project --json
 npx little-actors objects inspect ChatRoom lobby --namespace my-project
 ```
 
-Both commands also accept `--url <origin>` and `--api-key <key>`, which override the corresponding environment variables. A remote URL requires a remote API key; local credentials are never used as a fallback. These commands require a server version that provides the [object inspection API](http.md#object-inspection).
+Both commands also accept `--url <origin>` and `--api-key <key>`, which override the corresponding environment variables. Use the API key configured on the selected server. These commands require a server version that provides the [object inspection API](http.md#object-inspection).
 
-For inspection, `--namespace` overrides the connection's default: `local` for local dev, or `DURABLE_OBJECT_NAMESPACE_ID` (otherwise `default`) for cloud. Listing always covers all namespaces unless `--namespace` is supplied. Cloud URL or API-key settings select the cloud connection instead of `--data-dir`.
+`--namespace` overrides `DURABLE_OBJECT_NAMESPACE_ID`. Without either, inspection uses the server's default namespace (`local` in development), and listing covers all namespaces.
 
 Inspection requires the admin API key. Session tokens and browser socket tickets cannot read saved internal state. These commands do not download a native runtime.
 
@@ -268,13 +271,13 @@ A prebuilt runtime does not require Rust or a manually configured binary path.
 
 The default cache path is `~/.cache/little-actors/<version>/<platform>-<arch>/`. `DURABLE_OBJECT_CACHE_DIR` changes the download cache location.
 
-## Issue a local token
+## Issue a session token
 
 ```sh
 npx little-actors token
 ```
 
-Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
+Requests a session token using the configured server URL and API key. Standard output contains only the token followed by a newline. Errors go to standard error.
 
 ### token options
 
@@ -282,14 +285,17 @@ Requests a session token from the running local server. Standard output contains
 little-actors token [options]
 ```
 
-- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
+- `--url <origin>` — Control-plane URL, or `DURABLE_OBJECT_CONTROL_PLANE_URL`. Defaults to `http://127.0.0.1:7100`.
+- `--api-key <key>` — Admin API key, or `DURABLE_OBJECT_API_KEY`.
+- `--namespace <id>` — Namespace, or `DURABLE_OBJECT_NAMESPACE_ID`. Defaults to the server's default namespace.
+- `--region <region>` — Actor execution region, or `DURABLE_OBJECT_REGION`. Defaults to `north-america-east`.
 - `-h`, `--help` — Print command help.
 
 The requested deadline is one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 
 This diagnostic command is for trusted backend tools. Browser SDKs obtain actor-scoped tickets through your authenticated proxy instead.
 
-The token permits application access throughout the `local` namespace. It is neither an admin credential nor restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules.
+The token permits application access throughout the selected namespace (`local` on the development server). It is neither an admin credential nor restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules.
 
 ### Connect with a WebSocket tool
 
@@ -302,7 +308,7 @@ npx --yes wscat \
     -w -1
 ```
 
-Use the server's actual port, and pass `--data-dir` to `token` if the server uses a custom directory. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.
+Use the server's actual port, and pass `--url` to `token` if it differs from the default. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.
 
 ## Help and version
 
@@ -329,13 +335,13 @@ Ctrl-C requests shutdown. It does not erase actor state.
 
 ## Troubleshooting
 
-### No local runtime found
+### API key is missing
 
-Start `dev` and use its data directory for `token`. Your application proxy needs the current backend URL and API key. With a custom directory or a different working directory, pass `--data-dir` explicitly.
+Set `DURABLE_OBJECT_API_KEY` or pass `--api-key`. Use the same value on the actor server and your backend.
 
 ### Cannot reach the local runtime
 
-Restart `dev`, wait for the ready message, and refresh the proxy credentials. Tokens copied before the restart must be regenerated.
+Start `dev`, wait for the ready message, and check that the client URL matches the printed address. Tokens copied before the restart must be regenerated.
 
 ### Actor file is missing or changes do not appear
 

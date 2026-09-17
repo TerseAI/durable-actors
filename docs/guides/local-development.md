@@ -23,6 +23,7 @@ Both sides use this output: the frontend imports `ActorClient` from `generated/i
 ## Start the actor server
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
@@ -30,15 +31,15 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.litt
 
 ## Connect your application
 
-`ActorProxy` reads the connection settings from `.little-actors/runtime.json` automatically. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `ActorClient()` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
+Set the same `DURABLE_OBJECT_API_KEY` on your backend. Clients default to `http://127.0.0.1:7100`; use `DURABLE_OBJECT_CONTROL_PLANE_URL` for another address. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `ActorClient()` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
 
-Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` and reads the local runtime settings automatically.
+Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` after setting the API key.
 
 The frontend never imports the actor implementation. Generated SDK requests go to your proxy for credentials, and socket messages go directly to the actor gateway.
 
 ## Update after changes
 
-Restart `little-actors dev` after changing actor code. Regenerate the shared SDK when the actor contract changes. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
+Restart `little-actors dev` after changing actor code. Regenerate the shared SDK when the actor contract changes. Reuse the same API key after restarting.
 
 ## Troubleshooting
 

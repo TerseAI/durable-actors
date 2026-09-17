@@ -16,7 +16,6 @@ import type { JsonValue } from "../json.js"
 import { GrpcActorHostTransport } from "./actorHostGrpc.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./actorHostGrpc.js"
 import { configuredSettings } from "./clientSettings.js"
-import { readLocalSettings } from "./localSettings.js"
 import { SocketConnection } from "./socketConnection.js"
 import { LatencyTimeline, stderrTelemetry } from "./telemetry.js"
 import type { TelemetrySink } from "./telemetry.js"
@@ -26,7 +25,6 @@ const TARGET_EXPIRATION_SAFETY_MS = 5_000
 class RemoteActorClient {
     private settingsValue: RemoteActorSettings | undefined
     private readonly environment: NodeJS.ProcessEnv
-    private readonly readLocalSettings: typeof readLocalSettings
     private readonly fetchRequest: typeof globalThis.fetch
     private readonly requestId: () => string
     private readonly actorHost: ActorHostTransport
@@ -38,7 +36,6 @@ class RemoteActorClient {
 
     constructor(options?: DurableObjectsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
         this.environment = dependencies.environment ?? process.env
-        this.readLocalSettings = dependencies.readLocalSettings ?? readLocalSettings
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
         this.actorHost = dependencies.actorHost ?? new GrpcActorHostTransport()
@@ -304,17 +301,11 @@ class RemoteActorClient {
 
     private get settings(): RemoteActorSettings {
         if (this.settingsValue !== undefined) return this.settingsValue
-        const local = ["CONTROL_PLANE_URL", "SOCKET_GATEWAY_URL", "API_KEY", "TOKEN"].every(
-            key => this.environment[`DURABLE_OBJECT_${key}`] === undefined
-        )
-            ? this.readLocalSettings()
-            : {}
         this.settingsValue = configuredSettings({
-            apiKey: this.environment.DURABLE_OBJECT_API_KEY ?? local.apiKey,
+            apiKey: this.environment.DURABLE_OBJECT_API_KEY,
             token: this.environment.DURABLE_OBJECT_TOKEN,
-            namespaceId: this.environment.DURABLE_OBJECT_NAMESPACE_ID ?? local.namespaceId,
-            controlPlaneUrl:
-                this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL ?? local.controlPlaneUrl ?? "http://127.0.0.1:7100",
+            namespaceId: this.environment.DURABLE_OBJECT_NAMESPACE_ID,
+            controlPlaneUrl: this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100",
             socketGatewayUrl: this.environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
         })
         return this.settingsValue
@@ -419,7 +410,6 @@ interface DurableObjectsClientOptions {
 
 interface RemoteActorClientDependencies {
     readonly environment?: NodeJS.ProcessEnv
-    readonly readLocalSettings?: typeof readLocalSettings
     readonly fetch?: typeof globalThis.fetch
     readonly requestId?: () => string
     readonly actorHost?: ActorHostTransport

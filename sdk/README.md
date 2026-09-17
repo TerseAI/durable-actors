@@ -25,6 +25,7 @@ For a collaborative Tiptap editor, use `npx little-actors init documents-example
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
@@ -55,7 +56,7 @@ const files = await generateTypeScript(actors.map(actor => actor.contract))
 
 The caller chooses where to write the files. Generation does not execute actor code.
 
-The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
+The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. Set the same `DURABLE_OBJECT_API_KEY` on your application backend. Clients default to `http://127.0.0.1:7100`; set `DURABLE_OBJECT_CONTROL_PLANE_URL` for another address. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
 
 `little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
@@ -66,7 +67,7 @@ Start a local server programmatically and pass its connection settings to your t
 ```ts
 import { startLocalActors } from "little-actors/dev"
 
-const runtime = await startLocalActors({ entrypoint: "src/actors.ts" })
+const runtime = await startLocalActors({ entrypoint: "src/actors.ts", apiKey: "test-key" })
 try {
     await runTests(runtime.connection)
 } finally {
@@ -158,7 +159,7 @@ export async function POST(request: Request) {
 
 The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails before ticket issuance. `ActorProxy.handle(authorization)` returns `{ websocketUrl, key }`; it constructs the control-plane request internally and throws if authorization fails. Return the result as JSON with `Cache-Control: no-store`.
 
-With no configuration, the proxy reads `.little-actors/runtime.json` from the working directory. Set `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and optional `DURABLE_OBJECT_NAMESPACE_ID` for a remote server. The URL defaults to `http://127.0.0.1:7100` when no local runtime URL is available. An explicit URL or API key skips local-file credentials. An optional second argument overrides these settings. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
+Set `DURABLE_OBJECT_API_KEY` on the backend, with optional `DURABLE_OBJECT_CONTROL_PLANE_URL` (default `http://127.0.0.1:7100`) and `DURABLE_OBJECT_NAMESPACE_ID`. An optional second argument overrides these settings. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
 
 The frontend uses the default application route:
 

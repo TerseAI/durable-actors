@@ -12,7 +12,6 @@ use anyhow::{Context, Result, ensure};
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, ValueEnum};
-use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +34,8 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
+    #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
+    pub api_key: String,
     #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
     pub project: PathBuf,
     #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
@@ -95,25 +96,17 @@ pub async fn serve_local(
         storage.leases.clone(),
         options.sdk_host.clone(),
     ));
-    let api_key = std::env::var("DURABLE_OBJECT_API_KEY")
-        .unwrap_or_else(|_| uuid::Uuid::new_v4().simple().to_string());
     let routes = local_routes(
         &options,
         &project,
         &origin,
         &storage,
         provider.clone(),
-        &api_key,
+        &options.api_key,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = publish_connection(
-        &directory,
-        &origin,
-        &api_key,
-        &storage.region,
-        options.ready_fd,
-    );
+    let ready = notify_launcher(&origin, &options.api_key, &storage.region, options.ready_fd);
     if ready.is_ok() {
         println!(
             "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx little-actors generate\nRestart this command after changing actor code.",
@@ -125,9 +118,7 @@ pub async fn serve_local(
             );
         }
     }
-    let result = server.run_until(shutdown, ready).await;
-    let _ = std::fs::remove_file(directory.join("runtime.json"));
-    result
+    server.run_until(shutdown, ready).await
 }
 
 struct LocalServer {
@@ -321,30 +312,14 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     )
 }
 
-fn publish_connection(
-    directory: &Path,
-    origin: &str,
-    api_key: &str,
-    region: &str,
-    ready_fd: Option<i32>,
-) -> Result<()> {
-    let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
-    write_private_json(&directory.join("runtime.json"), &connection)?;
+fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i32>) -> Result<()> {
     if let Some(fd) = ready_fd {
         // The launcher transfers ownership of this inherited readiness descriptor.
         let mut ready = unsafe { File::from_raw_fd(fd) };
+        let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
         serde_json::to_writer(&mut ready, &connection)?;
         ready.flush()?;
     }
-    Ok(())
-}
-
-fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(path.parent().context("file has no parent")?)?;
-    temporary.write_all(&serde_json::to_vec_pretty(value)?)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
     Ok(())
 }
 
@@ -358,6 +333,7 @@ mod tests {
         let directory = tempfile::tempdir_in(&cwd)?;
         let relative = directory.path().strip_prefix(&cwd)?;
         let options = DevOptions {
+            api_key: "test-key".into(),
             project: cwd.clone(),
             port: 0,
             data_dir: Some(relative.into()),

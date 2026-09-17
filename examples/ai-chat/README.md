@@ -14,12 +14,14 @@ cp .env.example .env
 Add your `OPENAI_API_KEY` to `.env`, then start the actors:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, from the same directory:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npm run dev
 ```
 
@@ -33,7 +35,7 @@ If you already have this directory, start at `npm install`. No client generation
 - [src/backend.ts](src/backend.ts) loads saved history, appends the new user message, streams a reply, and saves the completed assistant message.
 - [src/Chat.tsx](src/Chat.tsx) loads the lobby history and uses `useChat` to send messages and render streaming replies.
 
-The backend discovers the local actor runtime automatically. For a remote actor server, set `DURABLE_OBJECT_CONTROL_PLANE_URL` and `DURABLE_OBJECT_API_KEY` on the backend.
+The backend uses `DURABLE_OBJECT_API_KEY` and defaults to `http://127.0.0.1:7100`. Set `DURABLE_OBJECT_CONTROL_PLANE_URL` for another address.
 
 This sample has one shared lobby and no authentication. Authenticate both routes and check chat ownership before using it for private conversations. Reloads restore saved messages; in-progress streams are not resumed.
 

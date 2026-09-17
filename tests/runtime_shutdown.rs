@@ -28,7 +28,15 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
     std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_little-actors"))
-        .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+        .args([
+            "dev",
+            "--port",
+            "0",
+            "--entrypoint",
+            "actors.ts",
+            "--api-key",
+            "test-key",
+        ])
         .arg("--project")
         .arg(project.path())
         .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
@@ -148,7 +156,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             .spawn()?;
         let mut output = BufReader::new(runtime.stdout.take().context("runtime stdout")?);
         let origin = timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
-        std::fs::remove_file(shell_directory.path().join("state/runtime.json"))?;
+        assert!(!shell_directory.path().join("state/runtime.json").exists());
         let result = timeout(
             Duration::from_secs(30),
             Command::new("node")

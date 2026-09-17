@@ -192,12 +192,13 @@ To save snapshots in GCS while running actors locally:
 export DURABLE_OBJECT_BUCKET=my-actor-state-bucket
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
+Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on its backend, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
-Local execution uses the same GCS ownership and snapshot layout as hosted execution. Changing the bucket selects a different set of actors; existing state is not copied. Launch settings come from flags or environment variables. The local connection file is only for client discovery.
+Local execution uses the same GCS ownership and snapshot layout as hosted execution. Changing the bucket selects a different set of actors; existing state is not copied. Launch settings come from flags or environment variables. Clients use explicit settings or environment variables.
 
 ## WebSocket configuration
 

@@ -754,7 +754,7 @@ export DURABLE_OBJECT_API_KEY='<your-api-key>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-For local development, backend actor calls read `.little-actors/runtime.json` automatically from the working directory. An explicit control-plane URL, gateway URL, API key, or token skips local credentials. Restart the application backend after restarting the actor runtime to reload its cached settings. Keep these settings in trusted backend processes. Browser applications use a generated SDK and an authenticated proxy; see the [browser demo](../../examples/chat/README.md).
+For local development, set the same API key on the actor server and your backend. Clients default to `http://127.0.0.1:7100`. Keep these settings in trusted backend processes. Browser applications use a generated SDK and an authenticated proxy; see the [browser demo](../../examples/chat/README.md).
 
 ### DURABLE_OBJECT_API_KEY
 
@@ -762,7 +762,7 @@ For local development, backend actor calls read `.little-actors/runtime.json` au
 
 ### DURABLE_OBJECT_CONTROL_PLANE_URL
 
-**Default:** The local runtime origin, or `http://127.0.0.1:7100`. HTTP(S) server origin. A port and trailing slash are allowed; paths, queries, fragments, usernames, and passwords are not.
+**Default:** `http://127.0.0.1:7100`. HTTP(S) server origin. A port and trailing slash are allowed; paths, queries, fragments, usernames, and passwords are not.
 
 ### DURABLE_OBJECT_SOCKET_GATEWAY_URL
 

@@ -7,6 +7,7 @@ import { z } from "zod"
 import { runtimeExecutable } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
+    apiKey?: string
     entrypoint: string
     project?: string
     dataDir?: string
@@ -52,6 +53,7 @@ function launch(executable: string, options: LocalActorOptions) {
         executable,
         [
             "dev",
+            ...(options.apiKey === undefined ? [] : ["--api-key", options.apiKey]),
             "--project",
             project,
             "--entrypoint",

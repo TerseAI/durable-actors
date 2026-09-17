@@ -5,10 +5,13 @@ import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
+import { connection, connectionOptions } from "./cli/connection.js"
+import type { ConnectionOptions } from "./cli/connection.js"
 import { registerObjectCommands } from "./cli/objects.js"
 import { runtimeExecutable } from "./runtimeInstaller.js"
 
 interface DevOptions {
+    apiKey: string
     port: number
     project: string
     entrypoint: string
@@ -62,6 +65,11 @@ try {
         .command("dev")
         .description("Start local actors with persistent file storage")
         .addOption(
+            new Option("--api-key <key>", "API key for local clients")
+                .env("DURABLE_OBJECT_API_KEY")
+                .makeOptionMandatory()
+        )
+        .addOption(
             new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
         )
         .addOption(
@@ -89,13 +97,14 @@ try {
         .action(async options => {
             process.exitCode = await runRuntime(devArguments(options))
         })
-    program
-        .command("token")
-        .description("Print a one-hour local session token for tools such as wscat")
-        .option("--data-dir <directory>", "runtime state directory", ".little-actors")
+    connectionOptions(program.command("token").description("Print a one-hour session token"))
+        .addOption(
+            new Option("--region <region>", "actor execution region")
+                .env("DURABLE_OBJECT_REGION")
+                .default("north-america-east")
+        )
         .action(async options => {
-            const { token } = await localSession(options.dataDir)
-            console.log(token)
+            console.log(await sessionToken(options))
         })
     program
         .command("start")
@@ -132,9 +141,11 @@ async function initializeProject(directory: string, options: { template: string 
 
 From that directory, run:
   npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx little-actors generate"}
+  export DURABLE_OBJECT_API_KEY=local-dev-key
   npx little-actors dev
 
 In another terminal, from the same directory:
+  export DURABLE_OBJECT_API_KEY=local-dev-key
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`)
@@ -157,7 +168,9 @@ function devArguments(options: DevOptions): string[] {
         "--entrypoint",
         options.entrypoint,
         "--storage",
-        options.storage
+        options.storage,
+        "--api-key",
+        options.apiKey
     ]
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args
@@ -178,39 +191,24 @@ async function runRuntime(args: string[]): Promise<number> {
     )
 }
 
-async function localSession(directory: string) {
-    const connection = await localConnection(directory)
-    const response = await fetch(
-        `${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`,
-        {
-            method: "POST",
-            headers: { authorization: `Bearer ${connection.apiKey}`, "content-type": "application/json" },
-            body: JSON.stringify({
-                executionId: `local-${randomUUID()}`,
-                deadlineUnixMs: Date.now() + 3_600_000,
-                storageRegion: connection.storageRegion
-            }),
-            signal: AbortSignal.timeout(10_000)
-        }
-    ).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
+async function sessionToken(options: ConnectionOptions & { region: string }): Promise<string> {
+    const settings = connection(options)
+    const scope = settings.namespaceId ? `/namespaces/${encodeURIComponent(settings.namespaceId)}` : ""
+    const response = await fetch(`${settings.controlPlaneUrl}/v1${scope}/session-scoped-token`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${settings.credential}`, "content-type": "application/json" },
+        body: JSON.stringify({
+            executionId: `cli-${randomUUID()}`,
+            deadlineUnixMs: Date.now() + 3_600_000,
+            storageRegion: options.region
+        }),
+        signal: AbortSignal.timeout(10_000)
+    }).catch(() => {
+        throw new Error(`Cannot reach the runtime at ${settings.controlPlaneUrl}.`)
     })
-    if (!response.ok)
-        throw new Error(
-            `Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`
-        )
+    if (!response.ok) throw new Error(`Could not issue a session token (HTTP ${response.status}).`)
     const { token } = (await response.json()) as { token: string }
-    return { connection, token }
-}
-
-async function localConnection(directory: string) {
-    return readFile(path.resolve(directory, "runtime.json"), "utf8")
-        .then(JSON.parse)
-        .catch(() => {
-            throw new Error(
-                "No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands."
-            )
-        })
+    return token
 }
 
 async function version(): Promise<string> {

@@ -94,9 +94,8 @@ replica directory and defaults to `/tmp/durable-object-replica`.
 
 Local development's file bucket uses atomic replacement and a shared file lock for
 conditional writes. Its objects live under `<data-dir>/objects/` with the same path
-layout as GCS. Launch configuration stays in memory; `runtime.json` only lets local
-clients discover the address and API key. Explicit client environment variables
-bypass that discovery file.
+layout as GCS. Launch configuration stays in memory. Configure server and client
+connections with flags or environment variables; no connection file is written.
 
 Modal replica storage is ephemeral and sandboxes have a maximum lifetime. Recovery
 is not guaranteed after every recorded replica disappears before a complete witness
