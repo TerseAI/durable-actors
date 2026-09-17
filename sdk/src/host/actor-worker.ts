@@ -4,7 +4,7 @@ import { parentPort, workerData } from "node:worker_threads"
 import { Actor, findActorDefinition, registerActorClass } from "../actor/actor.js"
 import type { ActorClass } from "../actor/actor.js"
 import type { ActorSchema } from "../actor/schema.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorDefinitionError, errorMessage } from "../errors.js"
 
 import { ActorRuntime } from "./actor-runtime.js"
@@ -16,11 +16,20 @@ if (port === null) throw new Error("actor Worker requires a parent message port"
 
 const data = workerData as ActorWorkerData
 let publishing: { resolve: () => void; reject: (error: Error) => void } | undefined
+let loadingConnections:
+    { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void } | undefined
 try {
     const actorTypes = await loadActorEntrypoint(data.moduleUrl, data.schemas)
     let runtime: ActorRuntime | undefined
 
     port.on("message", (message: ActorWorkerRequest) => {
+        if (message.type === "socket_connections") {
+            const pending = loadingConnections
+            loadingConnections = undefined
+            if (message.error === undefined) pending?.resolve(message.connections)
+            else pending?.reject(new Error(message.error))
+            return
+        }
         if (message.type === "socket_effects_published") {
             const pending = publishing
             publishing = undefined
@@ -38,7 +47,7 @@ try {
             )
             return
         }
-        runtime ??= new ActorRuntime(definition, publish)
+        runtime ??= new ActorRuntime(definition, publish, getConnections)
         void runtime.handle(message.command).then(
             reply => post(reply),
             error => post(failedReply("actor_worker_failed", errorMessage(error)))
@@ -58,6 +67,14 @@ function publish(effects: readonly SocketEffect[]): Promise<void> {
         if (publishing !== undefined) throw new Error("actor socket output is already being published")
         publishing = { resolve, reject }
         post({ type: "socket_effects", effects })
+    })
+}
+
+function getConnections(): Promise<readonly SocketConnection[]> {
+    return new Promise((resolve, reject) => {
+        if (loadingConnections !== undefined) throw new Error("actor connections are already being loaded")
+        loadingConnections = { resolve, reject }
+        post({ type: "get_connections" })
     })
 }
 

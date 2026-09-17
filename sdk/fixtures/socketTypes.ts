@@ -16,7 +16,7 @@ type Outgoing = z.infer<typeof outgoing>
 
 class MetadataRoom extends Actor<ChatroomMetadata> {
     async users(): Promise<string[]> {
-        return this.connections.map(socket => socket.metadata.userId)
+        return (await this.getConnections()).map(socket => socket.metadata.userId)
     }
 }
 
@@ -27,9 +27,10 @@ class TypedRoom extends Actor<ChatroomMetadata, Incoming, Outgoing, z.infer<type
 
     async onMessage(socket: ActorSocketOf<TypedRoom>, message: ActorMessageOf<TypedRoom>): Promise<void> {
         const response = { type: "posted" as const, text: message.text, userId: socket.metadata.userId }
+        const connections = await this.getConnections()
         socket.send(response)
         this.broadcast(response, { except: socket })
-        this.connections[0]?.send(response)
+        connections[0]?.send(response)
         socket.setTags("member", "moderator")
         this.broadcast(response, { tags: ["member"], except: socket })
         this.broadcast(response, { tags: ["member", "moderator"], tagMatch: "any" })
@@ -43,13 +44,13 @@ class TypedRoom extends Actor<ChatroomMetadata, Incoming, Outgoing, z.infer<type
         // @ts-expect-error Broadcast filters use the same tag union.
         this.broadcast(response, { tags: ["admin"] })
         // @ts-expect-error Connections preserve the tag union too.
-        this.connections[0]?.setTags("admin")
+        connections[0]?.setTags("admin")
         // @ts-expect-error Connection metadata follows the actor generic.
         socket.metadata = { userId: 123 }
         // @ts-expect-error Actor output must match its outgoing message type.
         this.broadcast({ type: "post", text: "wrong direction" })
         // @ts-expect-error Connections use the actor's outgoing message type.
-        this.connections[0]?.send({ type: "post", text: "wrong direction" })
+        connections[0]?.send({ type: "post", text: "wrong direction" })
     }
 }
 

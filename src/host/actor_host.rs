@@ -10,7 +10,7 @@ use tracing::error;
 use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure, ActorKey,
-        ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher, ActorSocketSource,
+        ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher,
     },
     actor_state::ActorStorageKey,
     state_transport::StateTransport,
@@ -37,7 +37,6 @@ impl ActorHost {
         executor: Arc<dyn ActorExecutor>,
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
-        sockets: Arc<dyn ActorSocketSource>,
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
@@ -48,7 +47,6 @@ impl ActorHost {
             executor,
             commits,
             state,
-            sockets,
             publisher,
             activity_tx,
         );
@@ -148,7 +146,6 @@ struct HostDispatcher {
     executor: Arc<dyn ActorExecutor>,
     commits: Arc<dyn StateCommitAuthority>,
     state: Arc<dyn StateTransport>,
-    sockets: Arc<dyn ActorSocketSource>,
     publisher: Arc<dyn ActorSocketPublisher>,
     actors: HashMap<ActorStorageKey, ActorMailbox>,
     tasks: JoinSet<()>,
@@ -165,7 +162,6 @@ impl HostDispatcher {
         executor: Arc<dyn ActorExecutor>,
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
-        sockets: Arc<dyn ActorSocketSource>,
         publisher: Arc<dyn ActorSocketPublisher>,
         activity: watch::Sender<usize>,
     ) -> Self {
@@ -175,7 +171,6 @@ impl HostDispatcher {
             executor,
             commits,
             state,
-            sockets,
             publisher,
             actors: HashMap::new(),
             tasks: JoinSet::new(),
@@ -262,7 +257,6 @@ impl HostDispatcher {
             self.executor.clone(),
             self.commits.clone(),
             self.state.clone(),
-            self.sockets.clone(),
             self.publisher.clone(),
         );
         let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
@@ -486,20 +480,10 @@ mod tests {
     use super::*;
     use crate::actor::ActorKey;
 
-    struct EmptySocketSource;
+    struct EmptySocketPublisher;
 
     #[async_trait]
-    impl ActorSocketSource for EmptySocketSource {
-        async fn connections(
-            &self,
-            _: &ActorKey,
-        ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[async_trait]
-    impl ActorSocketPublisher for EmptySocketSource {
+    impl ActorSocketPublisher for EmptySocketPublisher {
         async fn publish(&self, _: &ActorKey, _: Vec<ActorSocketEffect>) -> Result<()> {
             Ok(())
         }
@@ -509,20 +493,8 @@ mod tests {
         invocations: AtomicU64,
     }
 
-    struct UnavailableSocketSource;
-
-    #[async_trait]
-    impl ActorSocketSource for UnavailableSocketSource {
-        async fn connections(
-            &self,
-            _: &ActorKey,
-        ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
-            anyhow::bail!("gateway unavailable")
-        }
-    }
-
     #[tokio::test]
-    async fn connection_lookup_failure_does_not_execute_or_commit_the_method() -> Result<()> {
+    async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Result<()> {
         let executor = Arc::new(IncrementingExecutor {
             invocations: AtomicU64::new(0),
         });
@@ -536,14 +508,14 @@ mod tests {
             executor.clone(),
             Arc::new(FakeAuthority::default()),
             state.clone(),
-            Arc::new(UnavailableSocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
-        assert!(
-            matches!(invoke(&host, "request-1").await?, ActorExecutionResult::Failed { failure } if failure.code == "socket_gateway_unavailable")
-        );
-        assert_eq!(executor.invocations.load(Ordering::Relaxed), 0);
-        assert!(state.writes.lock().unwrap().is_empty());
+        assert!(matches!(
+            invoke(&host, "request-1").await?,
+            ActorExecutionResult::Completed { result, .. } if result == json!(1)
+        ));
+        assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
+        assert_eq!(state.writes.lock().unwrap().len(), 1);
         Ok(())
     }
 
@@ -594,7 +566,6 @@ mod tests {
                         actor: invocation.actor,
                         method: "onMessage".into(),
                         args: Vec::new(),
-                        connections: invocation.connections,
                     },
                     state,
                 )
@@ -627,8 +598,7 @@ mod tests {
             }),
             Arc::new(FakeAuthority::default()),
             Arc::new(FakeStateTransport::default()),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
         (Arc::new(host), receiver, release)
     }
@@ -688,8 +658,7 @@ mod tests {
             executor.clone(),
             authority.clone(),
             Arc::new(FakeStateTransport::default()),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         ));
         let caller = host.clone();
         let first = tokio::spawn(async move { invoke(&caller, "first").await });
@@ -1069,8 +1038,7 @@ mod tests {
             }),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
         assert_eq!(invoke(&host, "request-1").await?, completed(9));
         assert_eq!(state.reads.load(Ordering::Relaxed), 1);
@@ -1118,8 +1086,7 @@ mod tests {
             Arc::new(ExpiringExecutor(authority.clone())),
             authority,
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
         assert!(invoke(&host, "request-1").await.is_err());
         assert!(state.writes.lock().unwrap().is_empty());
@@ -1149,8 +1116,7 @@ mod tests {
             executor.clone(),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
         assert!(matches!(
             invoke(&host, "request-1").await?,
@@ -1185,8 +1151,7 @@ mod tests {
                 replicated: true,
                 ..Default::default()
             }),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
         assert_eq!(*authority.commits.lock().unwrap(), [0]);
@@ -1209,8 +1174,7 @@ mod tests {
             executor.clone(),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
 
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
@@ -1251,8 +1215,7 @@ mod tests {
             executor.clone(),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
 
         let first = invoke(&host, "request-1").await?;
@@ -1279,8 +1242,7 @@ mod tests {
             Arc::new(ExhaustedExecutor),
             Arc::new(FakeAuthority::default()),
             Arc::new(FakeStateTransport::default()),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
 
         assert!(matches!(
@@ -1303,8 +1265,7 @@ mod tests {
             Arc::new(InvalidEffectsExecutor),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
 
         assert!(matches!(
@@ -1369,7 +1330,6 @@ mod tests {
             Arc::new(Emitter),
             authority.clone(),
             Arc::new(FakeStateTransport::default()),
-            Arc::new(EmptySocketSource),
             publisher.clone(),
         );
         assert_eq!(invoke(&host, "one").await?, completed(1));
@@ -1413,8 +1373,7 @@ mod tests {
             }),
             authority.clone(),
             state.clone(),
-            Arc::new(EmptySocketSource),
-            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketPublisher),
         );
 
         let invocation = |request_id: &str| ActorSocketInvocation {

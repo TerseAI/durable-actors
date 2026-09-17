@@ -86,14 +86,17 @@ where
         host,
         lease,
         renewal,
-        socket_publisher,
+        socket_gateway,
         archive,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
 
     let service = ActorHostGrpcService::new(host.clone(), invocation_auth).into_service();
-    if let Err(error) = executor_connection.mark_ready(Some(socket_publisher)).await {
+    if let Err(error) = executor_connection
+        .mark_ready(Some(socket_gateway.clone()), Some(socket_gateway))
+        .await
+    {
         log_startup(&config, &timings, "failed", Some(&error));
         return Err(error);
     }
@@ -252,7 +255,7 @@ impl HostMetadataFile {
 
 struct PreparedActorHost {
     archive: CancellationToken,
-    socket_publisher: Arc<dyn crate::actor::ActorSocketPublisher>,
+    socket_gateway: Arc<ControlPlaneClient>,
     invocation_auth: ActorJwtVerifier,
     listener: TcpListener,
     route: String,
@@ -315,7 +318,6 @@ async fn prepare_actor_host(
             local,
         )),
         control_plane.clone(),
-        control_plane.clone(),
     ));
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,
@@ -329,7 +331,7 @@ async fn prepare_actor_host(
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
         archive,
-        socket_publisher: control_plane,
+        socket_gateway: control_plane,
         invocation_auth,
         listener,
         route,

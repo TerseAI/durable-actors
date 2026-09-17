@@ -46,7 +46,7 @@ export class ChatRoom extends Actor<ChatSession, { text: string }> {
     @Persisted private events: string[] = []
 
     async onConnect(socket: ActorSocket<ChatSession>): Promise<void> {
-        this.events.push(`connect:${socket.metadata.userId}:${this.connections.length}`)
+        this.events.push(`connect:${socket.metadata.userId}:${(await this.getConnections()).length}`)
         socket.metadata = { ...socket.metadata, connectedAt: 2 }
         socket.setTags("member")
         socket.send({ text: "ready" })
@@ -58,7 +58,9 @@ export class ChatRoom extends Actor<ChatSession, { text: string }> {
     }
 
     async onDisconnect(socket: ActorSocket<ChatSession>, code: number, reason: string): Promise<void> {
-        this.events.push(`disconnect:${socket.metadata.userId}:${code}:${reason}:${this.connections.length}`)
+        this.events.push(
+            `disconnect:${socket.metadata.userId}:${code}:${reason}:${(await this.getConnections()).length}`
+        )
     }
 
     async getEvents(): Promise<readonly string[]> {
@@ -543,7 +545,6 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
             actor,
             method: "announce",
             args: ["announcement"],
-            connections: [],
             state: { events: ["connect:user-1:1", "message:user-1:hello"] }
         }),
         {

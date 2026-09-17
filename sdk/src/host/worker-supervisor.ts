@@ -21,7 +21,8 @@ import type {
     ActorWorkerHandle,
     ActorWorkerSupervisorOptions,
     ResidentActorWorkerOptions,
-    SocketPublisher
+    SocketPublisher,
+    SocketSource
 } from "./types.js"
 
 const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
@@ -63,14 +64,18 @@ class ActorWorkerSupervisor {
         return this.actorTypes
     }
 
-    async handle(command: ActorExecutorCommand, publish?: SocketPublisher): Promise<ActorExecutorReply> {
+    async handle(
+        command: ActorExecutorCommand,
+        publish?: SocketPublisher,
+        connections?: SocketSource
+    ): Promise<ActorExecutorReply> {
         if (this.closed) return failedReply("actor_worker_terminated", "actor supervisor is closed")
         switch (command.type) {
             case "invoke":
             case "websocket_event":
                 try {
                     if (this.actorTypes === undefined) await this.ready()
-                    return await this.execute(command, publish)
+                    return await this.execute(command, publish, connections)
                 } catch (error) {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
@@ -104,7 +109,8 @@ class ActorWorkerSupervisor {
 
     private execute(
         command: InvokeCommand | WebSocketEventCommand,
-        publish?: SocketPublisher
+        publish?: SocketPublisher,
+        connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (!this.actorTypes?.includes(command.actor.actor_type)) {
             return Promise.resolve(
@@ -136,7 +142,7 @@ class ActorWorkerSupervisor {
             })
             this.actors.set(key, actor)
         }
-        return actor.execute(command, publish)
+        return actor.execute(command, publish, connections)
     }
 
     private evict(command: EvictCommand): ActorExecutorReply {
@@ -196,7 +202,8 @@ class ResidentActorWorker {
 
     async execute(
         command: InvokeCommand | WebSocketEventCommand,
-        publish?: SocketPublisher
+        publish?: SocketPublisher,
+        connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (this.worker === undefined && command.resident_only) return { type: "state_required" }
         if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
@@ -205,7 +212,7 @@ class ResidentActorWorker {
         const worker = this.worker
         let reply: ActorExecutorReply
         try {
-            reply = await worker.execute(command, publish)
+            reply = await worker.execute(command, publish, connections)
         } catch (error) {
             reply = failedReply(
                 error instanceof ActorWorkerTerminatedError ? "actor_worker_terminated" : "actor_worker_failed",
@@ -246,6 +253,7 @@ class ActorWorker implements ActorWorkerHandle {
     private replyReject: ((error: Error) => void) | undefined
     private terminalError: Error | undefined
     private publish: SocketPublisher | undefined
+    private connections: SocketSource | undefined
 
     constructor(data: ActorWorkerData) {
         this.readyPromise = new Promise<readonly string[]>((resolve, reject) => {
@@ -269,11 +277,13 @@ class ActorWorker implements ActorWorkerHandle {
 
     async execute(
         command: InvokeCommand | WebSocketEventCommand,
-        publish?: SocketPublisher
+        publish?: SocketPublisher,
+        connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (this.terminalError !== undefined) throw this.terminalError
         this.worker.ref()
         this.publish = publish
+        this.connections = connections
         try {
             await this.readyPromise
             if (this.terminalError !== undefined) throw this.terminalError
@@ -295,6 +305,10 @@ class ActorWorker implements ActorWorkerHandle {
     }
 
     private receive(message: ActorWorkerMessage): void {
+        if (message.type === "get_connections") {
+            void this.loadConnections()
+            return
+        }
         if (message.type === "socket_effects") {
             void this.publishEffects(message.effects)
             return
@@ -327,12 +341,23 @@ class ActorWorker implements ActorWorkerHandle {
         }
     }
 
+    private async loadConnections(): Promise<void> {
+        try {
+            if (this.connections === undefined) throw new Error("actor connection lookup is unavailable")
+            const connections = await this.connections()
+            this.post({ type: "socket_connections", connections })
+        } catch (error) {
+            this.post({ type: "socket_connections", connections: [], error: errorMessage(error) })
+        }
+    }
+
     private reply(reply: ActorExecutorReply): void {
         const resolve = this.replyResolve
         if (resolve === undefined) return
         this.replyResolve = undefined
         this.replyReject = undefined
         this.publish = undefined
+        this.connections = undefined
         resolve(reply)
         this.worker.unref()
     }

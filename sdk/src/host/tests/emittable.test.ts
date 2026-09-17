@@ -103,5 +103,5 @@ test("does not emit intermediate values, unchanged fields, or failed operations"
 })
 
 function invocation(method: string): InvokeCommand {
-    return { type: "invoke", request_id: method, actor, state: null, method, args: [], connections: [] }
+    return { type: "invoke", request_id: method, actor, state: null, method, args: [] }
 }

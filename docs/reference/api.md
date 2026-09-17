@@ -48,7 +48,7 @@ TypeScript `private` and `protected` do not provide authorization for discovered
 Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string>
 ```
 
-Declare socket types once on the base class: `class ChatRoom extends Actor<ChatroomMetadata>`. The first parameter types `connect()` metadata, hook sockets, and `this.connections`. The remaining parameters type incoming messages, outgoing messages, and connection tags. Outgoing messages default to the incoming type.
+Declare socket types once on the base class: `class ChatRoom extends Actor<ChatroomMetadata>`. The first parameter types `connect()` metadata, hook sockets, and `await this.getConnections()`. The remaining parameters type incoming messages, outgoing messages, and connection tags. Outgoing messages default to the incoming type.
 
 Use `never` for a message type with no possible values: `Actor<Member, ClientEvent, never>` has no outgoing application events. Automatic state subscriptions still work.
 
@@ -128,15 +128,17 @@ protected readonly id: string
 
 The current actor ID, available inside an actor method or lifecycle hook. Reading it before the runtime binds the actor, including in its constructor, raises an `Error`. It is not a saved state field.
 
-### Actor.connections
+### Actor.getConnections
 
 ```text
-protected readonly connections: readonly ActorSocket<Metadata, Outgoing, Tag>[]
+protected getConnections(): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]>
 ```
 
-Connections available inside any actor method or lifecycle hook. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Access outside an invocation raises an `Error`.
+Returns connections inside an actor method or lifecycle hook. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Calling it outside an invocation rejects with an `Error`.
 
-Ordinary method calls fetch the current connections from the gateway before execution. If the lookup fails, the method does not run.
+Ordinary methods fetch connections from the gateway only when `getConnections()` is called. Repeated or concurrent calls share one lookup and the same socket objects within that invocation. A later invocation fetches a fresh list. Lifecycle hooks use the connection snapshot supplied with their event.
+
+A failed lookup rejects the promise. The method can catch the error; otherwise the invocation fails and its state changes are not committed. Methods that do not enumerate connections skip the lookup. Broadcasting and automatic state updates still use the socket gateway.
 
 Socket objects belong to the current invocation and are not saved actor state. Each actor supports up to 128 connections per gateway process.
 
@@ -210,7 +212,7 @@ The [chat tutorial](../../examples/chat/src/durable-objects.ts) shows a complete
 async onDisconnect(socket: ActorSocket<Metadata, Outgoing, Tag>, code: number, reason: string, wasClean: boolean): Promise<void>
 ```
 
-Optional lifecycle hook called when the server observes a connection closing. The socket is absent from `this.connections` and cannot send messages.
+Optional lifecycle hook called when the server observes a connection closing. The socket is absent from `await this.getConnections()` and cannot send messages.
 
 **Parameters**
 
@@ -367,7 +369,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 import type { ActorSocket } from "little-actors"
 ```
 
-Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
+Actor-side connection passed to lifecycle hooks and listed in `await this.getConnections()`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
 
 ### ActorSocket.id
 
@@ -635,7 +637,6 @@ Server-reported error category. This is an open string, not a closed enum; addit
 | `unauthenticated`            | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
 | `actor_error`                | Actor execution failed, including user exceptions or invalid output.                                       |
 | `resource_exhausted`         | Execution resource limit reached.                                                                          |
-| `socket_gateway_unavailable` | The host could not load connections from the gateway. The actor method did not run.                        |
 | `unavailable`                | Actor could not be reached or made available.                                                              |
 | `outcome_unknown`            | Caller could not confirm the result; the operation may have run and saved state.                           |
 | `invalid_request`            | Invalid request reported by the server.                                                                    |

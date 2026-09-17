@@ -56,10 +56,10 @@ interface ActorConnectionEventMap<Receive = JsonValue, State = JsonValue> {
 
 const scopes = new WeakMap<object, ActorSocketScope>()
 
-function actorConnections<Metadata, Outgoing, Tag extends string>(
+async function actorConnections<Metadata, Outgoing, Tag extends string>(
     instance: object
-): readonly ActorSocket<Metadata, Outgoing, Tag>[] {
-    return socketScope(instance).sockets as unknown as readonly ActorSocket<Metadata, Outgoing, Tag>[]
+): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
+    return (await socketScope(instance).getConnections()) as unknown as readonly ActorSocket<Metadata, Outgoing, Tag>[]
 }
 
 function broadcastActor(instance: object, message: unknown, options?: ActorBroadcastOptions): void {
@@ -68,7 +68,7 @@ function broadcastActor(instance: object, message: unknown, options?: ActorBroad
 
 async function runWithActorSockets<T>(
     instance: object,
-    connections: readonly SocketConnection[],
+    connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
     operation: (scope: ActorSocketScope) => Promise<T>,
     publish?: (effects: readonly SocketEffect[]) => Promise<void>,
     schemas: ActorSchemas = {}
@@ -81,22 +81,33 @@ async function runWithActorSockets<T>(
         return { value: await operation(scope), effects }
     } finally {
         scopes.delete(instance)
+        await scope.settle()
         await output?.flush()
     }
 }
 
 class ActorSocketScope {
-    readonly sockets: readonly RuntimeActorSocket[]
-    private readonly byId: ReadonlyMap<string, RuntimeActorSocket>
+    private readonly byId = new Map<string, RuntimeActorSocket>()
+    private loading: Promise<readonly RuntimeActorSocket[]> | undefined
 
     constructor(
-        connections: readonly SocketConnection[],
+        private readonly connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
         readonly effects: Pick<SocketEffect[], "push">,
         private readonly schemas: ActorSchemas
     ) {
-        const sockets = connections.map(connection => new RuntimeActorSocket(connection, effects, schemas))
-        this.sockets = sockets
-        this.byId = new Map(sockets.map(socket => [socket.id, socket]))
+        if (typeof connections !== "function") this.loading = Promise.resolve(this.wrap(connections))
+    }
+
+    getConnections(): Promise<readonly RuntimeActorSocket[]> {
+        this.loading ??= Promise.resolve().then(async () => {
+            const connections = typeof this.connections === "function" ? await this.connections() : this.connections
+            return this.wrap(connections)
+        })
+        return this.loading
+    }
+
+    async settle(): Promise<void> {
+        await this.loading?.catch(() => undefined)
     }
 
     eventSocket(connection: SocketConnection, state: ActorSocketState): RuntimeActorSocket {
@@ -125,6 +136,12 @@ class ActorSocketScope {
             tags: socketTags(options.tags ?? [], this.schemas),
             ...(options.tagMatch === undefined ? {} : { tag_match: options.tagMatch })
         })
+    }
+
+    private wrap(connections: readonly SocketConnection[]): readonly RuntimeActorSocket[] {
+        const sockets = connections.map(connection => new RuntimeActorSocket(connection, this.effects, this.schemas))
+        for (const socket of sockets) this.byId.set(socket.id, socket)
+        return sockets
     }
 }
 

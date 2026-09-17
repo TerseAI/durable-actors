@@ -3,7 +3,7 @@ import { z } from "zod"
 import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
@@ -31,8 +31,7 @@ const invokeCommandSchema = z.object({
     method: actorComponentSchema,
     args: z.array(jsonValueSchema),
     state: jsonValueSchema.nullable().optional(),
-    resident_only: z.boolean().optional(),
-    connections: z.array(socketConnectionSchema).optional()
+    resident_only: z.boolean().optional()
 })
 
 const websocketEventCommandSchema = z.object({
@@ -57,7 +56,13 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(15) }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(16) }),
+    z.object({
+        type: z.literal("socket_connections"),
+        message_id: z.number().int().nonnegative(),
+        connections: z.array(socketConnectionSchema),
+        error: z.string().optional()
+    }),
     z.object({
         type: z.literal("socket_effects_published"),
         message_id: z.number().int().nonnegative(),
@@ -79,11 +84,12 @@ type ActorExecutorReply =
 type ActorSessionClientMessage =
     | AttachMessage
     | ReplyMessage
+    | { readonly type: "get_connections"; readonly message_id: number }
     | { readonly type: "socket_effects"; readonly message_id: number; readonly effects: readonly SocketEffect[] }
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 15
+    readonly protocol: 16
     readonly actor_types: readonly string[]
 }
 
@@ -124,10 +130,16 @@ interface ActorWorkerData {
 type ActorWorkerRequest =
     | { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand }
     | { readonly type: "socket_effects_published"; readonly error?: string }
+    | {
+          readonly type: "socket_connections"
+          readonly connections: readonly SocketConnection[]
+          readonly error?: string
+      }
 type ActorWorkerMessage =
     | { readonly type: "ready"; readonly actorTypes: readonly string[] }
     | ActorExecutorReply
     | { readonly type: "socket_effects"; readonly effects: readonly SocketEffect[] }
+    | { readonly type: "get_connections" }
 
 type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema>
 export { failedReply, parseActorSessionServerMessage }

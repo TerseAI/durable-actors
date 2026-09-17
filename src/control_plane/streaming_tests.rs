@@ -22,6 +22,36 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
+async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_isolated()
+-> Result<()> {
+    #[derive(Default)]
+    struct UnavailableConnections(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl ActorSocketSource for UnavailableConnections {
+        async fn connections(
+            &self,
+            actor: &ActorKey,
+        ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
+            assert_eq!(actor.namespace_id, "project-1");
+            assert_eq!(actor.actor_id, "counter-1");
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            anyhow::bail!("gateway unavailable")
+        }
+    }
+    let source = Arc::new(UnavailableConnections::default());
+    let mut stack = Stack::start_with_connections(Some(source.clone())).await?;
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "");
+    assert_eq!(stack.invoke("appendHistory", vec![]).await?, "saved");
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(stack.invoke("clients", vec![]).await.is_err());
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "saved");
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn browser_ticket_connects_renews_without_resetting_metadata_and_expires() -> Result<()> {
     let mut stack = Stack::start().await?;
     let grant = stack
@@ -463,6 +493,10 @@ impl Stack {
             .send().await?.error_for_status()?.json().await.map_err(Into::into)
     }
     async fn start() -> Result<Self> {
+        Self::start_with_connections(None).await
+    }
+
+    async fn start_with_connections(source: Option<Arc<dyn ActorSocketSource>>) -> Result<Self> {
         let directory = tempfile::TempDir::new_in(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk"),
         )?;
@@ -552,7 +586,12 @@ impl Stack {
             .await?;
 
         let (child, connection) = start_worker(directory.path()).await?;
-        connection.mark_ready(Some(publisher.clone())).await?;
+        connection
+            .mark_ready(
+                Some(publisher.clone()),
+                Some(source.unwrap_or_else(|| publisher.clone())),
+            )
+            .await?;
         let host = Arc::new(ActorHost::new(
             HostEndpoint {
                 id: host_id.clone(),
@@ -562,7 +601,6 @@ impl Stack {
             connection.executor(),
             publisher.clone(),
             Arc::new(MemoryState::default()),
-            publisher.clone(),
             publisher.clone(),
         ));
         tasks.spawn(async move {
@@ -707,6 +745,8 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     @Persisted @Emittable count = 0;
     @Persisted private secret = 'private';
     @Persisted protected internal = 'internal';
+    async readHistory() {{ return this.history; }}
+    async appendHistory() {{ this.history += 'saved'; return this.history; }}
     async change() {{ this.count++; this.count++; this.secret = 'changed'; }}
     async fail() {{ this.count++; throw new Error('failed'); }}
     async onConnect(socket: ActorSocket<{{name?:string; notified?:boolean; user?:string}}, {{delta:string}} | {{text:string}}, "member">) {{
@@ -714,17 +754,17 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
         socket.setTags('member');
     }}
     async clients() {{
-        return this.connections.map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
+        return (await this.getConnections()).map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
     }}
     async watchFiles(id: string, tags: string[]) {{
-        this.connections.find(socket => socket.id === id)!.setTags(...tags);
+        (await this.getConnections()).find(socket => socket.id === id)!.setTags(...tags);
     }}
     async notifyFiles(tagMatch: "all" | "any") {{
         this.broadcast({{ text: 'matched' }}, {{ tags: ['file:a', 'file:b'], tagMatch }});
         this.broadcast({{ text: 'done' }});
     }}
     async notifyClient(id: string) {{
-        const socket = this.connections.find(socket => socket.id === id)!;
+        const socket = (await this.getConnections()).find(socket => socket.id === id)!;
         socket.metadata = {{ ...socket.metadata, notified: true }};
         socket.send({{ text: 'from method' }});
     }}

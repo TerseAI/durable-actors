@@ -99,7 +99,7 @@ Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. T
 | `socket.setTags(...tags)`            | Tags a connection for filtered broadcasts.           |
 | `socket.close()` / `socket.reject()` | Closes a connection / rejects it during `onConnect`. |
 
-`this.connections` lists connections during an invocation. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
+`await this.getConnections()` loads connections on demand during an invocation. Repeated calls share the same list for that invocation; lifecycle hooks use their supplied connection snapshot. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
 
 WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` is set.
 

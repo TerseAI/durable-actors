@@ -1,5 +1,5 @@
 import type { ActorSchema } from "../actor/schema.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 
 import type {
     ActorExecutorCommand,
@@ -18,8 +18,13 @@ interface ActorHostSettings {
 }
 
 type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
+type SocketSource = () => Promise<readonly SocketConnection[]>
 
-type ActorCommandHandler = (command: ActorExecutorCommand, publish?: SocketPublisher) => Promise<ActorExecutorReply>
+type ActorCommandHandler = (
+    command: ActorExecutorCommand,
+    publish?: SocketPublisher,
+    connections?: SocketSource
+) => Promise<ActorExecutorReply>
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
@@ -43,7 +48,11 @@ interface ResidentActorWorkerOptions {
 
 interface ActorWorkerHandle {
     ready(): Promise<readonly string[]>
-    execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply>
+    execute(
+        command: InvokeCommand | WebSocketEventCommand,
+        publish?: SocketPublisher,
+        connections?: SocketSource
+    ): Promise<ActorExecutorReply>
     terminate(reason: string): void
 }
 
@@ -57,5 +66,6 @@ export type {
     ActorWorkerSupervisorFactory,
     ActorWorkerSupervisorOptions,
     ResidentActorWorkerOptions,
-    SocketPublisher
+    SocketPublisher,
+    SocketSource
 }

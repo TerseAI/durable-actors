@@ -12,8 +12,7 @@ use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, ActorSocketSource,
-        validate_socket_effects,
+        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
     },
     control_plane::ControlPlaneClient,
     state_log::StateSnapshot,
@@ -121,7 +120,6 @@ pub(super) struct ActorRuntime {
     executor: Arc<dyn ActorExecutor>,
     commits: Arc<dyn StateCommitAuthority>,
     state: Arc<dyn StateTransport>,
-    sockets: Arc<dyn ActorSocketSource>,
     publisher: Arc<dyn ActorSocketPublisher>,
     cached_state: Option<CachedActorState>,
 }
@@ -132,7 +130,6 @@ impl ActorRuntime {
         executor: Arc<dyn ActorExecutor>,
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
-        sockets: Arc<dyn ActorSocketSource>,
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         Self {
@@ -140,7 +137,6 @@ impl ActorRuntime {
             executor,
             commits,
             state,
-            sockets,
             publisher,
             cached_state: None,
         }
@@ -441,16 +437,6 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         state: Option<Arc<Value>>,
     ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
-        let connections = self
-            .sockets
-            .connections(&invocation.actor)
-            .await
-            .map_err(|error| {
-                failed(
-                    "socket_gateway_unavailable",
-                    format!("load actor connections: {error:#}"),
-                )
-            })?;
         let outcome = self
             .executor
             .invoke_shared(
@@ -459,7 +445,6 @@ impl ActorRuntime {
                     actor: invocation.actor.clone(),
                     method: invocation.method.clone(),
                     args: invocation.args.clone(),
-                    connections,
                 },
                 state,
             )

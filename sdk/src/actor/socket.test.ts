@@ -3,8 +3,56 @@ import { test } from "node:test"
 
 import { ActorProtocolError, ActorSerializationError } from "../errors.js"
 
-import { decodeSocketMessage, runWithActorSockets } from "./socket.js"
+import { actorConnections, decodeSocketMessage, runWithActorSockets } from "./socket.js"
 import { parseSocketEffects } from "./socketProtocol.js"
+
+test("ordinary invocations and broadcasts do not enumerate connections", async () => {
+    let lookups = 0
+    const load = async () => {
+        lookups++
+        throw new Error("gateway unavailable")
+    }
+    const result = await runWithActorSockets({}, load, async scope => {
+        scope.broadcast({ hello: "world" })
+        return 42
+    })
+    assert.equal(result.value, 42)
+    assert.equal(result.effects.length, 1)
+    assert.equal(lookups, 0)
+})
+
+test("connection lookup is lazy and shared only within the current invocation", async () => {
+    const actor = {}
+    let lookups = 0
+    const load = async () => {
+        lookups++
+        return [{ id: "socket-1", metadata: { revision: lookups }, tags: [] }]
+    }
+    await runWithActorSockets(actor, load, async () => {
+        assert.equal(lookups, 0)
+        const [first, concurrent] = await Promise.all([actorConnections(actor), actorConnections(actor)])
+        assert.equal(lookups, 1)
+        assert.strictEqual(first, concurrent)
+        first[0]!.metadata = { revision: 100 }
+        assert.deepEqual((await actorConnections(actor))[0]!.metadata, { revision: 100 })
+    })
+    await runWithActorSockets(actor, load, async () => {
+        assert.deepEqual((await actorConnections(actor))[0]!.metadata, { revision: 2 })
+    })
+    assert.equal(lookups, 2)
+})
+
+test("an actor can handle a failed explicit connection lookup", async () => {
+    const actor = {}
+    const load = async () => {
+        throw new Error("gateway unavailable")
+    }
+    const result = await runWithActorSockets(actor, load, async () => {
+        await assert.rejects(async () => actorConnections(actor), /gateway unavailable/)
+        return "handled"
+    })
+    assert.equal(result.value, "handled")
+})
 
 test("broadcast tag matching modes survive socket transport", async () => {
     const published: unknown[] = []
