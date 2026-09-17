@@ -13,13 +13,12 @@ use crate::{
         ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher,
     },
     actor_state::ActorStorageKey,
-    state_transport::StateTransport,
 };
 
 use super::{
     HostEndpoint,
     actor_runtime::{
-        ActorActivation, ActorRuntime, InvocationTimings, StateCommitAuthority, socket_event_name,
+        ActorActivation, ActorRuntime, ActorStorage, InvocationTimings, socket_event_name,
     },
 };
 
@@ -37,8 +36,8 @@ impl ActorHost {
         endpoint: HostEndpoint,
         namespace_id: String,
         executor: Arc<dyn ActorExecutor>,
-        commits: Arc<dyn StateCommitAuthority>,
-        state: Arc<dyn StateTransport>,
+        storage: Arc<dyn ActorStorage>,
+        state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
@@ -47,7 +46,7 @@ impl ActorHost {
             endpoint.clone(),
             namespace_id,
             executor,
-            commits,
+            storage,
             state,
             publisher,
             activity_tx,
@@ -70,13 +69,8 @@ impl ActorHost {
 
     pub(crate) async fn activate_actor(&self, actor: ActorKey) -> Result<ActorActivation> {
         let (reply, result) = oneshot::channel();
-        self.submit(
-            ActorOperation::Activate { actor, reply },
-            0,
-            0,
-            String::new(),
-        )
-        .await?;
+        self.submit(ActorOperation::Activate { actor, reply }, 0)
+            .await?;
         result.await.context("actor activation was not completed")?
     }
 
@@ -84,32 +78,18 @@ impl ActorHost {
         &self,
         invocation: ActorInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: String,
     ) -> Result<ActorExecutionResult> {
-        self.submit(
-            ActorOperation::Method(invocation),
-            owner_epoch,
-            state_version,
-            state_read_url,
-        )
-        .await
+        self.submit(ActorOperation::Method(invocation), owner_epoch)
+            .await
     }
 
     pub(crate) async fn handle_socket_event(
         &self,
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: String,
     ) -> Result<ActorExecutionResult> {
-        self.submit(
-            ActorOperation::Socket(invocation),
-            owner_epoch,
-            state_version,
-            state_read_url,
-        )
-        .await
+        self.submit(ActorOperation::Socket(invocation), owner_epoch)
+            .await
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
@@ -130,15 +110,12 @@ impl ActorHost {
         &self,
         operation: ActorOperation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: String,
     ) -> Result<ActorExecutionResult> {
         let (reply, result) = oneshot::channel();
         let request = ActorRequest {
             operation,
             owner_epoch,
-            state_version,
-            state_read_url,
+
             timings: InvocationTimings::new(),
             reply,
         };
@@ -158,8 +135,8 @@ struct HostDispatcher {
     endpoint: HostEndpoint,
     namespace_id: String,
     executor: Arc<dyn ActorExecutor>,
-    commits: Arc<dyn StateCommitAuthority>,
-    state: Arc<dyn StateTransport>,
+    storage: Arc<dyn ActorStorage>,
+    state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
     actors: HashMap<ActorStorageKey, ActorMailbox>,
     tasks: JoinSet<()>,
@@ -174,8 +151,8 @@ impl HostDispatcher {
         endpoint: HostEndpoint,
         namespace_id: String,
         executor: Arc<dyn ActorExecutor>,
-        commits: Arc<dyn StateCommitAuthority>,
-        state: Arc<dyn StateTransport>,
+        storage: Arc<dyn ActorStorage>,
+        state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
         activity: watch::Sender<usize>,
     ) -> Self {
@@ -183,7 +160,7 @@ impl HostDispatcher {
             endpoint,
             namespace_id,
             executor,
-            commits,
+            storage,
             state,
             publisher,
             actors: HashMap::new(),
@@ -269,7 +246,7 @@ impl HostDispatcher {
         let runtime = ActorRuntime::new(
             self.endpoint.clone(),
             self.executor.clone(),
-            self.commits.clone(),
+            self.storage.clone(),
             self.state.clone(),
             self.publisher.clone(),
         );
@@ -363,24 +340,12 @@ async fn run_actor(
 
                 ActorOperation::Method(invocation) => {
                     runtime
-                        .invoke_actor(
-                            invocation,
-                            request.owner_epoch,
-                            request.state_version,
-                            request.state_read_url,
-                            request.timings,
-                        )
+                        .invoke_actor(invocation, request.owner_epoch, request.timings)
                         .await
                 }
                 ActorOperation::Socket(invocation) => {
                     runtime
-                        .handle_socket_event(
-                            invocation,
-                            request.owner_epoch,
-                            request.state_version,
-                            request.state_read_url,
-                            request.timings,
-                        )
+                        .handle_socket_event(invocation, request.owner_epoch, request.timings)
                         .await
                 }
             }
@@ -413,8 +378,7 @@ struct ActorMailbox {
 struct ActorRequest {
     operation: ActorOperation,
     owner_epoch: u64,
-    state_version: u64,
-    state_read_url: String,
+
     timings: InvocationTimings,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
 }
@@ -494,12 +458,11 @@ impl ActorOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::super::actor_runtime::CommittedState;
     use crate::{
         actor::{ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketOutcome},
         state_log::StateSnapshot,
         state_transport::StateWrite,
-        storage_urls::StateWriteTicket,
+        storage::WritePlan,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -675,7 +638,8 @@ mod tests {
     async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Result<()> {
         let (commit_started, mut committing) = mpsc::unbounded_channel();
         let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let authority = Arc::new(FakeAuthority {
+        let authority = Arc::new(FakeAuthority::default());
+        let state = Arc::new(FakeStateTransport {
             paused_commit: Some((commit_started, release.clone())),
             ..Default::default()
         });
@@ -690,7 +654,7 @@ mod tests {
             "project-1".into(),
             executor.clone(),
             authority.clone(),
-            Arc::new(FakeStateTransport::default()),
+            state.clone(),
             Arc::new(EmptySocketPublisher),
         ));
         let caller = host.clone();
@@ -714,7 +678,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), second).await???,
             completed(2)
         );
-        assert_eq!(*authority.commits.lock().unwrap(), [0, 1]);
+        assert_eq!(state.writes.lock().unwrap().len(), 2);
         host.drain(Duration::from_secs(1)).await?;
         Ok(())
     }
@@ -744,8 +708,6 @@ mod tests {
                                 connections: Vec::new(),
                             },
                             1,
-                            0,
-                            String::new(),
                         )
                         .await
                 } else {
@@ -809,8 +771,6 @@ mod tests {
                 args: Vec::new(),
             },
             1,
-            0,
-            String::new(),
         );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), other).await??,
@@ -921,7 +881,6 @@ mod tests {
     #[tokio::test]
     async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         let authority = Arc::new(FakeAuthority {
-            streams: true,
             ..Default::default()
         });
         let actor = ActorKey {
@@ -951,19 +910,11 @@ mod tests {
             method: "increment".into(),
             args: vec![],
         };
-        assert_eq!(
-            host.invoke_actor(invoke("one"), 7, 0, String::new())
-                .await?,
-            completed(1)
-        );
+        assert_eq!(host.invoke_actor(invoke("one"), 7).await?, completed(1));
         host.activate_actor(actor.clone()).await?;
-        assert_eq!(
-            host.invoke_actor(invoke("two"), 7, 0, String::new())
-                .await?,
-            completed(2)
-        );
+        assert_eq!(host.invoke_actor(invoke("two"), 7).await?, completed(2));
         assert_eq!(*authority.preparations.lock().unwrap(), vec![0]);
-        assert!(authority.commits.lock().unwrap().is_empty());
+
         authority.fenced.store(true, Ordering::SeqCst);
         assert!(host.activate_actor(actor).await.is_err());
         Ok(())
@@ -976,7 +927,6 @@ mod tests {
             StateSnapshot::new(3, 6, "previous".into(), json!({"count": 41}), json!(41))?
                 .encode()?;
         let authority = Arc::new(FakeAuthority {
-            streams: true,
             activation_state: Some(snapshot),
             ..Default::default()
         });
@@ -1011,12 +961,10 @@ mod tests {
                     args: vec![],
                 },
                 7,
-                0,
-                String::new(),
             )
             .await?;
         assert_eq!(result, completed(42));
-        assert_eq!(transport.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(authority.loads.load(Ordering::SeqCst), 0);
         assert_eq!(*authority.preparations.lock().unwrap(), vec![3]);
         Ok(())
     }
@@ -1024,24 +972,20 @@ mod tests {
     #[derive(Default)]
     struct FakeAuthority {
         fenced: std::sync::atomic::AtomicBool,
-        streams: bool,
-        initial_state: Option<(u64, String)>,
+        loads: AtomicUsize,
+        initial_state: Option<(u64, bytes::Bytes)>,
         activation_state: Option<Vec<u8>>,
         preparations: Mutex<Vec<u64>>,
-        commits: Mutex<Vec<u64>>,
-        commit_failures: AtomicUsize,
-        paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
     }
 
     #[async_trait]
-    impl StateCommitAuthority for FakeAuthority {
+    impl ActorStorage for FakeAuthority {
         async fn acquire_actor(
             &self,
             _actor: &ActorKey,
             _host: &super::super::HostId,
         ) -> Result<ActorActivation> {
             Ok(ActorActivation {
-                state_object: self.activation_state.as_ref().map(|_| "recovered".into()),
                 owner_epoch: 7,
                 state_version: self
                     .activation_state
@@ -1062,10 +1006,9 @@ mod tests {
             _: &ActorKey,
             _: &super::super::HostId,
             _: u64,
-        ) -> Result<Option<(u64, super::super::actor_runtime::StateSource)>> {
-            Ok(self.initial_state.clone().map(|(version, url)| {
-                (version, super::super::actor_runtime::StateSource::Url(url))
-            }))
+        ) -> Result<(u64, bytes::Bytes)> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.initial_state.clone().unwrap_or_default())
         }
         async fn prepare_state_write(
             &self,
@@ -1073,10 +1016,10 @@ mod tests {
             _host_id: &super::super::HostId,
             _owner_epoch: u64,
             expected_version: u64,
-        ) -> Result<StateWriteTicket> {
+        ) -> Result<WritePlan> {
             self.preparations.lock().unwrap().push(expected_version);
             let mut ticket = ticket(expected_version + 1);
-            if self.streams {
+            {
                 let stream = crate::replication::ReplicaStream {
                     prefix: "snapshots/epoch/".into(),
                     session: "snapshots/epoch/sessions/one/".into(),
@@ -1084,76 +1027,29 @@ mod tests {
                     base_version: 0,
                 };
                 ticket.object_name = stream.object(ticket.state_version);
-                ticket.stream = Some(stream);
+                ticket.stream = stream;
             }
             Ok(ticket)
-        }
-
-        async fn commit_state(
-            &self,
-            _actor: &ActorKey,
-            _host_id: &super::super::HostId,
-            _owner_epoch: u64,
-            expected_version: u64,
-            _state_object: &str,
-            request_id: &str,
-        ) -> Result<CommittedState> {
-            self.commits.lock().unwrap().push(expected_version);
-            if request_id == "first"
-                && let Some((started, release)) = &self.paused_commit
-            {
-                started.send(())?;
-                release.acquire().await?.forget();
-            }
-            if self
-                .commit_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
-                anyhow::bail!("commit response was lost");
-            }
-            Ok(CommittedState {
-                state_version: expected_version + 1,
-                next_write: Some(ticket(expected_version + 2)),
-            })
         }
     }
 
     #[derive(Default)]
     struct FakeStateTransport {
-        loaded: Option<Vec<u8>>,
         failures: AtomicUsize,
         writes: Mutex<Vec<Vec<u8>>>,
-        reads: AtomicUsize,
         replicated: bool,
+        paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
     }
 
     #[async_trait]
-    impl StateTransport for FakeStateTransport {
-        async fn read(&self, _signed_url: &str) -> Result<bytes::Bytes> {
-            self.reads.fetch_add(1, Ordering::Relaxed);
-            if let Some(bytes) = &self.loaded {
-                return Ok(bytes.clone().into());
+    impl crate::state_transport::SnapshotWriter for FakeStateTransport {
+        async fn write_snapshot(&self, _ticket: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
+            if StateSnapshot::decode(&bytes)?.request_id == "first"
+                && let Some((started, release)) = &self.paused_commit
+            {
+                started.send(())?;
+                release.acquire().await?.forget();
             }
-            anyhow::bail!("new actor should not read storage")
-        }
-
-        async fn write(&self, _signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-            anyhow::ensure!(
-                !self.replicated,
-                "replicated writes must use their complete ticket"
-            );
-            self.writes.lock().unwrap().push(bytes);
-            Ok(StateWrite::Written)
-        }
-
-        async fn write_ticket(
-            &self,
-            ticket: &StateWriteTicket,
-            bytes: Vec<u8>,
-        ) -> Result<StateWrite> {
             if self
                 .failures
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -1164,27 +1060,25 @@ mod tests {
                 self.writes.lock().unwrap().push(bytes);
                 anyhow::bail!("write response lost");
             }
-            if !self.replicated {
-                return self.write(&ticket.url, bytes).await;
-            }
+
             self.writes.lock().unwrap().push(bytes);
-            Ok(StateWrite::Replicated)
+            Ok(if self.replicated {
+                StateWrite::Replicated
+            } else {
+                StateWrite::Written
+            })
         }
     }
 
     #[tokio::test]
     async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() -> Result<()> {
-        let authority = Arc::new(FakeAuthority {
-            streams: true,
-            initial_state: Some((8, "http://current-state".into())),
-            ..Default::default()
-        });
         let snapshot =
             StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
-        let state = Arc::new(FakeStateTransport {
-            loaded: Some(snapshot),
+        let authority = Arc::new(FakeAuthority {
+            initial_state: Some((8, snapshot.into())),
             ..Default::default()
         });
+        let state = Arc::new(FakeStateTransport::default());
         let host = ActorHost::new(
             HostEndpoint {
                 id: super::super::HostId::new("host-1"),
@@ -1199,7 +1093,7 @@ mod tests {
             Arc::new(EmptySocketPublisher),
         );
         assert_eq!(invoke(&host, "request-1").await?, completed(9));
-        assert_eq!(state.reads.load(Ordering::Relaxed), 1);
+        assert_eq!(authority.loads.load(Ordering::Relaxed), 1);
         assert_eq!(*authority.preparations.lock().unwrap(), [8]);
         Ok(())
     }
@@ -1225,16 +1119,13 @@ mod tests {
                 })
             }
         }
-        let authority = Arc::new(FakeAuthority {
-            initial_state: Some((8, "http://current-state".into())),
-            ..Default::default()
-        });
         let snapshot =
             StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
-        let state = Arc::new(FakeStateTransport {
-            loaded: Some(snapshot),
+        let authority = Arc::new(FakeAuthority {
+            initial_state: Some((8, snapshot.into())),
             ..Default::default()
         });
+        let state = Arc::new(FakeStateTransport::default());
         let host = ActorHost::new(
             HostEndpoint {
                 id: super::super::HostId::new("host-1"),
@@ -1254,7 +1145,6 @@ mod tests {
     #[tokio::test]
     async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> Result<()> {
         let authority = Arc::new(FakeAuthority {
-            streams: true,
             ..Default::default()
         });
         let state = Arc::new(FakeStateTransport {
@@ -1283,7 +1173,7 @@ mod tests {
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
         assert_eq!(invoke(&host, "request-2").await?, completed(2));
         assert_eq!(executor.invocations.load(Ordering::Relaxed), 2);
-        assert!(authority.commits.lock().unwrap().is_empty());
+
         assert_eq!(*authority.preparations.lock().unwrap(), [0]);
         let writes = state.writes.lock().unwrap();
         assert_eq!(writes[0], writes[1]);
@@ -1292,9 +1182,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replicated_state_still_requires_the_authoritative_commit_before_success() -> Result<()>
-    {
+    async fn replica_durability_commits_locally_before_success() -> Result<()> {
         let authority = Arc::new(FakeAuthority::default());
+        let state = Arc::new(FakeStateTransport {
+            replicated: true,
+            ..Default::default()
+        });
         let host = ActorHost::new(
             HostEndpoint {
                 id: super::super::HostId::new("host-1"),
@@ -1305,14 +1198,11 @@ mod tests {
                 invocations: AtomicU64::new(0),
             }),
             authority.clone(),
-            Arc::new(FakeStateTransport {
-                replicated: true,
-                ..Default::default()
-            }),
+            state.clone(),
             Arc::new(EmptySocketPublisher),
         );
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
-        assert_eq!(*authority.commits.lock().unwrap(), [0]);
+        assert_eq!(state.writes.lock().unwrap().len(), 1);
         Ok(())
     }
 
@@ -1340,10 +1230,9 @@ mod tests {
         assert_eq!(invoke(&host, "request-2").await?, completed(2));
 
         assert_eq!(executor.invocations.load(Ordering::Relaxed), 2);
-        assert_eq!(state.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(authority.loads.load(Ordering::Relaxed), 1);
         assert_eq!(state.writes.lock().unwrap().len(), 2);
         assert_eq!(*authority.preparations.lock().unwrap(), [0]);
-        assert_eq!(*authority.commits.lock().unwrap(), [0, 1]);
         let snapshots = state
             .writes
             .lock()
@@ -1359,8 +1248,8 @@ mod tests {
     #[tokio::test]
     async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Result<()> {
         let authority = Arc::new(FakeAuthority::default());
-        authority.commit_failures.store(1, Ordering::SeqCst);
         let state = Arc::new(FakeStateTransport::default());
+        state.failures.store(1, Ordering::SeqCst);
         let executor = Arc::new(IncrementingExecutor {
             invocations: AtomicU64::new(0),
         });
@@ -1384,8 +1273,8 @@ mod tests {
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
 
         assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
-        assert_eq!(state.writes.lock().unwrap().len(), 1);
-        assert_eq!(*authority.commits.lock().unwrap(), [0, 0]);
+        assert_eq!(state.writes.lock().unwrap().len(), 2);
+        assert_eq!(state.writes.lock().unwrap().len(), 2);
         Ok(())
     }
 
@@ -1432,7 +1321,7 @@ mod tests {
                 if failure.code == "actor_error" && failure.message.contains("invalid socket effects")
         ));
         assert!(state.writes.lock().unwrap().is_empty());
-        assert!(authority.commits.lock().unwrap().is_empty());
+
         Ok(())
     }
 
@@ -1461,22 +1350,29 @@ mod tests {
             }
         }
         struct Publisher {
-            authority: Arc<FakeAuthority>,
+            state: Arc<FakeStateTransport>,
             values: Mutex<Vec<Value>>,
         }
         #[async_trait]
         impl crate::actor::ActorSocketPublisher for Publisher {
             async fn publish(&self, _: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
-                let commits = self.authority.commits.lock().unwrap().len();
+                let persisted = self.state.writes.lock().unwrap();
+                let version = StateSnapshot::decode(
+                    persisted
+                        .last()
+                        .expect("state must persist before publishing"),
+                )?
+                .state_version;
                 let value = serde_json::to_value(effects)?;
-                assert_eq!(value[0]["version"], commits as u64);
+                assert_eq!(value[0]["version"], version);
                 self.values.lock().unwrap().push(value);
                 Ok(())
             }
         }
         let authority = Arc::new(FakeAuthority::default());
+        let state = Arc::new(FakeStateTransport::default());
         let publisher = Arc::new(Publisher {
-            authority: authority.clone(),
+            state: state.clone(),
             values: Mutex::new(vec![]),
         });
         let host = ActorHost::new(
@@ -1487,7 +1383,7 @@ mod tests {
             "project-1".into(),
             Arc::new(Emitter),
             authority.clone(),
-            Arc::new(FakeStateTransport::default()),
+            state.clone(),
             publisher.clone(),
         );
         assert_eq!(invoke(&host, "one").await?, completed(1));
@@ -1497,7 +1393,7 @@ mod tests {
         assert_eq!(values[0][0]["changes"]["count"], 1);
         assert_eq!(values[1][0]["changes"]["count"], 2);
         drop(values);
-        authority.commit_failures.store(1, Ordering::SeqCst);
+        state.failures.store(1, Ordering::SeqCst);
         assert!(matches!(
             invoke(&host, "failed").await?,
             ActorExecutionResult::Failed { .. }
@@ -1542,29 +1438,24 @@ mod tests {
             },
             connections: Vec::new(),
         };
-        let result = host
-            .handle_socket_event(invocation("committed"), 1, 0, String::new())
-            .await?;
+        let result = host.handle_socket_event(invocation("committed"), 1).await?;
 
         assert!(matches!(
             result,
             ActorExecutionResult::Completed { result: Value::Null, ref effects } if effects.len() == 1
         ));
         assert_eq!(state.writes.lock().unwrap().len(), 1);
-        assert_eq!(*authority.commits.lock().unwrap(), [0]);
+        assert!(!state.writes.lock().unwrap().is_empty());
 
-        authority.commit_failures.store(1, Ordering::SeqCst);
-        let failed = host
-            .handle_socket_event(invocation("failed"), 1, 0, String::new())
-            .await?;
+        state.failures.store(1, Ordering::SeqCst);
+        let failed = host.handle_socket_event(invocation("failed"), 1).await?;
         assert!(
             matches!(failed, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
         );
 
         host.drain(Duration::from_secs(1)).await?;
         assert_eq!(
-            host.handle_socket_event(invocation("drained"), 1, 0, String::new())
-                .await?,
+            host.handle_socket_event(invocation("drained"), 1).await?,
             ActorExecutionResult::HostUnavailable
         );
         assert_eq!(state.writes.lock().unwrap().len(), 2);
@@ -1584,8 +1475,6 @@ mod tests {
                 args: Vec::new(),
             },
             1,
-            0,
-            String::new(),
         )
         .await
     }
@@ -1597,13 +1486,18 @@ mod tests {
         }
     }
 
-    fn ticket(state_version: u64) -> StateWriteTicket {
-        StateWriteTicket {
-            stream: None,
+    fn ticket(state_version: u64) -> WritePlan {
+        WritePlan {
+            stream: crate::replication::ReplicaStream {
+                prefix: "snapshots/epoch/".into(),
+                session: "session".into(),
+                owner_epoch: 1,
+                base_version: 0,
+            },
             replication: None,
-            state_version,
+
             object_name: format!("snapshots/{state_version}.json"),
-            url: format!("https://state.invalid/{state_version}"),
+            state_version,
             expires_at_ms: i64::MAX,
         }
     }

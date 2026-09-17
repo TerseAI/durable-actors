@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
@@ -209,20 +208,17 @@ impl AdminService {
     }
 }
 
-#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct LocalAdminRegistry {
     state: Mutex<LocalAdminState>,
 }
 
-#[cfg(test)]
 #[derive(Default)]
 struct LocalAdminState {
     namespaces: HashSet<String>,
     launch_specs: HashMap<String, HostLaunchSpec>,
 }
 
-#[cfg(test)]
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
     async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {

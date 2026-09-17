@@ -272,8 +272,7 @@ async fn resolve_actor_target(
             route: target.route,
             token: target.token,
             owner_epoch: target.owner_epoch,
-            state_version: target.state_version,
-            state_read_url: target.state_read_url,
+
             expires_at_ms: target.expires_at_ms,
         }))
     }
@@ -294,7 +293,7 @@ async fn resolve_actor_target(
             lease_checked_at_ms = timings.lease_checked_at_ms,
             host_ensured_at_ms = timings.host_ensured_at_ms,
             placement_claimed_at_ms = timings.placement_claimed_at_ms,
-            state_url_signed_at_ms = timings.state_url_signed_at_ms,
+
             invocation_token_issued_at_ms = timings.invocation_token_issued_at_ms,
             route_selected_at_ms = timings.route_selected_at_ms,
             completed_at_ms,
@@ -315,7 +314,7 @@ async fn resolve_actor_target(
             lease_checked_at_ms = timings.lease_checked_at_ms,
             host_ensured_at_ms = timings.host_ensured_at_ms,
             placement_claimed_at_ms = timings.placement_claimed_at_ms,
-            state_url_signed_at_ms = timings.state_url_signed_at_ms,
+
             invocation_token_issued_at_ms = timings.invocation_token_issued_at_ms,
             route_selected_at_ms = timings.route_selected_at_ms,
             completed_at_ms,
@@ -427,8 +426,7 @@ struct ActorTargetReply {
     route: String,
     token: String,
     owner_epoch: u64,
-    state_version: u64,
-    state_read_url: String,
+
     expires_at_ms: i64,
 }
 

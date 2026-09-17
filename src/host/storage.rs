@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -11,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     HostId,
-    actor_runtime::{ActorActivation, CommittedState, StateCommitAuthority, StateSource},
+    actor_runtime::{ActorActivation, ActorStorage},
 };
 use crate::{
     actor::ActorKey,
@@ -22,11 +21,11 @@ use crate::{
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest, HostLeaseStore},
-    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaTarget},
-    storage_urls::StateWriteTicket,
+    replication::{ReplicaAccess, ReplicaSet},
+    storage::WritePlan,
 };
 
-pub(super) struct HostStorage {
+pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     leases: Arc<dyn HostLeaseStore>,
     namespace: String,
@@ -48,29 +47,24 @@ impl HostStorage {
         stop: CancellationToken,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client, stop);
-        let authority = Arc::new(
-            GcsBucket::with_credentials(&config.authority_bucket, credentials.clone().into())
-                .await?,
-        );
+        let authority: Arc<dyn Bucket> = match config.bucket {
+            crate::bucket::access::BucketLocation::Gcs { bucket } => {
+                Arc::new(GcsBucket::with_credentials(&bucket, credentials.into()).await?)
+            }
+            crate::bucket::access::BucketLocation::File { directory } => {
+                Arc::new(crate::bucket::FileBucket::new(directory)?)
+            }
+        };
         let leases = Arc::new(BucketHostLeases::new(
             authority.clone(),
             Arc::new(SystemClock),
         ));
-        let mut states = HashMap::new();
-        for (region, bucket) in config.state_buckets {
-            states.insert(
-                region,
-                Arc::new(GcsBucket::with_credentials(&bucket, credentials.clone().into()).await?)
-                    as Arc<dyn Bucket>,
-            );
-        }
         let access =
             ReplicaAccess::delegated(&config.replica_secret, &namespace, Arc::new(SystemClock));
         let runtime = Arc::new(RuntimeStorage::new(
             authority,
-            states,
             leases.clone(),
-            Arc::new(FixedReplicas(config.replicas)),
+            Arc::new(ReplicaSet(config.replicas)),
             Arc::new(HttpReplicaPeers::new(access.clone())?),
             access,
             origin,
@@ -99,7 +93,7 @@ impl HostStorage {
 }
 
 #[async_trait]
-impl StateCommitAuthority for HostStorage {
+impl ActorStorage for HostStorage {
     fn ensure_authority(&self) -> Result<()> {
         self.fence
             .lock()
@@ -121,7 +115,6 @@ impl StateCommitAuthority for HostStorage {
             .await?;
         self.ensure_authority()?;
         Ok(ActorActivation {
-            state_object: loaded.placement.state_object,
             owner_epoch: loaded.placement.owner_epoch,
             state_version: loaded.placement.state_version,
             state: loaded.state,
@@ -133,7 +126,7 @@ impl StateCommitAuthority for HostStorage {
         actor: &ActorKey,
         host: &HostId,
         epoch: u64,
-    ) -> Result<Option<(u64, StateSource)>> {
+    ) -> Result<(u64, bytes::Bytes)> {
         self.authorize(actor, host)?;
         let lease = self
             .lease
@@ -143,10 +136,10 @@ impl StateCommitAuthority for HostStorage {
             .context("host lease missing")?;
         let loaded = self.runtime.load_owned_actor(actor, &lease, epoch).await?;
         self.ensure_authority()?;
-        Ok(Some((
+        Ok((
             loaded.placement.state_version,
-            StateSource::Bytes(loaded.state.unwrap_or_default()),
-        )))
+            loaded.state.unwrap_or_default(),
+        ))
     }
 
     async fn prepare_state_write(
@@ -155,7 +148,7 @@ impl StateCommitAuthority for HostStorage {
         host: &HostId,
         epoch: u64,
         version: u64,
-    ) -> Result<StateWriteTicket> {
+    ) -> Result<WritePlan> {
         self.authorize(actor, host)?;
         let lease = self
             .lease
@@ -174,18 +167,6 @@ impl StateCommitAuthority for HostStorage {
             .await?;
         self.ensure_authority()?;
         Ok(ticket)
-    }
-
-    async fn commit_state(
-        &self,
-        _: &ActorKey,
-        _: &HostId,
-        _: u64,
-        _: u64,
-        _: &str,
-        _: &str,
-    ) -> Result<CommittedState> {
-        anyhow::bail!("bucket state is committed by its durability proof")
     }
 }
 
@@ -230,35 +211,31 @@ impl HostLeaseRegistry for HostStorage {
     }
 }
 
-struct FixedReplicas(Vec<ReplicaTarget>);
-#[async_trait]
-impl ReplicaProvisioner for FixedReplicas {
-    async fn ensure(&self, _: &ActorKey, _: &str, count: usize) -> Result<Vec<ReplicaTarget>> {
-        ensure!(self.0.len() == count, "replica fleet is incomplete");
-        Ok(self.0.clone())
-    }
-}
-
 #[derive(Clone)]
-struct HostCredentials(Arc<std::sync::RwLock<StorageToken>>);
+struct HostCredentials(Arc<std::sync::RwLock<Option<StorageToken>>>);
 impl std::fmt::Debug for HostCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("HostCredentials")
     }
 }
 impl HostCredentials {
-    fn new(token: StorageToken, client: Arc<ControlPlaneClient>, stop: CancellationToken) -> Self {
+    fn new(
+        token: Option<StorageToken>,
+        client: Arc<ControlPlaneClient>,
+        stop: CancellationToken,
+    ) -> Self {
         let credentials = Self(Arc::new(std::sync::RwLock::new(token)));
         let refreshed = credentials.clone();
         tokio::spawn(async move {
             loop {
                 let now = SystemClock.now_ms().unwrap_or(u64::MAX);
+                let host_expiry = client.token_expires_at_ms().unwrap_or(now);
                 let expires = refreshed
                     .0
                     .read()
                     .unwrap()
-                    .expires_at_ms
-                    .min(client.token_expires_at_ms().unwrap_or(now));
+                    .as_ref()
+                    .map_or(host_expiry, |token| token.expires_at_ms.min(host_expiry));
                 let delay = Duration::from_millis(
                     expires
                         .saturating_sub(now.saturating_add(30_000))
@@ -286,7 +263,10 @@ impl CredentialsProvider for HostCredentials {
         CacheableResource<axum::http::HeaderMap>,
         google_cloud_auth::errors::CredentialsError,
     > {
-        let token = self.0.read().unwrap();
+        let stored = self.0.read().unwrap();
+        let token = stored.as_ref().ok_or_else(|| {
+            google_cloud_auth::errors::CredentialsError::from_msg(false, "GCS credentials missing")
+        })?;
         let mut headers = axum::http::HeaderMap::new();
         let mut value: axum::http::HeaderValue = format!("Bearer {}", token.access_token)
             .parse()
@@ -311,7 +291,8 @@ impl CredentialsProvider for HostCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bucket::BucketObject, state_log::StateSnapshot, state_transport::StateTransport};
+    use crate::{bucket::BucketObject, state_log::StateSnapshot, state_transport::SnapshotWriter};
+    use std::collections::HashMap;
 
     #[derive(Default)]
     struct MemoryBucket {
@@ -321,7 +302,7 @@ mod tests {
     #[async_trait]
     impl Bucket for MemoryBucket {
         async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
-            if key.starts_with("runtime/owners/") {
+            if key.contains("/owners/") {
                 self.owner_reads
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
@@ -367,9 +348,8 @@ mod tests {
             ReplicaAccess::new("secret", Arc::new(SystemClock)).for_namespace("project.a")?;
         let runtime = Arc::new(RuntimeStorage::new(
             bucket.clone(),
-            HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
             leases.clone(),
-            Arc::new(FixedReplicas(vec![])),
+            Arc::new(ReplicaSet(vec![])),
             Arc::new(HttpReplicaPeers::new(access.clone())?),
             access,
             "http://control-plane-unavailable.invalid".into(),
@@ -421,12 +401,11 @@ mod tests {
             1,
             "the first write uses locally established ownership"
         );
-        storage.runtime.write(&ticket.url, snapshot.clone()).await?;
-        let (version, StateSource::Bytes(loaded)) =
-            storage.load_actor_state(&actor, &host, 1).await?.unwrap()
-        else {
-            panic!("host should return loaded bytes")
-        };
+        storage
+            .runtime
+            .write_snapshot(&ticket, snapshot.clone())
+            .await?;
+        let (version, loaded) = storage.load_actor_state(&actor, &host, 1).await?;
         assert_eq!(version, 1);
         assert_eq!(loaded.as_ref(), snapshot.as_slice());
         assert!(

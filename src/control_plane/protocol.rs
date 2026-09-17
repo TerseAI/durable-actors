@@ -1,69 +1,22 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    actor::ActorKey,
-    grpc::proto::{ControlPlaneReply, ControlPlaneRequest},
-    host::HostId,
-    host_leases::{HostLease, HostLeaseRequest},
-    storage_urls::StateWriteTicket,
-};
+use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
-    LoadActorState {
-        actor: ActorKey,
-        host_id: HostId,
-        owner_epoch: u64,
-    },
-    RegisterLease {
-        request: HostLeaseRequest,
-    },
-    UnregisterLease {
-        host_id: HostId,
-    },
-    PrepareStateWrite {
-        actor: ActorKey,
-        host_id: HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-    },
-    CommitState {
-        actor: ActorKey,
-        host_id: HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: String,
-        request_id: String,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommandReply {
     StorageAccess {
-        token: crate::bucket::access::StorageToken,
+        token: Option<crate::bucket::access::StorageToken>,
         replacement_token: String,
     },
-    ActorState {
-        state_version: u64,
-        state_read_url: String,
-    },
     Unit,
-    Lease {
-        lease: HostLease,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        replacement_token: Option<String>,
-    },
-    StateWriteTicket {
-        ticket: StateWriteTicket,
-    },
-    StateCommitted {
-        state_version: u64,
-        next_write: Option<StateWriteTicket>,
-    },
 }
 
 pub(crate) fn encode_command(command: ControlPlaneCommand) -> Result<ControlPlaneRequest> {
@@ -89,27 +42,24 @@ pub(crate) fn decode_reply(reply: ControlPlaneReply) -> Result<ControlPlaneComma
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn state_commit_commands_are_plain_json_messages() -> Result<()> {
-        let encoded = encode_command(ControlPlaneCommand::CommitState {
-            actor: ActorKey {
-                namespace_id: "project-1".into(),
-                actor_type: "counter".into(),
-                actor_id: "counter-1".into(),
-            },
-            host_id: HostId::new("host.v2.project-1:revision-1.host-1"),
-            owner_epoch: 3,
-            expected_version: 6,
-            state_object:
-                "snapshots/project-1/01/0123456789abcdef0123456789abcdef/counter/counter-1/7.json"
-                    .into(),
-            request_id: "request-7".into(),
-        })?;
-        let json = String::from_utf8(encoded.command_json)?;
-        assert!(json.contains("commit_state"));
-        assert!(json.contains("\"expected_version\":6"));
-        assert!(json.contains("\"request_id\":\"request-7\""));
+    fn storage_credentials_are_the_only_runtime_control_plane_command() -> Result<()> {
+        let encoded = encode_command(ControlPlaneCommand::RefreshStorageAccess)?;
+        assert!(matches!(
+            decode_command(encoded)?,
+            ControlPlaneCommand::RefreshStorageAccess
+        ));
+        for command in [
+            "register_lease",
+            "prepare_state_write",
+            "commit_state",
+            "load_actor_state",
+        ] {
+            assert!(
+                serde_json::from_value::<ControlPlaneCommand>(serde_json::json!({"type":command}))
+                    .is_err()
+            );
+        }
         Ok(())
     }
 }

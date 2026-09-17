@@ -54,7 +54,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Start local actors with automatic SQLite and file storage")]
+    #[command(about = "Start local actors with persistent file storage")]
     Dev(DevOptions),
 }
 

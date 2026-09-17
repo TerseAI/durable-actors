@@ -38,8 +38,6 @@ message InvokeActorRequest {
 message HostInvokeActorRequest {
   InvokeActorRequest invocation = 1;
   uint64 owner_epoch = 2;
-  string state_read_url = 3;
-  uint64 state_version = 4;
 }
 
 message HostSocketEventRequest {
@@ -48,8 +46,6 @@ message HostSocketEventRequest {
   bytes event_json = 3;
   bytes connections_json = 4;
   uint64 owner_epoch = 5;
-  string state_read_url = 6;
-  uint64 state_version = 7;
 }
 
 message InvokeActorReply {
@@ -75,6 +71,4 @@ message Reroute {}
 message ActivateActorRequest { ActorKey actor = 1; }
 message ActivateActorReply {
   uint64 owner_epoch = 1;
-  uint64 state_version = 2;
-  string state_object = 3;
 }

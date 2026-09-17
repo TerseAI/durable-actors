@@ -10,7 +10,8 @@ pub mod placement;
 mod postgres;
 pub mod replication;
 pub mod sandbox;
-pub mod sqlite;
 pub mod state_log;
 pub mod state_transport;
-pub mod storage_urls;
+pub mod storage;
+
+pub mod storage_paths;

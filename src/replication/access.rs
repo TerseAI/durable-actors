@@ -66,7 +66,9 @@ impl ReplicaAccess {
     pub fn url(&self, origin: &str, resource: &str, grant: &ReplicaGrant) -> Result<String> {
         if let Some(namespace) = &self.namespace {
             ensure!(
-                grant.object.starts_with(&format!("snapshots/{namespace}/")),
+                grant
+                    .object
+                    .starts_with(&crate::storage_paths::namespace(namespace)),
                 "replica grant crossed namespace scope"
             );
         }
@@ -106,7 +108,9 @@ impl ReplicaAccess {
         let grant: ReplicaGrant = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
         if let Some(namespace) = namespace {
             ensure!(
-                grant.object.starts_with(&format!("snapshots/{namespace}/")),
+                grant
+                    .object
+                    .starts_with(&crate::storage_paths::namespace(namespace)),
                 "replica grant crossed namespace scope"
             );
         }
@@ -119,7 +123,7 @@ impl ReplicaAccess {
             "replica capability expired"
         );
         ensure!(
-            grant.object.starts_with("snapshots/") && grant.object.len() <= 1024,
+            grant.object.starts_with(crate::storage_paths::ROOT) && grant.object.len() <= 1024,
             "invalid replica object"
         );
         ensure!(
@@ -127,7 +131,7 @@ impl ReplicaAccess {
                 .stream
                 .as_ref()
                 .is_none_or(|stream| stream.prefix == grant.object
-                    && stream.session.split('/').nth(1) == grant.object.split('/').nth(1)),
+                    && stream.session.split('/').nth(3) == grant.object.split('/').nth(3)),
             "replica stream does not match its capability"
         );
         crate::placement::validate_region(&grant.region)?;
@@ -152,7 +156,7 @@ mod tests {
         let grant = ReplicaGrant {
             stream: None,
             operation: "GET".into(),
-            object: "snapshots/project/aa/test/1.json".into(),
+            object: "little-actors/v1/namespaces/cHJvamVjdA/snapshots/aa/test/1.json".into(),
             region: "us-east".into(),
             host_id: "replica".into(),
             archive_url: String::new(),
@@ -161,7 +165,7 @@ mod tests {
         let url = delegate.url("http://replica", "state", &grant)?;
         root.verify(url.split("token=").nth(1).unwrap(), "GET")?;
         let forbidden = ReplicaGrant {
-            object: "snapshots/other/aa/test/1.json".into(),
+            object: "little-actors/v1/namespaces/b3RoZXI/snapshots/aa/test/1.json".into(),
             ..grant
         };
         assert!(delegate.url("http://replica", "state", &forbidden).is_err());
@@ -173,10 +177,10 @@ mod tests {
         let forged = format!("project~{}", forged.split("token=").nth(1).unwrap());
         assert!(root.verify(&forged, "GET").is_err());
         let mismatched = ReplicaGrant {
-            object: "snapshots/project/aa/test/".into(),
+            object: "little-actors/v1/namespaces/cHJvamVjdA/snapshots/aa/test/".into(),
             stream: Some(super::super::ReplicaStream {
-                prefix: "snapshots/other/aa/test/".into(),
-                session: "snapshots/other/sessions/one/".into(),
+                prefix: "little-actors/v1/namespaces/b3RoZXI/snapshots/aa/test/".into(),
+                session: "little-actors/v1/namespaces/b3RoZXI/snapshots/sessions/one/".into(),
                 owner_epoch: 1,
                 base_version: 0,
             }),

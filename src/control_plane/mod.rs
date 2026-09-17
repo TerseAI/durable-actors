@@ -14,7 +14,6 @@ mod protocol;
 mod public_api;
 mod regions;
 mod replication;
-mod runtime_registry;
 mod service;
 mod socket_ticket;
 mod websocket;

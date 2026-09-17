@@ -64,9 +64,7 @@ impl ActorHostService for ActorHostGrpcService {
             .await
             .map_err(|error| Status::unavailable(format!("{error:#}")))?;
         Ok(Response::new(ActivateActorReply {
-            state_object: activation.state_object.unwrap_or_default(),
             owner_epoch: activation.owner_epoch,
-            state_version: activation.state_version,
         }))
     }
 
@@ -90,22 +88,14 @@ impl ActorHostService for ActorHostGrpcService {
         }
         let request = request.into_inner();
         let owner_epoch = request.owner_epoch;
-        let state_version = request.state_version;
-        let state_read_url = request.state_read_url.clone();
+
         let invocation: crate::actor::ActorSocketInvocation = request
             .try_into()
             .map_err(|error| Status::invalid_argument(format!("{error:#}")))?;
-        validate_host_request(
-            &principal,
-            &self.host_id,
-            &invocation.actor,
-            owner_epoch,
-            state_version,
-            &state_read_url,
-        )?;
+        validate_host_request(&principal, &self.host_id, &invocation.actor, owner_epoch)?;
         let result = self
             .host
-            .handle_socket_event(invocation, owner_epoch, state_version, state_read_url)
+            .handle_socket_event(invocation, owner_epoch)
             .await
             .map_err(|error| {
                 Status::unavailable(format!("actor socket event failed: {error:#}"))
@@ -136,14 +126,10 @@ impl ActorHostGrpcService {
             &self.host_id,
             &invocation.actor,
             request.owner_epoch,
-            request.state_version,
-            &request.state_read_url,
         )?;
         Ok(AuthorizedHostInvocation {
             invocation,
             owner_epoch: request.owner_epoch,
-            state_version: request.state_version,
-            state_read_url: request.state_read_url,
         })
     }
 
@@ -154,12 +140,7 @@ impl ActorHostGrpcService {
         let request_id = request.invocation.request_id.clone();
         let result = match self
             .host
-            .invoke_actor(
-                request.invocation,
-                request.owner_epoch,
-                request.state_version,
-                request.state_read_url,
-            )
+            .invoke_actor(request.invocation, request.owner_epoch)
             .await
         {
             Ok(result) => result,
@@ -199,15 +180,13 @@ fn validate_host_request(
     host_id: &HostId,
     actor: &crate::actor::ActorKey,
     owner_epoch: u64,
-    state_version: u64,
-    state_read_url: &str,
 ) -> Result<(), Status> {
     if !principal.scope.contains(actor) {
         return Err(Status::permission_denied(
             "actor invocation crossed namespace scope",
         ));
     }
-    if owner_epoch == 0 || (state_version == 0) != state_read_url.is_empty() {
+    if owner_epoch == 0 {
         return Err(Status::invalid_argument(
             "actor ownership capability is incomplete",
         ));
@@ -220,9 +199,7 @@ fn validate_host_request(
     if let Some(capability) = &principal.invocation
         && (capability.actor != *actor
             || capability.host_id != *host_id
-            || capability.owner_epoch != owner_epoch
-            || capability.state_version != state_version
-            || capability.state_read_url != state_read_url)
+            || capability.owner_epoch != owner_epoch)
     {
         return Err(Status::permission_denied(
             "actor invocation does not match its direct capability",
@@ -234,8 +211,6 @@ fn validate_host_request(
 struct AuthorizedHostInvocation {
     invocation: ActorInvocation,
     owner_epoch: u64,
-    state_version: u64,
-    state_read_url: String,
 }
 
 #[cfg(test)]
@@ -247,7 +222,7 @@ mod tests {
     };
 
     #[test]
-    fn direct_capability_is_bound_to_the_actor_epoch_and_state_url() {
+    fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         let actor = ActorKey {
             namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
@@ -268,8 +243,6 @@ mod tests {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch: 3,
-                state_version: 1,
-                state_read_url: "https://storage.example.com/state".into(),
             }),
         };
 
@@ -287,36 +260,17 @@ mod tests {
             .is_err()
         );
 
+        assert!(validate_host_request(&principal, &host_id, &actor, 3).is_ok());
+        assert!(validate_host_request(&principal, &host_id, &actor, 4).is_err());
         assert!(
             validate_host_request(
                 &principal,
                 &host_id,
-                &actor,
-                3,
-                1,
-                "https://storage.example.com/state"
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_host_request(
-                &principal,
-                &host_id,
-                &actor,
-                4,
-                1,
-                "https://storage.example.com/state"
-            )
-            .is_err()
-        );
-        assert!(
-            validate_host_request(
-                &principal,
-                &host_id,
-                &actor,
-                3,
-                1,
-                "https://storage.example.com/other"
+                &ActorKey {
+                    actor_id: "other".into(),
+                    ..actor
+                },
+                3
             )
             .is_err()
         );

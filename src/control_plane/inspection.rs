@@ -16,8 +16,7 @@ use crate::{
     actor_state::ActorStorageKey,
     placement::{ObjectPlacement, ObjectPlacementStore},
     state_log::StateSnapshot,
-    state_transport::StateTransport,
-    storage_urls::{StorageUrlSigner, validate_snapshot_object_name},
+    storage::{SnapshotReader, validate_snapshot_object_name},
 };
 
 use super::{
@@ -88,20 +87,17 @@ async fn inspect_object(
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     placements: Arc<dyn ObjectPlacementStore>,
-    storage: Arc<dyn StorageUrlSigner>,
-    transport: Arc<dyn StateTransport>,
+    storage: Arc<dyn SnapshotReader>,
 }
 
 impl ActorInspector {
     pub(super) fn new(
         placements: Arc<dyn ObjectPlacementStore>,
-        storage: Arc<dyn StorageUrlSigner>,
-        transport: Arc<dyn StateTransport>,
+        storage: Arc<dyn SnapshotReader>,
     ) -> Self {
         Self {
             placements,
             storage,
-            transport,
         }
     }
 
@@ -157,11 +153,12 @@ impl ActorInspector {
             .state_object
             .as_deref()
             .context("committed state object is missing")?;
-        let url = self
-            .storage
-            .read_url(&placement.home_region, object)
-            .await?;
-        let snapshot = StateSnapshot::decode(&self.transport.read(&url).await?)?;
+        let snapshot = StateSnapshot::decode(
+            &self
+                .storage
+                .read_snapshot(&placement.home_region, object)
+                .await?,
+        )?;
         ensure!(
             snapshot.state_version == placement.state_version
                 && Some(snapshot.request_id.as_str()) == placement.last_request_id.as_deref()
@@ -177,21 +174,7 @@ fn actor_from_placement(placement: &ObjectPlacement) -> Result<ActorKey> {
         .state_object
         .as_deref()
         .context("committed state object is missing")?;
-    let mut components = object.split('/').skip(1);
-    let actor = ActorKey {
-        namespace_id: components
-            .next()
-            .context("snapshot namespace is missing")?
-            .to_owned(),
-        actor_type: components
-            .nth(1)
-            .context("snapshot actor type is missing")?
-            .to_owned(),
-        actor_id: components
-            .next()
-            .context("snapshot actor ID is missing")?
-            .to_owned(),
-    };
+    let actor = crate::storage_paths::actor_from_snapshot(object)?;
     actor.validate()?;
     validate_snapshot_object_name(&actor, placement.state_version, object)?;
     ensure!(

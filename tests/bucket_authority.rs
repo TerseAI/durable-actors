@@ -24,7 +24,7 @@ use little_actors::{
         ReplicaTarget, SessionHead, StreamHead,
     },
     state_log::StateSnapshot,
-    storage_urls::StorageUrlSigner,
+    state_transport::SnapshotWriter,
 };
 
 struct Fleet(Vec<ReplicaTarget>);
@@ -107,7 +107,6 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     });
     let runtime = RuntimeStorage::new(
         bucket.clone(),
-        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
         leases.clone(),
         Arc::new(Fleet(targets)),
         peers.clone(),
@@ -126,8 +125,8 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     else {
         panic!("claim lost")
     };
-    let ticket = runtime.write_ticket("us-east", &actor, 1).await?;
-    let stream = ticket.stream.as_ref().unwrap();
+    let ticket = runtime.prepare_write("us-east", &actor, 1).await?;
+    let stream = &ticket.stream;
     let bytes = StateSnapshot::new(
         1,
         first.owner_epoch,
@@ -152,7 +151,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         runtime.get_owner(&actor.storage_key()).await?,
         Some(first.clone())
     );
-    assert!(runtime.write_ticket("us-east", &actor, 2).await.is_err());
+    assert!(runtime.prepare_write("us-east", &actor, 2).await.is_err());
     let pending = runtime.get_owner(&actor.storage_key()).await?.unwrap();
     *peers.unavailable.lock().unwrap() = vec!["a".into()];
     let PlacementClaim::Acquired(next) = runtime
@@ -171,13 +170,14 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
             .bytes,
         bytes
     );
-    let read_url = runtime
-        .read_url("us-east", next.state_object.as_ref().unwrap())
-        .await?;
     assert_eq!(
-        little_actors::state_transport::StateTransport::read(&runtime, &read_url)
-            .await?
-            .as_ref(),
+        little_actors::storage::SnapshotReader::read_snapshot(
+            &runtime,
+            "us-east",
+            next.state_object.as_ref().unwrap()
+        )
+        .await?
+        .as_ref(),
         bytes.as_slice()
     );
     assert!(
@@ -206,7 +206,6 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
     let fleet = Arc::new(UnavailableFleet(AtomicU64::new(0)));
     let runtime = RuntimeStorage::new(
         bucket.clone(),
-        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
         leases,
         fleet.clone(),
         Arc::new(Peers {
@@ -260,7 +259,7 @@ impl Bucket for MemoryBucket {
         bytes: Vec<u8>,
     ) -> Result<bool> {
         anyhow::ensure!(
-            !key.starts_with("snapshots/") || !self.reject_snapshots.load(Ordering::SeqCst),
+            !key.contains("/snapshots/") || !self.reject_snapshots.load(Ordering::SeqCst),
             "bucket writes unavailable"
         );
         let mut objects = self.objects.lock().unwrap();
@@ -268,7 +267,7 @@ impl Bucket for MemoryBucket {
         if current != generation {
             return Ok(false);
         }
-        if key.starts_with("runtime/owners/") {
+        if key.contains("/owners/") {
             self.owner_writes.fetch_add(1, Ordering::SeqCst);
         }
         objects.insert(
@@ -383,8 +382,7 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
     impl Bucket for RacingBucket {
         async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
             let observed = self.inner.get(key).await?;
-            if key.starts_with("runtime/owners/") && self.readers.fetch_add(1, Ordering::SeqCst) < 2
-            {
+            if key.contains("/owners/") && self.readers.fetch_add(1, Ordering::SeqCst) < 2 {
                 self.barrier.wait().await;
             }
             Ok(observed)
@@ -417,7 +415,6 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
     });
     let runtime = RuntimeStorage::new(
         authority,
-        std::collections::HashMap::from([("us-east".into(), bucket as Arc<dyn Bucket>)]),
         leases,
         Arc::new(Fleet(vec![])),
         Arc::new(Peers {
@@ -480,7 +477,6 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     let access = access.for_namespace("project")?;
     let runtime = Arc::new(RuntimeStorage::new(
         bucket.clone(),
-        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
         leases.clone(),
         Arc::new(Fleet(vec![ReplicaTarget {
             host_id: "peer".into(),
@@ -512,7 +508,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     else {
         panic!("claim lost")
     };
-    let ticket = StorageUrlSigner::write_ticket(runtime.as_ref(), "us-east", &actor, 1).await?;
+    let ticket = runtime.prepare_write("us-east", &actor, 1).await?;
     let snapshot = StateSnapshot::new(
         1,
         first.owner_epoch,
@@ -523,12 +519,13 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     .encode()?;
     let http = Arc::new(HttpStateTransport::new());
     let transport = ReplicatedStateTransport::new(
+        runtime.clone(),
         http.clone(),
         Arc::new(FileReplicaStore::open(directory.path().join("actor"), 4096).await?),
     );
     bucket.reject_snapshots.store(true, Ordering::SeqCst);
     assert_eq!(
-        transport.write_ticket(&ticket, snapshot.clone()).await?,
+        transport.write_snapshot(&ticket, snapshot.clone()).await?,
         StateWrite::Replicated
     );
     assert!(bucket.get(&ticket.object_name).await?.is_none());
@@ -564,7 +561,19 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
         .await
         .is_err()
     );
-    assert!(http.write(&ticket.url, late).await.is_err());
+    assert!(
+        SnapshotWriter::write_snapshot(
+            runtime.as_ref(),
+            &little_actors::storage::WritePlan {
+                state_version: 2,
+                object_name: ticket.stream.object(2),
+                ..ticket.clone()
+            },
+            late
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         runtime
             .get(&actor.storage_key())
@@ -612,10 +621,6 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
     let runtime = || {
         RuntimeStorage::new(
             bucket.clone(),
-            std::collections::HashMap::from([(
-                "us-east".into(),
-                bucket.clone() as Arc<dyn Bucket>,
-            )]),
             leases.clone(),
             Arc::new(Fleet(
                 peers
@@ -653,7 +658,7 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
         else {
             panic!("claim lost")
         };
-        let ticket = old.write_ticket("us-east", actor, version).await?;
+        let ticket = old.prepare_write("us-east", actor, version).await?;
         let bytes = StateSnapshot::new(
             version,
             placement.owner_epoch,
@@ -663,9 +668,7 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
         )?
         .encode()?;
         for store in peers.stores.values() {
-            store
-                .append(ticket.stream.as_ref().unwrap(), "archive", &bytes)
-                .await?;
+            store.append(&ticket.stream, "archive", &bytes).await?;
         }
         placements.push(placement);
         tickets.push(ticket);
@@ -767,7 +770,6 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
     });
     let runtime = Arc::new(RuntimeStorage::new(
         bucket.clone(),
-        std::collections::HashMap::from([("us-east".into(), bucket.clone() as Arc<dyn Bucket>)]),
         leases.clone(),
         Arc::new(Fleet(vec![ReplicaTarget {
             host_id: "peer".into(),
@@ -792,7 +794,7 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
     };
     let task = {
         let (runtime, actor) = (runtime.clone(), actor.clone());
-        tokio::spawn(async move { runtime.write_ticket("us-east", &actor, 1).await })
+        tokio::spawn(async move { runtime.prepare_write("us-east", &actor, 1).await })
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), entered.acquire())
         .await??

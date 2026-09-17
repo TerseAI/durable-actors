@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -192,4 +192,44 @@ test("objects rejects invalid limits and conflicting pagination flags before con
     ]) {
         await assert.rejects(run(process.execPath, [cli, "objects", "list", ...flags]), /cannot be used with/u)
     }
+})
+
+test("dev accepts environment configuration and explicit flags override it", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const binary = path.join(directory, "runtime")
+    await writeFile(
+        binary,
+        `#!${process.execPath}
+console.log(JSON.stringify(process.argv.slice(2)))
+`
+    )
+    await chmod(binary, 0o755)
+    const env = {
+        ...process.env,
+        DURABLE_OBJECT_BINARY: binary,
+        DURABLE_OBJECT_PROJECT: "/tmp/actor-project",
+        DURABLE_OBJECT_PORT: "7200",
+        DURABLE_OBJECT_ENTRYPOINT: "actors.ts",
+        DURABLE_OBJECT_STORAGE: "gcs",
+        DURABLE_OBJECT_DATA_DIR: "/tmp/actor-state"
+    }
+    const { stdout } = await run(process.execPath, [cli, "dev"], { env })
+    assert.deepEqual(JSON.parse(stdout), [
+        "dev",
+        "--project",
+        env.DURABLE_OBJECT_PROJECT,
+        "--port",
+        "7200",
+        "--entrypoint",
+        "actors.ts",
+        "--storage",
+        "gcs",
+        "--data-dir",
+        env.DURABLE_OBJECT_DATA_DIR
+    ])
+    const overridden = await run(process.execPath, [cli, "dev", "--port", "7300", "--storage", "local"], { env })
+    const args: string[] = JSON.parse(overridden.stdout)
+    assert.equal(args[args.indexOf("--port") + 1], "7300")
+    assert.equal(args[args.indexOf("--storage") + 1], "local")
 })

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::storage_urls::STATE_CONTENT_TYPE;
+use crate::storage::STATE_CONTENT_TYPE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateWrite {
@@ -15,14 +15,15 @@ pub enum StateWrite {
 pub trait StateTransport: Send + Sync {
     async fn read(&self, signed_url: &str) -> Result<Bytes>;
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite>;
+}
 
-    async fn write_ticket(
+#[async_trait]
+pub trait SnapshotWriter: Send + Sync {
+    async fn write_snapshot(
         &self,
-        ticket: &crate::storage_urls::StateWriteTicket,
+        plan: &crate::storage::WritePlan,
         bytes: Vec<u8>,
-    ) -> Result<StateWrite> {
-        self.write(&ticket.url, bytes).await
-    }
+    ) -> Result<StateWrite>;
 }
 
 #[derive(Clone)]

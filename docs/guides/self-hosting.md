@@ -6,7 +6,7 @@ Recommended setup:
 
 - One always-on control plane near your database and hosts.
 - Managed PostgreSQL with backups.
-- A STANDARD GCS bucket near each actor region.
+- One STANDARD GCS bucket shared by snapshots, ownership, and leases.
 - Modal hosts with matching runtime and SDK versions.
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
@@ -22,8 +22,7 @@ DURABLE_OBJECT_PROCESS_ROLE=control_plane
 DURABLE_OBJECT_CONTROL_PLANE_BIND=0.0.0.0:7100
 DURABLE_OBJECT_CONTROL_PLANE_URL=https://objects.example.com
 DURABLE_OBJECT_POSTGRES_URL=postgresql://USER:PASSWORD@DB_HOST/durable_objects?sslmode=require
-DURABLE_OBJECT_COORDINATION_BUCKET=my-actor-state-bucket
-DURABLE_OBJECT_STANDARD_BUCKETS={"north-america-east":"my-actor-state-bucket"}
+DURABLE_OBJECT_BUCKET=my-actor-state-bucket
 GOOGLE_APPLICATION_CREDENTIALS=/credentials/gcs.json
 DURABLE_OBJECT_SANDBOX_PROVIDER=modal
 MODAL_TOKEN_ID=YOUR_MODAL_TOKEN_ID
@@ -34,11 +33,11 @@ DURABLE_OBJECT_API_KEY=YOUR_ADMIN_API_KEY
 
 Replace the placeholders and keep this file out of source control.
 
-PostgreSQL must be reachable for administrative changes; the hosted runtime can start and serve existing deployments while PostgreSQL is unavailable. Use your provider's TLS settings; the database user needs permission to run automatic migrations. `localhost` refers to the container.
+PostgreSQL must be reachable for deployment configuration, route resolution, and host provisioning. Existing hosts renew leases and handle calls through cached routes without PostgreSQL. Use your provider's TLS settings; the database user needs permission to run automatic migrations. `localhost` refers to the container.
 
-`north-america-east` maps to Modal's `us-east`. Enter a nearby bucket's name without `gs://`. GCS holds snapshots, ownership, host leases, and published runtime configuration. PostgreSQL retains administrative deployment records. Back up the database and retain runtime bucket metadata and referenced snapshots.
+`north-america-east` maps to Modal's `us-east`. Enter a nearby bucket's name without `gs://`. GCS holds snapshots, ownership, host leases, and replica session records. PostgreSQL retains administrative deployment records. Back up the database and retain runtime bucket metadata and referenced snapshots.
 
-The Google service account needs object read, list, create, and replace permissions. Hosts use scoped capabilities through the control plane and replica hosts. On Google Cloud, an attached service account can replace the key file. See [bucket authority and replica snapshots](replication.md) for lease clock requirements and recovery behavior.
+The Google service account needs object read, list, create, and replace permissions. Hosts access GCS directly with namespace-scoped credentials issued by the control plane. On Google Cloud, an attached service account can replace the key file. See [bucket authority and replica snapshots](replication.md) for lease clock requirements and recovery behavior.
 
 Use Modal credentials from the workspace that owns your actor image.
 
@@ -190,7 +189,7 @@ The proxy checks user access and obtains connection credentials. Application mes
 To save snapshots in GCS while running actors locally:
 
 ```sh
-export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
+export DURABLE_OBJECT_BUCKET=my-actor-state-bucket
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
 npx little-actors dev --storage gcs --data-dir .gcs-demo
@@ -198,7 +197,7 @@ npx little-actors dev --storage gcs --data-dir .gcs-demo
 
 Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
-Changing backends or buckets requires a separate state directory; existing actors are not migrated. Local development references remain in SQLite, so losing that file loses access to those local actors. The hosted runtime uses bucket authority instead.
+Local execution uses the same GCS ownership and snapshot layout as hosted execution. Changing the bucket selects a different set of actors; existing state is not copied. Launch settings come from flags or environment variables. The local connection file is only for client discovery.
 
 ## WebSocket configuration
 
@@ -220,15 +219,15 @@ These environment variables configure the hosted server, including [`start`](../
 
 PostgreSQL connection URL for administrative deployment data.
 
-### `DURABLE_OBJECT_COORDINATION_BUCKET`
+### `DURABLE_OBJECT_BUCKET`
 
-**Required for hosted servers.** Bucket containing actor ownership, host leases, and published runtime configuration. It may also be a snapshot bucket. All control-plane instances must use the same value.
+**Required.** One bucket containing snapshots, ownership, host leases, and replica sessions under namespace prefixes. All control-plane instances must use the same value. Use a bucket name without `gs://`.
 
-### `DURABLE_OBJECT_STANDARD_BUCKETS`
+### `DURABLE_OBJECT_REPLICA_REGIONS`
 
-**Required.**
+**Default:** `[]` (object storage only).
 
-Nonempty JSON region-to-bucket map. Region names contain 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`.
+JSON array with up to eight replica regions. Repeated regions create multiple replicas in that region. Count is derived from the list. Region placement does not guarantee availability-zone separation. See [replication](replication.md).
 
 ### `DURABLE_OBJECT_API_KEY`
 

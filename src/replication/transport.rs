@@ -2,51 +2,51 @@ use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use bytes::Bytes;
 use tokio::task::JoinSet;
 
 use crate::{
-    state_transport::{StateTransport, StateWrite},
-    storage_urls::StateWriteTicket,
+    state_transport::{SnapshotWriter, StateTransport, StateWrite},
+    storage::WritePlan,
 };
 
 use super::{ReplicaStore, ReplicationTicket};
 
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
+    bucket: Arc<dyn SnapshotWriter>,
     http: Arc<dyn StateTransport>,
     local: Arc<dyn ReplicaStore>,
 }
 
 impl ReplicatedStateTransport {
-    pub fn new(http: Arc<dyn StateTransport>, local: Arc<dyn ReplicaStore>) -> Self {
-        Self { http, local }
+    pub fn new(
+        bucket: Arc<dyn SnapshotWriter>,
+        http: Arc<dyn StateTransport>,
+        local: Arc<dyn ReplicaStore>,
+    ) -> Self {
+        Self {
+            bucket,
+            http,
+            local,
+        }
     }
 }
 
 #[async_trait]
-impl StateTransport for ReplicatedStateTransport {
-    async fn read(&self, url: &str) -> Result<Bytes> {
-        self.http.read(url).await
-    }
-
-    async fn write(&self, url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        self.http.write(url, bytes).await
-    }
-
-    async fn write_ticket(&self, ticket: &StateWriteTicket, bytes: Vec<u8>) -> Result<StateWrite> {
+impl SnapshotWriter for ReplicatedStateTransport {
+    async fn write_snapshot(&self, ticket: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
         let Some(replication) = &ticket.replication else {
-            return self.http.write(&ticket.url, bytes).await;
+            return self.bucket.write_snapshot(ticket, bytes).await;
         };
         replication.validate()?;
         let started = Instant::now();
-        let http = self.http.clone();
+        let bucket = self.bucket.clone();
         let local = self.local.clone();
-        let url = ticket.url.clone();
+        let plan = ticket.clone();
         let object = ticket.object_name.clone();
         let bucket_bytes = bytes.clone();
         let bucket_task = tokio::spawn(async move {
-            let result = http.write(&url, bucket_bytes).await;
+            let result = bucket.write_snapshot(&plan, bucket_bytes).await;
             tracing::info!(event = "object_storage_upload", %object, uploaded = result.is_ok(),
                 upload_ms = started.elapsed().as_secs_f64() * 1000.0);
             if result.is_ok() {
@@ -84,7 +84,7 @@ impl StateTransport for ReplicatedStateTransport {
 impl ReplicatedStateTransport {
     fn start_replication(
         &self,
-        ticket: StateWriteTicket,
+        ticket: WritePlan,
         replication: ReplicationTicket,
         bytes: Vec<u8>,
         started: Instant,
@@ -100,7 +100,7 @@ impl ReplicatedStateTransport {
 
     async fn replicate(
         &self,
-        ticket: &StateWriteTicket,
+        ticket: &WritePlan,
         replication: &ReplicationTicket,
         bytes: Vec<u8>,
     ) -> Result<StateWrite> {

@@ -25,7 +25,7 @@ impl GcsBucket {
     ) -> Result<Self> {
         anyhow::ensure!(
             !bucket.is_empty() && !bucket.contains('/'),
-            "invalid coordination bucket"
+            "invalid storage bucket"
         );
         Ok(Self {
             bucket: format!("projects/_/buckets/{bucket}"),

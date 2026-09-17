@@ -77,21 +77,22 @@ impl ReplicaProvisioner for ModalReplicaFleet {
         count: usize,
     ) -> Result<Vec<ReplicaTarget>> {
         self.cache
-            .try_get_with((region.into(), count), self.provision(actor, region, count))
+            .try_get_with((region.into(), count), self.provision(actor, count))
             .await
             .map_err(|error| anyhow::anyhow!("replica fleet unavailable: {error}"))
     }
 }
 
 impl ModalReplicaFleet {
-    async fn provision(
-        &self,
-        actor: &ActorKey,
-        region: &str,
-        count: usize,
-    ) -> Result<Vec<ReplicaTarget>> {
-        let destinations =
-            crate::replication::replica_destinations(region, count, &self.replica_regions)?;
+    async fn provision(&self, actor: &ActorKey, count: usize) -> Result<Vec<ReplicaTarget>> {
+        anyhow::ensure!(
+            count == self.replica_regions.len(),
+            "replica placement mismatch"
+        );
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let destinations = self.replica_regions.clone();
         let spec = self
             .registry
             .launch_spec(&actor.namespace_id)

@@ -1,4 +1,4 @@
-use super::tests::{FakeLeaseStore, FakeStorageUrls, FakeWarmProvisioner, test_issuer};
+use super::tests::{FakeWarmProvisioner, test_issuer};
 use super::*;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
@@ -6,11 +6,9 @@ use crate::{
     grpc::ActorHostGrpcService,
     host::{ActorHost, HostEndpoint},
     host_leases::{HostLeaseRegistry, HostLeaseRequest},
-    placement::testing::LocalObjectPlacementStore,
-    state_transport::{StateTransport, StateWrite},
 };
 use futures_util::{SinkExt, StreamExt};
-use std::{collections::HashMap, process::Stdio, sync::Mutex};
+use std::process::Stdio;
 use tokio::{net::TcpListener, task::JoinSet};
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_tungstenite::{
@@ -475,7 +473,8 @@ struct Stack {
     workflow_token: String,
     actor: ActorKey,
     host_id: HostId,
-    leases: Arc<FakeLeaseStore>,
+    leases: Arc<crate::bucket::BucketHostLeases>,
+    _runtime: crate::bucket::testing::RuntimeFixture,
     publisher: Arc<ControlPlaneClient>,
     host: Arc<ActorHost>,
 }
@@ -510,21 +509,8 @@ impl Stack {
         let host_id = HostId::new("host.v2.project-1:revision.session");
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
-        leases
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
-            .await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        placements
-            .claim(&actor.storage_key(), None, &host_id, "us-east")
-            .await?;
+        let runtime = crate::bucket::testing::RuntimeFixture::new()?;
+        let leases = runtime.leases.clone();
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .ensure_namespace_and_register_deployment(&HostLaunchSpec {
@@ -546,8 +532,7 @@ impl Stack {
         )?;
         let service = ControlPlaneService::new(
             leases.clone(),
-            placements,
-            Arc::new(FakeStorageUrls(&["us-east"])),
+            runtime.runtime.clone(),
             auth,
             registry.clone(),
             issuer.clone(),
@@ -576,7 +561,28 @@ impl Stack {
                 .await?
                 .with_socket_gateway(&gateway),
         );
-        publisher
+        let storage = Arc::new(
+            crate::host::storage::HostStorage::new(
+                crate::bucket::access::HostStorageConfig {
+                    bucket: crate::bucket::access::BucketLocation::File {
+                        directory: runtime.directory.path().into(),
+                    },
+                    region: "us-east".into(),
+                    replica_secret: runtime.access.delegate_secret("project-1")?,
+                    replicas: vec![],
+                    replica_count: 0,
+                    token: None,
+                },
+                host_id.clone(),
+                "00000000-0000-4000-8000-000000000001".into(),
+                "project-1".into(),
+                "http://unused".into(),
+                publisher.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?,
+        );
+        storage
             .register(&HostLeaseRequest {
                 id: host_id.clone(),
                 session_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -599,10 +605,11 @@ impl Stack {
             },
             "project-1".into(),
             connection.executor(),
-            publisher.clone(),
-            Arc::new(MemoryState::default()),
+            storage.clone(),
+            storage.runtime.clone(),
             publisher.clone(),
         ));
+        host.activate_actor(actor.clone()).await?;
         tasks.spawn(async move {
             let _ = connection
                 .run(tokio_util::sync::CancellationToken::new())
@@ -639,6 +646,7 @@ impl Stack {
             .token;
         Ok(Self {
             directory,
+            _runtime: runtime,
             tasks,
             child,
             gateway,
@@ -666,8 +674,6 @@ impl Stack {
                     args,
                 },
                 1,
-                0,
-                String::new(),
             )
             .await?;
         match result {
@@ -823,18 +829,4 @@ async fn receive(socket: &mut Socket) -> Result<serde_json::Value> {
     ensure!(frame.is_text(), "unexpected socket frame: {frame:?}");
     serde_json::from_str(frame.to_text()?)
         .with_context(|| format!("invalid socket JSON: {frame:?}"))
-}
-
-#[derive(Default)]
-struct MemoryState(Mutex<Vec<u8>>);
-
-#[async_trait]
-impl StateTransport for MemoryState {
-    async fn read(&self, _: &str) -> Result<bytes::Bytes> {
-        Ok(self.0.lock().unwrap().clone().into())
-    }
-    async fn write(&self, _: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        *self.0.lock().unwrap() = bytes;
-        Ok(StateWrite::Written)
-    }
 }

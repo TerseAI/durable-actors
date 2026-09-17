@@ -7,32 +7,10 @@ use little_actors::{
     replication::{
         FileReplicaStore, ReplicaStore, ReplicaTarget, ReplicatedStateTransport, ReplicationTicket,
     },
-    state_transport::{StateTransport, StateWrite},
-    storage_urls::StateWriteTicket,
+    state_transport::{SnapshotWriter, StateTransport, StateWrite},
+    storage::WritePlan,
 };
 use tokio::sync::Semaphore;
-
-#[test]
-fn installation_policy_defaults_to_bucket_and_supports_only_explicit_zonal_replication()
--> Result<()> {
-    use little_actors::replication::replica_count;
-    assert_eq!(replica_count(&mut |_| None)?, 0);
-    let config = |mode: &str, count: &str| {
-        replica_count(&mut |name| match name {
-            "DURABLE_OBJECT_DURABILITY" => Some(mode.into()),
-            "DURABLE_OBJECT_REPLICA_COUNT" => Some(count.into()),
-            _ => None,
-        })
-    };
-    assert_eq!(config("zonal", "2")?, 2);
-    assert_eq!(config("zonal", "3")?, 3);
-    assert!(config("regional", "2").is_err());
-    assert!(config("multi-region", "2").is_err());
-    assert!(config("zonal", "0").is_err());
-    assert!(config("zonal", "9").is_err());
-    assert!(config("object_storage", "2").is_err());
-    Ok(())
-}
 
 struct Storage {
     bucket: Semaphore,
@@ -61,6 +39,13 @@ impl StateTransport for Storage {
     }
 }
 
+#[async_trait]
+impl SnapshotWriter for Storage {
+    async fn write_snapshot(&self, _: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
+        self.write("bucket", bytes).await
+    }
+}
+
 #[tokio::test]
 async fn both_replicas_and_a_local_disk_copy_can_finish_before_the_bucket() -> Result<()> {
     let directory = tempfile::tempdir()?;
@@ -70,9 +55,9 @@ async fn both_replicas_and_a_local_disk_copy_can_finish_before_the_bucket() -> R
         second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), local.clone());
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local.clone());
     let ticket = ticket();
-    let mut write = Box::pin(transport.write_ticket(&ticket, b"snapshot".to_vec()));
+    let mut write = Box::pin(transport.write_snapshot(&ticket, b"snapshot".to_vec()));
     assert!(
         tokio::time::timeout(Duration::from_millis(30), &mut write)
             .await
@@ -96,10 +81,10 @@ async fn bucket_can_commit_while_a_replica_is_unavailable() -> Result<()> {
         second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage, local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage, local);
     assert_eq!(
         transport
-            .write_ticket(&ticket(), b"snapshot".to_vec())
+            .write_snapshot(&ticket(), b"snapshot".to_vec())
             .await?,
         StateWrite::Written
     );
@@ -249,12 +234,12 @@ async fn a_duplicate_host_cannot_satisfy_two_replica_acknowledgments() -> Result
         second_finished: Semaphore::new(0),
         second: Semaphore::new(1),
     });
-    let transport = ReplicatedStateTransport::new(storage, local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage, local);
     let mut invalid = ticket();
     invalid.replication.as_mut().unwrap().replicas[1].host_id = "one".into();
     assert!(
         transport
-            .write_ticket(&invalid, b"snapshot".to_vec())
+            .write_snapshot(&invalid, b"snapshot".to_vec())
             .await
             .is_err()
     );
@@ -270,9 +255,9 @@ async fn a_full_local_spool_does_not_count_as_a_durable_primary() -> Result<()> 
         second_finished: Semaphore::new(0),
         second: Semaphore::new(1),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local);
     let ticket = ticket();
-    let mut write = Box::pin(transport.write_ticket(&ticket, b"snapshot".to_vec()));
+    let mut write = Box::pin(transport.write_snapshot(&ticket, b"snapshot".to_vec()));
     assert!(
         tokio::time::timeout(Duration::from_millis(30), &mut write)
             .await
@@ -283,12 +268,16 @@ async fn a_full_local_spool_does_not_count_as_a_durable_primary() -> Result<()> 
     Ok(())
 }
 
-fn ticket() -> StateWriteTicket {
-    StateWriteTicket {
-        stream: None,
+fn ticket() -> WritePlan {
+    WritePlan {
+        stream: little_actors::replication::ReplicaStream {
+            prefix: "snapshots/epoch/".into(),
+            session: "session".into(),
+            owner_epoch: 1,
+            base_version: 0,
+        },
         state_version: 1,
         object_name: "snapshot".into(),
-        url: "bucket".into(),
         expires_at_ms: i64::MAX,
         replication: Some(ReplicationTicket {
             required_replicas: 2,
@@ -329,7 +318,7 @@ async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             })
             .await
     });
-    let object = "snapshots/project/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
+    let object = "little-actors/v1/namespaces/cHJvamVjdA/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
     let grant = ReplicaGrant {
         stream: None,
         operation: "PUT".into(),
@@ -457,10 +446,10 @@ async fn replica_uploads_continue_after_object_storage_wins() -> Result<()> {
         second: Semaphore::new(0),
         second_finished: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local);
     assert_eq!(
         transport
-            .write_ticket(&ticket(), b"snapshot".to_vec())
+            .write_snapshot(&ticket(), b"snapshot".to_vec())
             .await?,
         StateWrite::Written
     );

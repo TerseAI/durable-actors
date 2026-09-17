@@ -271,9 +271,7 @@ impl RuntimeStorage {
         let prefix = snapshot_prefix(&owner.actor)?;
         let mut loaded: Option<LoadedSnapshot> = None;
         for snapshot in snapshots {
-            let bytes = self
-                .recover_snapshot(&session.region, &session.replicas, &snapshot)
-                .await?;
+            let bytes = self.recover_snapshot(&session.replicas, &snapshot).await?;
             if snapshot.object.starts_with(&prefix)
                 && loaded.as_ref().is_none_or(|s| {
                     snapshot_position(&snapshot.object) > snapshot_position(&s.reference.object)
@@ -291,17 +289,14 @@ impl RuntimeStorage {
 
 pub(super) fn identity(namespace: &str, host: &HostId, session: &str) -> String {
     format!(
-        "snapshots/{namespace}/sessions/{}/{}/",
-        component(host.as_str()),
-        component(session)
+        "{}/",
+        crate::storage_paths::session(namespace, host, session)
     )
 }
 
 fn key(namespace: &str, host: &HostId, session: &str) -> String {
     format!(
-        "runtime/sessions/{}/{}/{}.json",
-        component(namespace),
-        component(host.as_str()),
-        component(session)
+        "{}.json",
+        crate::storage_paths::session(namespace, host, session)
     )
 }

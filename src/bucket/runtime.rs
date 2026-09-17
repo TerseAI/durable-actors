@@ -21,17 +21,15 @@ use crate::{
     actor_state::ActorStorageKey,
     host::HostId,
     host_leases::{HostLease, HostLeaseStore},
-    placement::{
-        ObjectPlacement, ObjectPlacementStore, PlacementClaim, StateCommit, StateCommitRequest,
-    },
+    placement::{ObjectPlacement, ObjectPlacementStore, PlacementClaim},
     replication::{
         ArchiveTicket, ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaStream,
         ReplicaTarget, ReplicationTicket, SnapshotRef, access::AccessQuery,
     },
-    storage_urls::{StateWriteTicket, StorageUrlSigner, snapshot_object_name, snapshot_prefix},
+    storage::{SnapshotReader, WritePlan, snapshot_object_name, snapshot_prefix},
 };
 
-use super::{Bucket, ReplicaPeers, component, peers::grant, replace};
+use super::{Bucket, ReplicaPeers, peers::grant, replace};
 
 mod session;
 
@@ -39,14 +37,12 @@ pub struct RuntimeStorage {
     owned: Mutex<HashMap<String, Ownership>>,
     sessions: tokio::sync::Mutex<HashMap<String, session::Session>>,
     authority: Arc<dyn Bucket>,
-    states: HashMap<String, Arc<dyn Bucket>>,
     leases: Arc<dyn HostLeaseStore>,
     fleet: Arc<dyn ReplicaProvisioner>,
     peers: Arc<dyn ReplicaPeers>,
     access: ReplicaAccess,
     origin: String,
     count: usize,
-    http: crate::state_transport::HttpStateTransport,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -100,7 +96,6 @@ impl RuntimeStorage {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         authority: Arc<dyn Bucket>,
-        states: HashMap<String, Arc<dyn Bucket>>,
         leases: Arc<dyn HostLeaseStore>,
         fleet: Arc<dyn ReplicaProvisioner>,
         peers: Arc<dyn ReplicaPeers>,
@@ -109,21 +104,19 @@ impl RuntimeStorage {
         count: usize,
     ) -> Result<Self> {
         ensure!(
-            !states.is_empty() && count <= crate::replication::MAX_REPLICAS,
+            count <= crate::replication::MAX_REPLICAS,
             "invalid runtime storage configuration"
         );
         Ok(Self {
             owned: Mutex::new(HashMap::new()),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             authority,
-            states,
             leases,
             fleet,
             peers,
             access,
             origin,
             count,
-            http: crate::state_transport::HttpStateTransport::new(),
         })
     }
 
@@ -158,7 +151,20 @@ impl ObjectPlacementStore for RuntimeStorage {
         limit: u32,
     ) -> Result<Vec<ObjectPlacement>> {
         let mut records = Vec::new();
-        for key in self.authority.list("runtime/owners/").await? {
+        for key in self
+            .authority
+            .list(
+                &namespace
+                    .map(|namespace| {
+                        format!("{}owners/", crate::storage_paths::namespace(namespace))
+                    })
+                    .unwrap_or_else(|| crate::storage_paths::ROOT.into()),
+            )
+            .await?
+        {
+            if !key.contains("/owners/") {
+                continue;
+            }
             if let Some(object) = self.authority.get(&key).await? {
                 let record: Ownership = serde_json::from_slice(&object.bytes)?;
                 if namespace.is_none_or(|id| id == record.actor.namespace_id)
@@ -182,7 +188,33 @@ impl ObjectPlacementStore for RuntimeStorage {
         Ok(placements)
     }
 
-    async fn claim_actor(
+    async fn matches_lease(&self, placement: &ObjectPlacement, lease: &HostLease) -> Result<bool> {
+        Ok(self
+            .load(&placement.object)
+            .await?
+            .is_some_and(|(_, record)| {
+                record.epoch == placement.owner_epoch
+                    && record.owner == lease.id
+                    && record.session == lease.session_id
+            }))
+    }
+}
+
+#[async_trait]
+impl SnapshotReader for RuntimeStorage {
+    fn durability(&self) -> crate::replication::DurabilityPolicy {
+        let mut policy = crate::replication::DurabilityPolicy::new(self.count);
+        policy.replica_regions = self.fleet.replica_regions();
+        policy
+    }
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
+        self.fetch_snapshot(&grant("RUNTIME_READ", region, object, 60_000)?)
+            .await
+    }
+}
+
+impl RuntimeStorage {
+    pub async fn claim_actor(
         &self,
         actor: &ActorKey,
         expected: Option<&ObjectPlacement>,
@@ -201,66 +233,19 @@ impl ObjectPlacementStore for RuntimeStorage {
         })
     }
 
-    async fn claim(
-        &self,
-        _: &ActorStorageKey,
-        _: Option<&ObjectPlacement>,
-        _: &HostId,
-        _: &str,
-    ) -> Result<PlacementClaim> {
-        anyhow::bail!("bucket ownership requires the actor identity")
-    }
-
-    async fn matches_lease(&self, placement: &ObjectPlacement, lease: &HostLease) -> Result<bool> {
-        Ok(self
-            .load(&placement.object)
-            .await?
-            .is_some_and(|(_, record)| {
-                record.epoch == placement.owner_epoch
-                    && record.owner == lease.id
-                    && record.session == lease.session_id
-            }))
-    }
-
-    async fn commit_state(&self, _: &StateCommitRequest) -> Result<StateCommit> {
-        anyhow::bail!("bucket runtime writes are committed by their durability proof")
-    }
-}
-
-#[async_trait]
-impl StorageUrlSigner for RuntimeStorage {
-    fn uses_epoch_streams(&self) -> bool {
-        true
-    }
-    fn durability(&self) -> crate::replication::DurabilityPolicy {
-        let mut policy = crate::replication::DurabilityPolicy::new(self.count);
-        policy.replica_regions = self.fleet.replica_regions();
-        if !policy.replica_regions.is_empty() {
-            policy.mode = "cross_region_preview".into();
-        }
-        policy
-    }
-
-    fn regions(&self) -> Vec<String> {
-        let mut regions: Vec<_> = self.states.keys().cloned().collect();
-        regions.sort();
-        regions
-    }
-
-    async fn read_url(&self, region: &str, object: &str) -> Result<String> {
+    pub async fn read_url(&self, region: &str, object: &str) -> Result<String> {
         self.access.url(
             &self.origin,
             "runtime",
             &grant("RUNTIME_READ", region, object, 60_000)?,
         )
     }
-
-    async fn write_ticket(
+    pub async fn prepare_write(
         &self,
         region: &str,
         actor: &ActorKey,
         version: u64,
-    ) -> Result<StateWriteTicket> {
+    ) -> Result<WritePlan> {
         let (_, record) = self
             .load(&actor.storage_key())
             .await?
@@ -273,7 +258,7 @@ impl StorageUrlSigner for RuntimeStorage {
         let replicas = self
             .prepare_session(&actor.namespace_id, &lease, region)
             .await?;
-        self.sign_write(&record, version, &replicas)
+        self.write_plan(&record, version, &replicas)
     }
 }
 
@@ -310,7 +295,7 @@ impl RuntimeStorage {
         lease: &HostLease,
         epoch: u64,
         version: u64,
-    ) -> Result<StateWriteTicket> {
+    ) -> Result<WritePlan> {
         let record = self
             .owned
             .lock()
@@ -325,7 +310,7 @@ impl RuntimeStorage {
         let replicas = self
             .prepare_session(&actor.namespace_id, lease, &record.region)
             .await?;
-        self.sign_write(&record, version, &replicas)
+        self.write_plan(&record, version, &replicas)
     }
 
     async fn acquire(
@@ -336,7 +321,7 @@ impl RuntimeStorage {
         region: &str,
     ) -> Result<LoadedActor> {
         actor.validate()?;
-        self.bucket(region)?;
+        crate::placement::validate_region(region)?;
         let current = self.load(&actor.storage_key()).await?;
         if let Some(expected) = expected {
             ensure!(
@@ -377,7 +362,7 @@ impl RuntimeStorage {
         ensure!(
             replace(
                 self.authority.as_ref(),
-                &ownership_key(&actor.storage_key()),
+                &ownership_key(&actor.storage_key())?,
                 current.map(|(generation, _)| generation),
                 serde_json::to_vec(&record)?
             )
@@ -435,19 +420,17 @@ impl RuntimeStorage {
         }
     }
 
-    fn sign_write(
+    fn write_plan(
         &self,
         record: &Ownership,
         version: u64,
         replicas: &[ReplicaTarget],
-    ) -> Result<StateWriteTicket> {
+    ) -> Result<WritePlan> {
         ensure!(version > 0, "state version must be positive");
         let stream = record.stream()?;
-        let mut capability = grant("RUNTIME_WRITE", &record.region, &stream.prefix, 60_000)?;
+        let mut capability = grant("RUNTIME_ARCHIVE", &record.region, &stream.prefix, 60_000)?;
         capability.stream = Some(stream.clone());
-        let url = self.access.url(&self.origin, "runtime", &capability)?;
         let expires_at_ms = i64::try_from(capability.expires_at_ms)?;
-        capability.operation = "RUNTIME_ARCHIVE".into();
         capability.expires_at_ms = u64::MAX;
         let archive_url = self
             .access
@@ -472,12 +455,11 @@ impl RuntimeStorage {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(StateWriteTicket {
+        Ok(WritePlan {
             state_version: version,
             object_name: stream.object(version),
-            url,
             expires_at_ms,
-            stream: Some(stream),
+            stream,
             replication: (!targets.is_empty()).then_some(ReplicationTicket {
                 required_replicas: targets.len(),
                 replicas: targets,
@@ -491,7 +473,7 @@ impl RuntimeStorage {
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let bucket = self.bucket(&record.region)?;
+        let bucket = &self.authority;
         let stream = record.stream()?;
         let newest = bucket
             .list(&stream.prefix)
@@ -536,9 +518,7 @@ impl RuntimeStorage {
         );
         if let Some(snapshot) = candidate {
             if loaded.as_ref().is_none_or(|s| s.reference != snapshot) {
-                let bytes = self
-                    .recover_snapshot(&record.region, &replicas, &snapshot)
-                    .await?;
+                let bytes = self.recover_snapshot(&replicas, &snapshot).await?;
                 loaded = Some(LoadedSnapshot {
                     reference: snapshot,
                     bytes: bytes.into(),
@@ -550,28 +530,26 @@ impl RuntimeStorage {
 
     async fn recover_snapshot(
         &self,
-        region: &str,
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        if let Some(object) = self.bucket(region)?.get(&snapshot.object).await? {
+        if let Some(object) = self.authority.get(&snapshot.object).await? {
             snapshot.verify(&object.bytes)?;
             return Ok(object.bytes);
         }
         for peer in replicas {
             if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
                 snapshot.verify(&bytes)?;
-                self.persist(region, &snapshot.object, bytes.clone())
-                    .await?;
+                self.persist(&snapshot.object, bytes.clone()).await?;
                 return Ok(bytes);
             }
         }
         anyhow::bail!("acknowledged snapshot is unavailable")
     }
 
-    async fn persist(&self, region: &str, object: &str, bytes: Vec<u8>) -> Result<()> {
+    async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {
         ensure!(
-            replace(self.bucket(region)?.as_ref(), object, None, bytes).await?,
+            replace(self.authority.as_ref(), object, None, bytes).await?,
             "conflicting immutable snapshot"
         );
         Ok(())
@@ -589,34 +567,24 @@ impl RuntimeStorage {
         Ok(placement)
     }
 
-    async fn write_snapshot(&self, grant: &ReplicaGrant, bytes: Vec<u8>) -> Result<()> {
+    async fn archive_snapshot(&self, grant: &ReplicaGrant, bytes: Vec<u8>) -> Result<()> {
         let stream = grant.stream.as_ref().context("missing write stream")?;
         let snapshot = stream.snapshot(&bytes)?;
-        self.persist(&grant.region, &snapshot.object, bytes).await?;
-        if grant.operation == "RUNTIME_WRITE" {
-            let actor = actor_from_object(&snapshot.object)?;
-            let (_, record) = self
-                .load(&actor.storage_key())
-                .await?
-                .context("actor ownership is missing")?;
-            ensure!(
-                record.stream()? == *stream,
-                "snapshot writer has been fenced"
-            );
-        }
+        self.persist(&snapshot.object, bytes).await?;
+
         Ok(())
     }
 
     async fn load(&self, object: &ActorStorageKey) -> Result<Option<(i64, Ownership)>> {
         self.authority
-            .get(&ownership_key(object))
+            .get(&ownership_key(object)?)
             .await?
             .map(|value| Ok((value.generation, serde_json::from_slice(&value.bytes)?)))
             .transpose()
     }
 
-    async fn read_snapshot(&self, grant: &ReplicaGrant) -> Result<Bytes> {
-        if let Some(object) = self.bucket(&grant.region)?.get(&grant.object).await? {
+    async fn fetch_snapshot(&self, grant: &ReplicaGrant) -> Result<Bytes> {
+        if let Some(object) = self.authority.get(&grant.object).await? {
             return Ok(Bytes::from(object.bytes));
         }
         let actor = actor_from_object(&grant.object)?;
@@ -637,12 +605,6 @@ impl RuntimeStorage {
         }
         anyhow::bail!("snapshot unavailable")
     }
-
-    fn bucket(&self, region: &str) -> Result<&Arc<dyn Bucket>> {
-        self.states
-            .get(region)
-            .context("actor region has no bucket")
-    }
 }
 
 async fn read(
@@ -653,7 +615,7 @@ async fn read(
         .access
         .verify(&query.token, "RUNTIME_READ")
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    runtime.read_snapshot(&grant).await.map_err(unavailable)
+    runtime.fetch_snapshot(&grant).await.map_err(unavailable)
 }
 
 async fn write(
@@ -663,11 +625,10 @@ async fn write(
 ) -> Result<StatusCode, StatusCode> {
     let grant = runtime
         .access
-        .verify(&query.token, "RUNTIME_WRITE")
-        .or_else(|_| runtime.access.verify(&query.token, "RUNTIME_ARCHIVE_WRITE"))
+        .verify(&query.token, "RUNTIME_ARCHIVE_WRITE")
         .map_err(|_| StatusCode::FORBIDDEN)?;
     runtime
-        .write_snapshot(&grant, bytes.to_vec())
+        .archive_snapshot(&grant, bytes.to_vec())
         .await
         .map_err(unavailable)?;
     Ok(StatusCode::CREATED)
@@ -709,18 +670,8 @@ async fn archive(
     }))
 }
 
-fn ownership_key(object: &ActorStorageKey) -> String {
-    format!(
-        "runtime/owners/{}/{}.json",
-        component(
-            object
-                .as_str()
-                .strip_prefix("object.v2.")
-                .and_then(|key| key.split_once(':'))
-                .map_or("", |(ns, _)| ns)
-        ),
-        component(object.as_str())
-    )
+fn ownership_key(object: &ActorStorageKey) -> Result<String> {
+    crate::storage_paths::owner(object)
 }
 
 fn apply_snapshot(placement: &mut ObjectPlacement, snapshot: Option<&SnapshotRef>) {
@@ -769,18 +720,7 @@ fn decode_snapshot(object: String, bytes: Vec<u8>) -> Result<LoadedSnapshot> {
 }
 
 fn actor_from_object(object: &str) -> Result<ActorKey> {
-    let parts: Vec<_> = object.split('/').collect();
-    ensure!(
-        parts.len() == 7 && parts[0] == "snapshots",
-        "invalid snapshot object"
-    );
-    let actor = ActorKey {
-        namespace_id: parts[1].into(),
-        actor_type: parts[3].into(),
-        actor_id: parts[4].into(),
-    };
-    actor.validate()?;
-    Ok(actor)
+    crate::storage_paths::actor_from_snapshot(object)
 }
 
 fn unavailable(error: anyhow::Error) -> StatusCode {
@@ -789,32 +729,28 @@ fn unavailable(error: anyhow::Error) -> StatusCode {
 }
 
 #[async_trait]
-impl crate::state_transport::StateTransport for RuntimeStorage {
-    async fn read(&self, url: &str) -> Result<Bytes> {
-        let parsed = reqwest::Url::parse(url)?;
-        let token = parsed
-            .query_pairs()
-            .find(|(key, _)| key == "token")
-            .context("state capability missing")?
-            .1
-            .into_owned();
-        let grant = self.access.verify(&token, "RUNTIME_READ")?;
-        self.read_snapshot(&grant).await
-    }
-
-    async fn write(&self, url: &str, bytes: Vec<u8>) -> Result<crate::state_transport::StateWrite> {
-        let parsed = reqwest::Url::parse(url)?;
-        if parsed.path() != "/_replica/runtime" {
-            return self.http.write(url, bytes).await;
-        }
-        let token = parsed
-            .query_pairs()
-            .find(|(key, _)| key == "token")
-            .context("state capability missing")?
-            .1
-            .into_owned();
-        let grant = self.access.verify(&token, "RUNTIME_WRITE")?;
-        self.write_snapshot(&grant, bytes).await?;
+impl crate::state_transport::SnapshotWriter for RuntimeStorage {
+    async fn write_snapshot(
+        &self,
+        plan: &WritePlan,
+        bytes: Vec<u8>,
+    ) -> Result<crate::state_transport::StateWrite> {
+        let stream = &plan.stream;
+        let snapshot = stream.snapshot(&bytes)?;
+        ensure!(
+            snapshot.object == plan.object_name && snapshot.state_version == plan.state_version,
+            "write plan does not match snapshot"
+        );
+        self.persist(&snapshot.object, bytes).await?;
+        let actor = actor_from_object(&snapshot.object)?;
+        let (_, owner) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("actor ownership missing")?;
+        ensure!(
+            owner.stream()? == *stream,
+            "snapshot writer has been fenced"
+        );
         Ok(crate::state_transport::StateWrite::Written)
     }
 }

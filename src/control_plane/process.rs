@@ -4,12 +4,11 @@ use anyhow::{Context, Result, ensure};
 use tracing::info;
 
 use crate::{
-    bucket::{Bucket, BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage},
+    bucket::{BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage},
     clock::SystemClock,
     host_leases::HostLeaseStore,
     postgres::PostgresDatabase,
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
-    storage_urls::validate_buckets,
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -38,8 +37,7 @@ pub struct ControlPlaneProcessConfig {
 
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
-    pub coordination_bucket: String,
-    pub standard_buckets: HashMap<String, String>,
+    pub bucket: String,
     pub replica_count: usize,
     pub replica_regions: Vec<String>,
 }
@@ -102,15 +100,12 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         config.jwt_max_lifetime,
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
-    let authority = Arc::new(GcsBucket::new(&config.storage.coordination_bucket).await?);
+    let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let leases: Arc<dyn HostLeaseStore> = Arc::new(BucketHostLeases::new(
         authority.clone(),
         Arc::new(SystemClock),
     ));
-    let registry = Arc::new(super::runtime_registry::RuntimeRegistry::new(
-        Arc::new(super::PostgresAdminRegistry::from_database(database)),
-        authority.clone(),
-    ));
+    let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
     let (fleet, access) = super::replication::fleet(
         registry.clone(),
         &config.sandbox_provider,
@@ -118,22 +113,15 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         config.storage.replica_regions,
     )?;
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        config.storage.coordination_bucket.clone(),
-        config.storage.standard_buckets.clone(),
+        crate::bucket::access::BucketLocation::Gcs {
+            bucket: config.storage.bucket.clone(),
+        },
         fleet.clone(),
         access.clone(),
         config.storage.replica_count,
     )?);
-    let mut states = HashMap::new();
-    for (region, bucket) in config.storage.standard_buckets {
-        states.insert(
-            region,
-            Arc::new(GcsBucket::new(&bucket).await?) as Arc<dyn Bucket>,
-        );
-    }
-    let storage_urls = Arc::new(RuntimeStorage::new(
+    let storage = Arc::new(RuntimeStorage::new(
         authority,
-        states,
         leases.clone(),
         fleet,
         Arc::new(HttpReplicaPeers::new(access.clone())?),
@@ -141,7 +129,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         config.sandbox_provider.runtime.control_plane_url.clone(),
         config.storage.replica_count,
     )?);
-    let placements = storage_urls.clone();
+    let placements = storage.clone();
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
@@ -159,7 +147,6 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     let service = ControlPlaneService::new(
         leases,
         placements.clone(),
-        storage_urls.clone(),
         auth,
         registry.clone(),
         issuer.clone(),
@@ -167,16 +154,12 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )
     .with_runtime_access(runtime_access)
     .with_socket_event_sink(socket_events);
-    let admin = super::admin::AdminService::new(config.api_key, registry.admin_view(), issuer)?
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
         .with_socket_origin(&socket_origin)?;
-    let inspector = super::inspection::ActorInspector::new(
-        placements,
-        storage_urls.clone(),
-        Arc::new(crate::state_transport::HttpStateTransport::new()),
-    );
+    let inspector = super::inspection::ActorInspector::new(placements, storage.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
-        .merge(storage_urls.router());
+        .merge(storage.router());
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -233,17 +216,15 @@ impl ControlPlaneProcessConfig {
             api_key.trim() == api_key,
             "DURABLE_OBJECT_API_KEY has surrounding whitespace"
         );
-        let standard_buckets: HashMap<String, String> =
-            serde_json::from_str(&required(&mut get, "DURABLE_OBJECT_STANDARD_BUCKETS")?)
-                .context("DURABLE_OBJECT_STANDARD_BUCKETS must be a JSON region-to-bucket map")?;
-        validate_buckets(&standard_buckets)?;
-        let replica_count = crate::replication::replica_count(&mut get)?;
+        let bucket = required(&mut get, "DURABLE_OBJECT_BUCKET")?;
+        crate::storage::validate_bucket(&bucket)?;
+        let replica_regions = crate::replication::replica_regions(&mut get)?;
+        let replica_count = replica_regions.len();
         let storage = ControlPlaneStorageConfig {
             replica_count,
-            replica_regions: crate::replication::replica_regions(&mut get, replica_count)?,
+            replica_regions,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
-            coordination_bucket: required(&mut get, "DURABLE_OBJECT_COORDINATION_BUCKET")?,
-            standard_buckets,
+            bucket,
         };
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
@@ -407,10 +388,7 @@ mod tests {
         let values = HashMap::from([
             ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
             ("DURABLE_OBJECT_API_KEY", "api-key"),
-            (
-                "DURABLE_OBJECT_COORDINATION_BUCKET",
-                "actor-coordination-test",
-            ),
+            ("DURABLE_OBJECT_BUCKET", "actor-state-test"),
             ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL",
@@ -422,18 +400,11 @@ mod tests {
                 "DURABLE_OBJECT_POSTGRES_URL",
                 "postgresql://localhost/actors",
             ),
-            (
-                "DURABLE_OBJECT_STANDARD_BUCKETS",
-                "{\"us-east\":\"actor-state-test\"}",
-            ),
         ]);
         let config = ControlPlaneProcessConfig::from_lookup(|name| {
             values.get(name).map(|value| (*value).into())
         })?;
-        assert_eq!(
-            config.storage.standard_buckets["us-east"],
-            "actor-state-test"
-        );
+        assert_eq!(config.storage.bucket, "actor-state-test");
         assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
         Ok(())
     }

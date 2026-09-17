@@ -1,97 +1,104 @@
 # Bucket authority and replica snapshots
 
-The hosted runtime uses GCS conditional writes for actor ownership and host leases.
-PostgreSQL stores administrative deployment data. Successful deployment changes
-publish their runtime configuration to the coordination bucket, so routing,
-hydration, lease renewal, state writes, and application credential issuance do not
-query PostgreSQL. Startup opens PostgreSQL lazily when an administrative operation
-needs it.
+GCS conditional writes govern actor ownership and host leases. The actor host
+claims ownership, recovers state, renews its lease, and persists writes directly.
+PostgreSQL stores deployment configuration for the control plane. Resolving routes
+and provisioning hosts can require PostgreSQL; calls to a cached actor route do not.
+There is no second deployment record in GCS.
 
-This follows celld's object-storage coordination approach using this project's
-existing GCS backend and replica hosts. Actor state remains a full JSON snapshot.
-Replica storage uses atomic blob files; no replica database or separate consensus
-service is required.
+Actor state remains a full JSON snapshot. Replica storage uses atomic blob files.
+Local development runs the same ownership and recovery code against a file bucket.
 
 ## Configuration
 
 Set these on the control plane and socket gateway:
 
 ```sh
-DURABLE_OBJECT_COORDINATION_BUCKET=my-actor-state-bucket
-DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
-DURABLE_OBJECT_DURABILITY=zonal
-DURABLE_OBJECT_REPLICA_COUNT=2
+DURABLE_OBJECT_BUCKET=my-actor-state-bucket
+DURABLE_OBJECT_REPLICA_REGIONS='["north-america-east","north-america-east"]'
 ```
 
-The coordination bucket can also be a snapshot bucket. All instances must use the
-same coordination bucket and signing key. Grant the control-plane identity object
-read, list, create, and replace access. Keep control-plane clocks less than five
-seconds apart. Hosts stop releasing results five seconds before their locally
-confirmed lease deadline, measured from the start of the renewal request.
+One list specifies placement and count: up to eight entries, including repeated
+regions. An empty list, the default, uses only object storage. To place two replicas
+in different regions, use `["north-america-central","north-america-west"]`.
+A region setting does not guarantee separate physical machines or availability zones.
 
-Use fresh runtime metadata and re-register deployments when adopting this layout.
-Existing PostgreSQL actor placements are not migrated. Do not expire ownership,
-lease, deployment, or referenced snapshot objects through a bucket lifecycle rule.
+All instances use the same bucket and signing key. Grant the control-plane identity
+object read, list, create, and replace access. Hosts receive namespace-scoped GCS
+credentials: mutable ownership and lease records, immutable snapshots. Credentials
+refresh through the control plane; lease renewal goes directly to GCS.
 
-Replica counts from 1 through 8 are supported. Replicas are shared Rust-only Modal
-sandboxes, built from the registered actor image. They do not execute actor code
-or receive application secrets. Every replica in an actor's recorded set must
-acknowledge a write for it to provide a replica durability proof.
+Keep host and control-plane clocks less than five seconds apart. Hosts stop
+releasing results five seconds before their locally confirmed lease deadline,
+measured from the start of the renewal request.
 
-For bucket-only operation, set `DURABLE_OBJECT_DURABILITY=object_storage` and
-`DURABLE_OBJECT_REPLICA_COUNT=0`. For the existing cross-region preview, set:
+## Object paths
 
-```sh
-DURABLE_OBJECT_DURABILITY=cross_region_preview
-DURABLE_OBJECT_REPLICA_COUNT=2
-DURABLE_OBJECT_REPLICA_REGIONS='["north-america-central","north-america-west"]'
+All objects share this prefix:
+
+```text
+little-actors/v1/namespaces/<namespace>/
+  owners/<shard>/<actor-type>/<actor-id>.json
+  hosts/<host>/lease.json
+  hosts/<host>/sessions/<session>.json
+  snapshots/<shard>/<actor-type>/<actor-id>/<epoch>/<version>.json
 ```
 
-Cross-region destinations must be distinct and exclude the actor's home region.
-Archival still uses the home bucket; the bucket fallback does not promise
-synchronous cross-region durability.
+Identity components use base64url without padding. The shard is the first byte
+of the actor key's SHA-256 hash; the epoch is 32 hexadecimal characters.
+Do not expire ownership, lease, session, or referenced snapshot objects through
+bucket lifecycle rules. This change requires a fresh administrative database schema
+and runtime metadata; it does not migrate previous SQL or bucket layouts.
 
 ## Writes and takeover
 
-Each ownership epoch records its host session, snapshot prefix, initial state,
-and fixed replica set. A fresh epoch initializes that set before it can serve.
-If provisioning fails, that epoch uses bucket-only writes.
+Each ownership record names a host session, epoch, and recovered starting snapshot.
+Replica membership belongs to the host session and is initialized once for all its
+actors. New actors can activate before this initialization finishes. A replicated
+write waits for the session; failed initialization selects object storage for that
+session.
 
 The host races immutable bucket upload against its local blob and every recorded
 replica. Replica acknowledgments require durable snapshot bytes and a durable
-stream head. The winning proof completes the write locally, without a per-write
-control-plane commit. Bucket writes verify ownership after uploading. A reusable,
-short-lived epoch capability allows the host to derive subsequent snapshot names.
-An ambiguous write retains the exact snapshot for retry without executing again.
+stream head. Either proof completes the write locally, followed by a lease check
+before releasing the result. Bucket writes verify ownership after uploading.
+The host derives subsequent snapshot names and reuses short-lived replica
+capabilities. An ambiguous write retries the exact snapshot without executing again.
 
-Takeover first fences the old epoch with a conditional ownership write. It seals
-a surviving old replica, recovers the latest full snapshot, and saves the recovered
-state to the bucket before publishing the new active owner. Seals survive restart
-and reject delayed appends. Full snapshots also cover earlier writes that used the
-bucket fallback. Late uploads into an old prefix cannot change the new epoch's
-starting state. An uncertain write may be included during recovery.
+Takeover checks that the previous host lease has ended, marks its session as
+recovering, and seals a surviving initialized replica. It recovers the session's
+latest snapshots into GCS and marks recovery complete. The new host then claims
+the actor with one conditional ownership write, recording its recovered starting
+snapshot. Seals survive restart and reject delayed appends. Late uploads into an
+old epoch cannot change the new epoch's starting state. An uncertain write may be
+included during recovery.
 
-An epoch that used replicas requires a complete surviving replica witness during
+A session that used replicas requires a complete surviving replica witness during
 recovery. If every witness is unavailable, recovery stops rather than guessing
-that the newest archived snapshot includes every acknowledged write. Failed
-recovery retains its predecessor and can be retried when a witness returns.
+that the newest archived snapshot includes every acknowledged write. Recovery can
+be retried when a witness returns.
 
 ## Local storage and archival
 
 Replica files contain a JSON metadata line followed by the original snapshot.
 Writes sync a temporary file, publish it atomically, and sync the directory before
-acknowledgment. Stream heads and seals use the same atomic replacement procedure.
+acknowledgment. Stream heads and seals use the same replacement procedure.
 The archive queue is rebuilt from blob files on restart. Each spool accepts at
 most 1 GiB of pending snapshot payloads.
 
-Archival uses an epoch-scoped capability to obtain upload access. It verifies an
-existing object's bytes before deleting a local copy. Stream heads and seals
-remain after archival. Keep the installation signing key stable while snapshots
-remain pending. `DURABLE_OBJECT_REPLICA_DATA` selects the replica directory and
-defaults to `/tmp/durable-object-replica`.
+Archival obtains upload access through the control plane using an epoch-scoped
+capability. It verifies an existing object's bytes before deleting a local copy.
+Stream heads and seals remain after archival. Keep the installation signing key
+stable while snapshots remain pending. `DURABLE_OBJECT_REPLICA_DATA` selects the
+replica directory and defaults to `/tmp/durable-object-replica`.
 
-Modal storage remains ephemeral and has a maximum sandbox lifetime. This mode
-does not promise recovery after every recorded replica disappears before recovery
-can establish a complete witness. Physical machine or availability-zone separation
-is not attested by the provider adapter. Runtime authority and retained snapshots
-also depend on the configured buckets remaining available.
+Local development's file bucket uses atomic replacement and a shared file lock for
+conditional writes. Its objects live under `<data-dir>/objects/` with the same path
+layout as GCS. Launch configuration stays in memory; `runtime.json` only lets local
+clients discover the address and API key. Explicit client environment variables
+bypass that discovery file.
+
+Modal replica storage is ephemeral and sandboxes have a maximum lifetime. Recovery
+is not guaranteed after every recorded replica disappears before a complete witness
+can be established. A bucket write that wins the durability race has the bucket's
+configured durability, regardless of replica placement.

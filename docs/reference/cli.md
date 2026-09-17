@@ -77,7 +77,7 @@ Starts a server on IPv4 loopback, loads the actor entrypoint, and registers your
 Local actors ready at http://127.0.0.1:7100
 ```
 
-Local mode needs no cloud credentials, database URL, bucket, or signing key. SQLite metadata and snapshots are saved in `.little-actors/` by default.
+Local mode needs no cloud credentials, database URL, bucket, or signing key. Ownership, leases, and snapshots use atomic files in `.little-actors/objects/` by default.
 
 ### dev options
 
@@ -89,8 +89,30 @@ little-actors dev [options]
 - `--entrypoint <file>` — TypeScript actor source file relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Loopback port, an integer from `0` through `65535`. Defaults to `7100`; `0` selects an available port.
 - `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-actors`. An explicit relative path resolves from the shell's working directory.
-- `--storage <backend>` — Snapshot storage, either `local` (default) or `gcs`. Local metadata stays in the data directory for both backends.
+- `--storage <backend>` — Storage for ownership, leases, and snapshots: `local` (default) or `gcs`.
 - `-h`, `--help` — Print command help.
+
+### Configure through environment variables
+
+Each startup option has an environment equivalent. Explicit flags take precedence.
+
+| Flag | Environment variable |
+| --- | --- |
+| `--project` | `DURABLE_OBJECT_PROJECT` |
+| `--entrypoint` | `DURABLE_OBJECT_ENTRYPOINT` |
+| `--port` | `DURABLE_OBJECT_PORT` |
+| `--data-dir` | `DURABLE_OBJECT_DATA_DIR` |
+| `--storage` | `DURABLE_OBJECT_STORAGE` |
+
+Set `DURABLE_OBJECT_API_KEY` to choose a stable local API key; otherwise startup generates one. For example:
+
+```sh
+export DURABLE_OBJECT_PORT=7200
+export DURABLE_OBJECT_API_KEY=local-development-key
+npx little-actors dev
+```
+
+Your backend can connect using `DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.1:7200`, the same API key, and `DURABLE_OBJECT_NAMESPACE_ID=local`. Explicit client settings bypass `.little-actors/runtime.json`. That file contains connection details for automatic discovery, including a randomly chosen port or generated key; it is not a deployment manifest. Launch configuration stays in memory.
 
 ### Choose a port
 
@@ -115,14 +137,14 @@ Local storage is intended for development. Deleting the directory or losing its 
 ### Save snapshots in GCS
 
 ```sh
-export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
+export DURABLE_OBJECT_BUCKET=my-actor-state-bucket
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-GCS mode uses Google Application Default Credentials and a nonempty region-to-bucket map. Bucket values are names without `gs://` or slashes. Local metadata still lives in the data directory and must be preserved.
+GCS mode uses Google Application Default Credentials and one bucket name, without `gs://` or slashes. Ownership, leases, and snapshots all live in that bucket.
 
-Changing the storage backend or bucket map requires a separate data directory; startup rejects a changed configuration for an existing directory. See [local execution with GCS](../guides/self-hosting.md#local-execution-with-gcs) for storage and credential setup.
+Changing the storage backend or bucket selects different persisted state; state is not migrated. See [local execution with GCS](../guides/self-hosting.md#local-execution-with-gcs) for storage and credential setup.
 
 ## Inspect saved objects
 
@@ -213,9 +235,9 @@ Optional path to an existing native executable used by `dev` and `start`. Relati
 
 Root directory for downloaded runtimes. Ignored when `DURABLE_OBJECT_BINARY` is set.
 
-### DURABLE_OBJECT_STANDARD_BUCKETS
+### DURABLE_OBJECT_BUCKET
 
-**Required for `--storage gcs`.** JSON object mapping storage regions to bucket names. It is not needed for `--storage local`. See [GCS snapshots](#save-snapshots-in-gcs).
+**Required for `--storage gcs`.** Bucket name for ownership, leases, and snapshots. It is not needed for `--storage local`. See [GCS snapshots](#save-snapshots-in-gcs).
 
 ### GOOGLE_APPLICATION_CREDENTIALS
 

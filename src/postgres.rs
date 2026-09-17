@@ -18,6 +18,7 @@ pub(crate) struct PostgresDatabase {
 }
 
 impl PostgresDatabase {
+    #[cfg(test)]
     pub(crate) async fn connect(url: &str) -> Result<Self> {
         let database = Self::lazy(url)?;
         database.initialize().await?;
@@ -60,21 +61,7 @@ impl PostgresDatabase {
         Ok(client.query_opt(&statement, params).await?)
     }
 
-    pub(crate) async fn query(
-        &self,
-        query: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<Row>> {
-        self.initialize().await?;
-        let client = self
-            .pool
-            .get()
-            .await
-            .context("acquire PostgreSQL connection")?;
-        let statement = client.prepare_cached(query).await?;
-        Ok(client.query(&statement, params).await?)
-    }
-
+    #[cfg(test)]
     pub(crate) async fn query_one(
         &self,
         query: &str,

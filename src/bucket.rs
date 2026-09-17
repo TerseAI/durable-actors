@@ -1,4 +1,5 @@
 pub(crate) mod access;
+mod file;
 mod gcs;
 mod leases;
 mod peers;
@@ -7,6 +8,7 @@ mod runtime;
 use anyhow::Result;
 use async_trait::async_trait;
 
+pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub use leases::BucketHostLeases;
 pub use peers::{HttpReplicaPeers, ReplicaPeers};
@@ -55,7 +57,5 @@ pub(crate) async fn replace(
     }
 }
 
-pub(crate) fn component(value: &str) -> String {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    URL_SAFE_NO_PAD.encode(value)
-}
+#[cfg(test)]
+pub(crate) mod testing;

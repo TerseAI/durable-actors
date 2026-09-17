@@ -20,7 +20,7 @@ use crate::{
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
     grpc::ActorHostGrpcService,
-    host_leases::{HostLeaseRegistry, MAX_HOST_LEASE_DURATION_MS},
+    host_leases::MAX_HOST_LEASE_DURATION_MS,
     state_transport::HttpStateTransport,
 };
 
@@ -32,7 +32,7 @@ const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
-    runtime_config: Option<crate::bucket::access::HostStorageConfig>,
+    runtime_config: crate::bucket::access::HostStorageConfig,
     pub control_plane_url: String,
     pub socket_gateway_url: String,
     pub host_token: String,
@@ -213,11 +213,10 @@ impl ActorHostConfig {
             renew_every < lease_duration,
             "DURABLE_OBJECT_RENEW_MS must be shorter than DURABLE_OBJECT_LEASE_MS"
         );
-        let runtime_config = get("DURABLE_OBJECT_RUNTIME_CONFIG")
-            .filter(|value| !value.is_empty())
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .context("parse host runtime configuration")?;
+        let runtime_config = serde_json::from_str(
+            &get("DURABLE_OBJECT_RUNTIME_CONFIG").context("host storage configuration missing")?,
+        )
+        .context("parse host runtime configuration")?;
         Ok(Self {
             runtime_config,
             socket_gateway_url,
@@ -317,45 +316,34 @@ async fn prepare_actor_host(
         .await?,
     );
     let archive = crate::replication::start_archiver(local.clone());
-    let (commits, registry, state): (
-        Arc<dyn super::actor_runtime::StateCommitAuthority>,
-        Arc<dyn HostLeaseRegistry>,
-        Arc<dyn crate::state_transport::StateTransport>,
-    ) = if let Some(storage) = config.runtime_config.clone() {
-        let storage = Arc::new(
-            super::storage::HostStorage::new(
-                storage,
-                config.host_id.clone(),
-                config.session_id.clone(),
-                config.namespace_id.clone(),
-                config.control_plane_url.clone(),
-                control_plane.clone(),
-                archive.child_token(),
-            )
-            .await?,
-        );
-        (storage.clone(), storage.clone(), storage.runtime.clone())
-    } else {
-        (
+    let storage = Arc::new(
+        super::storage::HostStorage::new(
+            config.runtime_config.clone(),
+            config.host_id.clone(),
+            config.session_id.clone(),
+            config.namespace_id.clone(),
+            config.control_plane_url.clone(),
             control_plane.clone(),
-            control_plane.clone(),
-            Arc::new(HttpStateTransport::new()),
+            archive.child_token(),
         )
-    };
+        .await?,
+    );
     let host = Arc::new(ActorHost::new(
         endpoint.clone(),
         config.namespace_id.clone(),
         executor_connection.executor(),
-        commits,
+        storage.clone(),
         Arc::new(crate::replication::ReplicatedStateTransport::new(
-            state, local,
+            storage.runtime.clone(),
+            Arc::new(HttpStateTransport::new()),
+            local,
         )),
         control_plane.clone(),
     ));
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,
         config.session_id.clone(),
-        registry,
+        storage,
         Arc::new(SystemClock),
         config.lease_duration,
         config.renew_every,
@@ -804,6 +792,15 @@ mod tests {
 
     fn values() -> HashMap<String, String> {
         HashMap::from([
+            (
+                "DURABLE_OBJECT_RUNTIME_CONFIG".into(),
+                serde_json::json!({
+                    "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
+                    "region":"north-america-east", "replicaSecret":"secret", "replicas":[],
+                    "replicaCount":0, "token":null
+                })
+                .to_string(),
+            ),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL".into(),
                 "http://127.0.0.1:7100".into(),

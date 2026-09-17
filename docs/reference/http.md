@@ -67,7 +67,7 @@ Registers actor code for your application. There is one active deployment. The J
 - `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
-- `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
+- `warmRegion` (`string | null`, default `null`) — Supported execution region in which to request background image warmup. It is not retained in the deployment record.
 
 **Response:** `200 OK` with JSON:
 

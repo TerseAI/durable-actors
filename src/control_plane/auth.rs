@@ -49,8 +49,6 @@ pub(crate) struct ActorInvocationCapability {
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub owner_epoch: u64,
-    pub state_version: u64,
-    pub state_read_url: String,
 }
 
 impl ActorPrincipal {
@@ -71,14 +69,6 @@ impl ActorPrincipal {
             expires_at,
             invocation: None,
         }
-    }
-
-    pub(crate) fn validate_host_id(&self, host_id: &str) -> Result<()> {
-        ensure!(
-            host_id == self.host_id.as_str(),
-            "host does not match the authenticated host identity"
-        );
-        Ok(())
     }
 
     pub(crate) fn host_id_prefix(&self) -> String {
@@ -312,20 +302,6 @@ impl ActorJwtVerifier {
                 capability.owner_epoch > 0,
                 "actor invocation capability owner epoch is invalid"
             );
-            if capability.state_version == 0 {
-                ensure!(
-                    capability.state_read_url.is_empty(),
-                    "uninitialized actor invocation capability has a state URL"
-                );
-            } else {
-                let state_read_url = reqwest::Url::parse(&capability.state_read_url)
-                    .context("actor invocation capability state URL is invalid")?;
-                ensure!(
-                    matches!(state_read_url.scheme(), "http" | "https")
-                        && state_read_url.host_str().is_some(),
-                    "actor invocation capability state URL must be HTTP or HTTPS"
-                );
-            }
         }
         Ok(principal)
     }

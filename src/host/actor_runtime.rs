@@ -14,10 +14,9 @@ use crate::{
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
         ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
     },
-    control_plane::ControlPlaneClient,
     state_log::StateSnapshot,
-    state_transport::{StateTransport, StateWrite},
-    storage_urls::StateWriteTicket,
+    state_transport::StateWrite,
+    storage::WritePlan,
 };
 
 use super::HostEndpoint;
@@ -25,122 +24,41 @@ use super::HostEndpoint;
 const STATE_WRITE_TICKET_SAFETY: Duration = Duration::from_secs(5);
 
 #[async_trait]
-pub(crate) trait StateCommitAuthority: Send + Sync {
+pub(crate) trait ActorStorage: Send + Sync {
     async fn acquire_actor(
         &self,
         _actor: &crate::actor::ActorKey,
         _host: &super::HostId,
-    ) -> Result<ActorActivation> {
-        anyhow::bail!("host-owned activation requires bucket storage")
-    }
+    ) -> Result<ActorActivation>;
 
     async fn load_actor_state(
         &self,
         _actor: &crate::actor::ActorKey,
         _host: &super::HostId,
         _epoch: u64,
-    ) -> Result<Option<(u64, StateSource)>> {
-        Ok(None)
-    }
-    fn ensure_authority(&self) -> Result<()> {
-        Ok(())
-    }
+    ) -> Result<(u64, bytes::Bytes)>;
+    fn ensure_authority(&self) -> Result<()>;
     async fn prepare_state_write(
         &self,
         actor: &crate::actor::ActorKey,
         host_id: &super::HostId,
         owner_epoch: u64,
         expected_version: u64,
-    ) -> Result<StateWriteTicket>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_state(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: &str,
-        request_id: &str,
-    ) -> Result<CommittedState>;
-}
-
-pub(crate) enum StateSource {
-    Url(String),
-    Bytes(bytes::Bytes),
+    ) -> Result<WritePlan>;
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActorActivation {
-    pub state_object: Option<String>,
     pub owner_epoch: u64,
     pub state_version: u64,
     pub state: Option<bytes::Bytes>,
 }
 
-#[derive(Debug)]
-pub(crate) struct CommittedState {
-    pub(super) state_version: u64,
-    pub(super) next_write: Option<StateWriteTicket>,
-}
-
-#[async_trait]
-impl StateCommitAuthority for ControlPlaneClient {
-    async fn load_actor_state(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host: &super::HostId,
-        epoch: u64,
-    ) -> Result<Option<(u64, StateSource)>> {
-        ControlPlaneClient::load_actor_state(self, actor, host, epoch)
-            .await
-            .map(|(version, url)| Some((version, StateSource::Url(url))))
-    }
-    fn ensure_authority(&self) -> Result<()> {
-        self.ensure_live_lease()
-    }
-    async fn prepare_state_write(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-    ) -> Result<StateWriteTicket> {
-        ControlPlaneClient::prepare_state_write(self, actor, host_id, owner_epoch, expected_version)
-            .await
-    }
-
-    async fn commit_state(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: &str,
-        request_id: &str,
-    ) -> Result<CommittedState> {
-        let (state_version, next_write) = ControlPlaneClient::commit_state(
-            self,
-            actor,
-            host_id,
-            owner_epoch,
-            expected_version,
-            state_object,
-            request_id,
-        )
-        .await?;
-        Ok(CommittedState {
-            state_version,
-            next_write,
-        })
-    }
-}
-
 pub(super) struct ActorRuntime {
     endpoint: HostEndpoint,
     executor: Arc<dyn ActorExecutor>,
-    commits: Arc<dyn StateCommitAuthority>,
-    state: Arc<dyn StateTransport>,
+    storage: Arc<dyn ActorStorage>,
+    state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
     cached_state: Option<CachedActorState>,
     activation: Option<ActorActivation>,
@@ -150,14 +68,14 @@ impl ActorRuntime {
     pub(super) fn new(
         endpoint: HostEndpoint,
         executor: Arc<dyn ActorExecutor>,
-        commits: Arc<dyn StateCommitAuthority>,
-        state: Arc<dyn StateTransport>,
+        storage: Arc<dyn ActorStorage>,
+        state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         Self {
             endpoint,
             executor,
-            commits,
+            storage,
             state,
             publisher,
             cached_state: None,
@@ -173,11 +91,11 @@ impl ActorRuntime {
         &mut self,
         actor: &crate::actor::ActorKey,
     ) -> Result<ActorActivation> {
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         if let Some(activation) = &self.activation {
             return Ok(activation.clone());
         }
-        let mut activation = self.commits.acquire_actor(actor, &self.endpoint.id).await?;
+        let mut activation = self.storage.acquire_actor(actor, &self.endpoint.id).await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
                 CachedActorState::new(activation.owner_epoch)
@@ -194,7 +112,7 @@ impl ActorRuntime {
             };
             self.cached_state = Some(cached);
         }
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         self.activation = Some(activation.clone());
         Ok(activation)
     }
@@ -203,22 +121,14 @@ impl ActorRuntime {
         &mut self,
         invocation: ActorInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: String,
         mut timings: InvocationTimings,
     ) -> Result<ActorExecutionResult> {
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         let outcome = self
-            .invoke_actor_once(
-                &invocation,
-                owner_epoch,
-                state_version,
-                &state_read_url,
-                &mut timings,
-            )
+            .invoke_actor_once(&invocation, owner_epoch, &mut timings)
             .await;
         Self::log_invocation(&self.endpoint, &invocation, &timings, &outcome);
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         outcome
     }
 
@@ -226,11 +136,9 @@ impl ActorRuntime {
         &mut self,
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: String,
         mut timings: InvocationTimings,
     ) -> Result<ActorExecutionResult> {
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         let persistence = ActorInvocation {
             request_id: invocation.request_id.clone(),
             actor: invocation.actor.clone(),
@@ -238,17 +146,10 @@ impl ActorRuntime {
             args: Vec::new(),
         };
         let outcome = self
-            .handle_socket_event_once(
-                invocation,
-                owner_epoch,
-                state_version,
-                &state_read_url,
-                &persistence,
-                &mut timings,
-            )
+            .handle_socket_event_once(invocation, owner_epoch, &persistence, &mut timings)
             .await;
         Self::log_invocation(&self.endpoint, &persistence, &timings, &outcome);
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         outcome
     }
 
@@ -256,20 +157,12 @@ impl ActorRuntime {
         &mut self,
         invocation: ActorSocketInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
         persistence: &ActorInvocation,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
         timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
         let mut cached = self
-            .take_or_load_state(
-                &invocation.actor,
-                owner_epoch,
-                state_version,
-                state_read_url,
-                timings,
-            )
+            .take_or_load_state(&invocation.actor, owner_epoch, timings)
             .await?;
         if self
             .finish_pending_commit(persistence, &mut cached)
@@ -329,19 +222,11 @@ impl ActorRuntime {
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
         timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
         let mut cached = self
-            .take_or_load_state(
-                &invocation.actor,
-                owner_epoch,
-                state_version,
-                state_read_url,
-                timings,
-            )
+            .take_or_load_state(&invocation.actor, owner_epoch, timings)
             .await?;
         if let Err(error) = self.finish_pending_commit(invocation, &mut cached).await {
             self.cached_state = Some(cached);
@@ -415,7 +300,7 @@ impl ActorRuntime {
         result: Value,
         effects: Vec<ActorSocketEffect>,
     ) -> Result<ActorExecutionResult> {
-        self.commits.ensure_authority()?;
+        self.storage.ensure_authority()?;
         let (mut automatic, effects): (Vec<_>, Vec<_>) = effects.into_iter().partition(|effect| {
             matches!(
                 effect,
@@ -444,8 +329,6 @@ impl ActorRuntime {
         &mut self,
         actor: &crate::actor::ActorKey,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
         timings: &mut InvocationTimings,
     ) -> Result<CachedActorState> {
         let cached = self.cached_state.take();
@@ -455,27 +338,14 @@ impl ActorRuntime {
         {
             return Ok(cached);
         }
-        let refreshed = self
-            .commits
+        let (state_version, loaded) = self
+            .storage
             .load_actor_state(actor, &self.endpoint.id, owner_epoch)
             .await?;
-        let (state_version, source) =
-            refreshed.unwrap_or_else(|| (state_version, StateSource::Url(state_read_url.into())));
         if state_version == 0 {
-            let empty = match &source {
-                StateSource::Url(url) => url.is_empty(),
-                StateSource::Bytes(bytes) => bytes.is_empty(),
-            };
-            ensure!(empty, "uninitialized actor has state");
+            ensure!(loaded.is_empty(), "uninitialized actor has state");
             return Ok(CachedActorState::new(owner_epoch));
         }
-        let loaded = match source {
-            StateSource::Url(url) => {
-                ensure!(!url.is_empty(), "initialized actor has no state URL");
-                self.state.read(&url).await.context("load actor state")?
-            }
-            StateSource::Bytes(bytes) => bytes,
-        };
         timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
         let cached = CachedActorState::from_loaded(owner_epoch, state_version, &loaded)?;
         timings.state_decoded_at_ms = Some(timings.elapsed_ms());
@@ -613,7 +483,7 @@ impl ActorRuntime {
                 ticket
             }
             _ => {
-                self.commits
+                self.storage
                     .prepare_state_write(
                         &invocation.actor,
                         &self.endpoint.id,
@@ -628,10 +498,7 @@ impl ActorRuntime {
             "state write ticket has the wrong version"
         );
         ensure!(
-            ticket
-                .stream
-                .as_ref()
-                .is_none_or(|stream| stream.owner_epoch == owner_epoch),
+            ticket.stream.owner_epoch == owner_epoch,
             "write capability belongs to another owner epoch"
         );
         timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
@@ -654,7 +521,7 @@ impl ActorRuntime {
             .pending
             .as_ref()
             .expect("pending write was installed");
-        let write = self.state.write_ticket(&pending.ticket, bytes).await?;
+        let write = self.state.write_snapshot(&pending.ticket, bytes).await?;
         cached
             .pending
             .as_mut()
@@ -741,11 +608,9 @@ impl ActorRuntime {
             return Ok(());
         };
         if !pending.durable {
-            if pending.ticket.stream.is_some()
-                && pending.ticket.expires_at_ms <= unix_millis()?.saturating_add(5000)
-            {
+            if pending.ticket.expires_at_ms <= unix_millis()?.saturating_add(5000) {
                 let renewed = self
-                    .commits
+                    .storage
                     .prepare_state_write(
                         &invocation.actor,
                         &self.endpoint.id,
@@ -761,44 +626,24 @@ impl ActorRuntime {
                 pending.ticket = renewed;
             }
             self.state
-                .write_ticket(&pending.ticket, pending.snapshot.encode()?)
+                .write_snapshot(&pending.ticket, pending.snapshot.encode()?)
                 .await?;
             pending.durable = true;
         }
-        let committed = if let Some(stream) = &pending.ticket.stream {
-            let mut next_write = pending.ticket.clone();
-            next_write.state_version = pending
-                .snapshot
-                .state_version
-                .checked_add(1)
-                .context("state version overflow")?;
-            next_write.object_name = stream.object(next_write.state_version);
-            CommittedState {
-                state_version: pending.snapshot.state_version,
-                next_write: Some(next_write),
-            }
-        } else {
-            self.commits
-                .commit_state(
-                    &invocation.actor,
-                    &self.endpoint.id,
-                    cached.owner_epoch,
-                    cached.state_version,
-                    &pending.ticket.object_name,
-                    &pending.snapshot.request_id,
-                )
-                .await?
-        };
-        ensure!(
-            committed.state_version == pending.snapshot.state_version,
-            "control plane committed the wrong actor state version"
-        );
+        let stream = &pending.ticket.stream;
+        let mut next_write = pending.ticket.clone();
+        next_write.state_version = pending
+            .snapshot
+            .state_version
+            .checked_add(1)
+            .context("state version overflow")?;
+        next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
         cached.state_version = pending.snapshot.state_version;
         cached.state = Some(Arc::new(pending.snapshot.state));
         cached.last_request_id = Some(pending.snapshot.request_id);
         cached.last_result = Some(pending.snapshot.result);
-        cached.next_write = committed.next_write;
+        cached.next_write = Some(next_write);
         Ok(())
     }
 
@@ -887,13 +732,13 @@ struct CachedActorState {
     state: Option<Arc<Value>>,
     last_request_id: Option<String>,
     last_result: Option<Value>,
-    next_write: Option<StateWriteTicket>,
+    next_write: Option<WritePlan>,
     pending: Option<PendingStateCommit>,
 }
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
-    ticket: StateWriteTicket,
+    ticket: WritePlan,
     durable: bool,
 }
 

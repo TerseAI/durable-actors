@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
@@ -14,13 +14,19 @@ use crate::{
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostStorageConfig {
-    pub authority_bucket: String,
-    pub state_buckets: HashMap<String, String>,
+    pub bucket: BucketLocation,
     pub region: String,
     pub replica_secret: String,
     pub replicas: Vec<ReplicaTarget>,
     pub replica_count: usize,
-    pub token: StorageToken,
+    pub token: Option<StorageToken>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum BucketLocation {
+    Gcs { bucket: String },
+    File { directory: PathBuf },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -39,10 +45,9 @@ impl std::fmt::Debug for StorageToken {
 }
 
 pub(crate) struct RuntimeAccess {
-    credentials: AccessTokenCredentials,
+    credentials: Option<AccessTokenCredentials>,
     http: reqwest::Client,
-    authority_bucket: String,
-    state_buckets: HashMap<String, String>,
+    location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
     count: usize,
@@ -51,19 +56,22 @@ pub(crate) struct RuntimeAccess {
 
 impl RuntimeAccess {
     pub fn new(
-        authority_bucket: String,
-        state_buckets: HashMap<String, String>,
+        location: BucketLocation,
         fleet: Arc<dyn ReplicaProvisioner>,
         replicas: ReplicaAccess,
         count: usize,
     ) -> Result<Self> {
         Ok(Self {
-            credentials: Builder::default().build_access_token_credentials()?,
+            credentials: match &location {
+                BucketLocation::Gcs { .. } => {
+                    Some(Builder::default().build_access_token_credentials()?)
+                }
+                BucketLocation::File { .. } => None,
+            },
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(20))
                 .build()?,
-            authority_bucket,
-            state_buckets,
+            location,
             fleet,
             replicas,
             count,
@@ -85,8 +93,7 @@ impl RuntimeAccess {
             self.fleet.ensure(&actor, region, self.count)
         )?;
         Ok(serde_json::to_string(&HostStorageConfig {
-            authority_bucket: self.authority_bucket.clone(),
-            state_buckets: self.state_buckets.clone(),
+            bucket: self.location.clone(),
             region: region.into(),
             replica_secret: self.replicas.delegate_secret(namespace)?,
             replicas,
@@ -95,22 +102,34 @@ impl RuntimeAccess {
         })?)
     }
 
-    pub async fn issue(&self, namespace: &str) -> Result<StorageToken> {
+    pub async fn issue(&self, namespace: &str) -> Result<Option<StorageToken>> {
+        if matches!(self.location, BucketLocation::File { .. }) {
+            return Ok(None);
+        }
         if let Some(token) = self.tokens.get(namespace).await {
             if token.expires_at_ms > SystemClock.now_ms()? + 60_000 {
-                return Ok(token);
+                return Ok(Some(token));
             }
             self.tokens.invalidate(namespace).await;
         }
         self.tokens
             .try_get_with(namespace.to_owned(), self.exchange(namespace))
             .await
+            .map(Some)
             .map_err(|error| anyhow::anyhow!("{error:#}"))
     }
 
     async fn exchange(&self, namespace: &str) -> Result<StorageToken> {
-        let boundary = boundary(&self.authority_bucket, &self.state_buckets, namespace)?;
-        let source = self.credentials.access_token().await?;
+        let BucketLocation::Gcs { bucket } = &self.location else {
+            anyhow::bail!("local buckets do not need credentials")
+        };
+        let boundary = boundary(bucket, namespace)?;
+        let source = self
+            .credentials
+            .as_ref()
+            .context("GCS credentials missing")?
+            .access_token()
+            .await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
             (
@@ -157,36 +176,16 @@ impl RuntimeAccess {
     }
 }
 
-fn boundary(authority: &str, states: &HashMap<String, String>, namespace: &str) -> Result<Value> {
+fn boundary(bucket: &str, namespace: &str) -> Result<Value> {
     crate::actor::ActorScope {
         namespace_id: namespace.into(),
     }
     .validate()?;
-    let namespace_key = super::component(namespace);
-    let mut rules = vec![rule(
-        authority,
-        &[
-            format!("runtime/owners/{namespace_key}/"),
-            format!("runtime/hosts/{namespace_key}/"),
-            format!("runtime/sessions/{namespace_key}/"),
-        ],
-        &["storage.objectUser"],
-    )];
-    let mut buckets: Vec<_> = states.values().collect();
-    buckets.sort();
-    buckets.dedup();
-    for bucket in buckets {
-        rules.push(rule(
-            bucket,
-            &[format!("snapshots/{namespace}/")],
-            &["storage.objectViewer", "storage.objectCreator"],
-        ));
-    }
-    ensure!(
-        rules.len() <= 10,
-        "GCS credential boundary exceeds ten buckets"
-    );
-    Ok(json!({"accessBoundary": {"accessBoundaryRules": rules}}))
+    let prefix = crate::storage_paths::namespace(namespace);
+    Ok(json!({"accessBoundary": {"accessBoundaryRules": [
+        rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"]),
+        rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])
+    ]}}))
 }
 
 fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
@@ -202,21 +201,18 @@ fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
 mod tests {
     use super::*;
     #[test]
-    fn boundary_scopes_coordination_and_immutable_snapshots() -> Result<()> {
-        let rules = boundary(
-            "authority",
-            &HashMap::from([("us-east".into(), "states".into())]),
-            "project.a",
-        )?;
-        let rules = rules["accessBoundary"]["accessBoundaryRules"]
+    fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {
+        let boundary = boundary("actors", "project.a")?;
+        let rules = boundary["accessBoundary"]["accessBoundaryRules"]
             .as_array()
             .unwrap();
         assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["availableResource"], rules[1]["availableResource"]);
         assert!(
             rules[0]["availabilityCondition"]["expression"]
                 .as_str()
                 .unwrap()
-                .contains("runtime/owners/cHJvamVjdC5h/")
+                .contains("little-actors/v1/namespaces/cHJvamVjdC5h/owners/")
         );
         assert_eq!(
             rules[1]["availablePermissions"],
@@ -229,9 +225,9 @@ mod tests {
             rules[1]["availabilityCondition"]["expression"]
                 .as_str()
                 .unwrap()
-                .contains(".startsWith('snapshots/project.a/')")
+                .contains("little-actors/v1/namespaces/cHJvamVjdC5h/snapshots/")
         );
-        assert!(boundary("authority", &HashMap::new(), "../escape").is_err());
+        assert!(super::boundary("actors", "../escape").is_err());
         Ok(())
     }
 }

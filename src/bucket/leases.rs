@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use super::{Bucket, component, replace};
+use super::{Bucket, replace};
 
 pub struct BucketHostLeases {
     bucket: Arc<dyn Bucket>,
@@ -136,14 +136,5 @@ impl HostLeaseStore for BucketHostLeases {
 }
 
 fn key(id: &HostId) -> String {
-    format!(
-        "runtime/hosts/{}/{}.json",
-        component(
-            id.as_str()
-                .strip_prefix("host.v2.")
-                .and_then(|id| id.split_once(':').map(|(namespace, _)| namespace))
-                .unwrap_or("")
-        ),
-        component(id.as_str())
-    )
+    format!("{}lease.json", crate::storage_paths::host(id))
 }
