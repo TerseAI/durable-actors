@@ -11,7 +11,7 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses version `0.1.27`. Its container includes the Rust runtime and Go provider; neither compiler is required.
+The commands below show the published `0.1.27` image layout. For bucket authority, substitute an image built from this source tree; both control-plane and actor images must contain the new runtime. Published older runtimes use the previous PostgreSQL authority.
 
 ## 1. Configure storage and credentials
 
@@ -22,6 +22,7 @@ DURABLE_OBJECT_PROCESS_ROLE=control_plane
 DURABLE_OBJECT_CONTROL_PLANE_BIND=0.0.0.0:7100
 DURABLE_OBJECT_CONTROL_PLANE_URL=https://objects.example.com
 DURABLE_OBJECT_POSTGRES_URL=postgresql://USER:PASSWORD@DB_HOST/durable_objects?sslmode=require
+DURABLE_OBJECT_COORDINATION_BUCKET=my-actor-state-bucket
 DURABLE_OBJECT_STANDARD_BUCKETS={"north-america-east":"my-actor-state-bucket"}
 GOOGLE_APPLICATION_CREDENTIALS=/credentials/gcs.json
 DURABLE_OBJECT_SANDBOX_PROVIDER=modal
@@ -33,11 +34,11 @@ DURABLE_OBJECT_API_KEY=YOUR_ADMIN_API_KEY
 
 Replace the placeholders and keep this file out of source control.
 
-PostgreSQL must be reachable from the container. Use your provider's TLS settings; the database user needs permission to run automatic migrations. `localhost` refers to the container.
+PostgreSQL must be reachable for administrative changes; the hosted runtime can start and serve existing deployments while PostgreSQL is unavailable. Use your provider's TLS settings; the database user needs permission to run automatic migrations. `localhost` refers to the container.
 
-`north-america-east` maps to Modal's `us-east`. Enter a nearby bucket's name without `gs://`. GCS holds snapshots; PostgreSQL records which are committed. Back up the database and retain referenced snapshots.
+`north-america-east` maps to Modal's `us-east`. Enter a nearby bucket's name without `gs://`. GCS holds snapshots, ownership, host leases, and published runtime configuration. PostgreSQL retains administrative deployment records. Back up the database and retain runtime bucket metadata and referenced snapshots.
 
-The Google service account needs object read/create permissions. Hosts access snapshots through [signed URLs](https://docs.cloud.google.com/storage/docs/access-control/signed-urls). On Google Cloud, an attached service account can replace the key file; enable the IAM Service Account Credentials API and grant the signing identity `iam.serviceAccounts.signBlob`.
+The Google service account needs object read, list, create, and replace permissions. Hosts use scoped capabilities through the control plane and replica hosts. On Google Cloud, an attached service account can replace the key file. See [bucket authority and replica snapshots](replication.md) for lease clock requirements and recovery behavior.
 
 Use Modal credentials from the workspace that owns your actor image.
 
@@ -189,7 +190,7 @@ npx little-actors dev --storage gcs --data-dir .gcs-demo
 
 Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
-Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
+Changing backends or buckets requires a separate state directory; existing actors are not migrated. Local development references remain in SQLite, so losing that file loses access to those local actors. The hosted runtime uses bucket authority instead.
 
 ## WebSocket configuration
 
@@ -209,7 +210,11 @@ These environment variables configure the hosted server, including [`start`](../
 
 **Required.**
 
-PostgreSQL connection URL.
+PostgreSQL connection URL for administrative deployment data.
+
+### `DURABLE_OBJECT_COORDINATION_BUCKET`
+
+**Required for hosted servers.** Bucket containing actor ownership, host leases, and published runtime configuration. It may also be a snapshot bucket. All control-plane instances must use the same value.
 
 ### `DURABLE_OBJECT_STANDARD_BUCKETS`
 

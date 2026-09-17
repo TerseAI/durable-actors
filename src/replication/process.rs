@@ -5,14 +5,14 @@ use tokio::{fs, net::TcpListener};
 
 use crate::clock::SystemClock;
 
-use super::{DEFAULT_SPOOL_BYTES, ReplicaAccess, ReplicaStore, replica_router, start_archiver};
+use super::{DEFAULT_SPOOL_BYTES, FileReplicaStore, ReplicaAccess, replica_router, start_archiver};
 
 pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let host_id = env::var("DURABLE_OBJECT_HOST_ID").context("replica host ID is required")?;
     let secret = env::var("DURABLE_OBJECT_REPLICA_SECRET").context("replica secret is required")?;
     let path = env::var("DURABLE_OBJECT_REPLICA_DATA")
-        .unwrap_or_else(|_| "/tmp/durable-object-replica/state.db".into());
-    let store = Arc::new(ReplicaStore::open(PathBuf::from(path), DEFAULT_SPOOL_BYTES).await?);
+        .unwrap_or_else(|_| "/tmp/durable-object-replica".into());
+    let store = Arc::new(FileReplicaStore::open(PathBuf::from(path), DEFAULT_SPOOL_BYTES).await?);
     let listener = TcpListener::bind(
         env::var("DURABLE_OBJECT_HOST_BIND").unwrap_or_else(|_| "127.0.0.1:7101".into()),
     )

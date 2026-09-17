@@ -1,9 +1,9 @@
-mod access;
+pub(crate) mod access;
 mod archive;
-mod coordinator;
 mod process;
 mod server;
 mod store;
+mod stream;
 mod transport;
 
 use std::collections::HashSet;
@@ -13,14 +13,28 @@ use serde::{Deserialize, Serialize};
 
 pub use access::{ReplicaAccess, ReplicaGrant};
 pub use archive::{ArchiveTicket, archive_pending, start_archiver};
-pub use coordinator::{ReplicaCatalog, ReplicaCoordinator, ReplicaManifest, ReplicaProvisioner};
 pub use process::serve_replica_host;
 pub use server::replica_router;
-pub use store::ReplicaStore;
+pub use store::{FileReplicaStore, PendingSnapshot, ReplicaStore};
+pub use stream::{ReplicaStream, SnapshotRef, StreamHead};
 pub use transport::ReplicatedStateTransport;
 
 pub const MAX_REPLICAS: usize = 8;
 pub const DEFAULT_SPOOL_BYTES: u64 = 1024 * 1024 * 1024;
+
+#[async_trait::async_trait]
+pub trait ReplicaProvisioner: Send + Sync {
+    fn replica_regions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn ensure(
+        &self,
+        actor: &crate::actor::ActorKey,
+        region: &str,
+        count: usize,
+    ) -> Result<Vec<ReplicaTarget>>;
+}
 
 pub fn replica_count(get: &mut impl FnMut(&str) -> Option<String>) -> Result<usize> {
     let mode = get("DURABLE_OBJECT_DURABILITY").unwrap_or_else(|| "object_storage".into());
@@ -131,7 +145,7 @@ pub struct ReplicationTicket {
 }
 
 impl ReplicationTicket {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             (1..=MAX_REPLICAS).contains(&self.required_replicas),
             "invalid replica count"

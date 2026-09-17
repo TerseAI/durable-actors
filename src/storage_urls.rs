@@ -19,6 +19,8 @@ pub const STATE_CONTENT_TYPE: &str = "application/json";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateWriteTicket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<crate::replication::ReplicaStream>,
     pub state_version: u64,
     pub object_name: String,
     pub url: String,
@@ -29,6 +31,9 @@ pub struct StateWriteTicket {
 
 #[async_trait]
 pub trait StorageUrlSigner: Send + Sync {
+    fn uses_epoch_streams(&self) -> bool {
+        false
+    }
     fn durability(&self) -> crate::replication::DurabilityPolicy {
         crate::replication::DurabilityPolicy::new(0)
     }
@@ -103,6 +108,7 @@ impl StorageUrlSigner for GcsStorageUrlSigner {
             .context("signed state-write URL expiration overflow")?;
         let url = self.archive_write_url(region, &object_name).await?;
         Ok(StateWriteTicket {
+            stream: None,
             replication: None,
             state_version,
             object_name,

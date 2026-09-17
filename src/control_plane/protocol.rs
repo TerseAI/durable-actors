@@ -12,6 +12,11 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
+    LoadActorState {
+        actor: ActorKey,
+        host_id: HostId,
+        owner_epoch: u64,
+    },
     RegisterLease {
         request: HostLeaseRequest,
     },
@@ -37,6 +42,10 @@ pub(crate) enum ControlPlaneCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommandReply {
+    ActorState {
+        state_version: u64,
+        state_read_url: String,
+    },
     Unit,
     Lease {
         lease: HostLease,

@@ -1,6 +1,6 @@
 use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
+    sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -34,9 +34,32 @@ pub struct ControlPlaneClient {
     authorization: Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>,
     socket_gateway: String,
     http: reqwest::Client,
+    lease_fence: Arc<Mutex<LeaseFence>>,
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn load_actor_state(
+        &self,
+        actor: &ActorKey,
+        host_id: &HostId,
+        owner_epoch: u64,
+    ) -> Result<(u64, String)> {
+        match self
+            .execute(ControlPlaneCommand::LoadActorState {
+                actor: actor.clone(),
+                host_id: host_id.clone(),
+                owner_epoch,
+            })
+            .await?
+        {
+            ControlPlaneCommandReply::ActorState {
+                state_version,
+                state_read_url,
+            } => Ok((state_version, state_read_url)),
+            reply => anyhow::bail!("unexpected load-actor-state reply: {reply:?}"),
+        }
+    }
+
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
         let endpoint = endpoint.into();
         let channel = Endpoint::new(endpoint.clone())
@@ -47,6 +70,7 @@ impl ControlPlaneClient {
             .await
             .context("connect to actor control plane")?;
         Ok(Self {
+            lease_fence: Arc::new(Mutex::new(LeaseFence::default())),
             socket_gateway: endpoint,
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -62,6 +86,13 @@ impl ControlPlaneClient {
     pub(crate) fn with_socket_gateway(mut self, endpoint: &str) -> Self {
         self.socket_gateway = endpoint.to_owned();
         self
+    }
+
+    pub(crate) fn ensure_live_lease(&self) -> Result<()> {
+        self.lease_fence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
+            .check(Instant::now())
     }
 
     pub async fn prepare_state_write(
@@ -150,6 +181,11 @@ impl ActorSocketPublisher for ControlPlaneClient {
 #[async_trait]
 impl HostLeaseRegistry for ControlPlaneClient {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        let started = Instant::now();
+        self.lease_fence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
+            .begin(started)?;
         match self
             .execute(ControlPlaneCommand::RegisterLease {
                 request: request.clone(),
@@ -160,6 +196,18 @@ impl HostLeaseRegistry for ControlPlaneClient {
                 lease,
                 replacement_token,
             } => {
+                ensure!(
+                    lease.id == request.id && lease.session_id == request.session_id,
+                    "lease reply has another identity"
+                );
+                self.lease_fence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
+                    .confirm(
+                        started,
+                        Duration::from_millis(request.duration_ms),
+                        Instant::now(),
+                    )?;
                 if let Some(token) = replacement_token {
                     self.replace_token(&token)?;
                 }
@@ -170,6 +218,10 @@ impl HostLeaseRegistry for ControlPlaneClient {
     }
 
     async fn unregister(&self, id: &HostId, _session_id: &str) -> Result<()> {
+        self.lease_fence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
+            .fenced = true;
         match self
             .execute(ControlPlaneCommand::UnregisterLease {
                 host_id: id.clone(),
@@ -179,6 +231,46 @@ impl HostLeaseRegistry for ControlPlaneClient {
             ControlPlaneCommandReply::Unit => Ok(()),
             reply => anyhow::bail!("unexpected unregister-lease reply: {reply:?}"),
         }
+    }
+}
+
+#[derive(Default)]
+struct LeaseFence {
+    deadline: Option<Instant>,
+    fenced: bool,
+}
+
+impl LeaseFence {
+    fn begin(&mut self, now: Instant) -> Result<()> {
+        if self.deadline.is_some() {
+            self.check(now)?;
+        }
+        ensure!(!self.fenced, "host session is permanently fenced");
+        Ok(())
+    }
+
+    fn confirm(&mut self, started: Instant, duration: Duration, now: Instant) -> Result<()> {
+        self.begin(now)?;
+        let window = duration.saturating_sub(Duration::from_secs(5));
+        let deadline = started + window;
+        if deadline <= now {
+            self.fenced = true;
+        }
+        ensure!(
+            !self.fenced,
+            "host lease response arrived after the safe lease window"
+        );
+        self.deadline = Some(deadline);
+        Ok(())
+    }
+
+    fn check(&mut self, now: Instant) -> Result<()> {
+        let deadline = self.deadline.context("host lease is not confirmed yet")?;
+        if deadline <= now {
+            self.fenced = true;
+        }
+        ensure!(!self.fenced, "host session has no confirmed live lease");
+        Ok(())
     }
 }
 
@@ -247,4 +339,54 @@ fn bearer_authorization(token: &str) -> Result<MetadataValue<tonic::metadata::As
     format!("Bearer {token}")
         .parse()
         .context("actor token is not valid gRPC metadata")
+}
+
+#[cfg(test)]
+mod lease_fence_tests {
+    use super::*;
+
+    #[test]
+    fn an_early_request_does_not_prevent_initial_lease_confirmation() -> Result<()> {
+        let now = Instant::now();
+        let mut fence = LeaseFence::default();
+        assert!(fence.check(now).is_err());
+        fence.confirm(now, Duration::from_secs(30), now + Duration::from_secs(1))?;
+        fence.check(now + Duration::from_secs(2))
+    }
+
+    #[test]
+    fn slow_renewal_cannot_revive_an_expired_process() -> Result<()> {
+        let start = Instant::now();
+        let mut fence = LeaseFence::default();
+        fence.confirm(
+            start,
+            Duration::from_secs(30),
+            start + Duration::from_secs(1),
+        )?;
+        fence.check(start + Duration::from_secs(24))?;
+        assert!(
+            fence
+                .confirm(
+                    start + Duration::from_secs(20),
+                    Duration::from_secs(30),
+                    start + Duration::from_secs(26)
+                )
+                .is_err()
+        );
+        assert!(fence.begin(start + Duration::from_secs(27)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn response_gate_expires_from_request_start_even_without_a_timer() -> Result<()> {
+        let start = Instant::now();
+        let mut fence = LeaseFence::default();
+        fence.confirm(
+            start,
+            Duration::from_secs(30),
+            start + Duration::from_secs(10),
+        )?;
+        assert!(fence.check(start + Duration::from_secs(25)).is_err());
+        Ok(())
+    }
 }

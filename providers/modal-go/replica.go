@@ -37,7 +37,7 @@ func (p *provider) ensureReplica(ctx context.Context, r replicaRequest) (hostHan
 		"DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE": routeFile,
 		"DURABLE_OBJECT_HOST_METADATA_FILE":     metadataFile,
 		"DURABLE_OBJECT_HOST_READY_FILE":        readyFile,
-		"DURABLE_OBJECT_REPLICA_DATA":           "/tmp/durable-object-replica/state.db",
+		"DURABLE_OBJECT_REPLICA_DATA":           "/tmp/durable-object-replica",
 	}
 	return p.ensureSandbox(ctx, request, params)
 }

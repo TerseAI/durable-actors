@@ -15,7 +15,7 @@ pub struct ArchiveTicket {
     pub read_url: String,
 }
 
-pub fn start_archiver(store: Arc<ReplicaStore>) -> CancellationToken {
+pub fn start_archiver(store: Arc<dyn ReplicaStore>) -> CancellationToken {
     let stop = CancellationToken::new();
     let cancelled = stop.clone();
     tokio::spawn(async move {
@@ -28,7 +28,7 @@ pub fn start_archiver(store: Arc<ReplicaStore>) -> CancellationToken {
                 _ = interval.tick() => {
                     let result = tokio::select! {
                         _ = cancelled.cancelled() => break,
-                        result = archive_batch(&store, &http, &transport) => result,
+                        result = archive_batch(store.as_ref(), &http, &transport) => result,
                     };
                     if let Err(error) = result {
                         tracing::warn!(event = "replica_archive_failed", error = %error);
@@ -40,7 +40,7 @@ pub fn start_archiver(store: Arc<ReplicaStore>) -> CancellationToken {
     stop
 }
 
-pub async fn archive_pending(store: &ReplicaStore) -> Result<()> {
+pub async fn archive_pending(store: &dyn ReplicaStore) -> Result<()> {
     archive_batch(store, &archive_client(), &HttpStateTransport::new()).await
 }
 
@@ -53,7 +53,7 @@ fn archive_client() -> reqwest::Client {
 }
 
 async fn archive_batch(
-    store: &ReplicaStore,
+    store: &dyn ReplicaStore,
     http: &reqwest::Client,
     transport: &dyn StateTransport,
 ) -> Result<()> {
@@ -81,6 +81,7 @@ async fn archive_snapshot(
 ) -> Result<()> {
     let ticket: ArchiveTicket = http
         .get(&snapshot.archive_url)
+        .query(&[("object", &snapshot.object)])
         .send()
         .await?
         .error_for_status()?

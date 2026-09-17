@@ -16,6 +16,8 @@ pub struct ReplicaAccess {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplicaGrant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<super::ReplicaStream>,
     pub operation: String,
     pub object: String,
     pub region: String,
@@ -73,4 +75,5 @@ impl ReplicaAccess {
 #[derive(Deserialize)]
 pub(crate) struct AccessQuery {
     pub token: String,
+    pub object: Option<String>,
 }

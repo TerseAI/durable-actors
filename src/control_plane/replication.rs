@@ -10,27 +10,18 @@ use tokio::task::JoinSet;
 use crate::{
     actor::ActorKey,
     clock::SystemClock,
-    postgres::PostgresDatabase,
-    replication::{
-        ReplicaAccess, ReplicaCatalog, ReplicaCoordinator, ReplicaManifest, ReplicaProvisioner,
-        ReplicaTarget,
-    },
+    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaTarget},
     sandbox::{CommandSandboxProvider, EnsureReplicaRequest},
-    state_transport::HttpStateTransport,
-    storage_urls::StorageUrlSigner,
 };
 
 use super::{admin::AdminRegistry, process::SandboxProviderConfig};
 
-pub(super) fn coordinator(
-    bucket: Arc<dyn StorageUrlSigner>,
-    database: PostgresDatabase,
+pub(super) fn fleet(
     registry: Arc<dyn AdminRegistry>,
     config: &SandboxProviderConfig,
     signing_key: &str,
-    count: usize,
     replica_regions: Vec<String>,
-) -> Result<Arc<ReplicaCoordinator>> {
+) -> Result<(Arc<dyn ReplicaProvisioner>, ReplicaAccess)> {
     let origin = config.runtime.control_plane_url.clone();
     let secret = URL_SAFE_NO_PAD.encode(
         hmac::sign(
@@ -57,37 +48,10 @@ pub(super) fn coordinator(
             .time_to_live(Duration::from_secs(30))
             .build(),
     };
-    Ok(Arc::new(ReplicaCoordinator::new(
-        bucket,
-        Arc::new(PostgresReplicaCatalog(database)),
+    Ok((
         Arc::new(fleet),
-        Arc::new(HttpStateTransport::new()),
         ReplicaAccess::new(&secret, Arc::new(SystemClock)),
-        origin,
-        count,
-    )?))
-}
-
-struct PostgresReplicaCatalog(PostgresDatabase);
-
-#[async_trait]
-impl ReplicaCatalog for PostgresReplicaCatalog {
-    async fn record(&self, object: &str, manifest: &ReplicaManifest) -> Result<()> {
-        let document = serde_json::to_string(manifest)?;
-        self.0.execute("INSERT INTO durable_object_snapshot_replicas (object_name, manifest) VALUES ($1, $2) ON CONFLICT (object_name) DO NOTHING", &[&object, &document]).await?;
-        Ok(())
-    }
-
-    async fn get(&self, object: &str) -> Result<Option<ReplicaManifest>> {
-        self.0
-            .query_opt(
-                "SELECT manifest FROM durable_object_snapshot_replicas WHERE object_name = $1",
-                &[&object],
-            )
-            .await?
-            .map(|row| serde_json::from_str(&row.get::<_, String>(0)).map_err(Into::into))
-            .transpose()
-    }
+    ))
 }
 
 struct ModalReplicaFleet {
@@ -136,7 +100,11 @@ impl ModalReplicaFleet {
         let mut pending = JoinSet::new();
         for (slot, destination) in destinations.into_iter().enumerate() {
             let request = EnsureReplicaRequest {
-                installation_id: format!("{}:{}", self.installation, env!("CARGO_PKG_VERSION")),
+                installation_id: format!(
+                    "{}:{}:epochs-v1",
+                    self.installation,
+                    env!("CARGO_PKG_VERSION")
+                ),
                 slot,
                 canonical_region: destination.clone(),
                 image_ref: spec.image_ref.clone(),
@@ -161,43 +129,5 @@ impl ModalReplicaFleet {
         }
         peers.sort_by(|a, b| a.host_id.cmp(&b.host_id));
         Ok(peers)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn snapshot_replica_manifest_survives_reconnecting_to_postgres() -> Result<()> {
-        let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
-            return Ok(());
-        };
-        let database = PostgresDatabase::connect(&url).await?;
-        let catalog = PostgresReplicaCatalog(database.clone());
-        let object = format!("snapshots/{}", uuid::Uuid::new_v4());
-        let manifest = ReplicaManifest {
-            region: "us-east".into(),
-            replicas: vec![ReplicaTarget {
-                host_id: "old-host".into(),
-                region: String::new(),
-                url: "https://old-host.example".into(),
-            }],
-        };
-        catalog.record(&object, &manifest).await?;
-        let reopened = PostgresReplicaCatalog(PostgresDatabase::connect(&url).await?);
-        let recovered = reopened
-            .get(&object)
-            .await?
-            .context("replica manifest was lost")?;
-        assert_eq!(recovered.region, manifest.region);
-        assert_eq!(recovered.replicas, manifest.replicas);
-        database
-            .execute(
-                "DELETE FROM durable_object_snapshot_replicas WHERE object_name = $1",
-                &[&object],
-            )
-            .await?;
-        Ok(())
     }
 }

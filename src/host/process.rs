@@ -296,10 +296,10 @@ async fn prepare_actor_host(
         .await?;
     let control_plane = Arc::new(control_plane.with_socket_gateway(&config.socket_gateway_url));
     let local = Arc::new(
-        crate::replication::ReplicaStore::open(
+        crate::replication::FileReplicaStore::open(
             std::env::temp_dir()
                 .join(format!("little-actors-{}", config.host_id))
-                .join("state.db"),
+                .join("snapshots"),
             crate::replication::DEFAULT_SPOOL_BYTES,
         )
         .await?,

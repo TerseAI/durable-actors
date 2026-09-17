@@ -511,6 +511,14 @@ impl ControlPlaneService {
             "only hosts may use the internal control-plane API"
         );
         match command {
+            ControlPlaneCommand::LoadActorState {
+                actor,
+                host_id,
+                owner_epoch,
+            } => {
+                self.load_actor_state(principal, actor, host_id, owner_epoch)
+                    .await
+            }
             ControlPlaneCommand::RegisterLease { request } => {
                 self.register_lease(principal, request).await
             }
@@ -583,8 +591,12 @@ impl ControlPlaneService {
             principal.scope.contains(actor),
             "actor crossed the host namespace"
         );
-        self.require_active_host(principal).await?;
+        let lease = self.require_active_host(principal).await?;
         let placement = self.current_placement(actor).await?;
+        ensure!(
+            self.placements.matches_lease(&placement, &lease).await?,
+            "actor ownership belongs to another session"
+        );
         validate_state_owner(
             principal,
             &principal.host_id,
@@ -637,17 +649,65 @@ impl ControlPlaneService {
             "actor crossed the host namespace"
         );
         principal.validate_host_id(host_id.as_str())?;
-        self.require_active_host(principal).await?;
+        let lease = self.require_active_host(principal).await?;
         let placement = self.current_placement(&actor).await?;
+        ensure!(
+            self.placements.matches_lease(&placement, &lease).await?,
+            "actor ownership belongs to another session"
+        );
         validate_state_owner(principal, &host_id, owner_epoch, &placement)?;
         ensure!(
-            placement.state_version == expected_version,
+            self.storage_urls.uses_epoch_streams() || placement.state_version == expected_version,
             "actor state version changed before write preparation"
         );
-        Ok(ControlPlaneCommandReply::StateWriteTicket {
-            ticket: self
-                .state_write_ticket(&placement.home_region, &actor, expected_version)
-                .await?,
+        let ticket = self
+            .state_write_ticket(&placement.home_region, &actor, expected_version)
+            .await?;
+        ensure!(
+            ticket
+                .stream
+                .as_ref()
+                .is_none_or(|stream| stream.owner_epoch == owner_epoch),
+            "owner changed during write preparation"
+        );
+        Ok(ControlPlaneCommandReply::StateWriteTicket { ticket })
+    }
+
+    async fn load_actor_state(
+        &self,
+        principal: &ActorPrincipal,
+        actor: ActorKey,
+        host_id: HostId,
+        owner_epoch: u64,
+    ) -> Result<ControlPlaneCommandReply> {
+        actor.validate()?;
+        ensure!(
+            principal.scope.contains(&actor),
+            "actor crossed the host namespace"
+        );
+        principal.validate_host_id(host_id.as_str())?;
+        let lease = self.require_active_host(principal).await?;
+        let placement = self
+            .placements
+            .get(&actor.storage_key())
+            .await?
+            .context("actor ownership is missing")?;
+        validate_state_owner(principal, &host_id, owner_epoch, &placement)?;
+        ensure!(
+            self.placements.matches_lease(&placement, &lease).await?,
+            "actor ownership is recovering or belongs to another session"
+        );
+        let state_read_url = match &placement.state_object {
+            Some(object) => {
+                self.storage_urls
+                    .read_url(&placement.home_region, object)
+                    .await?
+            }
+            None => String::new(),
+        };
+        Ok(ControlPlaneCommandReply::ActorState {
+            state_version: placement.state_version,
+            state_read_url,
         })
     }
 
@@ -746,7 +806,7 @@ impl ControlPlaneService {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
         loop {
-            let current = self.placements.get(&actor.storage_key()).await?;
+            let current = self.placements.get_owner(&actor.storage_key()).await?;
             if let Some(timings) = timings.as_deref_mut() {
                 timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
             }
@@ -768,12 +828,16 @@ impl ControlPlaneService {
             }
             match self
                 .placements
-                .claim(&actor.storage_key(), current.as_ref(), &lease.id, &region)
+                .claim_actor(actor, current.as_ref(), &lease.id, &region)
                 .await?
             {
                 PlacementClaim::Acquired(placement) | PlacementClaim::Current(placement)
                     if placement.owner == lease.id =>
                 {
+                    ensure!(
+                        self.placements.matches_lease(&placement, &lease).await?,
+                        "actor ownership is recovering or belongs to another session"
+                    );
                     if let Some(timings) = timings.as_deref_mut() {
                         timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
                     }
@@ -857,7 +921,7 @@ impl ControlPlaneService {
 
     async fn current_placement(&self, actor: &ActorKey) -> Result<ObjectPlacement> {
         self.placements
-            .get(&actor.storage_key())
+            .get_owner(&actor.storage_key())
             .await?
             .context("actor has no current placement")
     }
@@ -875,6 +939,16 @@ impl ControlPlaneService {
         }
         let status = self.leases.lease_status(&placement.owner).await?;
         if !status.is_active() {
+            return Ok(None);
+        }
+        if !self
+            .placements
+            .matches_lease(
+                placement,
+                status.lease.as_ref().context("active lease is missing")?,
+            )
+            .await?
+        {
             return Ok(None);
         }
         Ok(Some(RoutedActor {
@@ -1262,6 +1336,7 @@ mod tests {
             state_version: u64,
         ) -> Result<StateWriteTicket> {
             Ok(StateWriteTicket {
+                stream: None,
                 replication: None,
                 state_version,
                 object_name: format!(

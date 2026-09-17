@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod actor_state;
+pub mod bucket;
 pub mod clock;
 pub mod control_plane;
 mod grpc;

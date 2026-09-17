@@ -4,11 +4,12 @@ use anyhow::{Context, Result, ensure};
 use tracing::info;
 
 use crate::{
-    host_leases::PostgresHostLeaseStore,
-    placement::PostgresObjectPlacementStore,
+    bucket::{Bucket, BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage},
+    clock::SystemClock,
+    host_leases::HostLeaseStore,
     postgres::PostgresDatabase,
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
-    storage_urls::{GcsStorageUrlSigner, validate_buckets},
+    storage_urls::validate_buckets,
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -37,6 +38,7 @@ pub struct ControlPlaneProcessConfig {
 
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
+    pub coordination_bucket: String,
     pub standard_buckets: HashMap<String, String>,
     pub replica_count: usize,
     pub replica_regions: Vec<String>,
@@ -99,25 +101,40 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         super::ActorTokenPurpose::ControlPlane,
         config.jwt_max_lifetime,
     )?;
-    let database = PostgresDatabase::connect(&config.storage.postgres_url).await?;
-    let leases = Arc::new(PostgresHostLeaseStore::from_database(database.clone()));
-    let placements = Arc::new(PostgresObjectPlacementStore::from_database(
-        database.clone(),
+    let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
+    let authority = Arc::new(GcsBucket::new(&config.storage.coordination_bucket).await?);
+    let leases: Arc<dyn HostLeaseStore> = Arc::new(BucketHostLeases::new(
+        authority.clone(),
+        Arc::new(SystemClock),
     ));
-    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
-        database.clone(),
+    let registry = Arc::new(super::runtime_registry::RuntimeRegistry::new(
+        Arc::new(super::PostgresAdminRegistry::from_database(database)),
+        authority.clone(),
     ));
-    let bucket_urls =
-        Arc::new(GcsStorageUrlSigner::from_adc(config.storage.standard_buckets).await?);
-    let storage_urls = super::replication::coordinator(
-        bucket_urls,
-        database,
+    let (fleet, access) = super::replication::fleet(
         registry.clone(),
         &config.sandbox_provider,
         &config.jwt_signing_key,
-        config.storage.replica_count,
         config.storage.replica_regions,
     )?;
+    let mut states = HashMap::new();
+    for (region, bucket) in config.storage.standard_buckets {
+        states.insert(
+            region,
+            Arc::new(GcsBucket::new(&bucket).await?) as Arc<dyn Bucket>,
+        );
+    }
+    let storage_urls = Arc::new(RuntimeStorage::new(
+        authority,
+        states,
+        leases.clone(),
+        fleet,
+        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        access,
+        config.sandbox_provider.runtime.control_plane_url.clone(),
+        config.storage.replica_count,
+    )?);
+    let placements = storage_urls.clone();
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
     let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
     let socket_events = config
@@ -137,7 +154,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         provisioner,
     )
     .with_socket_event_sink(socket_events);
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
+    let admin = super::admin::AdminService::new(config.api_key, registry.admin_view(), issuer)?
         .with_socket_origin(&socket_origin)?;
     let inspector = super::inspection::ActorInspector::new(
         placements,
@@ -154,7 +171,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
 fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
-    leases: &Arc<PostgresHostLeaseStore>,
+    leases: &Arc<dyn HostLeaseStore>,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(CommandSandboxProvider::new(
         config.provider_name,
@@ -208,6 +225,7 @@ impl ControlPlaneProcessConfig {
             replica_count,
             replica_regions: crate::replication::replica_regions(&mut get, replica_count)?,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
+            coordination_bucket: required(&mut get, "DURABLE_OBJECT_COORDINATION_BUCKET")?,
             standard_buckets,
         };
         let sandbox_provider =
@@ -372,6 +390,10 @@ mod tests {
         let values = HashMap::from([
             ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
             ("DURABLE_OBJECT_API_KEY", "api-key"),
+            (
+                "DURABLE_OBJECT_COORDINATION_BUCKET",
+                "actor-coordination-test",
+            ),
             ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL",

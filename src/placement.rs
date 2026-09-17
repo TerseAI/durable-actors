@@ -43,6 +43,28 @@ pub enum StateCommit {
 
 #[async_trait]
 pub trait ObjectPlacementStore: Send + Sync {
+    async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
+        self.get(object).await
+    }
+    async fn claim_actor(
+        &self,
+        actor: &crate::actor::ActorKey,
+        expected: Option<&ObjectPlacement>,
+        owner: &HostId,
+        region: &str,
+    ) -> Result<PlacementClaim> {
+        self.claim(&actor.storage_key(), expected, owner, region)
+            .await
+    }
+
+    async fn matches_lease(
+        &self,
+        _placement: &ObjectPlacement,
+        _lease: &crate::host_leases::HostLease,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;
 
     async fn list_committed(

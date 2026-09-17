@@ -15,11 +15,11 @@ use super::{ReplicaStore, ReplicationTicket};
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
     http: Arc<dyn StateTransport>,
-    local: Arc<ReplicaStore>,
+    local: Arc<dyn ReplicaStore>,
 }
 
 impl ReplicatedStateTransport {
-    pub fn new(http: Arc<dyn StateTransport>, local: Arc<ReplicaStore>) -> Self {
+    pub fn new(http: Arc<dyn StateTransport>, local: Arc<dyn ReplicaStore>) -> Self {
         Self { http, local }
     }
 }

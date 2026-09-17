@@ -542,6 +542,14 @@ impl Stack {
                 .await?
                 .with_socket_gateway(&gateway),
         );
+        publisher
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: host_route.clone(),
+                duration_ms: 60_000,
+            })
+            .await?;
 
         let (child, connection) = start_worker(directory.path()).await?;
         connection.mark_ready(Some(publisher.clone())).await?;
@@ -736,7 +744,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     )?;
     std::fs::write(
         directory.join("tsconfig.json"),
-        r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true},"include":["actors.ts"]}"#,
+        r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true,"types":["node"],"typeRoots":["../node_modules/@types"]},"include":["actors.ts"]}"#,
     )?;
     let socket = directory.join("executor.sock");
     let listener = ActorExecutorListener::bind(&socket).await?;

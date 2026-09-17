@@ -918,6 +918,9 @@ mod tests {
 
     #[derive(Default)]
     struct FakeAuthority {
+        fenced: std::sync::atomic::AtomicBool,
+        streams: bool,
+        initial_state: Option<(u64, String)>,
         preparations: Mutex<Vec<u64>>,
         commits: Mutex<Vec<u64>>,
         commit_failures: AtomicUsize,
@@ -926,6 +929,18 @@ mod tests {
 
     #[async_trait]
     impl StateCommitAuthority for FakeAuthority {
+        fn ensure_authority(&self) -> Result<()> {
+            anyhow::ensure!(!self.fenced.load(Ordering::SeqCst), "host lease expired");
+            Ok(())
+        }
+        async fn load_actor_state(
+            &self,
+            _: &ActorKey,
+            _: &super::super::HostId,
+            _: u64,
+        ) -> Result<Option<(u64, String)>> {
+            Ok(self.initial_state.clone())
+        }
         async fn prepare_state_write(
             &self,
             _actor: &ActorKey,
@@ -934,7 +949,17 @@ mod tests {
             expected_version: u64,
         ) -> Result<StateWriteTicket> {
             self.preparations.lock().unwrap().push(expected_version);
-            Ok(ticket(expected_version + 1))
+            let mut ticket = ticket(expected_version + 1);
+            if self.streams {
+                let stream = crate::replication::ReplicaStream {
+                    prefix: "snapshots/epoch/".into(),
+                    owner_epoch: _owner_epoch,
+                    base_version: 0,
+                };
+                ticket.object_name = stream.object(ticket.state_version);
+                ticket.stream = Some(stream);
+            }
+            Ok(ticket)
         }
 
         async fn commit_state(
@@ -971,6 +996,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeStateTransport {
+        loaded: Option<Vec<u8>>,
+        failures: AtomicUsize,
         writes: Mutex<Vec<Vec<u8>>>,
         reads: AtomicUsize,
         replicated: bool,
@@ -980,6 +1007,9 @@ mod tests {
     impl StateTransport for FakeStateTransport {
         async fn read(&self, _signed_url: &str) -> Result<bytes::Bytes> {
             self.reads.fetch_add(1, Ordering::Relaxed);
+            if let Some(bytes) = &self.loaded {
+                return Ok(bytes.clone().into());
+            }
             anyhow::bail!("new actor should not read storage")
         }
 
@@ -997,12 +1027,144 @@ mod tests {
             ticket: &StateWriteTicket,
             bytes: Vec<u8>,
         ) -> Result<StateWrite> {
+            if self
+                .failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                self.writes.lock().unwrap().push(bytes);
+                anyhow::bail!("write response lost");
+            }
             if !self.replicated {
                 return self.write(&ticket.url, bytes).await;
             }
             self.writes.lock().unwrap().push(bytes);
             Ok(StateWrite::Replicated)
         }
+    }
+
+    #[tokio::test]
+    async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() -> Result<()> {
+        let authority = Arc::new(FakeAuthority {
+            streams: true,
+            initial_state: Some((8, "http://current-state".into())),
+            ..Default::default()
+        });
+        let snapshot =
+            StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
+        let state = Arc::new(FakeStateTransport {
+            loaded: Some(snapshot),
+            ..Default::default()
+        });
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            Arc::new(IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            }),
+            authority.clone(),
+            state.clone(),
+            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
+        );
+        assert_eq!(invoke(&host, "request-1").await?, completed(9));
+        assert_eq!(state.reads.load(Ordering::Relaxed), 1);
+        assert_eq!(*authority.preparations.lock().unwrap(), [8]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() -> Result<()> {
+        struct ExpiringExecutor(Arc<FakeAuthority>);
+        #[async_trait]
+        impl ActorExecutor for ExpiringExecutor {
+            fn supports(&self, _: &str) -> bool {
+                true
+            }
+            async fn invoke(
+                &self,
+                _: ActorMethodInvocation,
+                state: Option<&Value>,
+            ) -> Result<ActorMethodOutcome> {
+                self.0.fenced.store(true, Ordering::SeqCst);
+                Ok(ActorMethodOutcome::Completed {
+                    result: json!(8),
+                    state: state.unwrap().clone(),
+                    effects: vec![],
+                })
+            }
+        }
+        let authority = Arc::new(FakeAuthority {
+            initial_state: Some((8, "http://current-state".into())),
+            ..Default::default()
+        });
+        let snapshot =
+            StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
+        let state = Arc::new(FakeStateTransport {
+            loaded: Some(snapshot),
+            ..Default::default()
+        });
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            Arc::new(ExpiringExecutor(authority.clone())),
+            authority,
+            state.clone(),
+            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
+        );
+        assert!(invoke(&host, "request-1").await.is_err());
+        assert!(state.writes.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> Result<()> {
+        let authority = Arc::new(FakeAuthority {
+            streams: true,
+            ..Default::default()
+        });
+        let state = Arc::new(FakeStateTransport {
+            replicated: true,
+            failures: AtomicUsize::new(1),
+            ..Default::default()
+        });
+        let executor = Arc::new(IncrementingExecutor {
+            invocations: AtomicU64::new(0),
+        });
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            executor.clone(),
+            authority.clone(),
+            state.clone(),
+            Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
+        );
+        assert!(matches!(
+            invoke(&host, "request-1").await?,
+            ActorExecutionResult::Failed { .. }
+        ));
+        assert_eq!(invoke(&host, "request-1").await?, completed(1));
+        assert_eq!(invoke(&host, "request-2").await?, completed(2));
+        assert_eq!(executor.invocations.load(Ordering::Relaxed), 2);
+        assert!(authority.commits.lock().unwrap().is_empty());
+        assert_eq!(*authority.preparations.lock().unwrap(), [0]);
+        let writes = state.writes.lock().unwrap();
+        assert_eq!(writes[0], writes[1]);
+        assert_eq!(writes.len(), 3);
+        Ok(())
     }
 
     #[tokio::test]
@@ -1320,6 +1482,7 @@ mod tests {
 
     fn ticket(state_version: u64) -> StateWriteTicket {
         StateWriteTicket {
+            stream: None,
             replication: None,
             state_version,
             object_name: format!("snapshots/{state_version}.json"),
