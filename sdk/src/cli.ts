@@ -1,25 +1,17 @@
 #!/usr/bin/env node
-import { Command, InvalidArgumentError, Option } from "commander"
-import { spawn } from "node:child_process"
+import { Command, Option } from "commander"
 import { randomUUID } from "node:crypto"
-import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
 import { ControlPlaneClient } from "./cli/control-plane.js"
 import { registerDeployCommand } from "./cli/deploy.js"
+import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
+import { runtimeEnvironment, startRustRuntime } from "./cli/rust-runtime.js"
 import { configuredSettings } from "./client/clientSettings.js"
-import { runtimeExecutable } from "./runtimeInstaller.js"
-
-interface DevOptions {
-    port: number
-    project: string
-    entrypoint: string
-    storage: "local" | "gcs"
-    dataDir?: string
-}
+import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 try {
     const program = new Command()
@@ -38,21 +30,7 @@ try {
         .action(initializeProject)
     registerGenerateCommand(program)
     registerDeployCommand(program)
-    program
-        .command("dev")
-        .description("Start local actors with automatic SQLite and file storage")
-        .option("--project <directory>", "actor project directory", ".")
-        .option("--port <number>", "loopback port (0 selects a free port)", portNumber, 7100)
-        .option("--entrypoint <file>", "actor source file, relative to the project", "src/durable-objects.ts")
-        .option("--data-dir <directory>", "state directory (default: <project>/.little-actors)")
-        .addOption(
-            new Option("--storage <backend>", "where to save actor snapshots")
-                .choices(["local", "gcs"])
-                .default("local")
-        )
-        .action(async options => {
-            process.exitCode = await runDev(options)
-        })
+    registerDevCommand(program)
     program
         .command("token")
         .description("Print a one-hour local session token for tools such as wscat")
@@ -104,58 +82,9 @@ In another terminal, from the same directory:
 Open http://127.0.0.1:3000. The README walks through the app.`)
 }
 
-function portNumber(value: string): number {
-    const port = Number(value)
-    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(port) || port < 0 || port > 65535)
-        throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
-    return port
-}
-
-async function runDev(options: DevOptions): Promise<number> {
-    const { ActorCompiler } = await import("./compiler/actor-compiler.js")
-    const { parsePublicContract } = await import("./compiler/validate-public-contract.js")
-    const contract = parsePublicContract(
-        new ActorCompiler().compileContract(path.resolve(options.project, options.entrypoint))
-    )
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-contract-"))
-    try {
-        const file = path.join(directory, "contract.json")
-        await writeFile(file, JSON.stringify(contract))
-        return await runRuntime([...devArguments(options), "--contract", file])
-    } finally {
-        await rm(directory, { recursive: true, force: true })
-    }
-}
-
-function devArguments(options: DevOptions): string[] {
-    const args = [
-        "dev",
-        "--project",
-        options.project,
-        "--port",
-        String(options.port),
-        "--entrypoint",
-        options.entrypoint,
-        "--storage",
-        options.storage
-    ]
-    if (options.dataDir) args.push("--data-dir", options.dataDir)
-    return args
-}
-
 async function runRuntime(args: string[]): Promise<number> {
-    const executable = await runtimeExecutable()
-    return runProcess(
-        executable,
-        args,
-        {
-            ...process.env,
-            PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
-            DURABLE_OBJECT_PROCESS_ROLE: process.env.DURABLE_OBJECT_PROCESS_ROLE ?? "control_plane",
-            DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"
-        },
-        true
-    )
+    const executable = await fetchRuntimeExecutablePath()
+    return runProcess(executable, args, runtimeEnvironment(executable), true)
 }
 
 async function localSession(directory: string) {
@@ -184,30 +113,5 @@ async function version(): Promise<string> {
 }
 
 function runProcess(command: string, args: string[], env: NodeJS.ProcessEnv, parentLifetime = false): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { env, stdio: [parentLifetime ? "pipe" : "inherit", "inherit", "inherit"] })
-        const interrupt = () => child.kill("SIGINT")
-        const terminate = () => child.kill("SIGTERM")
-        const parentClosed = () => child.stdin?.end()
-        process.on("SIGINT", interrupt)
-        process.on("SIGTERM", terminate)
-        if (parentLifetime && process.env.DURABLE_OBJECT_PARENT_LIFETIME_STDIN) {
-            process.stdin.resume()
-            process.stdin.on("end", parentClosed)
-        }
-        const cleanup = () => {
-            process.off("SIGINT", interrupt)
-            process.off("SIGTERM", terminate)
-            process.stdin.off("end", parentClosed)
-            if (parentLifetime) process.stdin.pause()
-        }
-        child.once("error", error => {
-            cleanup()
-            reject(error)
-        })
-        child.once("exit", (code, signal) => {
-            cleanup()
-            resolve(code ?? (signal === "SIGINT" ? 130 : 1))
-        })
-    })
+    return startRustRuntime(command, args, env, parentLifetime).exited
 }
