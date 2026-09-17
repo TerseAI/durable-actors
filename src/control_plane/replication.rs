@@ -61,7 +61,7 @@ struct ModalReplicaFleet {
     origin: String,
     installation: String,
     replica_regions: Vec<String>,
-    cache: Cache<(String, usize), Vec<ReplicaTarget>>,
+    cache: Cache<String, Vec<ReplicaTarget>>,
 }
 
 #[async_trait]
@@ -70,26 +70,17 @@ impl ReplicaProvisioner for ModalReplicaFleet {
         self.replica_regions.clone()
     }
 
-    async fn ensure(
-        &self,
-        actor: &ActorKey,
-        region: &str,
-        count: usize,
-    ) -> Result<Vec<ReplicaTarget>> {
+    async fn ensure(&self, actor: &ActorKey, region: &str) -> Result<Vec<ReplicaTarget>> {
         self.cache
-            .try_get_with((region.into(), count), self.provision(actor, count))
+            .try_get_with(region.into(), self.provision(actor))
             .await
             .map_err(|error| anyhow::anyhow!("replica fleet unavailable: {error}"))
     }
 }
 
 impl ModalReplicaFleet {
-    async fn provision(&self, actor: &ActorKey, count: usize) -> Result<Vec<ReplicaTarget>> {
-        anyhow::ensure!(
-            count == self.replica_regions.len(),
-            "replica placement mismatch"
-        );
-        if count == 0 {
+    async fn provision(&self, actor: &ActorKey) -> Result<Vec<ReplicaTarget>> {
+        if self.replica_regions.is_empty() {
             return Ok(Vec::new());
         }
         let destinations = self.replica_regions.clone();

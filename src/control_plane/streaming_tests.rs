@@ -570,7 +570,6 @@ impl Stack {
                     region: "us-east".into(),
                     replica_secret: runtime.access.delegate_secret("project-1")?,
                     replicas: vec![],
-                    replica_count: 0,
                     token: None,
                 },
                 host_id.clone(),

@@ -28,7 +28,6 @@ async fn bucket_lists_snapshots_with_exact_namespace_filtering_and_pagination() 
         )?),
         access,
         "http://unused".into(),
-        0,
     )?;
     check_listing(&store, leases.as_ref()).await
 }
@@ -36,11 +35,14 @@ async fn bucket_lists_snapshots_with_exact_namespace_filtering_and_pagination() 
 struct EmptyFleet;
 #[async_trait::async_trait]
 impl little_actors::replication::ReplicaProvisioner for EmptyFleet {
+    fn replica_regions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn ensure(
         &self,
         _: &ActorKey,
         _: &str,
-        _: usize,
     ) -> Result<Vec<little_actors::replication::ReplicaTarget>> {
         Ok(vec![])
     }

@@ -74,7 +74,7 @@ impl SnapshotWriter for ReplicatedStateTransport {
             },
         };
         tracing::info!(event = "actor_durability", object = %ticket.object_name,
-            durability = "replication", replica_count = replication.required_replicas,
+            durability = "replication", replica_count = replication.replicas.len(),
             proof = match &outcome { Ok(StateWrite::Replicated) => "replicas", Ok(_) => "object_storage", Err(_) => "failed" },
             persistence_ms = started.elapsed().as_secs_f64() * 1000.0);
         outcome

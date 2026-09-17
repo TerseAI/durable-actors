@@ -38,7 +38,6 @@ pub struct ControlPlaneProcessConfig {
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub bucket: String,
-    pub replica_count: usize,
     pub replica_regions: Vec<String>,
 }
 
@@ -118,7 +117,6 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         },
         fleet.clone(),
         access.clone(),
-        config.storage.replica_count,
     )?);
     let storage = Arc::new(RuntimeStorage::new(
         authority,
@@ -127,7 +125,6 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         Arc::new(HttpReplicaPeers::new(access.clone())?),
         access,
         config.sandbox_provider.runtime.control_plane_url.clone(),
-        config.storage.replica_count,
     )?);
     let placements = storage.clone();
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
@@ -219,9 +216,7 @@ impl ControlPlaneProcessConfig {
         let bucket = required(&mut get, "DURABLE_OBJECT_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
         let replica_regions = crate::replication::replica_regions(&mut get)?;
-        let replica_count = replica_regions.len();
         let storage = ControlPlaneStorageConfig {
-            replica_count,
             replica_regions,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
             bucket,

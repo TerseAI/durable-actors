@@ -24,15 +24,12 @@ pub const DEFAULT_SPOOL_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[async_trait::async_trait]
 pub trait ReplicaProvisioner: Send + Sync {
-    fn replica_regions(&self) -> Vec<String> {
-        Vec::new()
-    }
+    fn replica_regions(&self) -> Vec<String>;
 
     async fn ensure(
         &self,
         actor: &crate::actor::ActorKey,
         region: &str,
-        count: usize,
     ) -> Result<Vec<ReplicaTarget>>;
 }
 
@@ -61,7 +58,8 @@ pub struct DurabilityPolicy {
 }
 
 impl DurabilityPolicy {
-    pub fn new(replica_count: usize) -> Self {
+    pub fn new(replica_regions: Vec<String>) -> Self {
+        let replica_count = replica_regions.len();
         Self {
             mode: if replica_count == 0 {
                 "object_storage"
@@ -71,7 +69,7 @@ impl DurabilityPolicy {
             .into(),
             replica_count,
             runtime_version: env!("CARGO_PKG_VERSION").into(),
-            replica_regions: Vec::new(),
+            replica_regions,
         }
     }
 }
@@ -79,25 +77,18 @@ impl DurabilityPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplicationTicket {
-    pub required_replicas: usize,
     pub replicas: Vec<ReplicaTarget>,
     pub archive_url: String,
 }
 
 impl ReplicationTicket {
     pub(crate) fn validate(&self) -> Result<()> {
-        ensure!(
-            (1..=MAX_REPLICAS).contains(&self.required_replicas),
-            "invalid replica count"
-        );
-        ensure!(
-            self.replicas.len() == self.required_replicas,
-            "incomplete replica set"
-        );
+        let count = self.replicas.len();
+        ensure!((1..=MAX_REPLICAS).contains(&count), "invalid replica count");
         let hosts: HashSet<_> = self.replicas.iter().map(|peer| &peer.host_id).collect();
         let urls: HashSet<_> = self.replicas.iter().map(|peer| &peer.url).collect();
         ensure!(
-            hosts.len() == self.required_replicas && urls.len() == self.required_replicas,
+            hosts.len() == count && urls.len() == count,
             "replica hosts must be distinct"
         );
         ensure!(
@@ -121,16 +112,14 @@ pub struct ReplicaTarget {
 pub(crate) struct ReplicaSet(pub Vec<ReplicaTarget>);
 #[async_trait::async_trait]
 impl ReplicaProvisioner for ReplicaSet {
-    async fn ensure(
-        &self,
-        _: &crate::actor::ActorKey,
-        _: &str,
-        count: usize,
-    ) -> Result<Vec<ReplicaTarget>> {
-        ensure!(
-            self.0.len() == count,
-            "replica membership does not match configuration"
-        );
+    fn replica_regions(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .map(|replica| replica.region.clone())
+            .collect()
+    }
+
+    async fn ensure(&self, _: &crate::actor::ActorKey, _: &str) -> Result<Vec<ReplicaTarget>> {
         Ok(self.0.clone())
     }
 }

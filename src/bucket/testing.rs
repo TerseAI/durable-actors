@@ -27,7 +27,6 @@ impl RuntimeFixture {
             Arc::new(HttpReplicaPeers::new(access.clone())?),
             access.clone(),
             "http://unused".into(),
-            0,
         )?);
         Ok(Self {
             directory,

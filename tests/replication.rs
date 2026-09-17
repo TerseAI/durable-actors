@@ -4,9 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use little_actors::{
-    replication::{
-        FileReplicaStore, ReplicaStore, ReplicaTarget, ReplicatedStateTransport, ReplicationTicket,
-    },
+    replication::{FileReplicaStore, ReplicaStore, ReplicatedStateTransport},
     state_transport::{SnapshotWriter, StateTransport, StateWrite},
     storage::WritePlan,
 };
@@ -279,22 +277,16 @@ fn ticket() -> WritePlan {
         state_version: 1,
         object_name: "snapshot".into(),
         expires_at_ms: i64::MAX,
-        replication: Some(ReplicationTicket {
-            required_replicas: 2,
-            archive_url: "archive".into(),
-            replicas: vec![
-                ReplicaTarget {
-                    region: String::new(),
-                    host_id: "one".into(),
-                    url: "first".into(),
-                },
-                ReplicaTarget {
-                    region: String::new(),
-                    host_id: "two".into(),
-                    url: "second".into(),
-                },
-            ],
-        }),
+        replication: Some(
+            serde_json::from_value(serde_json::json!({
+                "archiveUrl": "archive",
+                "replicas": [
+                    { "hostId": "one", "url": "first" },
+                    { "hostId": "two", "url": "second" }
+                ]
+            }))
+            .unwrap(),
+        ),
     }
 }
 

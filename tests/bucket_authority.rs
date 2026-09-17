@@ -30,7 +30,14 @@ use little_actors::{
 struct Fleet(Vec<ReplicaTarget>);
 #[async_trait]
 impl ReplicaProvisioner for Fleet {
-    async fn ensure(&self, _: &ActorKey, _: &str, _: usize) -> Result<Vec<ReplicaTarget>> {
+    fn replica_regions(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .map(|replica| replica.region.clone())
+            .collect()
+    }
+
+    async fn ensure(&self, _: &ActorKey, _: &str) -> Result<Vec<ReplicaTarget>> {
         Ok(self.0.clone())
     }
 }
@@ -112,7 +119,6 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         peers.clone(),
         ReplicaAccess::new("secret", clock.clone()),
         "http://control".into(),
-        2,
     )?;
     let actor = ActorKey {
         namespace_id: "project".into(),
@@ -194,7 +200,11 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
     struct UnavailableFleet(AtomicU64);
     #[async_trait]
     impl ReplicaProvisioner for UnavailableFleet {
-        async fn ensure(&self, _: &ActorKey, _: &str, _: usize) -> Result<Vec<ReplicaTarget>> {
+        fn replica_regions(&self) -> Vec<String> {
+            vec!["us-east".into()]
+        }
+
+        async fn ensure(&self, _: &ActorKey, _: &str) -> Result<Vec<ReplicaTarget>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             anyhow::bail!("replica provisioning must not block a cold read")
         }
@@ -217,7 +227,6 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
         }),
         ReplicaAccess::new("secret", clock),
         "http://control".into(),
-        1,
     )?;
     let actor = ActorKey {
         namespace_id: "project".into(),
@@ -426,7 +435,6 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         }),
         ReplicaAccess::new("secret", clock),
         "http://control".into(),
-        0,
     )?;
     let actor = ActorKey {
         namespace_id: "project".into(),
@@ -486,7 +494,6 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
         Arc::new(HttpReplicaPeers::new(access.clone())?),
         access,
         origin,
-        1,
     )?);
     let stop = tokio_util::sync::CancellationToken::new();
     let shutdown = stop.clone();
@@ -636,7 +643,6 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
             peers.clone(),
             ReplicaAccess::new("secret", clock.clone()),
             "http://control".into(),
-            2,
         )
     };
     let old = runtime()?;
@@ -779,7 +785,6 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         peers,
         ReplicaAccess::new("secret", clock.clone()),
         "http://control".into(),
-        1,
     )?);
     let actor = ActorKey {
         namespace_id: "project".into(),

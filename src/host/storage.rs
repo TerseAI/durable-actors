@@ -68,7 +68,6 @@ impl HostStorage {
             Arc::new(HttpReplicaPeers::new(access.clone())?),
             access,
             origin,
-            config.replica_count,
         )?);
         Ok(Self {
             runtime,
@@ -353,7 +352,6 @@ mod tests {
             Arc::new(HttpReplicaPeers::new(access.clone())?),
             access,
             "http://control-plane-unavailable.invalid".into(),
-            0,
         )?);
         let host = HostId::new("host.v2.project.a:revision.host");
         let storage = HostStorage {

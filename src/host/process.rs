@@ -797,7 +797,7 @@ mod tests {
                 serde_json::json!({
                     "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
                     "region":"north-america-east", "replicaSecret":"secret", "replicas":[],
-                    "replicaCount":0, "token":null
+                    "token":null
                 })
                 .to_string(),
             ),

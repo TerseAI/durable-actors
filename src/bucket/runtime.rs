@@ -42,7 +42,6 @@ pub struct RuntimeStorage {
     peers: Arc<dyn ReplicaPeers>,
     access: ReplicaAccess,
     origin: String,
-    count: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -93,7 +92,6 @@ impl Ownership {
 }
 
 impl RuntimeStorage {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         authority: Arc<dyn Bucket>,
         leases: Arc<dyn HostLeaseStore>,
@@ -101,10 +99,9 @@ impl RuntimeStorage {
         peers: Arc<dyn ReplicaPeers>,
         access: ReplicaAccess,
         origin: String,
-        count: usize,
     ) -> Result<Self> {
         ensure!(
-            count <= crate::replication::MAX_REPLICAS,
+            fleet.replica_regions().len() <= crate::replication::MAX_REPLICAS,
             "invalid runtime storage configuration"
         );
         Ok(Self {
@@ -116,7 +113,6 @@ impl RuntimeStorage {
             peers,
             access,
             origin,
-            count,
         })
     }
 
@@ -203,9 +199,7 @@ impl ObjectPlacementStore for RuntimeStorage {
 #[async_trait]
 impl SnapshotReader for RuntimeStorage {
     fn durability(&self) -> crate::replication::DurabilityPolicy {
-        let mut policy = crate::replication::DurabilityPolicy::new(self.count);
-        policy.replica_regions = self.fleet.replica_regions();
-        policy
+        crate::replication::DurabilityPolicy::new(self.fleet.replica_regions())
     }
     async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
         self.fetch_snapshot(&grant("RUNTIME_READ", region, object, 60_000)?)
@@ -461,7 +455,6 @@ impl RuntimeStorage {
             expires_at_ms,
             stream,
             replication: (!targets.is_empty()).then_some(ReplicationTicket {
-                required_replicas: targets.len(),
                 replicas: targets,
                 archive_url,
             }),

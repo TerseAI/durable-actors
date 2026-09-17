@@ -22,7 +22,7 @@ impl RuntimeStorage {
         lease: &HostLease,
         region: &str,
     ) -> Result<Vec<ReplicaTarget>> {
-        if self.count == 0 {
+        if self.fleet.replica_regions().is_empty() {
             return Ok(Vec::new());
         }
         let id = identity(namespace, &lease.id, &lease.session_id);
@@ -96,9 +96,12 @@ impl RuntimeStorage {
         session: &str,
         region: &str,
     ) -> Result<Vec<ReplicaTarget>> {
-        let replicas = self.fleet.ensure(actor, region, self.count).await?;
+        let replicas = self.fleet.ensure(actor, region).await?;
+        ensure!(
+            replicas.len() == self.fleet.replica_regions().len(),
+            "incomplete replica set"
+        );
         ReplicationTicket {
-            required_replicas: self.count,
             replicas: replicas.clone(),
             archive_url: "initialization".into(),
         }

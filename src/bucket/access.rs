@@ -18,7 +18,6 @@ pub(crate) struct HostStorageConfig {
     pub region: String,
     pub replica_secret: String,
     pub replicas: Vec<ReplicaTarget>,
-    pub replica_count: usize,
     pub token: Option<StorageToken>,
 }
 
@@ -50,7 +49,6 @@ pub(crate) struct RuntimeAccess {
     location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
-    count: usize,
     tokens: moka::future::Cache<String, StorageToken>,
 }
 
@@ -59,7 +57,6 @@ impl RuntimeAccess {
         location: BucketLocation,
         fleet: Arc<dyn ReplicaProvisioner>,
         replicas: ReplicaAccess,
-        count: usize,
     ) -> Result<Self> {
         Ok(Self {
             credentials: match &location {
@@ -74,7 +71,6 @@ impl RuntimeAccess {
             location,
             fleet,
             replicas,
-            count,
             tokens: moka::future::Cache::builder()
                 .max_capacity(512)
                 .time_to_live(Duration::from_secs(300))
@@ -88,16 +84,17 @@ impl RuntimeAccess {
             actor_type: "bootstrap".into(),
             actor_id: "bootstrap".into(),
         };
-        let (token, replicas) = tokio::try_join!(
-            self.issue(namespace),
-            self.fleet.ensure(&actor, region, self.count)
-        )?;
+        let (token, replicas) =
+            tokio::try_join!(self.issue(namespace), self.fleet.ensure(&actor, region))?;
+        ensure!(
+            replicas.len() == self.fleet.replica_regions().len(),
+            "incomplete replica set"
+        );
         Ok(serde_json::to_string(&HostStorageConfig {
             bucket: self.location.clone(),
             region: region.into(),
             replica_secret: self.replicas.delegate_secret(namespace)?,
             replicas,
-            replica_count: self.count,
             token,
         })?)
     }
@@ -200,6 +197,61 @@ fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_bootstrap_carries_replica_membership_without_a_separate_count() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let replicas: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|id| ReplicaTarget {
+                host_id: id.into(),
+                url: format!("https://{id}.example"),
+                region: "north-america-east".into(),
+            })
+            .collect();
+        let access = RuntimeAccess::new(
+            BucketLocation::File {
+                directory: directory.path().into(),
+            },
+            Arc::new(crate::replication::ReplicaSet(replicas.clone())),
+            ReplicaAccess::new("secret", Arc::new(SystemClock)),
+        )?;
+        let document = access.bootstrap("project", "north-america-east").await?;
+        let value: Value = serde_json::from_str(&document)?;
+        assert!(value.get("replicaCount").is_none());
+        let config: HostStorageConfig = serde_json::from_str(&document)?;
+        assert_eq!(config.replicas, replicas);
+        let partial = RuntimeAccess::new(
+            BucketLocation::File {
+                directory: directory.path().into(),
+            },
+            Arc::new(PartialFleet(crate::replication::ReplicaSet(replicas))),
+            ReplicaAccess::new("secret", Arc::new(SystemClock)),
+        )?;
+        assert!(
+            partial
+                .bootstrap("project", "north-america-east")
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    struct PartialFleet(crate::replication::ReplicaSet);
+
+    #[async_trait::async_trait]
+    impl ReplicaProvisioner for PartialFleet {
+        fn replica_regions(&self) -> Vec<String> {
+            self.0.replica_regions()
+        }
+
+        async fn ensure(&self, actor: &ActorKey, region: &str) -> Result<Vec<ReplicaTarget>> {
+            let mut replicas = self.0.ensure(actor, region).await?;
+            replicas.pop();
+            Ok(replicas)
+        }
+    }
+
     #[test]
     fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {
         let boundary = boundary("actors", "project.a")?;
