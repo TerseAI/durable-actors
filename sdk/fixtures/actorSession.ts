@@ -1,5 +1,4 @@
-import { Actor } from "../src/actor/actor.js"
-import { Persisted } from "../src/actor/decorators.js"
+import { Actor, Persisted } from "little-actors"
 
 class SessionCounter extends Actor {
     @Persisted private count = 0

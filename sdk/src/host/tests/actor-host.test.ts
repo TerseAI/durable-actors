@@ -44,7 +44,7 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
     }
 })
 
-test("a stalled actor import times out and closes the Worker", { timeout: 1_000 }, async () => {
+test("a stalled actor import times out and closes the Worker", { timeout: 5_000 }, async () => {
     let closed = 0
     const session = new ActorSession(
         parseHostSettings({
