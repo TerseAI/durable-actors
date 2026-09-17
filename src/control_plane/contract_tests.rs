@@ -8,7 +8,7 @@ use crate::{
     control_plane::admin::{
         AdminRegistry, HostLaunchSpec, LocalAdminRegistry, PostgresAdminRegistry,
     },
-    postgres::PostgresDatabase,
+    postgres::{PostgresDatabase, testing::with_postgres},
     sqlite::SqliteStore,
 };
 
@@ -228,28 +228,30 @@ async fn sqlite_discards_legacy_contract_history_on_open() -> Result<()> {
 
 #[tokio::test]
 async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Result<()> {
-    let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
-        return Ok(());
-    };
-    let database = PostgresDatabase::connect(&url).await?;
-    registry_behavior(Arc::new(PostgresAdminRegistry::from_database(database))).await?;
-    let registry = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&url).await?);
-    let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
-    let deployment = spec(&format!("persisted-{}", uuid::Uuid::new_v4()));
-    registry
-        .register_deployment(&deployment, Some(&contract))
-        .await?;
-    drop(registry);
-    let reopened = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&url).await?);
-    assert_eq!(
-        reopened
-            .deployment_contract(&deployment.namespace_id, None)
-            .await?
-            .unwrap()
-            .contract,
-        *contract.document()
-    );
-    Ok(())
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        registry_behavior(Arc::new(PostgresAdminRegistry::from_database(database))).await?;
+        let registry =
+            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
+        let deployment = spec(&format!("persisted-{}", uuid::Uuid::new_v4()));
+        registry
+            .register_deployment(&deployment, Some(&contract))
+            .await?;
+        drop(registry);
+        let reopened =
+            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        assert_eq!(
+            reopened
+                .deployment_contract(&deployment.namespace_id, None)
+                .await?
+                .unwrap()
+                .contract,
+            *contract.document()
+        );
+        Ok(())
+    })
+    .await
 }
 
 async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {

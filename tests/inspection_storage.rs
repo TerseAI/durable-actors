@@ -1,3 +1,5 @@
+mod support;
+
 use anyhow::Result;
 use little_actors::{
     actor::ActorKey,
@@ -7,6 +9,7 @@ use little_actors::{
     sqlite::SqliteStore,
     storage_urls::snapshot_object_name,
 };
+use support::postgres::with_postgres;
 
 #[tokio::test]
 async fn sqlite_lists_committed_objects_with_exact_namespace_filtering_and_pagination() -> Result<()>
@@ -19,12 +22,12 @@ async fn sqlite_lists_committed_objects_with_exact_namespace_filtering_and_pagin
 #[tokio::test]
 async fn postgres_lists_committed_objects_with_exact_namespace_filtering_and_pagination()
 -> Result<()> {
-    let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
-        return Ok(());
-    };
-    let store = PostgresObjectPlacementStore::connect(&url).await?;
-    let leases = PostgresHostLeaseStore::connect(&url).await?;
-    check_listing(&store, &leases).await
+    with_postgres(async |database| {
+        let store = PostgresObjectPlacementStore::connect(&database.url).await?;
+        let leases = PostgresHostLeaseStore::connect(&database.url).await?;
+        check_listing(&store, &leases).await
+    })
+    .await
 }
 
 async fn check_listing(

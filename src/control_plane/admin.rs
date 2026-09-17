@@ -604,37 +604,37 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_registration_ensures_the_namespace_and_deployment_atomically() -> Result<()> {
-        let Some(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL").ok() else {
-            return Ok(());
-        };
-        let database = PostgresDatabase::connect(&url).await?;
-        let registry = PostgresAdminRegistry::from_database(database.clone());
-        let mut deployment = spec("image-1");
-        deployment.namespace_id = format!("project-{}", uuid::Uuid::new_v4());
-        deployment.secret_refs = vec!["project-secrets".into()];
-        deployment.socket_gateway_url = Some("https://sockets.example".into());
+        crate::postgres::testing::with_postgres(async |fixture| {
+            let database = PostgresDatabase::connect(&fixture.url).await?;
+            let registry = PostgresAdminRegistry::from_database(database.clone());
+            let mut deployment = spec("image-1");
+            deployment.namespace_id = format!("project-{}", uuid::Uuid::new_v4());
+            deployment.secret_refs = vec!["project-secrets".into()];
+            deployment.socket_gateway_url = Some("https://sockets.example".into());
 
-        assert!(
-            registry
-                .ensure_namespace_and_register_deployment(&deployment)
-                .await?
-        );
-        assert_eq!(
-            registry.launch_spec(&deployment.namespace_id).await?,
-            Some(deployment.clone())
-        );
-        let namespace_exists = database
+            assert!(
+                registry
+                    .ensure_namespace_and_register_deployment(&deployment)
+                    .await?
+            );
+            assert_eq!(
+                registry.launch_spec(&deployment.namespace_id).await?,
+                Some(deployment.clone())
+            );
+            let namespace_exists = database
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM durable_object_namespaces WHERE namespace_id = $1)",
                 &[&deployment.namespace_id],
             )
             .await?
             .get::<_, bool>(0);
-        assert!(namespace_exists);
-        registry.remove_deployment(&deployment.namespace_id).await?;
-        assert_eq!(registry.launch_spec(&deployment.namespace_id).await?, None);
-        registry.remove_deployment(&deployment.namespace_id).await?;
-        Ok(())
+            assert!(namespace_exists);
+            registry.remove_deployment(&deployment.namespace_id).await?;
+            assert_eq!(registry.launch_spec(&deployment.namespace_id).await?, None);
+            registry.remove_deployment(&deployment.namespace_id).await?;
+            Ok(())
+        })
+        .await
     }
 
     fn spec(image: &str) -> HostLaunchSpec {

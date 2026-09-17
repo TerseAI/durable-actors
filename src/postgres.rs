@@ -11,6 +11,10 @@ mod embedded {
     embed_migrations!("migrations");
 }
 
+#[cfg(test)]
+#[path = "../tests/support/postgres.rs"]
+pub(crate) mod testing;
+
 #[derive(Clone)]
 pub(crate) struct PostgresDatabase {
     pool: Pool,
@@ -26,12 +30,7 @@ impl PostgresDatabase {
 
     pub(crate) async fn connect(url: &str) -> Result<Self> {
         let pool = connection_pool(url)?;
-        let mut client = pool.get().await.context("connect to PostgreSQL")?;
-        embedded::migrations::runner()
-            .run_async(&mut **client)
-            .await
-            .context("run durable-object PostgreSQL migrations")?;
-        drop(client);
+        migrate(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -88,6 +87,24 @@ impl PostgresDatabase {
     }
 }
 
+async fn migrate(pool: &Pool) -> Result<()> {
+    let client = pool.get().await.context("connect to PostgreSQL")?;
+    // Closing this dedicated session releases the lock even on errors or cancellation.
+    let mut client = deadpool_postgres::Object::take(client);
+    client
+        .query_one(
+            "SELECT pg_advisory_lock(hashtext('little-actors'), hashtext('schema-migrations'))",
+            &[],
+        )
+        .await
+        .context("lock durable-object PostgreSQL migrations")?;
+    embedded::migrations::runner()
+        .run_async(&mut *client)
+        .await
+        .context("run durable-object PostgreSQL migrations")?;
+    Ok(())
+}
+
 fn connection_pool(url: &str) -> Result<Pool> {
     let config = Config::from_str(url).context("parse PostgreSQL connection URL")?;
     let manager = match config.get_ssl_mode() {
@@ -109,7 +126,44 @@ fn connection_pool(url: &str) -> Result<Pool> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::AssertUnwindSafe;
+
+    use futures_util::FutureExt;
+
     use super::*;
+    use testing::{TestDatabase, with_postgres, with_postgres_schema};
+
+    #[tokio::test]
+    async fn fixtures_isolate_migrations_data_and_reconnections() -> Result<()> {
+        with_postgres(async |first| {
+            with_postgres(async |second| {
+                let first_client = first.pool.get().await?;
+                let another_client = first.pool.get().await?;
+                let second_client = second.pool.get().await?;
+                let first_schema = current_schema(&first_client).await?;
+                let second_schema = current_schema(&second_client).await?;
+                assert_eq!(first_schema, current_schema(&another_client).await?);
+                assert_ne!(first_schema, second_schema);
+                check_isolated_rows(&first_client, &second_client).await?;
+                check_isolated_migrations(&first_client, &second_client).await?;
+                check_reconnected_fixture(&second.url, &second_schema).await
+            })
+            .await
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn fixtures_cleanup_after_success_error_and_panic() -> Result<()> {
+        with_postgres(async |observer| {
+            let client = observer.pool.get().await?;
+            for outcome in ["success", "error", "panic"] {
+                check_fixture_cleanup(&client, outcome).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
 
     #[test]
     fn embedded_migrations_have_no_version_gaps() {
@@ -125,18 +179,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_connections_migrate_fresh_and_existing_schemas_once() -> Result<()> {
+        for version in [0, 3] {
+            with_postgres_schema(async |database| {
+                check_concurrent_migrations(database, version).await
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn independent_queries_can_use_different_database_connections() -> Result<()> {
-        let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
-            return Ok(());
-        };
-        let database = PostgresDatabase {
-            pool: connection_pool(&url)?,
-        };
-        let (first, second) = tokio::try_join!(
-            database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),
-            database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),
-        )?;
-        assert_ne!(first.get::<_, i32>(0), second.get::<_, i32>(0));
+        with_postgres(async |fixture| {
+            let database = PostgresDatabase {
+                pool: fixture.pool.clone(),
+            };
+            let (first, second) = tokio::try_join!(
+                database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),
+                database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),
+            )?;
+            assert_ne!(first.get::<_, i32>(0), second.get::<_, i32>(0));
+            Ok(())
+        })
+        .await
+    }
+
+    async fn current_schema(client: &tokio_postgres::Client) -> Result<String> {
+        Ok(client
+            .query_one("SELECT current_schema()", &[])
+            .await?
+            .get(0))
+    }
+
+    async fn check_isolated_rows(
+        first: &tokio_postgres::Client,
+        second: &tokio_postgres::Client,
+    ) -> Result<()> {
+        let insert = "INSERT INTO durable_object_namespaces VALUES ('same-id', DEFAULT)";
+        first.execute(insert, &[]).await?;
+        let count: i64 = second
+            .query_one("SELECT count(*) FROM durable_object_namespaces", &[])
+            .await?
+            .get(0);
+        assert_eq!(count, 0);
+        second.execute(insert, &[]).await?;
+        Ok(())
+    }
+
+    async fn check_isolated_migrations(
+        first: &tokio_postgres::Client,
+        second: &tokio_postgres::Client,
+    ) -> Result<()> {
+        first
+            .execute("DELETE FROM refinery_schema_history WHERE version = 4", &[])
+            .await?;
+        let count: i64 = second
+            .query_one(
+                "SELECT count(*) FROM refinery_schema_history WHERE version = 4",
+                &[],
+            )
+            .await?
+            .get(0);
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    async fn check_reconnected_fixture(url: &str, expected_schema: &str) -> Result<()> {
+        let reopened = PostgresDatabase::connect(url).await?;
+        let client = reopened.connection().await?;
+        assert_eq!(current_schema(&client).await?, expected_schema);
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM durable_object_namespaces", &[])
+            .await?
+            .get(0);
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    async fn check_fixture_cleanup(client: &tokio_postgres::Client, outcome: &str) -> Result<()> {
+        let mut schema = String::new();
+        let result = AssertUnwindSafe(with_postgres(async |fixture| {
+            schema = current_schema(&*fixture.pool.get().await?).await?;
+            match outcome {
+                "error" => anyhow::bail!("test failure"),
+                "panic" => panic!("test panic"),
+                _ => Ok(()),
+            }
+        }))
+        .catch_unwind()
+        .await;
+        match outcome {
+            "error" => assert_eq!(result.unwrap().unwrap_err().to_string(), "test failure"),
+            "panic" => assert!(result.is_err()),
+            _ => result.unwrap()?,
+        }
+        let exists: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+                &[&schema],
+            )
+            .await?
+            .get(0);
+        assert!(!exists, "fixture schema remained after {outcome}");
+        Ok(())
+    }
+
+    async fn check_concurrent_migrations(database: &TestDatabase, version: i32) -> Result<()> {
+        let mut client = database.pool.get().await?;
+        if version > 0 {
+            embedded::migrations::runner()
+                .set_target(refinery::Target::Version(version))
+                .run_async(&mut **client)
+                .await?;
+        }
+        check_concurrent_connections(&database.url).await?;
+        let versions: Vec<i32> = client
+            .query(
+                "SELECT version FROM refinery_schema_history ORDER BY version",
+                &[],
+            )
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+        Ok(())
+    }
+
+    async fn check_concurrent_connections(url: &str) -> Result<()> {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let url = url.to_owned();
+            let barrier = barrier.clone();
+            tasks.spawn(async move {
+                barrier.wait().await;
+                PostgresDatabase::connect(&url).await
+            });
+        }
+        let mut failures = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result? {
+                failures.push(format!("{error:#}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "concurrent migrations failed: {failures:#?}"
+        );
         Ok(())
     }
 }
