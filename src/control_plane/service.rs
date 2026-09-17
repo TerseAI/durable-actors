@@ -129,6 +129,13 @@ impl ControlPlaneService {
         ))
     }
 
+    pub(super) async fn runtime_deployment(
+        &self,
+        namespace_id: &str,
+    ) -> Result<Option<HostLaunchSpec>> {
+        self.registry.launch_spec(namespace_id).await
+    }
+
     pub(super) async fn register_deployment(
         &self,
         admin: &AdminService,
@@ -798,8 +805,7 @@ impl ControlPlaneService {
         mut timings: Option<&mut TargetResolutionTimings>,
     ) -> Result<RoutedActor> {
         let spec = self
-            .registry
-            .launch_spec(&actor.namespace_id)
+            .runtime_deployment(&actor.namespace_id)
             .await?
             .context("project has no registered actor code")?;
         if let Some(timings) = timings.as_deref_mut() {
@@ -2005,6 +2011,109 @@ mod tests {
                 assert_eq!(placements.get(&actor.storage_key()).await?, before);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn application_credentials_work_without_postgres() -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        registry
+            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
+                namespace_id: "default".into(),
+                code_revision: "v1".into(),
+                image_ref: "image".into(),
+                working_directory: "/app".into(),
+                actor_entrypoint: None,
+                secret_refs: vec![],
+                socket_gateway_url: Some("https://gateway.example".into()),
+            })
+            .await?;
+        let database = crate::postgres::PostgresDatabase::lazy(
+            "postgresql://localhost:1/unavailable?sslmode=disable&connect_timeout=1",
+        )?;
+        let admin = AdminService::new(
+            "api-key".into(),
+            Arc::new(super::super::admin::PostgresAdminRegistry::from_database(
+                database,
+            )),
+            issuer.clone(),
+        )?;
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            Arc::new(LocalObjectPlacementStore::default()),
+            Arc::new(FakeStorageUrls(&["north-america-east"])),
+            auth,
+            registry,
+            issuer.clone(),
+            Arc::new(FakeRoutingProvisioner {
+                failed_regions: vec![],
+                calls: Mutex::new(vec![]),
+            }),
+        );
+        let routes = super::super::public_api::router(service, admin);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async { axum::serve(listener, routes).await });
+        let client = reqwest::Client::new();
+        let requests = [
+            (
+                "actors/Room/lobby/socket-ticket",
+                serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
+            ),
+            (
+                "session-scoped-token",
+                serde_json::json!({"executionId":"run","storageRegion":"north-america-east","deadlineUnixMs":(unix_seconds()? + 30) * 1000}),
+            ),
+        ];
+        for (path, body) in requests {
+            let response = client
+                .post(format!("{origin}/v1/{path}"))
+                .bearer_auth("api-key")
+                .json(&body)
+                .send()
+                .await?;
+            let status = response.status();
+            let issued: serde_json::Value = response.json().await?;
+            assert!(status.is_success(), "{path}: {status} {issued}");
+            if path.ends_with("socket-ticket") {
+                assert_eq!(issued["websocketUrl"], "wss://gateway.example/v1/socket");
+                let ticket = issuer.verify_socket(issued["key"].as_str().unwrap())?;
+                assert_eq!(ticket.actor.namespace_id, "default");
+                assert_eq!(ticket.metadata, body["metadata"]);
+            } else {
+                assert!(issued["token"].is_string());
+            }
+            assert!(
+                !client
+                    .post(format!("{origin}/v1/namespaces/missing/{path}"))
+                    .bearer_auth("api-key")
+                    .json(&body)
+                    .send()
+                    .await?
+                    .status()
+                    .is_success()
+            );
+        }
+        assert_eq!(
+            client
+                .get(format!("{origin}/v1/deployment"))
+                .bearer_auth("api-key")
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        server.abort();
         Ok(())
     }
 

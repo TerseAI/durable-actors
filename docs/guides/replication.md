@@ -3,8 +3,9 @@
 The hosted runtime uses GCS conditional writes for actor ownership and host leases.
 PostgreSQL stores administrative deployment data. Successful deployment changes
 publish their runtime configuration to the coordination bucket, so routing,
-hydration, lease renewal, and state writes do not query PostgreSQL. Startup opens
-PostgreSQL lazily when an administrative operation needs it.
+hydration, lease renewal, state writes, and application credential issuance do not
+query PostgreSQL. Startup opens PostgreSQL lazily when an administrative operation
+needs it.
 
 This follows celld's object-storage coordination approach using this project's
 existing GCS backend and replica hosts. Actor state remains a full JSON snapshot.

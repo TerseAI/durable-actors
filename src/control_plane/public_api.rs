@@ -94,10 +94,15 @@ async fn issue_socket_ticket(
         connection_id: request.connection_id,
     };
     grant.validate().map_err(ApiError::bad_request)?;
+    let spec = state
+        .invocations
+        .runtime_deployment(&grant.actor.namespace_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::conflict("actor deployment is not registered"))?;
     let issued = state
         .admin
-        .issue_socket(grant)
-        .await
+        .issue_socket(grant, spec.socket_gateway_url.as_deref())
         .map_err(ApiError::bad_request)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response())
 }
@@ -200,11 +205,12 @@ async fn issue_workflow_token(
     if request.deadline_unix_ms <= 0 {
         return Err(ApiError::bad_request("workflow deadline is required"));
     }
-    if !state
-        .admin
-        .deployment_exists(namespace_id)
+    if state
+        .invocations
+        .runtime_deployment(namespace_id)
         .await
         .map_err(ApiError::internal)?
+        .is_none()
     {
         return Err(ApiError::conflict("project has no registered actor code"));
     }
