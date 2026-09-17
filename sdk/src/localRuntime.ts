@@ -4,7 +4,7 @@ import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
-import { runtimeExecutable } from "./runtimeInstaller.js"
+import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
     entrypoint: string
@@ -31,7 +31,7 @@ export interface LocalActorRuntime {
 
 /** Resolves when the local server is ready; stopping it preserves its data directory. */
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
-    const child = launch(await runtimeExecutable(), options)
+    const child = launch(await fetchRuntimeExecutablePath(), options)
     const { closed, stop } = lifecycle(child)
     try {
         const connection = await waitForConnection(

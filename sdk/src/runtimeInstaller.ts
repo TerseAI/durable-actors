@@ -7,7 +7,7 @@ import { x } from "tar"
 const executables = ["little-actors", "little-actors-modal-go"]
 const maximumBytes = 200 * 1024 * 1024
 
-export async function runtimeExecutable(): Promise<string> {
+export async function fetchRuntimeExecutablePath(): Promise<string> {
     if (process.env.DURABLE_OBJECT_BINARY) return path.resolve(process.env.DURABLE_OBJECT_BINARY)
     const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
     return new RuntimeInstaller({

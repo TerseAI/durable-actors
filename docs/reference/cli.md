@@ -10,11 +10,11 @@ npx little-actors init chat-example
 
 - `--template <name>` — Template to copy. Defaults to `chat`.
 
-| Template                                | Description                                                                                                                                                                                         |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and native WebSockets.                                                                                          |
+| Template                                | Description                                                                                                                                                                        |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and native WebSockets.                                                                                   |
 | `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
-| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                            |
+| `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                     |
 
 ## Run a development server
 
@@ -22,7 +22,7 @@ npx little-actors init chat-example
 npx little-actors dev
 ```
 
-Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. The contract is available to `generate --url` once the server is ready. Uses [automatic local configuration](configuration.md).
+Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [automatic local configuration](configuration.md).
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
@@ -71,10 +71,10 @@ npx little-actors generate
 
 Checks the actor dependency graph without executing it and writes TypeScript backend helpers.
 
-| Entrypoint | Export             | Contents                                                                    |
-| ---------- | ------------------ | --------------------------------------------------------------------------- |
-| `index.ts` | `actors.ChatRoom`  | Typed RPC client via `.get(id)` and WebSocket grants via `.prepareWebsocket({ actorId, metadata })`. |
-| `index.ts` | `ActorProxy`       | Authorization proxy and metadata types for browser connections.             |
+| Entrypoint | Export            | Contents                                                                                             |
+| ---------- | ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `index.ts` | `actors.ChatRoom` | Typed RPC client via `.get(id)` and WebSocket grants via `.prepareWebsocket({ actorId, metadata })`. |
+| `index.ts` | `ActorProxy`      | Authorization proxy and metadata types for browser connections.                                      |
 
 Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import backend helpers from `generated/index.js`. Frontends use native `WebSocket` without generated imports.
 

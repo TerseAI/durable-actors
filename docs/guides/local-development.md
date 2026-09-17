@@ -44,7 +44,7 @@ For remote servers or a custom data directory, see [configuration](../reference/
 
 ## Update after changes
 
-Restart `little-actors dev` after changing actor code. Regenerate the backend helpers when the actor contract changes. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
+Keep `little-actors dev` running while editing actor code. It watches TypeScript files across the project, recompiles changes in the entrypoint or its imports, and publishes each valid result to the local control plane. Regenerate the backend helpers when the actor contract changes. Invalid intermediate edits leave the last valid contract active. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
 
 ## Troubleshooting
 

@@ -113,7 +113,7 @@ pub async fn serve_local(
     );
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate --url",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {

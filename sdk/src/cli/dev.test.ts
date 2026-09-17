@@ -27,11 +27,18 @@ test("dev compiles the project contract before launching and cleans it up when t
     await writeFile(
         executable,
         `#!/usr/bin/env node
-import { readFileSync } from "node:fs"
+import { createWriteStream, readFileSync } from "node:fs"
 const args = process.argv.slice(2)
 const index = args.indexOf("--contract")
 if (index < 0) throw new Error("No public contract supplied to runtime")
 const file = args[index + 1]
+createWriteStream(null, { fd: 3 }).end(JSON.stringify({
+    pid: process.pid,
+    controlPlaneUrl: "http://127.0.0.1:7100",
+    namespaceId: "local",
+    apiKey: "test-key",
+    storageRegion: "local"
+}))
 console.log(JSON.stringify({ args, file, contract: JSON.parse(readFileSync(file, "utf8")) }))
 process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
