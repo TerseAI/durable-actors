@@ -58,13 +58,15 @@ protected readonly id: string
 
 The current actor ID, available inside an actor method or lifecycle hook. Reading it before the runtime binds the actor, including in its constructor, raises an `Error`. It is not a saved state field.
 
-### Actor.connections
+### Actor.getConnections
 
 ```text
-protected readonly connections: readonly ActorSocket<Metadata, Outgoing, Tag>[]
+protected getConnections(): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]>
 ```
 
-Connections available inside any actor method or lifecycle hook. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Access outside an invocation raises an `Error`. Each actor supports up to 128 connections per gateway process.
+Returns connections inside an actor method or lifecycle hook. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Calling it outside an invocation rejects with an `Error`. Each actor supports up to 128 connections per gateway process.
+
+Ordinary methods fetch connections from the gateway only when `getConnections()` is called. Repeated or concurrent calls share one lookup and the same socket objects within that invocation. Lifecycle hooks use the snapshot supplied with their event. A failed lookup rejects the promise; uncaught errors prevent the invocation from committing.
 
 ### Actor.broadcast
 
@@ -126,7 +128,7 @@ Optional lifecycle hook called for incoming application messages. The runtime pa
 async onDisconnect(socket: ActorSocket<Metadata, Outgoing, Tag>, code: number, reason: string, wasClean: boolean): Promise<void>
 ```
 
-Optional lifecycle hook called when the server observes a connection closing. The socket is absent from `this.connections` and cannot send messages.
+Optional lifecycle hook called when the server observes a connection closing. The socket is absent from `await this.getConnections()` and cannot send messages.
 
 **Parameters**
 
@@ -283,7 +285,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 import type { ActorSocket } from "little-actors"
 ```
 
-Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
+Actor-side connection passed to lifecycle hooks and listed in `await this.getConnections()`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
 
 ### [ActorSocket.id](http://ActorSocket.id)
 
@@ -546,17 +548,16 @@ readonly code: string
 
 Server-reported error category. This is an open string, not a closed enum; additional codes can occur.
 
-| Code                         | Meaning                                                                                                    |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `unauthenticated`            | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
-| `actor_error`                | Actor execution failed, including user exceptions or invalid output.                                       |
-| `resource_exhausted`         | Execution resource limit reached.                                                                          |
-| `socket_gateway_unavailable` | The host could not load connections from the gateway. The actor method did not run.                        |
-| `unavailable`                | Actor could not be reached or made available.                                                              |
-| `outcome_unknown`            | Caller could not confirm the result; the operation may have run and saved state.                           |
-| `invalid_request`            | Invalid request reported by the server.                                                                    |
-| `conflict`                   | Deployment conflict reported by the server.                                                                |
-| `internal`                   | Server failure.                                                                                            |
+| Code                 | Meaning                                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `unauthenticated`    | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
+| `actor_error`        | Actor execution failed, including user exceptions or invalid output.                                       |
+| `resource_exhausted` | Execution resource limit reached.                                                                          |
+| `unavailable`        | Actor could not be reached or made available.                                                              |
+| `outcome_unknown`    | Caller could not confirm the result; the operation may have run and saved state.                           |
+| `invalid_request`    | Invalid request reported by the server.                                                                    |
+| `conflict`           | Deployment conflict reported by the server.                                                                |
+| `internal`           | Server failure.                                                                                            |
 
 ### ActorInvocationError.requestId
 

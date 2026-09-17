@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::{File, OpenOptions},
     future::Future,
     io::Write,
@@ -14,22 +13,24 @@ use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use axum::{Router, extract::Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, ValueEnum};
-use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::{Level, info_span};
 
 use crate::{
+    bucket::{
+        Bucket, BucketHostLeases, FileBucket, GcsBucket, HttpReplicaPeers, RuntimeStorage,
+        access::{BucketLocation, RuntimeAccess},
+    },
     clock::SystemClock,
+    host_leases::HostLeaseStore,
     sandbox::{HostSandboxRuntimeConfig, LocalSandboxProvider},
-    sqlite::SqliteStore,
-    storage_urls::{GcsStorageUrlSigner, LocalStorage, StorageUrlSigner},
 };
 
 use super::{
     ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, ControlPlaneService,
-    admin::{AdminRegistry, AdminService, HostLaunchSpec},
+    admin::{AdminRegistry, AdminService, HostLaunchSpec, LocalAdminRegistry},
     contracts::PublicActorContract,
     public_api,
     service::SandboxHostProvisioner,
@@ -37,15 +38,26 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
-    #[arg(long, default_value = ".")]
+    #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
+    pub api_key: String,
+    #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
     pub project: PathBuf,
-    #[arg(long, default_value_t = 7100)]
+    #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
     pub port: u16,
-    #[arg(long)]
+    #[arg(long, env = "DURABLE_OBJECT_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
-    #[arg(long, default_value = "src/durable-objects.ts")]
+    #[arg(
+        long,
+        env = "DURABLE_OBJECT_ENTRYPOINT",
+        default_value = "src/durable-objects.ts"
+    )]
     pub entrypoint: String,
-    #[arg(long, value_enum, default_value = "local")]
+    #[arg(
+        long,
+        env = "DURABLE_OBJECT_STORAGE",
+        value_enum,
+        default_value = "local"
+    )]
     pub storage: DevStorage,
     #[arg(long, hide = true, value_parser = clap::value_parser!(i32).range(3..))]
     pub ready_fd: Option<i32>,
@@ -83,34 +95,24 @@ pub async fn serve_local(
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let database = Arc::new(SqliteStore::open(&directory.join("runtime.sqlite")).await?);
-    database.reset_local_leases().await?;
     let storage = local_storage(&options, &directory, &origin).await?;
     let provider = Arc::new(LocalSandboxProvider::new(
         std::env::current_exe()?,
         project.clone(),
-        database.clone(),
+        storage.leases.clone(),
         options.sdk_host.clone(),
     ));
-    let api_key = uuid::Uuid::new_v4().simple().to_string();
     let routes = local_routes(
         &options,
         &project,
         &origin,
-        database,
         &storage,
         provider.clone(),
-        &api_key,
+        &options.api_key,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = publish_connection(
-        &directory,
-        &origin,
-        &api_key,
-        &storage.region,
-        options.ready_fd,
-    );
+    let ready = notify_launcher(&origin, &options.api_key, &storage.region, options.ready_fd);
     if ready.is_ok() {
         println!(
             "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate --url",
@@ -122,9 +124,7 @@ pub async fn serve_local(
             );
         }
     }
-    let result = server.run_until(shutdown, ready).await;
-    let _ = std::fs::remove_file(directory.join("runtime.json"));
-    result
+    server.run_until(shutdown, ready).await
 }
 
 struct LocalServer {
@@ -210,63 +210,53 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 }
 
 struct LocalState {
-    signer: Arc<dyn StorageUrlSigner>,
-    routes: Router,
+    runtime: Arc<RuntimeStorage>,
+    access: Arc<RuntimeAccess>,
+    leases: Arc<dyn HostLeaseStore>,
     region: String,
 }
 
 async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> Result<LocalState> {
-    let (state, identity) = match options.storage {
-        DevStorage::Local => {
-            let storage = Arc::new(LocalStorage::new(
-                directory.to_owned(),
-                origin.to_owned(),
-                Arc::new(SystemClock),
-            )?);
-            (
-                LocalState {
-                    region: storage.regions()[0].clone(),
-                    routes: storage.clone().router(),
-                    signer: storage,
-                },
-                serde_json::json!({ "storage": "local" }),
-            )
-        }
-        DevStorage::Gcs => {
-            let buckets: HashMap<String, String> = serde_json::from_str(
-                &std::env::var("DURABLE_OBJECT_STANDARD_BUCKETS")
-                    .context("--storage gcs requires DURABLE_OBJECT_STANDARD_BUCKETS")?,
-            )?;
-            let identity = serde_json::json!({ "storage": "gcs", "buckets": buckets });
-            let storage = Arc::new(GcsStorageUrlSigner::from_adc(buckets).await?);
-            (
-                LocalState {
-                    region: storage.regions()[0].clone(),
-                    routes: Router::new(),
-                    signer: storage,
-                },
-                identity,
-            )
-        }
+    let location = match options.storage {
+        DevStorage::Local => BucketLocation::File {
+            directory: directory.canonicalize()?.join("objects"),
+        },
+        DevStorage::Gcs => BucketLocation::Gcs {
+            bucket: std::env::var("DURABLE_OBJECT_BUCKET")
+                .context("--storage gcs requires DURABLE_OBJECT_BUCKET")?,
+        },
     };
-    let path = directory.join("storage.json");
-    if path.exists() {
-        let previous: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        ensure!(
-            previous == identity,
-            "storage configuration changed; select a separate --data-dir to avoid losing access to saved state"
-        );
-    } else {
-        write_private_json(&path, &identity)?;
-    }
-    Ok(state)
+    let bucket: Arc<dyn Bucket> = match &location {
+        BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
+        BucketLocation::Gcs { bucket } => Arc::new(GcsBucket::new(bucket).await?),
+    };
+    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), Arc::new(SystemClock)));
+    let access = crate::replication::ReplicaAccess::new(
+        &uuid::Uuid::new_v4().to_string(),
+        Arc::new(SystemClock),
+    );
+    let fleet = Arc::new(crate::replication::ReplicaSet::default());
+    let bootstrap = Arc::new(RuntimeAccess::new(location, fleet.clone(), access.clone())?);
+    let runtime = Arc::new(RuntimeStorage::new(
+        bucket,
+        leases.clone(),
+        fleet,
+        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        access,
+        origin.into(),
+    )?);
+    Ok(LocalState {
+        runtime,
+        access: bootstrap,
+        leases,
+        region: "north-america-east".into(),
+    })
 }
 
 async fn local_routes(
     options: &DevOptions,
     project: &Path,
     origin: &str,
-    database: Arc<SqliteStore>,
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     api_key: &str,
@@ -289,7 +279,8 @@ async fn local_routes(
         secret_refs: vec![],
         socket_gateway_url: None,
     };
-    database
+    let registry = Arc::new(LocalAdminRegistry::default());
+    registry
         .register_deployment(&spec, contract.as_ref())
         .await?;
     let runtime = HostSandboxRuntimeConfig {
@@ -299,32 +290,27 @@ async fn local_routes(
         actor_idle_timeout_ms: 60_000,
         host_idle_timeout_ms: 300_000,
     };
-    let provisioner = Arc::new(SandboxHostProvisioner::new(
-        provider,
-        runtime,
-        issuer.clone(),
-        database.clone(),
-    ));
+    let provisioner = Arc::new(
+        SandboxHostProvisioner::new(provider, runtime, issuer.clone(), storage.leases.clone())
+            .with_runtime_access(storage.access.clone()),
+    );
     let service = ControlPlaneService::new(
-        database.clone(),
-        database.clone(),
-        storage.signer.clone(),
+        storage.leases.clone(),
+        storage.runtime.clone(),
         auth,
-        database.clone(),
+        registry.clone(),
         issuer.clone(),
         provisioner,
-    );
-    let admin = AdminService::new(api_key.to_owned(), database.clone(), issuer)?
+    )
+    .with_runtime_access(storage.access.clone());
+    let admin = AdminService::new(api_key.to_owned(), registry, issuer)?
         .with_default_namespace("local")?
         .with_socket_origin(origin)?;
-    let inspector = super::inspection::ActorInspector::new(
-        database,
-        storage.signer.clone(),
-        Arc::new(crate::state_transport::HttpStateTransport::new()),
-    );
+    let inspector =
+        super::inspection::ActorInspector::new(storage.runtime.clone(), storage.runtime.clone());
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
-        .merge(storage.routes.clone());
+        .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 
@@ -346,29 +332,47 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     )
 }
 
-fn publish_connection(
-    directory: &Path,
-    origin: &str,
-    api_key: &str,
-    region: &str,
-    ready_fd: Option<i32>,
-) -> Result<()> {
-    let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
-    write_private_json(&directory.join("runtime.json"), &connection)?;
+fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i32>) -> Result<()> {
     if let Some(fd) = ready_fd {
         // The launcher transfers ownership of this inherited readiness descriptor.
         let mut ready = unsafe { File::from_raw_fd(fd) };
+        let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
         serde_json::to_writer(&mut ready, &connection)?;
         ready.flush()?;
     }
     Ok(())
 }
 
-fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(path.parent().context("file has no parent")?)?;
-    temporary.write_all(&serde_json::to_vec_pretty(value)?)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn relative_state_directories_are_absolute_in_host_configuration() -> Result<()> {
+        let cwd = std::env::current_dir()?;
+        let directory = tempfile::tempdir_in(&cwd)?;
+        let relative = directory.path().strip_prefix(&cwd)?;
+        let options = DevOptions {
+            api_key: "test-key".into(),
+            contract: None,
+            project: cwd.clone(),
+            port: 0,
+            data_dir: Some(relative.into()),
+            entrypoint: "actors.ts".into(),
+            storage: DevStorage::Local,
+            ready_fd: None,
+            sdk_host: None,
+        };
+        let state = local_storage(&options, relative, "http://localhost:7100").await?;
+        let config: crate::bucket::access::HostStorageConfig =
+            serde_json::from_str(&state.access.bootstrap("local", &state.region).await?)?;
+        let BucketLocation::File {
+            directory: configured,
+        } = config.bucket
+        else {
+            panic!("expected file bucket")
+        };
+        assert_eq!(configured, directory.path().canonicalize()?.join("objects"));
+        Ok(())
+    }
 }

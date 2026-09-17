@@ -185,6 +185,9 @@ importers:
       commander:
         specifier: ^14.0.3
         version: 14.0.3
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       json-schema-to-typescript:
         specifier: ^16.0.0
         version: 16.0.0
@@ -216,9 +219,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      esbuild:
-        specifier: ^0.28.2
-        version: 0.28.2
 
 packages:
 

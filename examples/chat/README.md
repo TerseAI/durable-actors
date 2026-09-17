@@ -7,12 +7,14 @@ The sample bundled with `little-actors init`.
 ```sh
 npm install
 npx little-actors generate
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, from this directory:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npm run dev
 ```
 

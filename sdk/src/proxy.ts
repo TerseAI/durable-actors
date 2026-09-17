@@ -2,7 +2,6 @@ import { z } from "zod"
 
 import { validateActorComponent } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
-import { readLocalSettings } from "./client/localSettings.js"
 
 interface SocketProxyOptions {
     readonly controlPlaneUrl?: string
@@ -12,7 +11,6 @@ interface SocketProxyOptions {
 
 interface SocketProxyDependencies {
     readonly fetch?: typeof globalThis.fetch
-    readonly readLocalSettings?: () => SocketProxyOptions
 }
 
 interface ProxyActor<Metadata = unknown> {
@@ -46,7 +44,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         options: SocketProxyOptions = {},
         dependencies: SocketProxyDependencies = {}
     ) {
-        const settings = proxySettings(options, dependencies.readLocalSettings ?? readLocalSettings)
+        const settings = proxySettings(options)
         const url = new URL(settings.controlPlaneUrl)
         if (
             !["https:", "http:"].includes(url.protocol) ||
@@ -60,7 +58,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.origin = url.origin
         this.apiKey = settings.apiKey ?? ""
         if (typeof this.apiKey !== "string" || !this.apiKey || this.apiKey.trim() !== this.apiKey)
-            throw new Error("A backend API key is required; set DURABLE_OBJECT_API_KEY or run npx little-actors dev")
+            throw new Error("A backend API key is required; set DURABLE_OBJECT_API_KEY or pass apiKey")
         this.namespace = settings.namespaceId
         if (this.namespace) validateActorComponent("namespace ID", this.namespace)
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
@@ -93,14 +91,13 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
     }
 }
 
-function proxySettings(options: SocketProxyOptions, readLocal: () => SocketProxyOptions) {
+function proxySettings(options: SocketProxyOptions) {
     const controlPlaneUrl = options.controlPlaneUrl ?? process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
     const apiKey = options.apiKey ?? process.env.DURABLE_OBJECT_API_KEY
-    const local = controlPlaneUrl === undefined && apiKey === undefined ? readLocal() : {}
     return {
-        controlPlaneUrl: controlPlaneUrl ?? local.controlPlaneUrl ?? "http://127.0.0.1:7100",
-        apiKey: apiKey ?? local.apiKey,
-        namespaceId: options.namespaceId ?? process.env.DURABLE_OBJECT_NAMESPACE_ID ?? local.namespaceId
+        controlPlaneUrl: controlPlaneUrl ?? "http://127.0.0.1:7100",
+        apiKey,
+        namespaceId: options.namespaceId ?? process.env.DURABLE_OBJECT_NAMESPACE_ID
     }
 }
 

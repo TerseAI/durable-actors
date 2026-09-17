@@ -28,9 +28,7 @@ test("direct transport speaks the actor host protobuf contract", async () => {
                     method: "increment",
                     argsJson: Buffer.from("[2]")
                 },
-                ownerEpoch: 3,
-                stateVersion: 7,
-                stateReadUrl: "https://storage.example.com/state"
+                ownerEpoch: 3
             })
             callback(null, {
                 completed: { resultJson: Buffer.from("7"), socketEffectsJson: Buffer.from("[]") },
@@ -47,8 +45,7 @@ test("direct transport speaks the actor host protobuf contract", async () => {
                     route: `http://127.0.0.1:${port}`,
                     token: "direct-token",
                     ownerEpoch: 3,
-                    stateVersion: 7,
-                    stateReadUrl: "https://storage.example.com/state",
+
                     expiresAtMs: 4_000_000_000_000
                 },
                 {
@@ -84,8 +81,7 @@ test("direct transport rejects structurally invalid socket effects", async () =>
                     route: `http://127.0.0.1:${port}`,
                     token: "direct-token",
                     ownerEpoch: 3,
-                    stateVersion: 7,
-                    stateReadUrl: "https://storage.example.com/state",
+
                     expiresAtMs: 4_000_000_000_000
                 },
                 {
@@ -121,8 +117,7 @@ test("only transport authentication rejections are safe to retry", async () => {
                     route: `http://127.0.0.1:${port}`,
                     token: "expired",
                     ownerEpoch: 1,
-                    stateVersion: 0,
-                    stateReadUrl: "",
+
                     expiresAtMs: 1
                 },
                 {
@@ -185,8 +180,6 @@ interface HostRequest {
         readonly argsJson: Buffer
     }
     readonly ownerEpoch: number
-    readonly stateVersion: number
-    readonly stateReadUrl: string
 }
 
 type HostReply = {

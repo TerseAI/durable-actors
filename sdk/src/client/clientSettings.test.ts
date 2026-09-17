@@ -1,5 +1,10 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { test } from "node:test"
+import { promisify } from "node:util"
 
 import type { ActorConnection } from "../actor/socket.js"
 
@@ -27,18 +32,6 @@ test("environment and explicit client settings normalize routes, tokens, and gat
             metadata: {}
         }
         assert.deepEqual(connections, [expected, expected])
-        if (socketGatewayUrl === undefined) {
-            await new RemoteActorClient(undefined, {
-                ...dependencies,
-                environment: {},
-                readLocalSettings: () => ({
-                    apiKey: "token",
-                    namespaceId: "project-1",
-                    controlPlaneUrl: options.controlPlaneUrl
-                })
-            }).connect("Counter", "one", {})
-            assert.deepEqual(connections, [expected, expected, expected])
-        }
     }
 })
 
@@ -73,3 +66,30 @@ function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEn
         DURABLE_OBJECT_SOCKET_GATEWAY_URL: settings.socketGatewayUrl
     }
 }
+
+test("clients require explicit credentials even if a discovery file exists", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "actors-no-discovery-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    await mkdir(path.join(directory, ".little-actors"))
+    await writeFile(
+        path.join(directory, ".little-actors/runtime.json"),
+        JSON.stringify({
+            controlPlaneUrl: "http://localhost:7100",
+            apiKey: "stale-key",
+            namespaceId: "stale"
+        })
+    )
+    const source = `
+        import assert from 'node:assert/strict';
+        import { RemoteActorClient } from ${JSON.stringify(new URL("./remoteClient.js", import.meta.url).href)};
+        import { SocketProxy } from ${JSON.stringify(new URL("../proxy.js", import.meta.url).href)};
+        const client = new RemoteActorClient(undefined, {
+            environment: {},
+            connectWebSocket: async () => assert.fail('used file credentials')
+        });
+        await assert.rejects(client.connect('Counter', 'one', {}), /Configure exactly one of apiKey or token/);
+        assert.throws(() => new SocketProxy({Room:{}}), /API key/);
+    `
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))
+    await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })
+})

@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
+import { connection, connectionOptions } from "./cli/connection.js"
+import type { ConnectionOptions } from "./cli/connection.js"
 import { ControlPlaneClient } from "./cli/control-plane.js"
 import { registerDeployCommand } from "./cli/deploy.js"
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
 import { runtimeEnvironment, startRustRuntime } from "./cli/rust-runtime.js"
-import { configuredSettings } from "./client/clientSettings.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 try {
@@ -28,16 +29,28 @@ try {
             new Option("--template <name>", "example app").choices(["chat", "ai-chat", "documents"]).default("chat")
         )
         .action(initializeProject)
+    program
+        .command("build [entrypoint]")
+        .description("Build an actor runtime artifact with embedded persistence and socket schemas")
+        .option("--out-file <file>", "actor runtime artifact", "dist/actors.mjs")
+        .option("--config <file>", "TypeScript configuration file")
+        .action(async (entrypoint: string | undefined, options: { outFile: string; config?: string }) => {
+            const { buildActor } = await import("./compiler/actor-build.js")
+            await buildActor(entrypoint ?? "src/durable-objects.ts", path.resolve(options.outFile), {
+                configFile: options.config
+            })
+        })
     registerGenerateCommand(program)
     registerDeployCommand(program)
     registerDevCommand(program)
-    program
-        .command("token")
-        .description("Print a one-hour local session token for tools such as wscat")
-        .option("--data-dir <directory>", "runtime state directory", ".little-actors")
+    connectionOptions(program.command("token").description("Print a one-hour session token"))
+        .addOption(
+            new Option("--region <region>", "actor execution region")
+                .env("DURABLE_OBJECT_REGION")
+                .default("north-america-east")
+        )
         .action(async options => {
-            const { token } = await localSession(options.dataDir)
-            console.log(token)
+            console.log(await sessionToken(options))
         })
     program
         .command("start")
@@ -74,9 +87,11 @@ async function initializeProject(directory: string, options: { template: string 
 
 From that directory, run:
   npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx little-actors generate"}
+  export DURABLE_OBJECT_API_KEY=local-dev-key
   npx little-actors dev
 
 In another terminal, from the same directory:
+  export DURABLE_OBJECT_API_KEY=local-dev-key
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`)
@@ -87,25 +102,14 @@ async function runRuntime(args: string[]): Promise<number> {
     return runProcess(executable, args, runtimeEnvironment(executable), true)
 }
 
-async function localSession(directory: string) {
-    const connection = await localConnection(directory)
-    const client = new ControlPlaneClient(configuredSettings(connection), fetch)
+async function sessionToken(options: ConnectionOptions & { region: string }): Promise<string> {
+    const client = new ControlPlaneClient(connection(options), fetch)
     const { token } = (await client.issueSessionToken({
-        executionId: `local-${randomUUID()}`,
+        executionId: `cli-${randomUUID()}`,
         deadlineUnixMs: Date.now() + 3_600_000,
-        storageRegion: connection.storageRegion
+        storageRegion: options.region
     })) as { token: string }
-    return { connection, token }
-}
-
-async function localConnection(directory: string) {
-    return readFile(path.resolve(directory, "runtime.json"), "utf8")
-        .then(JSON.parse)
-        .catch(() => {
-            throw new Error(
-                "No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands."
-            )
-        })
+    return token
 }
 
 async function version(): Promise<string> {

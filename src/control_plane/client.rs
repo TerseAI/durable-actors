@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -16,9 +16,6 @@ use crate::{
         ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketPublisher, ActorSocketSource,
     },
     grpc::proto::actor_control_plane_service_client::ActorControlPlaneServiceClient,
-    host::HostId,
-    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
-    storage_urls::StateWriteTicket,
 };
 
 use super::{
@@ -37,15 +34,51 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
+        use base64::Engine;
+        let authorization = self
+            .authorization
+            .read()
+            .map_err(|_| anyhow::anyhow!("authorization lock poisoned"))?;
+        let payload = authorization
+            .to_str()?
+            .split('.')
+            .nth(1)
+            .context("host JWT has no payload")?;
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)?,
+        )?;
+        claims["exp"]
+            .as_u64()
+            .and_then(|value| value.checked_mul(1000))
+            .context("host JWT has no expiration")
+    }
+
+    pub(crate) async fn refresh_storage_access(
+        &self,
+    ) -> Result<Option<crate::bucket::access::StorageToken>> {
+        match self
+            .execute(ControlPlaneCommand::RefreshStorageAccess)
+            .await?
+        {
+            ControlPlaneCommandReply::StorageAccess {
+                token,
+                replacement_token,
+            } => {
+                self.replace_token(&replacement_token)?;
+                Ok(token)
+            }
+            _ => anyhow::bail!("unexpected storage credentials response"),
+        }
+    }
+
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
         let endpoint = endpoint.into();
         let channel = Endpoint::new(endpoint.clone())
             .context("parse actor control-plane endpoint")?
             .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
             .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
-            .connect()
-            .await
-            .context("connect to actor control plane")?;
+            .connect_lazy();
         Ok(Self {
             socket_gateway: endpoint,
             http: reqwest::Client::builder()
@@ -62,56 +95,6 @@ impl ControlPlaneClient {
     pub(crate) fn with_socket_gateway(mut self, endpoint: &str) -> Self {
         self.socket_gateway = endpoint.to_owned();
         self
-    }
-
-    pub async fn prepare_state_write(
-        &self,
-        actor: &ActorKey,
-        host_id: &HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-    ) -> Result<StateWriteTicket> {
-        match self
-            .execute(ControlPlaneCommand::PrepareStateWrite {
-                actor: actor.clone(),
-                host_id: host_id.clone(),
-                owner_epoch,
-                expected_version,
-            })
-            .await?
-        {
-            ControlPlaneCommandReply::StateWriteTicket { ticket } => Ok(ticket),
-            reply => anyhow::bail!("unexpected prepare-state-write reply: {reply:?}"),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn commit_state(
-        &self,
-        actor: &ActorKey,
-        host_id: &HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: &str,
-        request_id: &str,
-    ) -> Result<(u64, Option<StateWriteTicket>)> {
-        match self
-            .execute(ControlPlaneCommand::CommitState {
-                actor: actor.clone(),
-                host_id: host_id.clone(),
-                owner_epoch,
-                expected_version,
-                state_object: state_object.to_owned(),
-                request_id: request_id.to_owned(),
-            })
-            .await?
-        {
-            ControlPlaneCommandReply::StateCommitted {
-                state_version,
-                next_write,
-            } => Ok((state_version, next_write)),
-            reply => anyhow::bail!("unexpected commit-state reply: {reply:?}"),
-        }
     }
 }
 
@@ -147,38 +130,48 @@ impl ActorSocketPublisher for ControlPlaneClient {
     }
 }
 
-#[async_trait]
-impl HostLeaseRegistry for ControlPlaneClient {
-    async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-        match self
-            .execute(ControlPlaneCommand::RegisterLease {
-                request: request.clone(),
-            })
-            .await?
-        {
-            ControlPlaneCommandReply::Lease {
-                lease,
-                replacement_token,
-            } => {
-                if let Some(token) = replacement_token {
-                    self.replace_token(&token)?;
-                }
-                Ok(lease)
-            }
-            reply => anyhow::bail!("unexpected register-lease reply: {reply:?}"),
+#[derive(Default)]
+pub(crate) struct LeaseFence {
+    deadline: Option<Instant>,
+    pub(crate) fenced: bool,
+}
+
+impl LeaseFence {
+    pub(crate) fn begin(&mut self, now: Instant) -> Result<()> {
+        if self.deadline.is_some() {
+            self.check(now)?;
         }
+        ensure!(!self.fenced, "host session is permanently fenced");
+        Ok(())
     }
 
-    async fn unregister(&self, id: &HostId, _session_id: &str) -> Result<()> {
-        match self
-            .execute(ControlPlaneCommand::UnregisterLease {
-                host_id: id.clone(),
-            })
-            .await?
-        {
-            ControlPlaneCommandReply::Unit => Ok(()),
-            reply => anyhow::bail!("unexpected unregister-lease reply: {reply:?}"),
+    pub(crate) fn confirm(
+        &mut self,
+        started: Instant,
+        duration: Duration,
+        now: Instant,
+    ) -> Result<()> {
+        self.begin(now)?;
+        let window = duration.saturating_sub(Duration::from_secs(5));
+        let deadline = started + window;
+        if deadline <= now {
+            self.fenced = true;
         }
+        ensure!(
+            !self.fenced,
+            "host lease response arrived after the safe lease window"
+        );
+        self.deadline = Some(deadline);
+        Ok(())
+    }
+
+    pub(crate) fn check(&mut self, now: Instant) -> Result<()> {
+        let deadline = self.deadline.context("host lease is not confirmed yet")?;
+        if deadline <= now {
+            self.fenced = true;
+        }
+        ensure!(!self.fenced, "host session has no confirmed live lease");
+        Ok(())
     }
 }
 
@@ -247,4 +240,105 @@ fn bearer_authorization(token: &str) -> Result<MetadataValue<tonic::metadata::As
     format!("Bearer {token}")
         .parse()
         .context("actor token is not valid gRPC metadata")
+}
+
+#[cfg(test)]
+mod lease_fence_tests {
+    use super::*;
+
+    #[test]
+    fn an_early_request_does_not_prevent_initial_lease_confirmation() -> Result<()> {
+        let now = Instant::now();
+        let mut fence = LeaseFence::default();
+        assert!(fence.check(now).is_err());
+        fence.confirm(now, Duration::from_secs(30), now + Duration::from_secs(1))?;
+        fence.check(now + Duration::from_secs(2))
+    }
+
+    #[test]
+    fn slow_renewal_cannot_revive_an_expired_process() -> Result<()> {
+        let start = Instant::now();
+        let mut fence = LeaseFence::default();
+        fence.confirm(
+            start,
+            Duration::from_secs(30),
+            start + Duration::from_secs(1),
+        )?;
+        fence.check(start + Duration::from_secs(24))?;
+        assert!(
+            fence
+                .confirm(
+                    start + Duration::from_secs(20),
+                    Duration::from_secs(30),
+                    start + Duration::from_secs(26)
+                )
+                .is_err()
+        );
+        assert!(fence.begin(start + Duration::from_secs(27)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn response_gate_expires_from_request_start_even_without_a_timer() -> Result<()> {
+        let start = Instant::now();
+        let mut fence = LeaseFence::default();
+        fence.confirm(
+            start,
+            Duration::from_secs(30),
+            start + Duration::from_secs(10),
+        )?;
+        assert!(fence.check(start + Duration::from_secs(25)).is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use crate::grpc::proto::{
+        ControlPlaneReply, ControlPlaneRequest,
+        actor_control_plane_service_server::{
+            ActorControlPlaneService, ActorControlPlaneServiceServer,
+        },
+    };
+
+    struct LocalCredentials;
+    #[tonic::async_trait]
+    impl ActorControlPlaneService for LocalCredentials {
+        async fn execute(
+            &self,
+            _: Request<ControlPlaneRequest>,
+        ) -> Result<tonic::Response<ControlPlaneReply>, tonic::Status> {
+            Ok(tonic::Response::new(
+                super::super::protocol::encode_reply(ControlPlaneCommandReply::StorageAccess {
+                    token: None,
+                    replacement_token: "renewed-local-token".into(),
+                })
+                .unwrap(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn local_hosts_refresh_socket_credentials_without_a_cloud_token() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let client = ControlPlaneClient::connect(
+            format!("http://{}", listener.local_addr()?),
+            "initial-token",
+        )
+        .await?;
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(ActorControlPlaneServiceServer::new(LocalCredentials))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        let result = client.refresh_storage_access().await;
+        server.abort();
+        result?;
+        assert_eq!(
+            client.authorization.read().unwrap().to_str()?,
+            "Bearer renewed-local-token"
+        );
+        Ok(())
+    }
 }

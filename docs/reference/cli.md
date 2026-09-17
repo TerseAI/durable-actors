@@ -19,16 +19,18 @@ npx little-actors init chat-example
 ## Run a development server
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [automatic local configuration](configuration.md).
+Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
+- `--api-key <key>` — Required API key, or set `DURABLE_OBJECT_API_KEY`.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.little-actors`.
-- `--storage <backend>` — Snapshot storage, either `local` (default) or `gcs`.
+- `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
 
 ## Inspect saved objects
 
@@ -42,13 +44,24 @@ npx little-actors objects inspect ChatRoom lobby
 - `--after <cursor>` — Fetch the page following a cursor. Printed to stderr whenever more objects remain.
 - `--all` — Fetch every page. Cannot be combined with `--limit` or `--after`.
 - `--json` — Print a JSON array instead of a table, adding snapshot paths and request IDs.
-- `--data-dir <directory>` — State directory of the running local server. Defaults to `.little-actors`.
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
+
+## Build an actor artifact
+
+```sh
+npx little-actors build
+```
+
+Checks TypeScript and bundles actor code with its generated schemas into `dist/actors.mjs`. Hosted actors load this artifact without compiling source on startup.
+
+- `[entrypoint]` — TypeScript source file, default `src/durable-objects.ts`.
+- `--out-file <file>` — Artifact path, default `dist/actors.mjs`.
+- `--config <file>` — TypeScript configuration.
 
 ## Deploy actors
 
 ```sh
-npx little-actors deploy --image im-chat --working-directory /app
+npx little-actors deploy --image im-chat --working-directory /app --actor-entrypoint dist/actors.mjs
 ```
 
 Registers a built image plus the public API contract extracted from the TypeScript source
@@ -56,7 +69,7 @@ Registers a built image plus the public API contract extracted from the TypeScri
 - `--image <ref>` — Provider image to register.
 - `--revision <id>` — Optional revision name. Defaults to a new generated ID for each deploy.
 - `--working-directory <path>` — Absolute project path inside the image.
-- `--actor-entrypoint <path>` — Entrypoint inside the image.
+- `--actor-entrypoint <path>` — Entrypoint inside the image. Use `dist/actors.mjs` for the build artifact; this is also the default.
 - `--config <file>` — TypeScript configuration for extraction.
 - `--secret <name>` — Provider secret reference. Repeatable.
 - `--socket-gateway-url <origin>` — Separate socket gateway.
@@ -82,7 +95,7 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 
 - `--out-dir <directory>` — Output location. Defaults to `generated/`.
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.
-- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses the running local runtime or [connection](configuration.md) overrides. Cannot be combined with a source entrypoint or `--config`.
+- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_OBJECT_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
 - `--revision <id>` — Optional check that the active deployment matches this revision. Defaults to the latest deployment's contract.
 - `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) overrides.
 
@@ -92,7 +105,7 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 npx little-actors generate --url
 ```
 
-With `little-actors dev` running, this reads the local runtime's URL and API key automatically. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
+Set `DURABLE_OBJECT_API_KEY` and optionally `DURABLE_OBJECT_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
 
 ## Start a hosted server
 
@@ -108,9 +121,10 @@ Starts the packaged server using the [hosted server configuration](configuration
 npx little-actors token
 ```
 
-Requests a session token from the running local server, reading its origin from the data directory. Standard output contains only the token followed by a newline; errors go to standard error.
+Requests a session token using connection flags or environment variables. Standard output contains only the token followed by a newline; errors go to standard error.
 
-- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
+- `--url <origin>`, `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) settings.
+- `--region <region>` — Execution region, or `DURABLE_OBJECT_REGION`; defaults to `north-america-east`.
 
 The requested deadline is one hour in the future. Issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 

@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { z } from "zod"
 
 import type { ActorSchema } from "../actor/schema.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
 import { failedReply, parseActorSessionServerMessage } from "./protocol.js"
@@ -48,13 +48,16 @@ class ActorSession {
 
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
-        const actorSchemas = await prepareActorEntrypoint(actorEntrypointUrl)
+        const actorSchemas = actorEntrypointUrl.endsWith(".mjs")
+            ? undefined
+            : await prepareActorEntrypoint(actorEntrypointUrl)
         const supervisor = this.createSupervisor({
             actorEntrypointUrl,
             actorSchemas,
             actorIdleTimeoutMs: this.settings.actorIdleTimeoutMs
         })
-        const commandHandler: ActorCommandHandler = (command, publish) => supervisor.handle(command, publish)
+        const commandHandler: ActorCommandHandler = (command, publish, connections) =>
+            supervisor.handle(command, publish, connections)
         try {
             const actorTypes = await discoverActorTypes(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
@@ -99,6 +102,10 @@ class ActorSessionConnection {
     private closedResolve: (() => void) | undefined
     private readonly closedPromise: Promise<void>
     private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
+    private readonly loadingConnections = new Map<
+        number,
+        { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void }
+    >()
 
     static async open(
         socketPath: string,
@@ -110,7 +117,7 @@ class ActorSessionConnection {
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
         const connection = new ActorSessionConnection(socket, commandHandler)
-        connection.send({ type: "attach", protocol: 15, actor_types: actorTypes })
+        connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }
@@ -189,9 +196,22 @@ class ActorSessionConnection {
                     await this.reply(
                         message.message_id,
                         message.command,
-                        await this.commandHandler(message.command, effects => this.publish(message.message_id, effects))
+                        await this.commandHandler(
+                            message.command,
+                            effects => this.publish(message.message_id, effects),
+                            () => this.getConnections(message.message_id)
+                        )
                     )
                     break
+                case "socket_connections": {
+                    const pending = this.loadingConnections.get(message.message_id)
+                    if (pending === undefined)
+                        throw new ActorProtocolError("Rust host replied to unknown connection lookup")
+                    this.loadingConnections.delete(message.message_id)
+                    if (message.error === undefined) pending.resolve(message.connections)
+                    else pending.reject(new ActorSessionError(message.error))
+                    break
+                }
                 case "socket_effects_published": {
                     const pending = this.publishing.get(message.message_id)
                     if (pending === undefined)
@@ -218,6 +238,20 @@ class ActorSessionConnection {
                 this.send({ type: "socket_effects", message_id: messageId, effects })
             } catch (error) {
                 this.publishing.delete(messageId)
+                reject(sessionError(error))
+            }
+        })
+    }
+
+    private getConnections(messageId: number): Promise<readonly SocketConnection[]> {
+        return new Promise((resolve, reject) => {
+            if (this.loadingConnections.has(messageId))
+                throw new ActorProtocolError("actor connections are already being loaded")
+            this.loadingConnections.set(messageId, { resolve, reject })
+            try {
+                this.send({ type: "get_connections", message_id: messageId })
+            } catch (error) {
+                this.loadingConnections.delete(messageId)
                 reject(sessionError(error))
             }
         })
@@ -252,6 +286,9 @@ class ActorSessionConnection {
     }
 
     private close(): void {
+        for (const pending of this.loadingConnections.values())
+            pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
+        this.loadingConnections.clear()
         for (const pending of this.publishing.values())
             pending.reject(new ActorSessionError("Rust host disconnected while publishing socket output"))
         this.publishing.clear()
@@ -309,7 +346,7 @@ function sessionError(error: unknown): Error {
 
 async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
     const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
-    requireTypeScriptSource(entrypointPath)
+    if (!entrypointPath.endsWith(".mjs")) requireTypeScriptSource(entrypointPath)
     await requireFile(
         entrypointPath,
         configured === undefined
@@ -380,7 +417,7 @@ const actorSessionSettingsSchema = z.object({
     DURABLE_OBJECT_ENTRYPOINT: z.string().trim().min(1).optional()
 })
 
-const DEFAULT_ACTOR_ENTRYPOINT = "src/durable-objects.ts"
+const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
 export {
     ActorSession,

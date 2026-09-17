@@ -90,6 +90,7 @@ impl LocalRuntime {
             .arg("--project")
             .arg(project.path())
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
+            .env("DURABLE_OBJECT_API_KEY", "test-key")
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -99,14 +100,7 @@ impl LocalRuntime {
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
-        let connection: Value = serde_json::from_slice(&std::fs::read(
-            project.path().join(".little-actors/runtime.json"),
-        )?)?;
-        let origin = connection["controlPlaneUrl"]
-            .as_str()
-            .context("runtime origin is missing")?
-            .to_owned();
+        let origin = timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
         Ok(Self {
             _project: project,
             child,
@@ -127,15 +121,15 @@ impl LocalRuntime {
     }
 }
 
-async fn wait_until_ready(output: &mut BufReader<ChildStdout>) -> Result<()> {
+async fn wait_until_ready(output: &mut BufReader<ChildStdout>) -> Result<String> {
     let mut line = String::new();
     loop {
         ensure!(
             output.read_line(&mut line).await? != 0,
             "runtime exited before readiness: {line}"
         );
-        if line.contains("Local actors ready at") {
-            return Ok(());
+        if let Some((_, origin)) = line.split_once("Local actors ready at ") {
+            return Ok(origin.trim().to_owned());
         }
         line.clear();
     }

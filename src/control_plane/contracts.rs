@@ -52,7 +52,6 @@ pub(crate) struct PublishedContract {
     pub contract: Value,
 }
 
-#[cfg(test)]
 impl PublishedContract {
     pub(crate) fn new(namespace: &str, revision: &str, contract: &PublicActorContract) -> Self {
         Self {

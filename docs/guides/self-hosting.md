@@ -5,13 +5,13 @@ After the [local tutorial](../../examples/chat/README.md), use this guide to dep
 Recommended setup:
 
 - One always-on control plane near your database and hosts.
-- Managed PostgreSQL with backups.
-- A STANDARD GCS bucket near each actor region.
+- Managed PostgreSQL with backups for deployments and public contracts.
+- One GCS bucket for ownership, host leases, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses version `0.1.27`. Its container includes the Rust runtime and Go provider; neither compiler is required.
+Use matching runtime-container and SDK versions that include `little-actors build`. The container includes the Rust runtime and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
@@ -26,7 +26,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION
 ```
 
 For an attached Google service account, follow the [Google credentials configuration](../reference/configuration.md) and omit the mount.
@@ -46,13 +46,13 @@ Expect JSON with a `keys` array. Your first actor call will also exercise host p
 In the chat project from the local tutorial, pin the SDK to the runtime version:
 
 ```sh
-npm install --save-exact little-actors@0.1.27
+npm install --save-exact little-actors@YOUR_VERSION
 ```
 
 Create a `Dockerfile` in your chat project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27 AS runtime
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION AS runtime
 
 FROM node:22-bookworm
 COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
@@ -60,9 +60,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY src ./src
+COPY tsconfig.json ./
+RUN npx little-actors build
 ```
 
-The image combines the prebuilt runtime, Node.js, and your source.
+The image combines the runtime, Node.js, and the compiled actor artifact. The build embeds schemas in `dist/actors.mjs`, so host startup does not run the TypeScript compiler.
 
 Build and push an amd64 image to a registry you control:
 
@@ -108,7 +110,8 @@ From the actor project used to build the image, register it and publish its publ
 ```sh
 npx little-actors deploy \
     --image im-YOUR_IMAGE_ID \
-    --working-directory /app
+    --working-directory /app \
+    --actor-entrypoint dist/actors.mjs
 ```
 
 ## 5. Connect your web app
@@ -129,7 +132,7 @@ Configure [local GCS storage](../reference/configuration.md), then start the run
 npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
+Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
 ## Browser connections
 

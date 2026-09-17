@@ -96,10 +96,15 @@ async fn issue_socket_ticket(
         authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
     grant.validate().map_err(ApiError::bad_request)?;
+    let spec = state
+        .invocations
+        .runtime_deployment(&grant.actor.namespace_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::conflict("actor deployment is not registered"))?;
     let issued = state
         .admin
-        .issue_socket(grant)
-        .await
+        .issue_socket(grant, spec.socket_gateway_url.as_deref())
         .map_err(ApiError::bad_request)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response())
 }
@@ -211,11 +216,12 @@ async fn issue_workflow_token(
     if request.deadline_unix_ms <= 0 {
         return Err(ApiError::bad_request("workflow deadline is required"));
     }
-    if !state
-        .admin
-        .deployment_exists(namespace_id)
+    if state
+        .invocations
+        .runtime_deployment(namespace_id)
         .await
         .map_err(ApiError::internal)?
+        .is_none()
     {
         return Err(ApiError::conflict("project has no registered actor code"));
     }
@@ -277,8 +283,7 @@ async fn resolve_actor_target(
             route: target.route,
             token: target.token,
             owner_epoch: target.owner_epoch,
-            state_version: target.state_version,
-            state_read_url: target.state_read_url,
+
             expires_at_ms: target.expires_at_ms,
         }))
     }
@@ -299,7 +304,7 @@ async fn resolve_actor_target(
             lease_checked_at_ms = timings.lease_checked_at_ms,
             host_ensured_at_ms = timings.host_ensured_at_ms,
             placement_claimed_at_ms = timings.placement_claimed_at_ms,
-            state_url_signed_at_ms = timings.state_url_signed_at_ms,
+
             invocation_token_issued_at_ms = timings.invocation_token_issued_at_ms,
             route_selected_at_ms = timings.route_selected_at_ms,
             completed_at_ms,
@@ -320,7 +325,7 @@ async fn resolve_actor_target(
             lease_checked_at_ms = timings.lease_checked_at_ms,
             host_ensured_at_ms = timings.host_ensured_at_ms,
             placement_claimed_at_ms = timings.placement_claimed_at_ms,
-            state_url_signed_at_ms = timings.state_url_signed_at_ms,
+
             invocation_token_issued_at_ms = timings.invocation_token_issued_at_ms,
             route_selected_at_ms = timings.route_selected_at_ms,
             completed_at_ms,
@@ -434,8 +439,7 @@ struct ActorTargetReply {
     route: String,
     token: String,
     owner_epoch: u64,
-    state_version: u64,
-    state_read_url: String,
+
     expires_at_ms: i64,
 }
 

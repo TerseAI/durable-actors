@@ -4,11 +4,11 @@ use anyhow::{Context, Result, ensure};
 use tracing::info;
 
 use crate::{
-    host_leases::PostgresHostLeaseStore,
-    placement::PostgresObjectPlacementStore,
+    bucket::{BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage},
+    clock::SystemClock,
+    host_leases::HostLeaseStore,
     postgres::PostgresDatabase,
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
-    storage_urls::{GcsStorageUrlSigner, validate_buckets},
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -37,7 +37,8 @@ pub struct ControlPlaneProcessConfig {
 
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
-    pub standard_buckets: HashMap<String, String>,
+    pub bucket: String,
+    pub replica_regions: Vec<String>,
 }
 
 pub struct SandboxProviderConfig {
@@ -97,16 +98,42 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         super::ActorTokenPurpose::ControlPlane,
         config.jwt_max_lifetime,
     )?;
-    let database = PostgresDatabase::connect(&config.storage.postgres_url).await?;
-    let leases = Arc::new(PostgresHostLeaseStore::from_database(database.clone()));
-    let placements = Arc::new(PostgresObjectPlacementStore::from_database(
-        database.clone(),
+    let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
+    let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
+    let leases: Arc<dyn HostLeaseStore> = Arc::new(BucketHostLeases::new(
+        authority.clone(),
+        Arc::new(SystemClock),
     ));
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
-    let storage_urls =
-        Arc::new(GcsStorageUrlSigner::from_adc(config.storage.standard_buckets).await?);
+    let (fleet, access) = super::replication::fleet(
+        registry.clone(),
+        &config.sandbox_provider,
+        &config.jwt_signing_key,
+        config.storage.replica_regions,
+    )?;
+    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
+        crate::bucket::access::BucketLocation::Gcs {
+            bucket: config.storage.bucket.clone(),
+        },
+        fleet.clone(),
+        access.clone(),
+    )?);
+    let storage = Arc::new(RuntimeStorage::new(
+        authority,
+        leases.clone(),
+        fleet,
+        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        access,
+        config.sandbox_provider.runtime.control_plane_url.clone(),
+    )?);
+    let placements = storage.clone();
     let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
-    let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
+    let provisioner = sandbox_provisioner(
+        config.sandbox_provider,
+        &issuer,
+        &leases,
+        runtime_access.clone(),
+    )?;
     let socket_events = config
         .socket_event_sink
         .map(|sink| {
@@ -117,22 +144,19 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     let service = ControlPlaneService::new(
         leases,
         placements.clone(),
-        storage_urls.clone(),
         auth,
         registry.clone(),
         issuer.clone(),
         provisioner,
     )
+    .with_runtime_access(runtime_access)
     .with_socket_event_sink(socket_events);
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
         .with_socket_origin(&socket_origin)?;
-    let inspector = super::inspection::ActorInspector::new(
-        placements,
-        storage_urls,
-        Arc::new(crate::state_transport::HttpStateTransport::new()),
-    );
+    let inspector = super::inspection::ActorInspector::new(placements, storage.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin));
+        .merge(super::inspection::router(inspector, admin))
+        .merge(storage.router());
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -140,19 +164,23 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
 fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
-    leases: &Arc<PostgresHostLeaseStore>,
+    leases: &Arc<dyn HostLeaseStore>,
+    access: Arc<crate::bucket::access::RuntimeAccess>,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(CommandSandboxProvider::new(
         config.provider_name,
         config.command,
         config.environment,
     )?);
-    Ok(Arc::new(super::service::SandboxHostProvisioner::new(
-        provider,
-        config.runtime,
-        issuer.clone(),
-        leases.clone(),
-    )))
+    Ok(Arc::new(
+        super::service::SandboxHostProvisioner::new(
+            provider,
+            config.runtime,
+            issuer.clone(),
+            leases.clone(),
+        )
+        .with_runtime_access(access),
+    ))
 }
 
 impl ControlPlaneProcessConfig {
@@ -185,13 +213,13 @@ impl ControlPlaneProcessConfig {
             api_key.trim() == api_key,
             "DURABLE_OBJECT_API_KEY has surrounding whitespace"
         );
-        let standard_buckets: HashMap<String, String> =
-            serde_json::from_str(&required(&mut get, "DURABLE_OBJECT_STANDARD_BUCKETS")?)
-                .context("DURABLE_OBJECT_STANDARD_BUCKETS must be a JSON region-to-bucket map")?;
-        validate_buckets(&standard_buckets)?;
+        let bucket = required(&mut get, "DURABLE_OBJECT_BUCKET")?;
+        crate::storage::validate_bucket(&bucket)?;
+        let replica_regions = crate::replication::replica_regions(&mut get)?;
         let storage = ControlPlaneStorageConfig {
+            replica_regions,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
-            standard_buckets,
+            bucket,
         };
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
@@ -234,7 +262,7 @@ fn sandbox_provider_config(
         provider_name == "modal",
         "unsupported sandbox provider {provider_name:?}"
     );
-    let environment = HashMap::from([
+    let mut environment = HashMap::from([
         (
             "MODAL_TOKEN_ID".into(),
             provider_credential(get, "MODAL_TOKEN_ID")?,
@@ -244,6 +272,15 @@ fn sandbox_provider_config(
             provider_credential(get, "MODAL_TOKEN_SECRET")?,
         ),
     ]);
+    if let Some(value) = get("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK") {
+        let enabled: bool = value
+            .parse()
+            .context("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK must be true or false")?;
+        environment.insert(
+            "DURABLE_OBJECT_MODAL_MUTABLE_NETWORK".into(),
+            enabled.to_string(),
+        );
+    }
     let control_plane_url = validated_http_url(
         &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
         "DURABLE_OBJECT_CONTROL_PLANE_URL",
@@ -346,6 +383,7 @@ mod tests {
         let values = HashMap::from([
             ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
             ("DURABLE_OBJECT_API_KEY", "api-key"),
+            ("DURABLE_OBJECT_BUCKET", "actor-state-test"),
             ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL",
@@ -357,19 +395,45 @@ mod tests {
                 "DURABLE_OBJECT_POSTGRES_URL",
                 "postgresql://localhost/actors",
             ),
-            (
-                "DURABLE_OBJECT_STANDARD_BUCKETS",
-                "{\"us-east\":\"actor-state-test\"}",
-            ),
         ]);
         let config = ControlPlaneProcessConfig::from_lookup(|name| {
             values.get(name).map(|value| (*value).into())
         })?;
-        assert_eq!(
-            config.storage.standard_buckets["us-east"],
-            "actor-state-test"
-        );
+        assert_eq!(config.storage.bucket, "actor-state-test");
         assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
+        Ok(())
+    }
+
+    #[test]
+    fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
+        let mut values = HashMap::from([
+            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
+            (
+                "DURABLE_OBJECT_CONTROL_PLANE_URL",
+                "https://control.example",
+            ),
+            ("MODAL_TOKEN_ID", "id"),
+            ("MODAL_TOKEN_SECRET", "secret"),
+        ]);
+        let configure = |values: &HashMap<&str, &str>| {
+            sandbox_provider_config(
+                &mut |name| values.get(name).map(|v| (*v).into()),
+                "issuer",
+                "audience",
+            )
+        };
+        assert!(
+            !configure(&values)?
+                .environment
+                .contains_key("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK")
+        );
+        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "true");
+        assert_eq!(
+            configure(&values)?.environment["DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"],
+            "true"
+        );
+        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "yes");
+        assert!(configure(&values).is_err());
         Ok(())
     }
 

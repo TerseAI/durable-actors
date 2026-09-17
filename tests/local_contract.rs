@@ -72,6 +72,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
         Duration::from_secs(5),
         Command::new(env!("CARGO_BIN_EXE_little-actors"))
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .env("DURABLE_OBJECT_API_KEY", "test-key")
             .arg("--project")
             .arg(project.path())
             .arg("--contract")
@@ -92,7 +93,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
 
 struct LocalRuntime {
     child: Child,
-    connection: Value,
+    origin: String,
 }
 
 impl LocalRuntime {
@@ -100,6 +101,7 @@ impl LocalRuntime {
         let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .env("DURABLE_OBJECT_API_KEY", "test-key")
             .arg("--project")
             .arg(project)
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
@@ -112,31 +114,31 @@ impl LocalRuntime {
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        timeout(Duration::from_secs(5), async {
+        let origin = timeout(Duration::from_secs(5), async {
             let mut line = String::new();
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
-                if line.contains("Local actors ready at") {
-                    return Ok::<_, anyhow::Error>(());
+                if let Some((_, origin)) = line.split_once("Local actors ready at ") {
+                    return Ok::<_, anyhow::Error>(origin.trim().to_owned());
                 }
+                line.clear();
             }
         })
         .await??;
-        let connection =
-            serde_json::from_slice(&std::fs::read(project.join(".little-actors/runtime.json"))?)?;
-        Ok(Self { child, connection })
+        assert!(!project.join(".little-actors/runtime.json").exists());
+        Ok(Self { child, origin })
     }
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
             .get(format!(
                 "{}/v1/namespaces/local/contract{query}",
-                self.connection["controlPlaneUrl"].as_str().unwrap()
+                self.origin
             ))
-            .bearer_auth(self.connection["apiKey"].as_str().unwrap())
+            .bearer_auth("test-key")
             .send()
             .await?)
     }

@@ -4,6 +4,7 @@ mod browser_socket;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;
+pub(crate) use client::LeaseFence;
 mod event_sink;
 mod inspection;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod process;
 mod protocol;
 mod public_api;
 mod regions;
+mod replication;
 mod service;
 mod socket_ticket;
 mod websocket;

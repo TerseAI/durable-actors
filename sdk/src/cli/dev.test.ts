@@ -44,7 +44,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
         { mode: 0o755 }
     )
-    const env = { ...process.env, DURABLE_OBJECT_BINARY: executable }
+    const env = { ...process.env, DURABLE_OBJECT_BINARY: executable, DURABLE_OBJECT_API_KEY: "test-key" }
     const args = [cli, "dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)

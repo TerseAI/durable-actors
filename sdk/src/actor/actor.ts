@@ -43,7 +43,7 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
         return metadataFor(this).actorId
     }
 
-    protected get connections(): readonly ActorSocket<Metadata, Outgoing, Tag>[] {
+    protected getConnections(): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
         return actorConnections<Metadata, Outgoing, Tag>(this)
     }
 

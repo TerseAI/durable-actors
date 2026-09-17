@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
@@ -155,19 +154,15 @@ impl AdminService {
         Ok(self)
     }
 
-    pub(super) async fn issue_socket(
+    pub(super) fn issue_socket(
         &self,
         grant: super::socket_ticket::SocketGrant,
+        socket_gateway_url: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let spec = self
-            .current_deployment(&grant.actor.namespace_id)
-            .await?
-            .context("actor deployment is not registered")?;
-        let origin = spec
-            .socket_gateway_url
-            .or_else(|| self.socket_origin.clone())
+        let origin = socket_gateway_url
+            .or(self.socket_origin.as_deref())
             .context("socket origin is not configured")?;
-        let mut url = reqwest::Url::parse(&origin)?.join("/v1/socket")?;
+        let mut url = reqwest::Url::parse(origin)?.join("/v1/socket")?;
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme)
             .map_err(|_| anyhow::anyhow!("invalid socket URL"))?;
@@ -249,10 +244,6 @@ impl AdminService {
         Ok(())
     }
 
-    pub(crate) async fn deployment_exists(&self, namespace_id: &str) -> Result<bool> {
-        Ok(self.registry.launch_spec(namespace_id).await?.is_some())
-    }
-
     pub(crate) async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
         self.registry.remove_deployment(namespace_id).await
     }
@@ -273,13 +264,11 @@ impl AdminService {
     }
 }
 
-#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct LocalAdminRegistry {
     state: Mutex<LocalAdminState>,
 }
 
-#[cfg(test)]
 #[derive(Default)]
 struct LocalAdminState {
     namespaces: HashSet<String>,
@@ -287,7 +276,6 @@ struct LocalAdminState {
     contracts: HashMap<String, PublishedContract>,
 }
 
-#[cfg(test)]
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
     async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {

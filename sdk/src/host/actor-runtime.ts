@@ -18,7 +18,7 @@ import { validateContract } from "../wire/validation.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
-import type { SocketPublisher } from "./types.js"
+import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
     private instance: AnyActor | undefined
@@ -27,7 +27,10 @@ class ActorRuntime {
 
     constructor(
         private readonly definition: ActorDefinition,
-        private readonly publish?: SocketPublisher
+        private readonly publish?: SocketPublisher,
+        private readonly connections: SocketSource = async () => {
+            throw new Error("actor connection lookup is unavailable")
+        }
     ) {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
     }
@@ -63,7 +66,7 @@ class ActorRuntime {
             const before = snapshotActorState(instance, this.definition.state)
             const operation = await runWithActorSockets(
                 instance,
-                command.connections ?? [],
+                this.connections,
                 async () =>
                     runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
                 this.publish,

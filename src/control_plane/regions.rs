@@ -1,3 +1,12 @@
+pub(super) const ALL: &[&str] = &[
+    "north-america-east",
+    "north-america-central",
+    "north-america-south",
+    "north-america-west",
+    "europe-west",
+    "asia-southeast",
+];
+
 use anyhow::{Result, bail};
 
 pub(super) fn storage_region(region: &str) -> Result<&str> {

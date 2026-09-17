@@ -1,11 +1,7 @@
-mod postgres;
-
 use crate::host::HostId;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
-pub use self::postgres::PostgresHostLeaseStore;
 
 pub const MAX_HOST_LEASE_DURATION_MS: u64 = 60_000;
 

@@ -9,7 +9,6 @@ use crate::{
         AdminRegistry, HostLaunchSpec, LocalAdminRegistry, PostgresAdminRegistry,
     },
     postgres::{PostgresDatabase, testing::with_postgres},
-    sqlite::SqliteStore,
 };
 
 #[test]
@@ -151,75 +150,6 @@ fn rest_parameters_require_array_schemas_without_tuple_items() -> Result<()> {
 #[tokio::test]
 async fn in_memory_contract_keeps_only_the_active_revision() -> Result<()> {
     registry_behavior(Arc::new(LocalAdminRegistry::default())).await
-}
-
-#[tokio::test]
-async fn sqlite_latest_contract_is_atomic_and_survives_reopening() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("runtime.sqlite");
-    let store = Arc::new(SqliteStore::open(&path).await?);
-    registry_behavior(store.clone()).await?;
-    let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
-    let deployment = spec("persisted");
-    store
-        .register_deployment(&deployment, Some(&contract))
-        .await?;
-    drop(store);
-    let reopened = SqliteStore::open(&path).await?;
-    assert_eq!(
-        reopened
-            .deployment_contract("persisted", None)
-            .await?
-            .unwrap()
-            .contract,
-        *contract.document()
-    );
-    let second = SqliteStore::open(&path).await?;
-    let race = spec("independent-connections");
-    let different = PublicActorContract::new(serde_json::from_str(include_str!(
-        "../../sdk/fixtures/public-contract.json"
-    ))?)?;
-    let (left, right) = tokio::join!(
-        reopened.register_deployment(&race, Some(&contract)),
-        second.register_deployment(&race, Some(&different)),
-    );
-    assert_ne!(left.is_ok(), right.is_ok());
-    Ok(())
-}
-
-#[tokio::test]
-async fn sqlite_adds_contract_storage_to_existing_deployments() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("runtime.sqlite");
-    let deployment = spec("active");
-    {
-        let connection = tokio_rusqlite::rusqlite::Connection::open(&path)?;
-        connection.execute_batch(
-            "CREATE TABLE deployments (namespace_id TEXT PRIMARY KEY, body TEXT NOT NULL);",
-        )?;
-        connection.execute(
-            "INSERT INTO deployments VALUES (?1, ?2)",
-            tokio_rusqlite::rusqlite::params!["active", serde_json::to_string(&deployment)?],
-        )?;
-    }
-    let store = SqliteStore::open(&path).await?;
-    assert_eq!(store.launch_spec("active").await?, Some(deployment.clone()));
-    assert!(store.deployment_contract("active", None).await?.is_none());
-    let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
-    assert!(
-        store
-            .register_deployment(&deployment, Some(&contract))
-            .await?
-    );
-    assert_eq!(
-        store
-            .deployment_contract("active", None)
-            .await?
-            .unwrap()
-            .contract,
-        *contract.document()
-    );
-    Ok(())
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 const env = { ...process.env, DURABLE_OBJECT_API_KEY: "contract-key", DURABLE_OBJECT_NAMESPACE_ID: "" }
 
-test("generate discovers the local runtime and keeps explicit remote settings separate", async t => {
+test("generate uses environment settings and explicit flags without reading discovery files", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-local-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contract = JSON.parse(await readFile(path.join(sdk, "fixtures/public-contract.json"), "utf8"))
@@ -44,21 +44,35 @@ test("generate discovers the local runtime and keeps explicit remote settings se
             namespaceId: "local"
         })
     )
-    const localEnv = { ...process.env }
-    for (const key of ["DURABLE_OBJECT_API_KEY", "DURABLE_OBJECT_CONTROL_PLANE_URL", "DURABLE_OBJECT_NAMESPACE_ID"])
-        delete localEnv[key]
+    const localEnv = {
+        ...process.env,
+        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
+        DURABLE_OBJECT_API_KEY: "local-key",
+        DURABLE_OBJECT_NAMESPACE_ID: "local"
+    }
     const generate = (...args: string[]) =>
-        run(process.execPath, [cli, "generate", "--url", ...args], {
-            cwd: directory,
-            env: localEnv
-        })
+        run(process.execPath, [cli, "generate", "--url", ...args], { cwd: directory, env: localEnv })
     const result = await generate()
     assert.match(result.stdout, /local-revision/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
-    assert.deepEqual(requests, ["/v1/namespaces/local/contract"])
-    await assert.rejects(generate(origin), /API key/)
-    await assert.rejects(generate("--api-key", "remote-key"), /--url/)
-    assert.equal(requests.length, 1)
+    await run(process.execPath, [cli, "generate", "--url", origin, "--api-key", "local-key", "--namespace", "local"], {
+        cwd: directory,
+        env: {
+            ...localEnv,
+            DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
+            DURABLE_OBJECT_API_KEY: "wrong",
+            DURABLE_OBJECT_NAMESPACE_ID: "wrong"
+        }
+    })
+    assert.deepEqual(requests, Array(2).fill("/v1/namespaces/local/contract"))
+    await assert.rejects(
+        run(process.execPath, [cli, "generate", "--url"], {
+            cwd: directory,
+            env: { ...localEnv, DURABLE_OBJECT_API_KEY: "" }
+        }),
+        /API key/
+    )
+    assert.equal(requests.length, 2)
 })
 
 test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {
@@ -169,7 +183,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
         codeRevision: "release-1",
         imageRef: "im-chat",
         workingDirectory: "/app",
-        actorEntrypoint: "src/durable-objects.ts",
+        actorEntrypoint: "dist/actors.mjs",
         secretRefs: ["chat-secrets"],
         socketGatewayUrl: "https://gateway.example.com",
         warmRegion: "us-east"

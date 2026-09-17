@@ -54,6 +54,10 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 	if err != nil {
 		return hostHandle{}, err
 	}
+	return p.ensureSandbox(ctx, request, params)
+}
+
+func (p *provider) ensureSandbox(ctx context.Context, request ensureRequest, params *modal.SandboxCreateParams) (hostHandle, error) {
 	phases := &provisioning{Provider: "modal", StartedAtMS: p.elapsed(), InputParsedAtMS: p.inputParsed, SDKLoadedAtMS: p.sdkLoaded}
 	app, image, err := p.api.Resolve(ctx, request.ImageRef)
 	if err != nil {

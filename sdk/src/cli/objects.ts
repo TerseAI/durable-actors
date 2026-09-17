@@ -1,16 +1,10 @@
 import { Command, InvalidArgumentError, Option } from "commander"
-import { readFile } from "node:fs/promises"
-import path from "node:path"
 
-import { configuredSettings } from "../client/clientSettings.js"
+import { connection, connectionOptions } from "./connection.js"
+import type { ConnectionOptions } from "./connection.js"
+import { ControlPlaneClient } from "./control-plane.js"
 
-import { ControlPlaneClient, type ControlPlaneConnection } from "./control-plane.js"
-
-interface ObjectOptions {
-    dataDir: string
-    url?: string
-    apiKey?: string
-    namespace?: string
+interface ObjectOptions extends ConnectionOptions {
     json?: boolean
 }
 
@@ -51,14 +45,6 @@ function registerObjectCommands(program: Command): void {
     ).action(inspectObject)
 }
 
-function connectionOptions(command: Command): Command {
-    return command
-        .option("--namespace <id>", "namespace (list: all; inspect: connection default)")
-        .option("--data-dir <directory>", "local runtime state directory", ".little-actors")
-        .option("--url <origin>", "cloud control-plane URL (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
-        .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
-}
-
 function rowLimit(value: string): number {
     const limit = Number(value)
     if (!/^\d+$/u.test(value) || !Number.isInteger(limit) || limit < 1 || limit > 500)
@@ -67,7 +53,7 @@ function rowLimit(value: string): number {
 }
 
 async function listObjects(options: ListOptions): Promise<void> {
-    const client = new ControlPlaneClient(await connection(options), fetch)
+    const client = new ControlPlaneClient(connection(options), fetch)
     const objects: SavedObject[] = []
     let after: string | null = options.after ?? null
     do {
@@ -87,37 +73,10 @@ async function listObjects(options: ListOptions): Promise<void> {
 }
 
 async function inspectObject(actorType: string, actorId: string, options: ObjectOptions): Promise<void> {
-    const settings = await connection(options)
+    const settings = connection(options)
     const client = new ControlPlaneClient(settings, fetch)
     const result = await client.inspectObject(actorType, actorId)
     console.log(JSON.stringify(result, null, 2))
-}
-
-async function connection(options: ObjectOptions): Promise<ControlPlaneConnection> {
-    const url = options.url || process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
-    const apiKey = options.apiKey || process.env.DURABLE_OBJECT_API_KEY
-    if (url || apiKey) {
-        if (!url) throw new Error("Set --url or DURABLE_OBJECT_CONTROL_PLANE_URL to use a cloud API key.")
-        if (!apiKey)
-            throw new Error("Cloud inspection requires an admin API key. Set DURABLE_OBJECT_API_KEY or --api-key.")
-        return configuredSettings({
-            controlPlaneUrl: url,
-            apiKey,
-            namespaceId: options.namespace ?? process.env.DURABLE_OBJECT_NAMESPACE_ID
-        })
-    }
-    const local = await readFile(path.resolve(options.dataDir, "runtime.json"), "utf8")
-        .then(JSON.parse)
-        .catch(() => {
-            throw new Error(
-                "No local runtime found. Start `npx little-actors dev` first and use the same --data-dir, or set --url and DURABLE_OBJECT_API_KEY for cloud inspection."
-            )
-        })
-    return configuredSettings({
-        controlPlaneUrl: local.controlPlaneUrl,
-        apiKey: local.apiKey,
-        namespaceId: options.namespace ?? local.namespaceId
-    })
 }
 
 function printObjects(objects: SavedObject[]): void {

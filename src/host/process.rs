@@ -20,7 +20,7 @@ use crate::{
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
     grpc::ActorHostGrpcService,
-    host_leases::{HostLeaseRegistry, MAX_HOST_LEASE_DURATION_MS},
+    host_leases::MAX_HOST_LEASE_DURATION_MS,
     state_transport::HttpStateTransport,
 };
 
@@ -32,6 +32,7 @@ const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
+    runtime_config: crate::bucket::access::HostStorageConfig,
     pub control_plane_url: String,
     pub socket_gateway_url: String,
     pub host_token: String,
@@ -86,13 +87,19 @@ where
         host,
         lease,
         renewal,
-        socket_publisher,
+        socket_gateway,
+        archive,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
 
-    let service = ActorHostGrpcService::new(host.clone(), invocation_auth).into_service();
-    if let Err(error) = executor_connection.mark_ready(Some(socket_publisher)).await {
+    let service =
+        ActorHostGrpcService::new(host.clone(), config.session_id.clone(), invocation_auth)
+            .into_service();
+    if let Err(error) = executor_connection
+        .mark_ready(Some(socket_gateway.clone()), Some(socket_gateway))
+        .await
+    {
         log_startup(&config, &timings, "failed", Some(&error));
         return Err(error);
     }
@@ -124,6 +131,7 @@ where
     )
     .await;
     stop_host_tasks(&host, &stop, server, executor_task).await;
+    archive.cancel();
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
@@ -150,7 +158,7 @@ impl ActorHostConfig {
         ensure!(
             host_id
                 .as_str()
-                .starts_with(&format!("host.v1.{namespace_id}.")),
+                .starts_with(&format!("host.v2.{namespace_id}:")),
             "DURABLE_OBJECT_HOST_ID does not belong to DURABLE_OBJECT_NAMESPACE_ID"
         );
         let session_id = required(&mut get, "DURABLE_OBJECT_SESSION_ID")?;
@@ -205,7 +213,12 @@ impl ActorHostConfig {
             renew_every < lease_duration,
             "DURABLE_OBJECT_RENEW_MS must be shorter than DURABLE_OBJECT_LEASE_MS"
         );
+        let runtime_config = serde_json::from_str(
+            &get("DURABLE_OBJECT_RUNTIME_CONFIG").context("host storage configuration missing")?,
+        )
+        .context("parse host runtime configuration")?;
         Ok(Self {
+            runtime_config,
             socket_gateway_url,
             control_plane_url,
             host_token,
@@ -249,7 +262,8 @@ impl HostMetadataFile {
 }
 
 struct PreparedActorHost {
-    socket_publisher: Arc<dyn crate::actor::ActorSocketPublisher>,
+    archive: CancellationToken,
+    socket_gateway: Arc<ControlPlaneClient>,
     invocation_auth: ActorJwtVerifier,
     listener: TcpListener,
     route: String,
@@ -271,7 +285,7 @@ async fn prepare_actor_host(
         connect_host_dependencies(
             timed_connection(
                 started_at,
-                &mut timings.control_plane_connected_at_ms,
+                &mut timings.control_plane_client_ready_at_ms,
                 ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
             ),
             bind_host(
@@ -292,19 +306,44 @@ async fn prepare_actor_host(
         )
         .await?;
     let control_plane = Arc::new(control_plane.with_socket_gateway(&config.socket_gateway_url));
+    let local = Arc::new(
+        crate::replication::FileReplicaStore::open(
+            std::env::temp_dir()
+                .join(format!("little-actors-{}", config.host_id))
+                .join("snapshots"),
+            crate::replication::DEFAULT_SPOOL_BYTES,
+        )
+        .await?,
+    );
+    let archive = crate::replication::start_archiver(local.clone());
+    let storage = Arc::new(
+        super::storage::HostStorage::new(
+            config.runtime_config.clone(),
+            config.host_id.clone(),
+            config.session_id.clone(),
+            config.namespace_id.clone(),
+            config.control_plane_url.clone(),
+            control_plane.clone(),
+            archive.child_token(),
+        )
+        .await?,
+    );
     let host = Arc::new(ActorHost::new(
         endpoint.clone(),
         config.namespace_id.clone(),
         executor_connection.executor(),
-        control_plane.clone(),
-        Arc::new(HttpStateTransport::new()),
-        control_plane.clone(),
+        storage.clone(),
+        Arc::new(crate::replication::ReplicatedStateTransport::new(
+            storage.runtime.clone(),
+            Arc::new(HttpStateTransport::new()),
+            local,
+        )),
         control_plane.clone(),
     ));
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,
         config.session_id.clone(),
-        control_plane.clone() as Arc<dyn HostLeaseRegistry>,
+        storage,
         Arc::new(SystemClock),
         config.lease_duration,
         config.renew_every,
@@ -312,7 +351,8 @@ async fn prepare_actor_host(
     let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
-        socket_publisher: control_plane,
+        archive,
+        socket_gateway: control_plane,
         invocation_auth,
         listener,
         route,
@@ -396,7 +436,7 @@ struct HostStartupTimings {
     started_at: Instant,
     configuration_loaded_at_ms: f64,
     authentication_ready_at_ms: Option<f64>,
-    control_plane_connected_at_ms: Option<f64>,
+    control_plane_client_ready_at_ms: Option<f64>,
     listener_bound_at_ms: Option<f64>,
     route_resolved_at_ms: Option<f64>,
     executor_attached_at_ms: Option<f64>,
@@ -411,7 +451,7 @@ impl HostStartupTimings {
             started_at: config.startup_started_at,
             configuration_loaded_at_ms: config.configuration_loaded_at_ms,
             authentication_ready_at_ms: None,
-            control_plane_connected_at_ms: None,
+            control_plane_client_ready_at_ms: None,
             listener_bound_at_ms: None,
             route_resolved_at_ms: None,
             executor_attached_at_ms: None,
@@ -439,7 +479,7 @@ fn log_startup(
         started_at_ms = 0,
         configuration_loaded_at_ms = timings.configuration_loaded_at_ms,
         authentication_ready_at_ms = timings.authentication_ready_at_ms,
-        control_plane_connected_at_ms = timings.control_plane_connected_at_ms,
+        control_plane_client_ready_at_ms = timings.control_plane_client_ready_at_ms,
         listener_bound_at_ms = timings.listener_bound_at_ms,
         route_resolved_at_ms = timings.route_resolved_at_ms,
         executor_attached_at_ms = timings.executor_attached_at_ms,
@@ -745,13 +785,22 @@ mod tests {
         let timings = HostStartupTimings::new(&config);
 
         assert!(timings.configuration_loaded_at_ms <= timings.elapsed_ms());
-        assert!(timings.control_plane_connected_at_ms.is_none());
+        assert!(timings.control_plane_client_ready_at_ms.is_none());
         assert!(timings.javascript_spawned_at_ms.is_none());
         assert!(timings.executor_notified_at_ms.is_none());
     }
 
     fn values() -> HashMap<String, String> {
         HashMap::from([
+            (
+                "DURABLE_OBJECT_RUNTIME_CONFIG".into(),
+                serde_json::json!({
+                    "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
+                    "region":"north-america-east", "replicaSecret":"secret", "replicas":[],
+                    "token":null
+                })
+                .to_string(),
+            ),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL".into(),
                 "http://127.0.0.1:7100".into(),
@@ -761,7 +810,7 @@ mod tests {
             ("DURABLE_OBJECT_NAMESPACE_ID".into(), "project-1".into()),
             (
                 "DURABLE_OBJECT_HOST_ID".into(),
-                "host.v1.project-1.revision-1.host-1".into(),
+                "host.v2.project-1:revision-1.host-1".into(),
             ),
             (
                 "DURABLE_OBJECT_SESSION_ID".into(),

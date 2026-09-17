@@ -1,4 +1,4 @@
-use super::tests::{FakeLeaseStore, FakeStorageUrls, FakeWarmProvisioner, test_issuer};
+use super::tests::{FakeWarmProvisioner, test_issuer};
 use super::*;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
@@ -6,11 +6,9 @@ use crate::{
     grpc::ActorHostGrpcService,
     host::{ActorHost, HostEndpoint},
     host_leases::{HostLeaseRegistry, HostLeaseRequest},
-    placement::testing::LocalObjectPlacementStore,
-    state_transport::{StateTransport, StateWrite},
 };
 use futures_util::{SinkExt, StreamExt};
-use std::{collections::HashMap, process::Stdio, sync::Mutex};
+use std::process::Stdio;
 use tokio::{net::TcpListener, task::JoinSet};
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_tungstenite::{
@@ -19,6 +17,36 @@ use tokio_tungstenite::{
 };
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_isolated()
+-> Result<()> {
+    #[derive(Default)]
+    struct UnavailableConnections(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl ActorSocketSource for UnavailableConnections {
+        async fn connections(
+            &self,
+            actor: &ActorKey,
+        ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
+            assert_eq!(actor.namespace_id, "project-1");
+            assert_eq!(actor.actor_id, "counter-1");
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            anyhow::bail!("gateway unavailable")
+        }
+    }
+    let source = Arc::new(UnavailableConnections::default());
+    let mut stack = Stack::start_with_connections(Some(source.clone())).await?;
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "");
+    assert_eq!(stack.invoke("appendHistory", vec![]).await?, "saved");
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(stack.invoke("clients", vec![]).await.is_err());
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "saved");
+    stack.child.kill().await?;
+    Ok(())
+}
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
@@ -366,7 +394,8 @@ struct Stack {
     workflow_token: String,
     actor: ActorKey,
     host_id: HostId,
-    leases: Arc<FakeLeaseStore>,
+    leases: Arc<crate::bucket::BucketHostLeases>,
+    _runtime: crate::bucket::testing::RuntimeFixture,
     publisher: Arc<ControlPlaneClient>,
     host: Arc<ActorHost>,
 }
@@ -388,6 +417,10 @@ impl Stack {
             .map_err(Into::into)
     }
     async fn start() -> Result<Self> {
+        Self::start_with_connections(None).await
+    }
+
+    async fn start_with_connections(source: Option<Arc<dyn ActorSocketSource>>) -> Result<Self> {
         let directory = tempfile::TempDir::new_in(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk"),
         )?;
@@ -398,24 +431,11 @@ impl Stack {
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v1.project-1.revision.session");
+        let host_id = HostId::new("host.v2.project-1:revision.session");
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
-        leases
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
-            .await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        placements
-            .claim(&actor.storage_key(), None, &host_id, "us-east")
-            .await?;
+        let runtime = crate::bucket::testing::RuntimeFixture::new()?;
+        let leases = runtime.leases.clone();
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .ensure_namespace_and_register_deployment(&HostLaunchSpec {
@@ -437,8 +457,7 @@ impl Stack {
         )?;
         let service = ControlPlaneService::new(
             leases.clone(),
-            placements,
-            Arc::new(FakeStorageUrls(&["us-east"])),
+            runtime.runtime.clone(),
             auth,
             registry.clone(),
             issuer.clone(),
@@ -467,9 +486,42 @@ impl Stack {
                 .await?
                 .with_socket_gateway(&gateway),
         );
+        let storage = Arc::new(
+            crate::host::storage::HostStorage::new(
+                crate::bucket::access::HostStorageConfig {
+                    bucket: crate::bucket::access::BucketLocation::File {
+                        directory: runtime.directory.path().into(),
+                    },
+                    region: "us-east".into(),
+                    replica_secret: runtime.access.delegate_secret("project-1")?,
+                    replicas: vec![],
+                    token: None,
+                },
+                host_id.clone(),
+                "00000000-0000-4000-8000-000000000001".into(),
+                "project-1".into(),
+                "http://unused".into(),
+                publisher.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?,
+        );
+        storage
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: host_route.clone(),
+                duration_ms: 60_000,
+            })
+            .await?;
 
         let (child, connection) = start_worker(directory.path()).await?;
-        connection.mark_ready(Some(publisher.clone())).await?;
+        connection
+            .mark_ready(
+                Some(publisher.clone()),
+                Some(source.unwrap_or_else(|| publisher.clone())),
+            )
+            .await?;
         let host = Arc::new(ActorHost::new(
             HostEndpoint {
                 id: host_id.clone(),
@@ -477,11 +529,11 @@ impl Stack {
             },
             "project-1".into(),
             connection.executor(),
-            publisher.clone(),
-            Arc::new(MemoryState::default()),
-            publisher.clone(),
+            storage.clone(),
+            storage.runtime.clone(),
             publisher.clone(),
         ));
+        host.activate_actor(actor.clone()).await?;
         tasks.spawn(async move {
             let _ = connection
                 .run(tokio_util::sync::CancellationToken::new())
@@ -497,7 +549,14 @@ impl Stack {
         let serving_host = host.clone();
         tasks.spawn(async move {
             let _ = tonic::transport::Server::builder()
-                .add_service(ActorHostGrpcService::new(serving_host, auth).into_service())
+                .add_service(
+                    ActorHostGrpcService::new(
+                        serving_host,
+                        "00000000-0000-4000-8000-000000000001".into(),
+                        auth,
+                    )
+                    .into_service(),
+                )
                 .serve_with_incoming(TcpListenerStream::new(host_listener))
                 .await;
         });
@@ -511,6 +570,7 @@ impl Stack {
             .token;
         Ok(Self {
             directory,
+            _runtime: runtime,
             tasks,
             child,
             gateway,
@@ -538,8 +598,6 @@ impl Stack {
                     args,
                 },
                 1,
-                0,
-                String::new(),
             )
             .await?;
         match result {
@@ -624,6 +682,8 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     @Persisted @Emittable count = 0;
     @Persisted private secret = 'private';
     @Persisted protected internal = 'internal';
+    async readHistory() {{ return this.history; }}
+    async appendHistory() {{ this.history += 'saved'; return this.history; }}
     async change() {{ this.count++; this.count++; this.secret = 'changed'; }}
     async fail() {{ this.count++; throw new Error('failed'); }}
     async onConnect(socket: ActorSocket<{{name?:string; notified?:boolean; user?:string}}, {{delta:string}} | {{text:string}}, "member">) {{
@@ -631,17 +691,17 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
         socket.setTags('member');
     }}
     async clients() {{
-        return this.connections.map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
+        return (await this.getConnections()).map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
     }}
     async watchFiles(id: string, tags: string[]) {{
-        this.connections.find(socket => socket.id === id)!.setTags(...tags);
+        (await this.getConnections()).find(socket => socket.id === id)!.setTags(...tags);
     }}
     async notifyFiles(tagMatch: "all" | "any") {{
         this.broadcast({{ text: 'matched' }}, {{ tags: ['file:a', 'file:b'], tagMatch }});
         this.broadcast({{ text: 'done' }});
     }}
     async notifyClient(id: string) {{
-        const socket = this.connections.find(socket => socket.id === id)!;
+        const socket = (await this.getConnections()).find(socket => socket.id === id)!;
         socket.metadata = {{ ...socket.metadata, notified: true }};
         socket.send({{ text: 'from method' }});
     }}
@@ -661,7 +721,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     )?;
     std::fs::write(
         directory.join("tsconfig.json"),
-        r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true},"include":["actors.ts"]}"#,
+        r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true,"types":["node"],"typeRoots":["../node_modules/@types"]},"include":["actors.ts"]}"#,
     )?;
     let socket = directory.join("executor.sock");
     let listener = ActorExecutorListener::bind(&socket).await?;
@@ -693,18 +753,4 @@ async fn receive(socket: &mut Socket) -> Result<serde_json::Value> {
     ensure!(frame.is_text(), "unexpected socket frame: {frame:?}");
     serde_json::from_str(frame.to_text()?)
         .with_context(|| format!("invalid socket JSON: {frame:?}"))
-}
-
-#[derive(Default)]
-struct MemoryState(Mutex<Vec<u8>>);
-
-#[async_trait]
-impl StateTransport for MemoryState {
-    async fn read(&self, _: &str) -> Result<bytes::Bytes> {
-        Ok(self.0.lock().unwrap().clone().into())
-    }
-    async fn write(&self, _: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        *self.0.lock().unwrap() = bytes;
-        Ok(StateWrite::Written)
-    }
 }

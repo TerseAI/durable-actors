@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod actor_state;
+pub mod bucket;
 pub mod clock;
 pub mod control_plane;
 mod grpc;
@@ -7,8 +8,10 @@ pub mod host;
 pub mod host_leases;
 pub mod placement;
 mod postgres;
+pub mod replication;
 pub mod sandbox;
-pub mod sqlite;
 pub mod state_log;
 pub mod state_transport;
-pub mod storage_urls;
+pub mod storage;
+
+pub mod storage_paths;

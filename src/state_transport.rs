@@ -2,12 +2,13 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::storage_urls::STATE_CONTENT_TYPE;
+use crate::storage::STATE_CONTENT_TYPE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateWrite {
     Written,
     AlreadyExists,
+    Replicated,
 }
 
 #[async_trait]
@@ -16,7 +17,16 @@ pub trait StateTransport: Send + Sync {
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite>;
 }
 
-#[derive(Clone, Default)]
+#[async_trait]
+pub trait SnapshotWriter: Send + Sync {
+    async fn write_snapshot(
+        &self,
+        plan: &crate::storage::WritePlan,
+        bytes: Vec<u8>,
+    ) -> Result<StateWrite>;
+}
+
+#[derive(Clone)]
 pub struct HttpStateTransport {
     client: reqwest::Client,
 }
@@ -24,8 +34,19 @@ pub struct HttpStateTransport {
 impl HttpStateTransport {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(25))
+                .build()
+                .expect("valid state transport client configuration"),
         }
+    }
+}
+
+impl Default for HttpStateTransport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

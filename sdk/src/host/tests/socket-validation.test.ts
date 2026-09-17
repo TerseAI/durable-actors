@@ -37,11 +37,11 @@ class ValidatedRoom extends Actor<
     }
 
     async invalidMetadata(): Promise<void> {
-        this.connections[0]!.metadata = { userId: 123 } as never
+        ;(await this.getConnections())[0]!.metadata = { userId: 123 } as never
     }
 
     async invalidTags(): Promise<void> {
-        this.connections[0]!.setTags("admin" as never)
+        ;(await this.getConnections())[0]!.setTags("admin" as never)
     }
 
     async invalidFilter(): Promise<void> {
@@ -49,7 +49,7 @@ class ValidatedRoom extends Actor<
     }
 
     async joinMembers(): Promise<readonly string[]> {
-        const socket = this.connections[0]!
+        const socket = (await this.getConnections())[0]!
         socket.setTags("member", "member")
         this.broadcast({ type: "posted", text: "joined", userId: socket.metadata.userId }, { tags: ["member"] })
         return socket.tags
@@ -177,9 +177,13 @@ test("incoming JSON is validated before onMessage and outgoing values are encode
 
 test("invalid actor output, metadata, and tags cannot reach the gateway", async () => {
     const published: unknown[] = []
-    const runtime = new ActorRuntime(definition, async effects => {
-        published.push(...effects)
-    })
+    const runtime = new ActorRuntime(
+        definition,
+        async effects => {
+            published.push(...effects)
+        },
+        async () => [connection]
+    )
     for (const method of ["invalidOutput", "invalidMetadata", "invalidTags", "invalidFilter"]) {
         const reply = await runtime.handle({
             type: "invoke",
@@ -187,8 +191,7 @@ test("invalid actor output, metadata, and tags cannot reach the gateway", async 
             actor,
             method,
             args: [],
-            state: null,
-            connections: [connection]
+            state: null
         })
         assert.equal(reply.type, "failed")
     }
@@ -196,15 +199,14 @@ test("invalid actor output, metadata, and tags cannot reach the gateway", async 
 })
 
 test("schema-validated tags persist and select broadcast recipients", async () => {
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, undefined, async () => [connection])
     const reply = await runtime.handle({
         type: "invoke",
         request_id: "join",
         actor,
         method: "joinMembers",
         args: [],
-        state: null,
-        connections: [connection]
+        state: null
     })
     assert.equal(reply.type, "invoked")
     if (reply.type !== "invoked") return

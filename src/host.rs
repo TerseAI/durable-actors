@@ -2,6 +2,7 @@ mod actor_host;
 mod actor_runtime;
 mod lease_maintenance;
 mod process;
+pub(crate) mod storage;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

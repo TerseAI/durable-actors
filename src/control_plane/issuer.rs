@@ -250,8 +250,7 @@ impl ActorJwtIssuer {
         code_revision: &str,
         region: &str,
         owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
+
         workflow_expires_at: i64,
     ) -> Result<IssuedActorToken> {
         actor.validate()?;
@@ -283,8 +282,6 @@ impl ActorJwtIssuer {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch,
-                state_version,
-                state_read_url: state_read_url.to_owned(),
             }),
         })
     }
@@ -459,7 +456,7 @@ mod tests {
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v1.project-1.revision-1.host-1");
+        let host_id = HostId::new("host.v2.project-1:revision-1.host-1");
         let issued = issuer.issue_invocation_target(
             &actor,
             &host_id,
@@ -467,8 +464,6 @@ mod tests {
             "revision-1",
             "north-america-east",
             3,
-            1,
-            "https://storage.example.com/state",
             unix_millis()? / 1_000 + 30,
         )?;
         let invocation_verifier = ActorJwtVerifier::for_scope(

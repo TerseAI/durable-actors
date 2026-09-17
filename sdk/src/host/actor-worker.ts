@@ -3,8 +3,9 @@ import { parentPort, workerData } from "node:worker_threads"
 
 import { Actor, findActorDefinition, registerActorClass } from "../actor/actor.js"
 import type { ActorClass } from "../actor/actor.js"
+import { ACTOR_ARTIFACT_VERSION } from "../actor/schema.js"
 import type { ActorSchema } from "../actor/schema.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorDefinitionError, errorMessage } from "../errors.js"
 
 import { ActorRuntime } from "./actor-runtime.js"
@@ -16,11 +17,20 @@ if (port === null) throw new Error("actor Worker requires a parent message port"
 
 const data = workerData as ActorWorkerData
 let publishing: { resolve: () => void; reject: (error: Error) => void } | undefined
+let loadingConnections:
+    { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void } | undefined
 try {
     const actorTypes = await loadActorEntrypoint(data.moduleUrl, data.schemas)
     let runtime: ActorRuntime | undefined
 
     port.on("message", (message: ActorWorkerRequest) => {
+        if (message.type === "socket_connections") {
+            const pending = loadingConnections
+            loadingConnections = undefined
+            if (message.error === undefined) pending?.resolve(message.connections)
+            else pending?.reject(new Error(message.error))
+            return
+        }
         if (message.type === "socket_effects_published") {
             const pending = publishing
             publishing = undefined
@@ -38,7 +48,7 @@ try {
             )
             return
         }
-        runtime ??= new ActorRuntime(definition, publish)
+        runtime ??= new ActorRuntime(definition, publish, getConnections)
         void runtime.handle(message.command).then(
             reply => post(reply),
             error => post(failedReply("actor_worker_failed", errorMessage(error)))
@@ -61,15 +71,33 @@ function publish(effects: readonly SocketEffect[]): Promise<void> {
     })
 }
 
-async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSchema[]): Promise<string[]> {
+function getConnections(): Promise<readonly SocketConnection[]> {
+    return new Promise((resolve, reject) => {
+        if (loadingConnections !== undefined) throw new Error("actor connections are already being loaded")
+        loadingConnections = { resolve, reject }
+        post({ type: "get_connections" })
+    })
+}
+
+async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSchema[] | undefined): Promise<string[]> {
+    if (schemas !== undefined) return registerActors(await loadTypeScript(moduleUrl), schemas)
+    const artifact = await import(moduleUrl)
+    if (artifact.version !== ACTOR_ARTIFACT_VERSION || !Array.isArray(artifact.schemas) || !artifact.actors)
+        throw new ActorConfigurationError("invalid actor artifact; rebuild with little-actors build")
+    return registerActors(artifact.actors, artifact.schemas)
+}
+
+async function loadTypeScript(moduleUrl: string): Promise<Record<string, unknown>> {
     requireTypeScriptSource(fileURLToPath(moduleUrl))
     const unregister = (await import("tsx/esm/api")).register()
-    let actorModule: Record<string, unknown>
     try {
-        actorModule = (await import(moduleUrl)) as Record<string, unknown>
+        return (await import(moduleUrl)) as Record<string, unknown>
     } finally {
         await unregister()
     }
+}
+
+function registerActors(actorModule: Record<string, unknown>, schemas: readonly ActorSchema[]): string[] {
     const actorTypes: string[] = []
     for (const [exportName, value] of Object.entries(actorModule)) {
         if (!isActorClass(value)) continue
@@ -89,8 +117,7 @@ async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSch
             throw new ActorDefinitionError(`actor ${exportName} has no validated schema; restart the actor host`)
         actorTypes.push(registerActorClass(value, schema).actorType)
     }
-    if (actorTypes.length === 0)
-        throw new ActorDefinitionError(`actor entrypoint ${moduleUrl} has no named actor exports`)
+    if (actorTypes.length === 0) throw new ActorDefinitionError("actor entrypoint has no named actor exports")
     if (actorTypes.length !== schemas.length)
         throw new ActorDefinitionError("actor exports do not match validated schemas; restart the actor host")
     actorTypes.sort()

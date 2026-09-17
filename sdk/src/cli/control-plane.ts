@@ -1,5 +1,4 @@
-import { configuredSettings } from "../client/clientSettings.js"
-import { readLocalSettings } from "../client/localSettings.js"
+import { connection } from "./connection.js"
 
 interface ControlPlaneOptions {
     url?: string | true
@@ -33,10 +32,9 @@ class ControlPlaneClient {
     }
 
     inspectObject(actorType: string, actorId: string): Promise<unknown> {
-        const namespace = encodeURIComponent(this.connection.namespaceId ?? "default")
         return this.requestJson(
             "GET",
-            `/v1/namespaces/${namespace}/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/state`
+            this.namespacePath(`actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/state`)
         )
     }
 
@@ -79,25 +77,18 @@ class ControlPlaneClient {
     }
 }
 
-function createControlPlaneClient(
-    options: ControlPlaneOptions,
-    request: typeof fetch,
-    readLocal: typeof readLocalSettings = readLocalSettings
-): ControlPlaneClient {
-    const url = typeof options.url === "string" ? options.url : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
-    const key = options.apiKey || process.env.DURABLE_OBJECT_API_KEY
-    const local = !url && !key ? readLocal() : {}
-    const controlPlaneUrl = url || local.controlPlaneUrl
-    const apiKey = key || local.apiKey
-    if (!controlPlaneUrl)
-        throw new Error("Start `npx little-actors dev` first, or set --url or DURABLE_OBJECT_CONTROL_PLANE_URL.")
-    if (!apiKey) throw new Error("An admin API key is required. Set DURABLE_OBJECT_API_KEY or --api-key.")
-    const connection = configuredSettings({
-        controlPlaneUrl,
-        apiKey,
-        namespaceId: options.namespace || process.env.DURABLE_OBJECT_NAMESPACE_ID || local.namespaceId
-    })
-    return new ControlPlaneClient(connection, request)
+function createControlPlaneClient(options: ControlPlaneOptions, request: typeof fetch): ControlPlaneClient {
+    return new ControlPlaneClient(
+        connection({
+            url:
+                typeof options.url === "string"
+                    ? options.url
+                    : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
+            apiKey: options.apiKey || process.env.DURABLE_OBJECT_API_KEY,
+            namespace: options.namespace || process.env.DURABLE_OBJECT_NAMESPACE_ID || undefined
+        }),
+        request
+    )
 }
 
 async function readResponse(response: Response): Promise<unknown> {

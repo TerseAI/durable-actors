@@ -1,41 +1,59 @@
-mod support;
-
 use anyhow::Result;
 use little_actors::{
     actor::ActorKey,
     host::HostId,
-    host_leases::{HostLeaseRegistry, HostLeaseRequest, PostgresHostLeaseStore},
-    placement::{ObjectPlacementStore, PostgresObjectPlacementStore, StateCommitRequest},
-    sqlite::SqliteStore,
-    storage_urls::snapshot_object_name,
+    host_leases::{HostLeaseRegistry, HostLeaseRequest},
+    placement::ObjectPlacementStore,
+    state_transport::SnapshotWriter,
 };
-use support::postgres::with_postgres;
 
 #[tokio::test]
-async fn sqlite_lists_committed_objects_with_exact_namespace_filtering_and_pagination() -> Result<()>
-{
+async fn bucket_lists_snapshots_with_exact_namespace_filtering_and_pagination() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let store = SqliteStore::open(&directory.path().join("runtime.sqlite")).await?;
-    check_listing(&store, &store).await
+    let bucket = std::sync::Arc::new(little_actors::bucket::FileBucket::new(
+        directory.path().into(),
+    )?);
+    let clock = std::sync::Arc::new(little_actors::clock::SystemClock);
+    let leases = std::sync::Arc::new(little_actors::bucket::BucketHostLeases::new(
+        bucket.clone(),
+        clock.clone(),
+    ));
+    let access = little_actors::replication::ReplicaAccess::new("test", clock);
+    let store = little_actors::bucket::RuntimeStorage::new(
+        bucket,
+        leases.clone(),
+        std::sync::Arc::new(EmptyFleet),
+        std::sync::Arc::new(little_actors::bucket::HttpReplicaPeers::new(
+            access.clone(),
+        )?),
+        access,
+        "http://unused".into(),
+    )?;
+    check_listing(&store, leases.as_ref()).await
 }
 
-#[tokio::test]
-async fn postgres_lists_committed_objects_with_exact_namespace_filtering_and_pagination()
--> Result<()> {
-    with_postgres(async |database| {
-        let store = PostgresObjectPlacementStore::connect(&database.url).await?;
-        let leases = PostgresHostLeaseStore::connect(&database.url).await?;
-        check_listing(&store, &leases).await
-    })
-    .await
+struct EmptyFleet;
+#[async_trait::async_trait]
+impl little_actors::replication::ReplicaProvisioner for EmptyFleet {
+    fn replica_regions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn ensure(
+        &self,
+        _: &ActorKey,
+        _: &str,
+    ) -> Result<Vec<little_actors::replication::ReplicaTarget>> {
+        Ok(vec![])
+    }
 }
 
 async fn check_listing(
-    store: &dyn ObjectPlacementStore,
+    store: &little_actors::bucket::RuntimeStorage,
     leases: &dyn HostLeaseRegistry,
 ) -> Result<()> {
     let namespace = format!("test_{}", uuid::Uuid::new_v4().simple());
-    let host = HostId::new(namespace.clone());
+    let host = HostId::new(format!("host.v2.{namespace}:test"));
     leases
         .register(&HostLeaseRequest {
             id: host.clone(),
@@ -56,31 +74,23 @@ async fn check_listing(
             actor_type: "Room.with.dots".into(),
             actor_id: id.into(),
         };
-        store
-            .claim(&actor.storage_key(), None, &host, "us-east")
-            .await?;
+        store.claim_actor(&actor, None, &host, "us-east").await?;
         if committed {
-            store
-                .commit_state(&StateCommitRequest {
-                    object: actor.storage_key(),
-                    owner: host.clone(),
-                    session_id: "session".into(),
-                    owner_epoch: 1,
-                    expected_version: 0,
-                    state_object: snapshot_object_name(
-                        &actor,
-                        1,
-                        &uuid::Uuid::new_v4().simple().to_string(),
-                    )?,
-                    request_id: id.into(),
-                })
-                .await?;
+            let plan = store.prepare_write("us-east", &actor, 1).await?;
+            let snapshot = little_actors::state_log::StateSnapshot::new(
+                1,
+                1,
+                id.into(),
+                serde_json::json!({"value": id}),
+                serde_json::Value::Null,
+            )?;
+            SnapshotWriter::write_snapshot(store, &plan, snapshot.encode()?).await?;
         }
     }
     let objects = store.list_committed(Some(&namespace), None, 10).await?;
     assert_eq!(objects.len(), 2);
-    assert!(objects[0].object.as_str().ends_with(".a"));
-    assert!(objects[1].object.as_str().ends_with(".b.with.dots"));
+    assert!(objects[0].object.as_str().ends_with(":a"));
+    assert!(objects[1].object.as_str().ends_with(":b.with.dots"));
     assert_eq!(
         store.list_committed(Some(&namespace), None, 1).await?,
         objects[..1]
@@ -98,7 +108,7 @@ async fn check_listing(
             .is_empty()
     );
     let global = store
-        .list_committed(None, Some(objects[0].object.as_str()), 100)
+        .list_committed(None, Some(&format!("object.v2.{namespace}")), 100)
         .await?;
     assert!(global.contains(&objects[1]));
     assert!(global.iter().any(|object| {

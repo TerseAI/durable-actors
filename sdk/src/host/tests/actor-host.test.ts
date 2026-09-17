@@ -23,7 +23,7 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_types, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 15 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
             socket.end()
         })
     })
@@ -140,10 +140,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 15,
+            protocol: 16,
             actor_types: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 15 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
         await startup
 
         customerSocket.write(

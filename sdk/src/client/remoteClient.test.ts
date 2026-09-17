@@ -26,8 +26,7 @@ test("API-key clients invoke, connect, and broadcast without a namespace or sess
                 route: "https://host.example.com",
                 token: "invocation-ticket",
                 ownerEpoch: 1,
-                stateVersion: 0,
-                stateReadUrl: "",
+
                 expiresAtMs: 4_000_000_000_000
             })
         },
@@ -98,8 +97,7 @@ test("target expiry uses real time even when workflow Date.now is frozen", async
                         route: "https://host.example.com",
                         token: `target-${++resolutions}`,
                         ownerEpoch: 1,
-                        stateVersion: 0,
-                        stateReadUrl: "",
+
                         expiresAtMs: Math.floor(performance.timeOrigin + performance.now()) + 1_000
                     }),
                 actorHost: {
@@ -132,8 +130,7 @@ test("refreshes a rejected actor ticket once using the same invocation ID", asyn
                     route: "https://host.example.com",
                     token: `target-${++resolutions}`,
                     ownerEpoch: 1,
-                    stateVersion: 0,
-                    stateReadUrl: "",
+
                     expiresAtMs: 4_000_000_000_000
                 }),
             actorHost: {
@@ -170,8 +167,7 @@ test("does not retry ambiguous host failures or actor-method authentication erro
                         route: "https://host.example.com",
                         token: "target",
                         ownerEpoch: 1,
-                        stateVersion: 0,
-                        stateReadUrl: "",
+
                         expiresAtMs: 4_000_000_000_000
                     }),
                 actorHost: {
@@ -207,8 +203,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
             route: "https://actor.example.com",
             token: "direct-token",
             ownerEpoch: 3,
-            stateVersion: 7,
-            stateReadUrl: "https://storage.example.com/state",
+
             expiresAtMs: 4_000_000_000_000
         })
     })
@@ -275,8 +270,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
                 route: "https://actor.example.com",
                 token: "direct-token",
                 ownerEpoch: 3,
-                stateVersion: 7,
-                stateReadUrl: "https://storage.example.com/state",
+
                 expiresAtMs: 4_000_000_000_000
             },
             invocation: {
@@ -390,8 +384,7 @@ test("forwards actor socket effects to the control-plane gateway after a direct 
                 route: "https://actor.example.com",
                 token: "direct-token",
                 ownerEpoch: 3,
-                stateVersion: 0,
-                stateReadUrl: "",
+
                 expiresAtMs: 4_000_000_000_000
             })
             return

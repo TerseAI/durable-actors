@@ -13,12 +13,14 @@ npm install
 Copy `.env.example` to `.env` and add your `OPENAI_API_KEY`, then start the actors:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, from the same directory:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npm run dev
 ```
 
@@ -32,7 +34,7 @@ If you already have this directory, start at `npm install`. No client generation
 - [src/backend.ts](src/backend.ts) loads saved history, appends the new user message, streams a reply, and saves the completed assistant message.
 - [src/Chat.tsx](src/Chat.tsx) loads the lobby history and uses `useChat` to send messages and render streaming replies.
 
-The backend discovers the local actor runtime's generated API key and control plane URL automatically. Only the OpenAI key needs local configuration. For a remote actor server, use the [connection overrides](../../docs/reference/configuration.md) on the backend.
+Set the same `DURABLE_OBJECT_API_KEY` for the actor runtime and application backend. Local clients default to `http://127.0.0.1:7100`. For a remote actor server, use the [connection overrides](../../docs/reference/configuration.md) on the backend.
 
 This sample has one shared lobby and no authentication. Authenticate both routes and check chat ownership before using it for private conversations. Reloads restore saved messages; in-progress streams are not resumed.
 

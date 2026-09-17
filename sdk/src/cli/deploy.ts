@@ -1,6 +1,5 @@
 import { Command } from "commander"
 import { randomUUID } from "node:crypto"
-import path from "node:path"
 import { z } from "zod"
 
 import { type ControlPlaneOptions, createControlPlaneClient } from "./control-plane.js"
@@ -23,10 +22,7 @@ function registerDeployCommand(program: Command): void {
         .requiredOption("--image <reference>", "already-built provider image reference")
         .option("--revision <revision>", "code revision (defaults to a new generated ID)")
         .requiredOption("--working-directory <path>", "absolute actor project directory inside the image")
-        .option(
-            "--actor-entrypoint <path>",
-            "actor file inside the image (defaults to the local source's relative path)"
-        )
+        .option("--actor-entrypoint <path>", "actor file inside the image (defaults to dist/actors.mjs)")
         .option("--config <file>", "local TypeScript configuration file")
         .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
@@ -44,7 +40,7 @@ function registerDeployCommand(program: Command): void {
 
 async function deploy(entrypoint = "src/durable-objects.ts", options: DeployOptions): Promise<void> {
     const client = createControlPlaneClient(options, fetch)
-    const specification = deploymentSpecification(entrypoint, options)
+    const specification = deploymentSpecification(options)
     const { ActorCompiler } = await import("../compiler/actor-compiler.js")
     const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
     const contract = parsePublicContract(
@@ -58,15 +54,12 @@ async function deploy(entrypoint = "src/durable-objects.ts", options: DeployOpti
     )
 }
 
-function deploymentSpecification(entrypoint: string, options: DeployOptions) {
-    const relative = path.relative(process.cwd(), path.resolve(entrypoint))
-    if (!options.actorEntrypoint && (relative === ".." || relative.startsWith(`..${path.sep}`)))
-        throw new Error("Source outside the project requires --actor-entrypoint to specify its path inside the image.")
+function deploymentSpecification(options: DeployOptions) {
     return deploymentSchema.parse({
         codeRevision: options.revision ?? randomUUID(),
         imageRef: options.image,
         workingDirectory: options.workingDirectory,
-        actorEntrypoint: options.actorEntrypoint ?? relative.split(path.sep).join("/"),
+        actorEntrypoint: options.actorEntrypoint ?? "dist/actors.mjs",
         secretRefs: options.secret,
         socketGatewayUrl: options.socketGatewayUrl,
         warmRegion: options.warmRegion

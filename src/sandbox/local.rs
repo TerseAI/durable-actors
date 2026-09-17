@@ -262,6 +262,9 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
     ] {
         environment.insert(key.into(), value);
     }
+    if let Some(config) = &request.runtime_config {
+        environment.insert("DURABLE_OBJECT_RUNTIME_CONFIG".into(), config.clone());
+    }
     if let Some(entrypoint) = &request.actor_entrypoint {
         environment.insert("DURABLE_OBJECT_ENTRYPOINT".into(), entrypoint.clone());
     }
@@ -271,13 +274,20 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{host::HostId, sqlite::SqliteStore};
+    use crate::{
+        bucket::{BucketHostLeases, FileBucket},
+        clock::SystemClock,
+        host::HostId,
+    };
 
     #[tokio::test]
     async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let project = directory.path().to_path_buf();
-        let leases = Arc::new(SqliteStore::open(&project.join("metadata.sqlite")).await?);
+        let leases = Arc::new(BucketHostLeases::new(
+            Arc::new(FileBucket::new(project.join("objects"))?),
+            Arc::new(SystemClock),
+        ));
         let provider = LocalSandboxProvider::new(
             project.join("unused-executable"),
             project.clone(),
@@ -286,6 +296,7 @@ mod tests {
         );
         provider.shutdown().await;
         let request = EnsureHostRequest {
+            runtime_config: None,
             namespace_id: "local".into(),
             code_revision: "local".into(),
             canonical_region: "north-america-east".into(),

@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use deadpool_postgres::{Manager, Pool, Runtime};
@@ -18,20 +18,37 @@ pub(crate) mod testing;
 #[derive(Clone)]
 pub(crate) struct PostgresDatabase {
     pool: Pool,
+    initialized: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl PostgresDatabase {
     pub(crate) async fn connection(&self) -> Result<deadpool_postgres::Object> {
+        self.initialize().await?;
         self.pool
             .get()
             .await
             .context("acquire PostgreSQL connection")
     }
 
+    #[cfg(test)]
     pub(crate) async fn connect(url: &str) -> Result<Self> {
-        let pool = connection_pool(url)?;
-        migrate(&pool).await?;
-        Ok(Self { pool })
+        let database = Self::lazy(url)?;
+        database.initialize().await?;
+        Ok(database)
+    }
+
+    pub(crate) fn lazy(url: &str) -> Result<Self> {
+        Ok(Self {
+            pool: connection_pool(url)?,
+            initialized: Arc::new(tokio::sync::OnceCell::new()),
+        })
+    }
+
+    async fn initialize(&self) -> Result<()> {
+        self.initialized
+            .get_or_try_init(|| migrate(&self.pool))
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn query_opt(
@@ -39,6 +56,7 @@ impl PostgresDatabase {
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Option<Row>> {
+        self.initialize().await?;
         let client = self
             .pool
             .get()
@@ -48,25 +66,13 @@ impl PostgresDatabase {
         Ok(client.query_opt(&statement, params).await?)
     }
 
-    pub(crate) async fn query(
-        &self,
-        query: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<Row>> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .context("acquire PostgreSQL connection")?;
-        let statement = client.prepare_cached(query).await?;
-        Ok(client.query(&statement, params).await?)
-    }
-
+    #[cfg(test)]
     pub(crate) async fn query_one(
         &self,
         query: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Row> {
+        self.initialize().await?;
         let client = self
             .pool
             .get()
@@ -77,6 +83,7 @@ impl PostgresDatabase {
     }
 
     pub(crate) async fn execute(&self, query: &str, params: &[&(dyn ToSql + Sync)]) -> Result<u64> {
+        self.initialize().await?;
         let client = self
             .pool
             .get()
@@ -228,12 +235,18 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn runtime_startup_does_not_connect_to_postgres() -> Result<()> {
+        let database =
+            PostgresDatabase::lazy("postgresql://localhost:1/unavailable?sslmode=disable")?;
+        assert_eq!(database.pool.status().size, 0);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn independent_queries_can_use_different_database_connections() -> Result<()> {
         with_postgres(async |fixture| {
-            let database = PostgresDatabase {
-                pool: fixture.pool.clone(),
-            };
+            let database = PostgresDatabase::connect(&fixture.url).await?;
             let (first, second) = tokio::try_join!(
                 database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),
                 database.query_one("SELECT pg_backend_pid(), pg_sleep(0.05)", &[]),

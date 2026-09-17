@@ -1,5 +1,7 @@
 import type { SocketContract } from "../wire/contract.js"
 
+const ACTOR_ARTIFACT_VERSION = 1
+
 enum Persistence {
     Persisted = "persisted",
     Ephemeral = "ephemeral"
@@ -19,5 +21,5 @@ interface ActorSchema {
     readonly contract?: SocketContract
 }
 
-export { Persistence }
+export { ACTOR_ARTIFACT_VERSION, Persistence }
 export type { ActorFieldSchema, ActorSchema }

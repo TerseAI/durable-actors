@@ -19,8 +19,11 @@ See the sample apps:
 ## Run locally
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
+
+Set the same `DURABLE_OBJECT_API_KEY` in the terminal running your application backend. Local clients default to `http://127.0.0.1:7100`.
 
 ## Define an Actor
 
@@ -116,6 +119,8 @@ function Chat() {
 ## Host it yourself
 
 Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your backend with an API key and deploy your actors.
+
+See [bucket authority and replication](docs/guides/replication.md) for ownership, leases, storage layout, and replica placement.
 
 ## Reference
 

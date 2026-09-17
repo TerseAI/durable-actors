@@ -37,6 +37,7 @@ async fn run() -> Result<()> {
             serve_control_plane(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
+        "replica" => little_actors::replication::serve_replica_host(shutdown).await,
         role => anyhow::bail!("unsupported DURABLE_OBJECT_PROCESS_ROLE {role:?}"),
     }
 }
@@ -53,7 +54,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Start local actors with automatic SQLite and file storage")]
+    #[command(about = "Start local actors with persistent file storage")]
     Dev(DevOptions),
 }
 

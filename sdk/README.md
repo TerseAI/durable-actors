@@ -25,10 +25,11 @@ For a collaborative Tiptap editor, use `npx little-actors init documents-example
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
+export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. The runtime generates an API key and saves it with the control plane URL in `.little-actors/runtime.json`. Backend actor calls and generated proxies discover both automatically from the working directory. Start your application backend from the same project directory; no environment variables are needed.
+Wait for `Local actors ready at http://127.0.0.1:7100`. Set the same `DURABLE_OBJECT_API_KEY` for the actor runtime and your application backend. Local clients default to `http://127.0.0.1:7100`.
 
 Generate source once for your backend and web app:
 
@@ -121,7 +122,7 @@ Inside actor hooks and backend SDK connections, send JSON values with `socket.se
 | `socket.setTags(...tags)`            | Tags a connection for filtered broadcasts.           |
 | `socket.close()` / `socket.reject()` | Closes a connection / rejects it during `onConnect`. |
 
-`this.connections` lists connections during an invocation. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
+`await this.getConnections()` fetches connections on demand and caches the result for that invocation. Ordinary methods that do not enumerate connections skip the gateway lookup. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
 
 For a separate WebSocket gateway, see [gateway configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md).
 
@@ -154,7 +155,7 @@ export async function POST(request: Request) {
 
 `prepareWebsocket` returns `{ websocketUrl, key }`. The URL already includes the signed key and can be passed directly to `new WebSocket()`. The key grants socket access to one actor; it cannot invoke backend RPC methods or issue other keys. Metadata comes from your backend and is validated by the actor host.
 
-The helper discovers local settings automatically. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorType, actorId, metadata })` remains available for dynamic actor selection.
+The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorType, actorId, metadata })` remains available for dynamic actor selection.
 
 The frontend fetches your application endpoint and opens the returned URL:
 

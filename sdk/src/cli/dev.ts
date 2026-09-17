@@ -12,6 +12,7 @@ import { ControlPlaneClient } from "./control-plane.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
+    apiKey: string
     port: number
     project: string
     entrypoint: string
@@ -22,13 +23,34 @@ interface DevOptions {
 function registerDevCommand(program: Command): void {
     program
         .command("dev")
-        .description("Start local actors with automatic SQLite and file storage")
-        .option("--project <directory>", "actor project directory", ".")
-        .option("--port <number>", "loopback port (0 selects a free port)", portNumber, 7100)
-        .option("--entrypoint <file>", "actor source file, relative to the project", "src/durable-objects.ts")
-        .option("--data-dir <directory>", "state directory (default: <project>/.little-actors)")
+        .description("Start local actors with persistent file storage")
         .addOption(
-            new Option("--storage <backend>", "where to save actor snapshots")
+            new Option("--api-key <key>", "API key for local clients")
+                .env("DURABLE_OBJECT_API_KEY")
+                .makeOptionMandatory()
+        )
+        .addOption(
+            new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
+        )
+        .addOption(
+            new Option("--port <number>", "loopback port (0 selects a free port)")
+                .env("DURABLE_OBJECT_PORT")
+                .argParser(portNumber)
+                .default(7100)
+        )
+        .addOption(
+            new Option("--entrypoint <file>", "actor source file, relative to the project")
+                .env("DURABLE_OBJECT_ENTRYPOINT")
+                .default("src/durable-objects.ts")
+        )
+        .addOption(
+            new Option("--data-dir <directory>", "state directory (default: <project>/.little-actors)").env(
+                "DURABLE_OBJECT_DATA_DIR"
+            )
+        )
+        .addOption(
+            new Option("--storage <backend>", "where to save actor state and ownership")
+                .env("DURABLE_OBJECT_STORAGE")
                 .choices(["local", "gcs"])
                 .default("local")
         )
@@ -120,7 +142,9 @@ function devArguments(options: DevOptions): string[] {
         "--entrypoint",
         options.entrypoint,
         "--storage",
-        options.storage
+        options.storage,
+        "--api-key",
+        options.apiKey
     ]
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args

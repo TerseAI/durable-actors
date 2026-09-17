@@ -27,6 +27,7 @@ async function fixture(source: string, run: (binary: string) => Promise<void>) {
 test("waits for the readiness pipe and stops idempotently", async () => {
     await fixture(
         `const fs = require("node:fs");
+        require("node:assert/strict").equal(process.argv[process.argv.indexOf("--api-key") + 1], "secret");
         const fd = Number(process.argv[process.argv.indexOf("--ready-fd") + 1]);
         fs.writeSync(fd, '{"controlPlaneUrl":"http://127.0.0.1:7100",');
         setTimeout(() => {
@@ -36,7 +37,7 @@ test("waits for the readiness pipe and stops idempotently", async () => {
         process.stdin.resume();
         process.stdin.on("end", () => process.exit(0));`,
         async () => {
-            const runtime = await startLocalActors({ entrypoint: "src/actors.ts" })
+            const runtime = await startLocalActors({ entrypoint: "src/actors.ts", apiKey: "secret" })
             assert.equal(runtime.connection.namespaceId, "local")
             assert.equal(runtime.connection.apiKey, "secret")
             await Promise.all([runtime.stop(), runtime.stop()])

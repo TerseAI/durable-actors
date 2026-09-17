@@ -21,7 +21,7 @@ Backend operations require:
 Authorization: Bearer <api-key>
 ```
 
-The SDK and CLI discover local credentials automatically. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped URLs and keys from your authenticated backend and use native WebSockets.
+Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped URLs and keys from your authenticated backend and use native WebSockets.
 
 | Operation                      | Method and path                                       | Credential                                    |
 | ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
@@ -53,7 +53,7 @@ Registers actor code for your application. There is one active deployment. The J
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "dist/actors.mjs",
     "secretRefs": [],
     "socketGatewayUrl": null,
     "warmRegion": "north-america-east"
@@ -65,10 +65,10 @@ Registers actor code for your application. There is one active deployment. The J
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
 - `imageRef` (`string`, required) — Provider image reference containing the actor project, 1–255 bytes. Registration does not upload or build the image.
 - `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
-- `actorEntrypoint` (`string | null`, default `null`) — TypeScript actor source file, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `src/durable-objects.ts`. Loading validates actor definitions and [field annotations](api.md#saved-state-and-serialization).
+- `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
-- `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
+- `warmRegion` (`string | null`, default `null`) — Supported execution region in which to request background image warmup. It is not retained in the deployment record.
 - `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
 
 **Response:** `200 OK` with JSON:
@@ -126,7 +126,7 @@ Reads the active deployment.
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "dist/actors.mjs",
     "secretRefs": [],
     "socketGatewayUrl": null
 }
@@ -296,7 +296,7 @@ Each actor supports up to 128 connections per gateway process. Application messa
 | `1006`              | An observed abnormal disconnect; not a close frame sent by the server. |
 | `1011`              | Connection handling or an actor socket handler failed.                 |
 | `1013`              | Actor connection limit reached.                                        |
-| `4400`              | Invalid application message or actor handler failure.                 |
+| `4400`              | Invalid application message or actor handler failure.                  |
 | `4408`              | Authorization expired; reconnect with fresh authorization.             |
 | Other `3000`–`4999` | Application close or rejection; terminal.                              |
 
