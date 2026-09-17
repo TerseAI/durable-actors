@@ -12,6 +12,7 @@ use subtle::ConstantTimeEq;
 
 use crate::{actor::ActorScope, postgres::PostgresDatabase};
 
+use super::contracts::{PublicActorContract, PublishedContract, check_contract_hash};
 use super::{ActorJwtIssuer, issuer::IssuedActorToken};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,8 +84,23 @@ impl HostLaunchSpec {
 
 #[async_trait]
 pub(crate) trait AdminRegistry: Send + Sync {
-    async fn ensure_namespace_and_register_deployment(&self, spec: &HostLaunchSpec)
-    -> Result<bool>;
+    #[cfg(test)]
+    async fn ensure_namespace_and_register_deployment(
+        &self,
+        spec: &HostLaunchSpec,
+    ) -> Result<bool> {
+        self.register_deployment(spec, None).await
+    }
+    async fn register_deployment(
+        &self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool>;
+    async fn deployment_contract(
+        &self,
+        namespace_id: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<PublishedContract>>;
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>>;
     async fn remove_deployment(&self, namespace_id: &str) -> Result<()>;
 }
@@ -155,9 +171,9 @@ impl AdminService {
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme)
             .map_err(|_| anyhow::anyhow!("invalid socket URL"))?;
-        Ok(
-            serde_json::json!({ "websocketUrl": url.as_str(), "key": self.issuer.issue_socket(grant)? }),
-        )
+        let key = self.issuer.issue_socket(grant)?;
+        url.query_pairs_mut().append_pair("key", &key);
+        Ok(serde_json::json!({ "websocketUrl": url.as_str(), "key": key }))
     }
 
     pub(super) fn verify_socket(&self, token: &str) -> Result<super::socket_ticket::SocketTicket> {
@@ -177,6 +193,7 @@ impl AdminService {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn ensure_namespace_and_register_deployment(
         &self,
         spec: &HostLaunchSpec,
@@ -191,6 +208,45 @@ impl AdminService {
         namespace_id: &str,
     ) -> Result<Option<HostLaunchSpec>> {
         self.registry.launch_spec(namespace_id).await
+    }
+
+    pub(crate) async fn register_deployment(
+        &self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<bool> {
+        self.registry.register_deployment(spec, contract).await
+    }
+
+    pub(crate) async fn deployment_contract(
+        &self,
+        namespace: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<PublishedContract>> {
+        validate_namespace(namespace)?;
+        if let Some(revision) = revision {
+            validate_component("code revision", revision, 128)?;
+        }
+        self.registry.deployment_contract(namespace, revision).await
+    }
+
+    pub(crate) async fn validate_contract_registration(
+        &self,
+        spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
+    ) -> Result<()> {
+        if let Some(contract) = contract {
+            let existing = self
+                .deployment_contract(&spec.namespace_id, Some(&spec.code_revision))
+                .await?;
+            check_contract_hash(
+                existing
+                    .as_ref()
+                    .map(|record| record.contract_hash.as_str()),
+                contract,
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn deployment_exists(&self, namespace_id: &str) -> Result<bool> {
@@ -228,35 +284,76 @@ pub(crate) struct LocalAdminRegistry {
 struct LocalAdminState {
     namespaces: HashSet<String>,
     launch_specs: HashMap<String, HostLaunchSpec>,
+    contracts: HashMap<String, PublishedContract>,
 }
 
 #[cfg(test)]
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
     async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
-            .launch_specs
-            .remove(namespace_id);
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        state.launch_specs.remove(namespace_id);
+        state.contracts.remove(namespace_id);
         Ok(())
     }
 
-    async fn ensure_namespace_and_register_deployment(
+    async fn register_deployment(
         &self,
         spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
     ) -> Result<bool> {
         spec.validate()?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        let mut changed = state.launch_specs.get(&spec.namespace_id) != Some(spec);
+        if let Some(contract) = contract {
+            let existing = state
+                .contracts
+                .get(&spec.namespace_id)
+                .filter(|record| record.code_revision == spec.code_revision);
+            check_contract_hash(
+                existing.map(|record| record.contract_hash.as_str()),
+                contract,
+            )?;
+            changed |= existing.is_none();
+            state.contracts.insert(
+                spec.namespace_id.clone(),
+                PublishedContract::new(&spec.namespace_id, &spec.code_revision, contract),
+            );
+        }
+        if state
+            .contracts
+            .get(&spec.namespace_id)
+            .is_some_and(|record| record.code_revision != spec.code_revision)
+        {
+            state.contracts.remove(&spec.namespace_id);
+        }
         state.namespaces.insert(spec.namespace_id.clone());
-        let changed = state.launch_specs.get(&spec.namespace_id) != Some(spec);
         state
             .launch_specs
             .insert(spec.namespace_id.clone(), spec.clone());
         Ok(changed)
+    }
+
+    async fn deployment_contract(
+        &self,
+        namespace_id: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<PublishedContract>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        Ok(state
+            .contracts
+            .get(namespace_id)
+            .filter(|record| revision.is_none_or(|revision| record.code_revision == revision))
+            .cloned())
     }
 
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>> {
@@ -294,13 +391,15 @@ impl AdminRegistry for PostgresAdminRegistry {
         Ok(())
     }
 
-    async fn ensure_namespace_and_register_deployment(
+    async fn register_deployment(
         &self,
         spec: &HostLaunchSpec,
+        contract: Option<&PublicActorContract>,
     ) -> Result<bool> {
         spec.validate()?;
-        Ok(self
-            .database
+        let mut client = self.database.connection().await?;
+        let transaction = client.transaction().await?;
+        let changed = transaction
             .execute(
                 "WITH ensured_namespace AS ( \
                    INSERT INTO durable_object_namespaces (namespace_id) VALUES ($1) \
@@ -334,8 +433,53 @@ impl AdminRegistry for PostgresAdminRegistry {
                 ],
             )
             .await
-            .context("ensure PostgreSQL namespace and register project deployment")?
-            == 1)
+            .context("ensure PostgreSQL namespace and register project deployment")? == 1;
+        transaction.execute(
+            "DELETE FROM durable_object_contracts WHERE namespace_id = $1 AND code_revision <> $2",
+            &[&spec.namespace_id, &spec.code_revision],
+        ).await?;
+        let mut published = false;
+        if let Some(contract) = contract {
+            let existing = transaction.query_opt(
+                "SELECT contract_hash FROM durable_object_contracts WHERE namespace_id = $1 AND code_revision = $2",
+                &[&spec.namespace_id, &spec.code_revision],
+            ).await?;
+            check_contract_hash(existing.as_ref().map(|row| row.get::<_, &str>(0)), contract)?;
+            if existing.is_none() {
+                transaction.execute(
+                    "INSERT INTO durable_object_contracts (namespace_id, code_revision, contract_hash, contract_json) VALUES ($1, $2, $3, $4)",
+                    &[&spec.namespace_id, &spec.code_revision, &contract.hash(), &serde_json::to_string(contract.document())?],
+                ).await?;
+                published = true;
+            }
+        }
+        transaction.commit().await?;
+        Ok(changed || published)
+    }
+
+    async fn deployment_contract(
+        &self,
+        namespace_id: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<PublishedContract>> {
+        let row = self
+            .database
+            .query_opt(
+                "SELECT code_revision, contract_hash, contract_json FROM durable_object_contracts \
+             WHERE namespace_id = $1 AND code_revision = COALESCE($2, \
+               (SELECT code_revision FROM durable_object_project_specs WHERE namespace_id = $1))",
+                &[&namespace_id, &revision],
+            )
+            .await?;
+        row.map(|row| {
+            Ok(PublishedContract {
+                namespace_id: namespace_id.into(),
+                code_revision: row.get(0),
+                contract_hash: row.get(1),
+                contract: serde_json::from_str(row.get::<_, &str>(2))?,
+            })
+        })
+        .transpose()
     }
 
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>> {
@@ -368,7 +512,7 @@ fn validate_namespace(namespace_id: &str) -> Result<()> {
     .validate()
 }
 
-fn validate_component(name: &str, value: &str, maximum: usize) -> Result<()> {
+pub(crate) fn validate_component(name: &str, value: &str, maximum: usize) -> Result<()> {
     ensure!(!value.is_empty(), "{name} must not be empty");
     ensure!(
         value.len() <= maximum,
@@ -461,37 +605,37 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_registration_ensures_the_namespace_and_deployment_atomically() -> Result<()> {
-        let Some(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL").ok() else {
-            return Ok(());
-        };
-        let database = PostgresDatabase::connect(&url).await?;
-        let registry = PostgresAdminRegistry::from_database(database.clone());
-        let mut deployment = spec("image-1");
-        deployment.namespace_id = format!("project-{}", uuid::Uuid::new_v4());
-        deployment.secret_refs = vec!["project-secrets".into()];
-        deployment.socket_gateway_url = Some("https://sockets.example".into());
+        crate::postgres::testing::with_postgres(async |fixture| {
+            let database = PostgresDatabase::connect(&fixture.url).await?;
+            let registry = PostgresAdminRegistry::from_database(database.clone());
+            let mut deployment = spec("image-1");
+            deployment.namespace_id = format!("project-{}", uuid::Uuid::new_v4());
+            deployment.secret_refs = vec!["project-secrets".into()];
+            deployment.socket_gateway_url = Some("https://sockets.example".into());
 
-        assert!(
-            registry
-                .ensure_namespace_and_register_deployment(&deployment)
-                .await?
-        );
-        assert_eq!(
-            registry.launch_spec(&deployment.namespace_id).await?,
-            Some(deployment.clone())
-        );
-        let namespace_exists = database
+            assert!(
+                registry
+                    .ensure_namespace_and_register_deployment(&deployment)
+                    .await?
+            );
+            assert_eq!(
+                registry.launch_spec(&deployment.namespace_id).await?,
+                Some(deployment.clone())
+            );
+            let namespace_exists = database
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM durable_object_namespaces WHERE namespace_id = $1)",
                 &[&deployment.namespace_id],
             )
             .await?
             .get::<_, bool>(0);
-        assert!(namespace_exists);
-        registry.remove_deployment(&deployment.namespace_id).await?;
-        assert_eq!(registry.launch_spec(&deployment.namespace_id).await?, None);
-        registry.remove_deployment(&deployment.namespace_id).await?;
-        Ok(())
+            assert!(namespace_exists);
+            registry.remove_deployment(&deployment.namespace_id).await?;
+            assert_eq!(registry.launch_spec(&deployment.namespace_id).await?, None);
+            registry.remove_deployment(&deployment.namespace_id).await?;
+            Ok(())
+        })
+        .await
     }
 
     fn spec(image: &str) -> HostLaunchSpec {

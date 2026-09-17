@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS deployments (
     body TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS deployment_contracts (
+    namespace_id TEXT NOT NULL PRIMARY KEY,
+    code_revision TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
+    contract_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS host_leases (
     host_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,

@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "actors": [
+    {
+      "actorType": "ChatRoom",
+      "socket": {
+        "version": 1,
+        "actorType": "ChatRoom",
+        "schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "definitions": {
+            "Metadata": {
+              "type": "object",
+              "properties": {}
+            },
+            "Incoming": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            },
+            "Outgoing": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "text"
+              ]
+            },
+            "State": {
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          }
+        },
+        "emittable": []
+      },
+      "rpc": {
+        "schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "definitions": {
+            "Method_sendMessage_Parameter_0": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            },
+            "Method_sendMessage_Result": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "text"
+              ]
+            }
+          }
+        },
+        "methods": [
+          {
+            "name": "clear",
+            "parameters": [],
+            "result": {
+              "kind": "void"
+            }
+          },
+          {
+            "name": "sendMessage",
+            "parameters": [
+              {
+                "name": "input",
+                "optional": false,
+                "rest": false,
+                "type": {
+                  "$ref": "#/definitions/Method_sendMessage_Parameter_0"
+                }
+              }
+            ],
+            "result": {
+              "kind": "value",
+              "type": {
+                "$ref": "#/definitions/Method_sendMessage_Result"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -15,20 +15,21 @@ This page documents deployment management, backend access, WebSocket connections
 
 ## Authentication
 
-Use your configured server origin as the base URL. JSON requests use `Content-Type: application/json`. Backend operations require:
+Backend operations require:
 
 ```http
 Authorization: Bearer <api-key>
 ```
 
-Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage deployments, call actors, and publish updates. Browser apps use the generated SDK and your authenticated proxy endpoint to obtain actor-scoped WebSocket tickets.
+The SDK and CLI discover local credentials automatically. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped URLs and keys from your authenticated backend and use native WebSockets.
 
 | Operation                      | Method and path                                       | Credential                                    |
 | ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
 | Register or replace deployment | `PUT /v1/deployment`                                  | API key.                                      |
 | Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
+| Read public actor contract     | `GET /v1/contract`                                    | API key.                                      |
 | Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
-| List saved objects             | `GET /v1/objects`                                    | API key only.                                 |
+| List saved objects             | `GET /v1/objects`                                     | API key only.                                 |
 | Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}/state`          | API key only.                                 |
 | Read public signing keys       | `GET /.well-known/jwks.json`                          | None.                                         |
 | Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket`      | API key; WebSocket upgrade.                   |
@@ -68,6 +69,7 @@ Registers actor code for your application. There is one active deployment. The J
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
+- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
 
 **Response:** `200 OK` with JSON:
 
@@ -77,9 +79,40 @@ Registers actor code for your application. There is one active deployment. The J
 
 An identical deployment returns `{"changed":false}`. Changing the specification stops its previous cloud hosts before registering the replacement. Saved actor state remains, so new code must support existing state. This is not a zero-downtime rollout guarantee.
 
-**Errors:** `400` for an invalid specification and `401` for a rejected admin credential. See [HTTP errors](#http-errors) for shared failure responses.
+Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
+
+**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
 
 Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
+
+### GET /v1/contract
+
+Returns the active deployment's public actor contract. Requires the API key; session tokens and socket tickets cannot read contracts. No actor host needs to be running.
+
+```text
+GET /v1/contract
+GET /v1/contract?revision=chat-v1
+GET /v1/namespaces/customer/contract?revision=chat-v1
+```
+
+Omit `revision` to get the latest deployment's contract. The optional `revision` query checks that this revision is active and returns `404` otherwise. Only the active contract is stored; historical contracts are discarded on replacement or deletion. Unknown query parameters are rejected.
+
+**Response:** `200 OK`, with `Cache-Control: no-store`:
+
+```json
+{
+    "namespaceId": "default",
+    "codeRevision": "chat-v1",
+    "contractHash": "sha256:<digest>",
+    "contract": { "version": 1, "actors": [] }
+}
+```
+
+The example represents an empty actor API; a missing contract returns `404` with error code `contract_not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
+
+`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
+
+**Errors:** `400` for an invalid namespace, revision, or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
 ### GET /v1/deployment
 
@@ -210,13 +243,13 @@ Within 10 seconds of opening, send this as the first text frame:
 { "type": "initialize", "metadata": { "userId": "alice" } }
 ```
 
-The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling [`onMessage`](api.md#actoronmessage). It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
+The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling `[onMessage](api.md#actoronmessage)`. It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
 
-The SDK performs this handshake for [`reference.connect()`](api.md#referenceconnect). The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
+The SDK performs this handshake for `[reference.connect()](api.md#referenceconnect)`. The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
 
 ### External connections
 
-Use the [generated browser SDK and proxy helper](../../sdk/README.md#browser-clients) to manage this exchange automatically. Your proxy authenticates requests and checks actor access before asking the control plane for authorization.
+Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
 POST /v1/actors/{actorType}/{actorId}/socket-ticket
@@ -228,21 +261,27 @@ Content-Type: application/json
 { "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Only the API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. An optional `connectionId` requests a renewal ticket bound to that connection. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
+Only the backend API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
 
 ```json
-{ "websocketUrl": "wss://objects.example.com/v1/socket", "key": "<signed-ticket>" }
+{ "websocketUrl": "wss://objects.example.com/v1/socket?key=<signed-ticket>", "key": "<signed-ticket>" }
 ```
 
-The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Tickets authorize socket operations on exactly one actor instance; they do not authorize backend RPCs or administration. Admission expires after at most 60 seconds.
+The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Its key authorizes socket operations on exactly one actor instance; it does not authorize backend RPCs or administration. Open the URL within 60 seconds. Both the URL and key are credentials; omit the key from access logs.
 
-Connect with WebSocket subprotocol `little-actors.v1`. Within 10 seconds, send `{"type":"authorize","key":"<signed-ticket>"}`. Credentials are carried in the frame, not the URL. A renewal ticket cannot open a new connection.
+Pass the URL directly to a native WebSocket:
 
-After successful `onConnect` and persistence, the server sends `{"type":"state","state":{...},"version":1}` containing public persisted fields, then `{"type":"ready","protocol":1,"connectionId":"...","expiresInMs":900000}`. Explicit actor messages may also arrive before readiness. Application traffic uses `{"type":"message","data":...}` in both directions. Automatic changes use `{"type":"state_update","changes":{...},"removed":[],"version":2}` and contain changed `@Emittable` fields only.
+```js
+const socket = new WebSocket(grant.websocketUrl)
+socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }))
+socket.onmessage = event => console.log(JSON.parse(event.data))
+```
 
-Renew by obtaining a fresh ticket and sending `{"type":"renew","key":"<signed-ticket>"}` on the existing connection. The acknowledgment is `{"type":"renewed","expiresInMs":900000}`. Lifetimes are relative milliseconds. Renewal requires the same actor and, if the ticket specifies a `connectionId`, the same connection. Unchanged authorized metadata preserves actor-modified metadata and tags; changed metadata closes with `4409`, causing the SDK to reconnect and rerun `onConnect`.
+The gateway verifies the key before upgrading. Missing, invalid, or expired keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
 
-Expiry is enforced while idle, receiving messages, and running handlers. Reconnect fetches a new ticket and initial snapshot. Live events have no replay, and the SDK never resends application messages.
+Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Actors send initial data explicitly from `onConnect`, and call `socket.send()` or `this.broadcast()` for subsequent messages. Signed browser connections do not receive automatic state snapshots or updates.
+
+Authorization expires even while idle or running a handler; the gateway closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
 
 ### Message limits
 
@@ -257,21 +296,19 @@ Each actor supports up to 128 connections per gateway process. Application messa
 | `1006`              | An observed abnormal disconnect; not a close frame sent by the server. |
 | `1011`              | Connection handling or an actor socket handler failed.                 |
 | `1013`              | Actor connection limit reached.                                        |
-| `4400`              | Invalid browser protocol or actor handler failure; terminal.           |
-| `4401`, `4403`      | Rejected authorization or renewal target mismatch; terminal.           |
+| `4400`              | Invalid application message or actor handler failure.                 |
 | `4408`              | Authorization expired; reconnect with fresh authorization.             |
-| `4409`              | Authorized metadata changed; reconnect.                                |
 | Other `3000`–`4999` | Application close or rejection; terminal.                              |
 
 These are common runtime outcomes; WebSocket protocol and size failures may produce other standard codes. Receiving output is not an acknowledgment that a message was saved. The runtime does not replay transient broadcasts on reconnect.
 
 ## WebSocket callbacks
 
-The optional incoming-message callback is configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <DURABLE_OBJECT_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
+Enable incoming-message callbacks in the [server configuration](configuration.md). The server makes JSON `POST` requests with `Authorization: Bearer <api-key>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
 
 ### Incoming message events
 
-Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor handling:
+After successful actor handling, the callback receives:
 
 ```json
 {
@@ -301,11 +338,11 @@ Events cover successfully handled incoming messages. Connection changes and outg
 
 The default API requires no namespace setting. For explicit scopes, deployment, target, socket-effects, WebSocket, and session-token routes also accept `/v1/namespaces/{namespaceId}` in place of `/v1`. An API key can access all namespaces on its server. Session tokens are restricted to their own namespace and cannot manage deployments or issue credentials.
 
-Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](../guides/advanced-access.md).
+Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](configuration.md).
 
 ## Session tokens
 
-Session tokens are optional credentials for delegated workers or customer-provided code. See [advanced access configuration](../guides/advanced-access.md) for examples, including the local demo.
+Session tokens are optional credentials for delegated workers or customer-provided code. See [delegated credential configuration](configuration.md).
 
 ### POST /v1/session-scoped-token
 

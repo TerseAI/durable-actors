@@ -4,6 +4,8 @@ import path from "node:path"
 
 import { configuredSettings } from "../client/clientSettings.js"
 
+import { ControlPlaneClient, type ControlPlaneConnection } from "./control-plane.js"
+
 interface ObjectOptions {
     dataDir: string
     url?: string
@@ -16,12 +18,6 @@ interface ListOptions extends ObjectOptions {
     limit: number
     after?: string
     all?: boolean
-}
-
-interface Connection {
-    controlPlaneUrl: string
-    credential: string
-    namespaceId?: string
 }
 
 interface SavedObject {
@@ -71,7 +67,7 @@ function rowLimit(value: string): number {
 }
 
 async function listObjects(options: ListOptions): Promise<void> {
-    const client = new ObjectInspectionClient(await connection(options), fetch)
+    const client = new ControlPlaneClient(await connection(options), fetch)
     const objects: SavedObject[] = []
     let after: string | null = options.after ?? null
     do {
@@ -79,7 +75,7 @@ async function listObjects(options: ListOptions): Promise<void> {
         if (options.namespace) query.set("namespace", options.namespace)
         query.set("limit", String(options.all ? 500 : options.limit))
         if (after) query.set("after", after)
-        const page: ObjectPage = await client.get(`/v1/objects${query.size ? `?${query}` : ""}`)
+        const page = (await client.listObjects(query)) as ObjectPage
         objects.push(...page.objects)
         if (page.nextCursor && page.nextCursor === after) throw new Error("Server returned a repeated object cursor.")
         after = page.nextCursor
@@ -92,14 +88,12 @@ async function listObjects(options: ListOptions): Promise<void> {
 
 async function inspectObject(actorType: string, actorId: string, options: ObjectOptions): Promise<void> {
     const settings = await connection(options)
-    const client = new ObjectInspectionClient(settings, fetch)
-    const namespace = encodeURIComponent(settings.namespaceId ?? "default")
-    const actorPath = `${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}`
-    const result = await client.get(`/v1/namespaces/${namespace}/actors/${actorPath}/state`)
+    const client = new ControlPlaneClient(settings, fetch)
+    const result = await client.inspectObject(actorType, actorId)
     console.log(JSON.stringify(result, null, 2))
 }
 
-async function connection(options: ObjectOptions): Promise<Connection> {
+async function connection(options: ObjectOptions): Promise<ControlPlaneConnection> {
     const url = options.url || process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
     const apiKey = options.apiKey || process.env.DURABLE_OBJECT_API_KEY
     if (url || apiKey) {
@@ -151,32 +145,6 @@ function printObjects(objects: SavedObject[]): void {
                 .join("  ")
                 .trimEnd()
         )
-}
-
-class ObjectInspectionClient {
-    constructor(
-        private readonly connection: Connection,
-        private readonly request: typeof fetch
-    ) {}
-
-    async get<T>(pathname: string): Promise<T> {
-        const response = await this.request(`${this.connection.controlPlaneUrl}${pathname}`, {
-            headers: { authorization: `Bearer ${this.connection.credential}` },
-            signal: AbortSignal.timeout(30_000),
-            redirect: "error"
-        }).catch(() => {
-            throw new Error(
-                `Cannot reach the runtime at ${this.connection.controlPlaneUrl}. Check that it is running and the URL is correct.`
-            )
-        })
-        if (!response.ok) {
-            const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null
-            throw new Error(
-                `Object inspection failed (HTTP ${response.status}): ${body?.error?.message ?? response.statusText}`
-            )
-        }
-        return response.json() as Promise<T>
-    }
 }
 
 export { registerObjectCommands }

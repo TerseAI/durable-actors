@@ -14,6 +14,7 @@ use crate::{actor::ActorKey, host::ActorProcessRole};
 use super::{
     MAX_CONTROL_PLANE_MESSAGE_BYTES,
     admin::{AdminService, HostLaunchSpec},
+    contracts::{ContractRevisionConflict, PublicActorContract},
     service::{ControlPlaneService, TargetResolutionTimings},
 };
 
@@ -24,6 +25,7 @@ struct PublicApiState {
 }
 
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
+    let contracts = super::contract_api::router(admin.clone());
     let sockets = super::websocket::router(
         invocations.clone(),
         invocations.sockets.clone(),
@@ -67,6 +69,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(sockets)
+        .merge(contracts)
 }
 
 async fn issue_socket_ticket(
@@ -91,7 +94,6 @@ async fn issue_socket_ticket(
         region: principal.region,
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
-        connection_id: request.connection_id,
     };
     grant.validate().map_err(ApiError::bad_request)?;
     let issued = state
@@ -108,8 +110,6 @@ struct IssueSocketTicketRequest {
     metadata: Value,
     #[serde(default = "socket_authorization_lifetime")]
     authorization_lifetime_ms: i64,
-    #[serde(default)]
-    connection_id: Option<String>,
 }
 
 fn socket_authorization_lifetime() -> i64 {
@@ -161,6 +161,11 @@ async fn register_deployment(
     Json(request): Json<RegisterDeploymentRequest>,
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
+    let contract = request
+        .contract
+        .map(PublicActorContract::new)
+        .transpose()
+        .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
         namespace_id: path
             .namespace_id
@@ -174,9 +179,15 @@ async fn register_deployment(
     };
     let changed = state
         .invocations
-        .register_deployment(&state.admin, &spec)
+        .register_deployment(&state.admin, &spec, contract.as_ref())
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|error| {
+            if error.is::<ContractRevisionConflict>() {
+                ApiError::conflict(error.to_string())
+            } else {
+                ApiError::bad_request(error)
+            }
+        })?;
     if let Some(region) = request.warm_region {
         state.invocations.warm_deployment_image(spec, region);
     }
@@ -381,6 +392,8 @@ fn authorization(headers: &HeaderMap) -> Result<&str, ApiError> {
 #[serde(rename_all = "camelCase")]
 struct RegisterDeploymentRequest {
     code_revision: String,
+    #[serde(default)]
+    contract: Option<Value>,
     image_ref: String,
     working_directory: String,
     #[serde(default)]

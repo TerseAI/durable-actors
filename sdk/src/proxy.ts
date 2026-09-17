@@ -1,6 +1,7 @@
+import { z } from "zod"
+
 import { validateActorComponent } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
-import { decodeGrant } from "./browser/protocol.js"
 import { readLocalSettings } from "./client/localSettings.js"
 
 interface SocketProxyOptions {
@@ -27,7 +28,12 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
     }
 }[keyof Actors & string]
 
-type SocketGrant = ReturnType<typeof decodeGrant>
+const socketGrantSchema = z.object({
+    websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol)),
+    key: z.string().min(1)
+})
+
+type SocketGrant = z.infer<typeof socketGrantSchema>
 
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly origin: string
@@ -83,7 +89,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
             }
         )
         if (!response.ok) throw new Error(`WebSocket authorization could not be issued (HTTP ${response.status})`)
-        return decodeGrant(await response.json())
+        return socketGrantSchema.parse(await response.json())
     }
 }
 

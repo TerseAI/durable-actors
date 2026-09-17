@@ -1,6 +1,6 @@
 # Local development
 
-Run actors locally using the published npm package. For complete sample applications, start with `little-actors init` in the [Express + React chat tutorial](../../README.md#quickstart). The steps below cover adding actors to an existing application.
+Run actors locally using the published npm package. The runtime supplies the API key and control plane URL automatically; no environment variables are needed. For a complete sample application, start with the [Express + React chat example](../../examples/chat/README.md). The steps below cover adding actors to an existing application.
 
 ## Install the package
 
@@ -12,13 +12,13 @@ The package includes the `little-actors` CLI and TypeScript actor execution supp
 
 ## Define actors and generate clients
 
-Export your actor classes from `src/durable-objects.ts`, as shown in the [quickstart](../../README.md#quickstart). Generate the frontend client and backend proxy together:
+Export your actor classes from `src/durable-objects.ts`, as shown in the [README](../../README.md#define-an-actor). Generate the backend RPC and WebSocket grant helpers:
 
 ```sh
 npx little-actors generate
 ```
 
-Both sides use this output: the frontend imports `ActorClient` from `generated/index.ts`, and the backend imports `ActorProxy` from `generated/proxy.ts`.
+The backend imports `actors` from `generated/index.js`. The frontend fetches a grant from your backend and passes its `websocketUrl` directly to `new WebSocket()`.
 
 ## Start the actor server
 
@@ -28,20 +28,26 @@ npx little-actors dev
 
 Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.little-actors/` and survives restarts.
 
+Startup compiles and publishes your actors' public contract. You can then run `npx little-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
+
+The same terminal shows runtime logs and a request log with the method, path, status, and duration when the local control plane responds. Request logs omit query strings, headers, and bodies. Use `RUST_LOG=debug npx little-actors dev` for more detail, or `RUST_LOG=warn npx little-actors dev` to show only warnings and errors.
+
 ## Connect your application
 
-`ActorProxy` reads the connection settings from `.little-actors/runtime.json` automatically. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `ActorClient()` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
+Backend actor calls and generated `prepareWebsocket` helpers use [automatic local configuration](../reference/configuration.md). Start your backend from the same project directory as the actor runtime. Your backend authenticates users and calls `actors.ChatRoom.prepareWebsocket({ actorId, metadata })`. The example serves grants at `/api/socket/{actorType}/{actorId}`; your application chooses its own route.
 
 Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` and reads the local runtime settings automatically.
 
-The frontend never imports the actor implementation. Generated SDK requests go to your proxy for credentials, and socket messages go directly to the actor gateway.
+The frontend never imports the actor implementation. The frontend requests credentials from your backend, then sends socket messages directly to the actor gateway.
+
+For remote servers or a custom data directory, see [configuration](../reference/configuration.md).
 
 ## Update after changes
 
-Restart `little-actors dev` after changing actor code. Regenerate the shared SDK when the actor contract changes. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
+Restart `little-actors dev` after changing actor code. Regenerate the backend helpers when the actor contract changes. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
 
 ## Troubleshooting
 
 If the CLI is missing, run `npm install little-actors` in your application directory before invoking `npx little-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.
 
-For server startup, storage, and client connection issues, see the [CLI troubleshooting guide](../reference/cli.md#troubleshooting).
+For server startup, storage, and client connection issues, check the [local defaults and connection settings](../reference/configuration.md).

@@ -4,8 +4,11 @@ import ts from "typescript"
 
 import { validateActorComponent } from "../actor/identity.js"
 import { ActorDefinitionError } from "../errors.js"
+import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
+import { extractPublicSchema } from "./public-schema.js"
+import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
 import { Persistence } from "./types.js"
 import type {
@@ -38,6 +41,31 @@ class ActorCompiler {
                 schema
             )
         }))
+    }
+
+    compileContract(entrypoint: string, options: CompilerOptions = {}): PublicActorContract {
+        const { program, source, sdk, schemas } = this.analyze(entrypoint, options)
+        const checker = program.getTypeChecker()
+        const actors = discoverActors(source, checker, sdk).actors
+        return {
+            version: 1,
+            actors: [...schemas]
+                .sort((left, right) =>
+                    left.actorType < right.actorType ? -1 : left.actorType > right.actorType ? 1 : 0
+                )
+                .map(schema => {
+                    const actor = actors.find(actor => actor.name!.text === schema.actorType)!
+                    const socket = socketContract(checker, actor, schema)
+                    return {
+                        actorType: schema.actorType,
+                        socket: {
+                            ...socket,
+                            schema: extractPublicSchema(socket.schema, ["Metadata", "Incoming", "Outgoing", "State"])
+                        },
+                        rpc: rpcContract(checker, actor)
+                    }
+                })
+        }
     }
 
     private analyze(entrypoint: string, options: CompilerOptions) {
@@ -302,3 +330,11 @@ function definitionDiagnostic(node: ts.Node, messageText: string, related: reado
 
 export { ActorCompiler, analyzeActors, definitionDiagnostic, Persistence, resolveSdkSymbols }
 export type { CompilerOptions }
+export type {
+    ActorApi,
+    TypeReference,
+    PublicActorContract,
+    RpcContract,
+    RpcMethod,
+    RpcParameter
+} from "../wire/public-contract.js"

@@ -3,10 +3,10 @@ import { useEffect, useState } from "react"
 import Collaboration from "@tiptap/extension-collaboration"
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
-import type { ConnectionStatus } from "little-actors/browser"
 import type { Doc } from "yjs"
 
 import { openDocument } from "./collaboration.js"
+import type { ConnectionStatus } from "./collaboration.js"
 
 export function DocumentEditor({ id, title }: DocumentProps) {
     const [document, setDocument] = useState<Doc>()
@@ -24,7 +24,7 @@ export function DocumentEditor({ id, title }: DocumentProps) {
         <section aria-label={title}>
             <div className="document-heading">
                 <h2>{title}</h2>
-                <span role="status">{status === "open" ? "Connected" : status === "error" ? "Connection failed. Reload to retry." : "Connecting…"}</span>
+                <span role="status">{status === "open" ? "Connected" : status === "connecting" ? "Connecting…" : "Disconnected. Reload to retry."}</span>
             </div>
             {document ? <RichText document={document} connected={status === "open"} /> : <p>Loading document…</p>}
         </section>

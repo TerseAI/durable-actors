@@ -2,10 +2,15 @@
 import { Command, InvalidArgumentError, Option } from "commander"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 
+import { ControlPlaneClient } from "./cli/control-plane.js"
+import { registerDeployCommand } from "./cli/deploy.js"
+import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
+import { configuredSettings } from "./client/clientSettings.js"
 import { runtimeExecutable } from "./runtimeInstaller.js"
 
 interface DevOptions {
@@ -31,22 +36,8 @@ try {
             new Option("--template <name>", "example app").choices(["chat", "ai-chat", "documents"]).default("chat")
         )
         .action(initializeProject)
-    program
-        .command("generate [entrypoint]")
-        .description("Generate typed browser clients and backend proxies")
-        .option("--out-dir <directory>", "generated source directory", "generated")
-        .option("--config <file>", "TypeScript configuration file")
-        .action(async (entrypoint: string | undefined, options: { outDir: string; config?: string }) => {
-            const { ActorCompiler } = await import("./compiler/actor-compiler.js")
-            const { generateClient } = await import("./compiler/client-generator.js")
-            const actors = new ActorCompiler().compile(entrypoint ?? "src/durable-objects.ts", {
-                configFile: options.config
-            })
-            await generateClient(
-                actors.map(actor => actor.contract),
-                path.resolve(options.outDir)
-            )
-        })
+    registerGenerateCommand(program)
+    registerDeployCommand(program)
     program
         .command("dev")
         .description("Start local actors with automatic SQLite and file storage")
@@ -60,7 +51,7 @@ try {
                 .default("local")
         )
         .action(async options => {
-            process.exitCode = await runRuntime(devArguments(options))
+            process.exitCode = await runDev(options)
         })
     program
         .command("token")
@@ -120,6 +111,22 @@ function portNumber(value: string): number {
     return port
 }
 
+async function runDev(options: DevOptions): Promise<number> {
+    const { ActorCompiler } = await import("./compiler/actor-compiler.js")
+    const { parsePublicContract } = await import("./compiler/validate-public-contract.js")
+    const contract = parsePublicContract(
+        new ActorCompiler().compileContract(path.resolve(options.project, options.entrypoint))
+    )
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-contract-"))
+    try {
+        const file = path.join(directory, "contract.json")
+        await writeFile(file, JSON.stringify(contract))
+        return await runRuntime([...devArguments(options), "--contract", file])
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+}
+
 function devArguments(options: DevOptions): string[] {
     const args = [
         "dev",
@@ -153,26 +160,12 @@ async function runRuntime(args: string[]): Promise<number> {
 
 async function localSession(directory: string) {
     const connection = await localConnection(directory)
-    const response = await fetch(
-        `${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`,
-        {
-            method: "POST",
-            headers: { authorization: `Bearer ${connection.apiKey}`, "content-type": "application/json" },
-            body: JSON.stringify({
-                executionId: `local-${randomUUID()}`,
-                deadlineUnixMs: Date.now() + 3_600_000,
-                storageRegion: connection.storageRegion
-            }),
-            signal: AbortSignal.timeout(10_000)
-        }
-    ).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
-    })
-    if (!response.ok)
-        throw new Error(
-            `Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`
-        )
-    const { token } = (await response.json()) as { token: string }
+    const client = new ControlPlaneClient(configuredSettings(connection), fetch)
+    const { token } = (await client.issueSessionToken({
+        executionId: `local-${randomUUID()}`,
+        deadlineUnixMs: Date.now() + 3_600_000,
+        storageRegion: connection.storageRegion
+    })) as { token: string }
     return { connection, token }
 }
 
