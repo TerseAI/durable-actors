@@ -68,7 +68,7 @@ test("init creates a complete chat app using the installed SDK version", async t
     assert.equal(metadata.dependencies["little-actors"], sdk.version)
     assert.match(await readFile(path.join(project, "src/durable-objects.ts"), "utf8"), /extends Actor/)
     assert.match(await readFile(path.join(project, "src/backend.ts"), "utf8"), /ActorProxy.handle/)
-    assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /ActorClient/)
+    assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /clients.ChatRoom/)
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.little-actors\//)
     assert.match(stdout, /npm install/)
     assert.match(stdout, /little-actors generate/)

@@ -185,6 +185,9 @@ importers:
       json-schema-to-typescript:
         specifier: ^16.0.0
         version: 16.0.0
+      prettier:
+        specifier: ^3.9.6
+        version: 3.9.6
       tar:
         specifier: ^7.5.22
         version: 7.5.22

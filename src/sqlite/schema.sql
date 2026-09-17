@@ -7,22 +7,11 @@ CREATE TABLE IF NOT EXISTS deployments (
 );
 
 CREATE TABLE IF NOT EXISTS deployment_contracts (
-    namespace_id TEXT NOT NULL,
+    namespace_id TEXT NOT NULL PRIMARY KEY,
     code_revision TEXT NOT NULL,
     contract_hash TEXT NOT NULL,
-    contract_json TEXT NOT NULL,
-    PRIMARY KEY (namespace_id, code_revision)
+    contract_json TEXT NOT NULL
 );
-
-BEGIN IMMEDIATE;
-DELETE FROM deployment_contracts
-WHERE NOT EXISTS (
-    SELECT 1 FROM deployments
-    WHERE deployments.namespace_id = deployment_contracts.namespace_id
-      AND json_extract(deployments.body, '$.codeRevision') = deployment_contracts.code_revision
-);
-CREATE UNIQUE INDEX IF NOT EXISTS deployment_contracts_namespace ON deployment_contracts(namespace_id);
-COMMIT;
 
 CREATE TABLE IF NOT EXISTS host_leases (
     host_id TEXT PRIMARY KEY,

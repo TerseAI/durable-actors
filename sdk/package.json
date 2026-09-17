@@ -34,6 +34,11 @@
         "little-actors": "dist/cli.js"
     },
     "exports": {
+        "./generated": {
+            "types": "./dist/generated.d.ts",
+            "browser": "./dist/generated.browser.js",
+            "import": "./dist/generated.js"
+        },
         "./backend": {
             "types": "./dist/backend.d.ts",
             "import": "./dist/backend.js"
@@ -63,8 +68,8 @@
             "import": "./dist/compiler/actor-compiler.js"
         },
         "./codegen": {
-            "types": "./dist/compiler/typescript-generator.d.ts",
-            "import": "./dist/compiler/typescript-generator.js"
+            "types": "./dist/compiler/generators/typescript-generator.d.ts",
+            "import": "./dist/compiler/generators/typescript-generator.js"
         }
     },
     "files": [
@@ -91,6 +96,7 @@
         "ajv": "^8.20.0",
         "commander": "^14.0.3",
         "json-schema-to-typescript": "^16.0.0",
+        "prettier": "^3.9.6",
         "tar": "^7.5.22",
         "tsx": "^4.0.0",
         "typescript": "~5.9.3",

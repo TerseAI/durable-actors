@@ -135,7 +135,7 @@ Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy 
 
 For a separate gateway, see [client gateway configuration](../reference/configuration.md) and the [deployment request](../reference/http.md#put-v1deployment).
 
-For browser clients, generate the typed client and proxy with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `proxy.ts`. Keep the API key on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
+For browser clients, generate the typed client and proxy with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `index.ts`. Keep the API key on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
 
 Connection and renewal use the same application endpoint. The SDK renews authorization over the existing socket; unchanged authorized metadata preserves actor-modified metadata and tags. Changed metadata reconnects through `onConnect`. The gateway enforces expiration even while idle or running a handler.
 

@@ -179,8 +179,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contract_migration_creates_latest_only_schema() -> Result<()> {
+        with_postgres_schema(async |database| {
+            let mut client = database.pool.get().await?;
+            embedded::migrations::runner()
+                .set_target(refinery::Target::Version(2))
+                .run_async(&mut **client)
+                .await?;
+            client.batch_execute(
+                "INSERT INTO durable_object_namespaces (namespace_id) VALUES ('project');
+                 INSERT INTO durable_object_project_specs
+                    (namespace_id, code_revision, image_ref, working_directory)
+                 VALUES ('project', 'revision-1', 'image', '/app');",
+            ).await?;
+            embedded::migrations::runner()
+                .set_target(refinery::Target::Version(3))
+                .run_async(&mut **client)
+                .await?;
+            client.execute(
+                "INSERT INTO durable_object_contracts VALUES ('project', 'revision-1', 'hash', '{}')",
+                &[],
+            ).await?;
+            let duplicate = client.execute(
+                "INSERT INTO durable_object_contracts VALUES ('project', 'revision-2', 'hash', '{}')",
+                &[],
+            ).await.unwrap_err();
+            assert_eq!(duplicate.code(), Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION));
+            client.execute(
+                "DELETE FROM durable_object_project_specs WHERE namespace_id = 'project'",
+                &[],
+            ).await?;
+            let count: i64 = client.query_one(
+                "SELECT count(*) FROM durable_object_contracts", &[],
+            ).await?.get(0);
+            assert_eq!(count, 0);
+            Ok(())
+        }).await
+    }
+
+    #[tokio::test]
     async fn concurrent_connections_migrate_fresh_and_existing_schemas_once() -> Result<()> {
-        for version in [0, 3] {
+        for version in [0, 2] {
             with_postgres_schema(async |database| {
                 check_concurrent_migrations(database, version).await
             })
@@ -232,11 +271,11 @@ mod tests {
         second: &tokio_postgres::Client,
     ) -> Result<()> {
         first
-            .execute("DELETE FROM refinery_schema_history WHERE version = 4", &[])
+            .execute("DELETE FROM refinery_schema_history WHERE version = 3", &[])
             .await?;
         let count: i64 = second
             .query_one(
-                "SELECT count(*) FROM refinery_schema_history WHERE version = 4",
+                "SELECT count(*) FROM refinery_schema_history WHERE version = 3",
                 &[],
             )
             .await?
@@ -303,7 +342,7 @@ mod tests {
             .iter()
             .map(|row| row.get(0))
             .collect();
-        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(versions, vec![1, 2, 3]);
         Ok(())
     }
 

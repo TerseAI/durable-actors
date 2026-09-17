@@ -4,7 +4,7 @@ import { test } from "node:test"
 import ts from "typescript"
 import { z } from "zod"
 
-import { generateTypeScript } from "./typescript-generator.js"
+import { generateTypeScript } from "./generators/typescript-generator.js"
 import { parsePublicContract } from "./validate-public-contract.js"
 
 const fixture = JSON.parse(await readFile(new URL("../../../fixtures/public-contract.json", import.meta.url), "utf8"))
@@ -102,7 +102,7 @@ test("contract validation permits schema-like property names and recursive local
     }
     assert.deepEqual(parsePublicContract(document), document)
     const files = await generateTypeScript(document)
-    const code = files.get("ChatRoom.backend.ts")!
+    const code = files.get("index.ts")!
     assert.match(code, /next\?: SendMessageResult/)
     const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
     const variables = source.statements
@@ -110,5 +110,5 @@ test("contract validation permits schema-like property names and recursive local
         .flatMap(statement =>
             statement.declarationList.declarations.map(declaration => declaration.name.getText(source))
         )
-    assert.deepEqual(variables, ["ChatRoom"])
+    assert.deepEqual(variables, ["clients", "actors"])
 })

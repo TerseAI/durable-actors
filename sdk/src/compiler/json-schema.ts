@@ -19,7 +19,70 @@ function jsonSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>): JS
     const generated = generator.getSchemaForSymbols(names) as JSONSchema7
     const definitions: Record<string, JSONSchema7Definition> = { ...generated.definitions }
     for (const name of Object.keys(types)) if (types[name].flags & ts.TypeFlags.Never) definitions[name] = false
+    const seen = new Set<JSONSchema7>()
+    for (const [name, type] of Object.entries(types))
+        preserveTypeNames(checker, type, definitions[name], definitions, seen)
     return { $schema: "http://json-schema.org/draft-07/schema#", definitions }
+}
+
+function preserveTypeNames(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    schema: JSONSchema7Definition | undefined,
+    definitions: Record<string, JSONSchema7Definition>,
+    seen: Set<JSONSchema7>
+): void {
+    if (!schema || typeof schema === "boolean" || seen.has(schema)) return
+    seen.add(schema)
+    if (schema.$ref) {
+        const key = decodeURIComponent(schema.$ref.slice("#/definitions/".length))
+            .replaceAll("~1", "/")
+            .replaceAll("~0", "~")
+        preserveTypeNames(checker, type, definitions[key], definitions, seen)
+        return
+    }
+    const name = sourceTypeName(type)
+    if (type.isUnion()) {
+        const members = type.types.filter(member => !(member.flags & ts.TypeFlags.Undefined))
+        if (members.length !== 1) {
+            if (name) schema.title ??= name
+            return
+        }
+        type = members[0]
+    }
+    const title = name ?? sourceTypeName(type)
+    if (title) schema.title ??= title
+    const visit = (child: ts.Type, definition: JSONSchema7Definition | undefined) =>
+        preserveTypeNames(checker, child, definition, definitions, seen)
+    if (checker.isArrayType(type) || checker.isTupleType(type) || type.getSymbol()?.name === "ReadonlyArray") {
+        const elements = checker.getTypeArguments(type as ts.TypeReference)
+        if (Array.isArray(schema.items))
+            schema.items.forEach((item, index) => {
+                if (elements[index]) visit(elements[index], item)
+            })
+        else if (elements[0]) visit(elements[0], schema.items)
+        return
+    }
+    for (const property of type.getProperties()) {
+        const declaration = property.valueDeclaration ?? property.declarations?.[0]
+        if (declaration)
+            visit(checker.getTypeOfSymbolAtLocation(property, declaration), schema.properties?.[property.name])
+    }
+    const indexType = checker.getIndexTypeOfType(type, ts.IndexKind.String)
+    if (indexType) visit(indexType, schema.additionalProperties)
+}
+
+function sourceTypeName(type: ts.Type): string | undefined {
+    const symbol = type.aliasSymbol ?? type.getSymbol()
+    if (symbol?.declarations?.some(declaration => declaration.getSourceFile().hasNoDefaultLib)) return undefined
+    return symbol?.declarations?.some(
+        declaration =>
+            ts.isInterfaceDeclaration(declaration) ||
+            ts.isTypeAliasDeclaration(declaration) ||
+            ts.isEnumDeclaration(declaration)
+    )
+        ? symbol.name
+        : undefined
 }
 
 function assertJsonType(
@@ -79,4 +142,4 @@ function assertJsonType(
     for (const index of checker.getIndexInfosOfType(type)) assertJsonType(checker, index.type, label, false, seen)
 }
 
-export { assertJsonType, jsonSchema }
+export { assertJsonType, jsonSchema, sourceTypeName }

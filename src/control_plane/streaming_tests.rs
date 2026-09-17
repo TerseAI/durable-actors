@@ -102,19 +102,18 @@ import {{ build }} from 'esbuild';
 const directory = {directory};
 const actors = new ActorCompiler().compile(directory + '/actors.ts');
 await generateClient(actors.map(actor => actor.contract), directory + '/generated');
-await build({{entryPoints:[directory + '/generated/frontend.ts'],outfile:directory + '/browser.mjs',
-    bundle:true,platform:'browser',format:'esm',alias:{{'little-actors/browser':{browser}}}}});
-await build({{entryPoints:[directory + '/generated/proxy.ts'],outfile:directory + '/proxy.mjs',
-    bundle:true,platform:'node',format:'esm',external:['little-actors/proxy']}});
-const {{ ActorClient }} = await import(directory + '/browser.mjs');
+await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/browser.mjs',
+    bundle:true,platform:'browser',format:'esm',alias:{{'little-actors/generated':{browser}}}}});
+await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/proxy.mjs',
+    bundle:true,platform:'node',format:'esm',external:['little-actors/generated']}});
+const {{ clients }} = await import(directory + '/browser.mjs');
 const {{ ActorProxy }} = await import(directory + '/proxy.mjs');
 let authorizations = 0;
-const client = ActorClient({{ fetch: async () => {{
+const room = clients.Counter.get('counter-1', {{ fetch: async () => {{
     authorizations++;
     return Response.json(await ActorProxy.handle({{actorType:'Counter',actorId:'counter-1',metadata:{{user:'one'}},authorizationLifetimeMs:1000}},
         {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}}));
 }} }});
-const room = client.Counter.get('counter-1');
 const values = [];
 room.subscribe('count', value => values.push(value));
 const errors = [];
@@ -140,9 +139,10 @@ assert.throws(() => room.send({{type:'start'}}), /not open/i);
             ))?,
             generator = serde_json::to_string(&format!(
                 "file://{}",
-                sdk.join("compiler/client-generator.js").display()
+                sdk.join("compiler/generators/client-generator.js")
+                    .display()
             ))?,
-            browser = serde_json::to_string(&sdk.join("browser.js"))?,
+            browser = serde_json::to_string(&sdk.join("generated.browser.js"))?,
             directory = serde_json::to_string(stack.directory.path())?,
             gateway = serde_json::to_string(&stack.gateway)?,
         ),

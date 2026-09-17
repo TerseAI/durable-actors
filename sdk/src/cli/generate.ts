@@ -29,7 +29,7 @@ function registerGenerateCommand(program: Command): void {
 
 async function generate(entrypoint: string | undefined, options: GenerateOptions): Promise<void> {
     validateOptions(entrypoint, options)
-    const { generateClient } = await import("../compiler/client-generator.js")
+    const { generateClient } = await import("../compiler/generators/client-generator.js")
     const { contract, codeRevision } = options.url
         ? await remoteContract(options)
         : await localContract(entrypoint, options.config)

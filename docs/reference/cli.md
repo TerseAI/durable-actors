@@ -71,13 +71,13 @@ npx little-actors generate
 
 Checks the actor dependency graph without executing it and writes TypeScript clients.
 
-| Entrypoint    | Per-actor file         | Contents                                                           |
-| ------------- | ---------------------- | ------------------------------------------------------------------ |
-| `frontend.ts` | `ChatRoom.frontend.ts` | Frontend WebSocket client, connection types, and public state.     |
-| `backend.ts`  | `ChatRoom.backend.ts`  | Typed RPC client such as `ChatRoom.get("lobby").sendMessage(...)`. |
-| `proxy.ts`    | `ChatRoom.proxy.ts`    | Authorization proxy and metadata types for browser connections.    |
+| Entrypoint | Export             | Contents                                                                    |
+| ---------- | ------------------ | --------------------------------------------------------------------------- |
+| `index.ts` | `clients.ChatRoom` | Frontend WebSocket client, connection types, and public state.              |
+| `index.ts` | `actors.ChatRoom`  | Typed RPC client such as `actors.ChatRoom.get("lobby").sendMessage(...)`. |
+| `index.ts` | `ActorProxy`       | Authorization proxy and metadata types for browser connections.             |
 
-Regenerating replaces the former `index.ts` and `*.actor.ts` files with `frontend.ts` and `*.frontend.ts`. Update frontend imports to use these names.
+Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import everything from `generated/index.js`.
 
 The source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
 

@@ -1,8 +1,8 @@
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
-import type { SocketContract } from "../wire/contract.js"
-import type { PublicActorContract } from "../wire/public-contract.js"
+import type { SocketContract } from "../../wire/contract.js"
+import type { PublicActorContract } from "../../wire/public-contract.js"
 
 import { generateTypeScript } from "./typescript-generator.js"
 
@@ -14,10 +14,14 @@ async function generateClient(
     const contracts = "actors" in input ? input.actors.map(actor => actor.socket) : input
     await mkdir(directory, { recursive: true })
     for (const [file, contents] of artifacts) await writeFile(path.join(directory, file), contents)
-    for (const file of ["index.ts", "socket.ts", "rpc.ts"]) await rm(path.join(directory, file), { force: true })
+    for (const file of ["frontend.ts", "backend.ts", "proxy.ts", "socket.ts", "rpc.ts"])
+        await rm(path.join(directory, file), { force: true })
     for (const { actorType } of contracts)
         for (const suffix of [
             "actor.ts",
+            "frontend.ts",
+            "backend.ts",
+            "proxy.ts",
             "socket.ts",
             "rpc.ts",
             "validators.js",

@@ -6,7 +6,7 @@ import { test } from "node:test"
 
 test("public codegen returns the same typed artifacts as file generation", async t => {
     const { generateTypeScript } = await import("little-actors/codegen")
-    const { generateClient } = await import("../dist/compiler/client-generator.js")
+    const { generateClient } = await import("../dist/compiler/generators/client-generator.js")
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-codegen-api-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contracts = [
@@ -27,8 +27,8 @@ test("public codegen returns the same typed artifacts as file generation", async
 
     const files = await generateTypeScript(contracts)
     assert.deepEqual(await readdir(directory), [])
-    assert.deepEqual([...files.keys()].sort(), ["Room.frontend.ts", "Room.proxy.ts", "frontend.ts", "proxy.ts"])
-    assert.match(files.get("Room.proxy.ts"), /userId: string/)
+    assert.deepEqual([...files.keys()].sort(), ["index.ts"])
+    assert.match(files.get("index.ts"), /userId: string/)
     await generateClient(contracts, directory)
     for (const [name, contents] of files) {
         assert.equal(await readFile(path.join(directory, name), "utf8"), contents)
@@ -38,13 +38,13 @@ test("public codegen returns the same typed artifacts as file generation", async
 test("public codegen supports projects without actors", async () => {
     const { generateTypeScript } = await import("little-actors/codegen")
     const files = await generateTypeScript([])
-    assert.deepEqual([...files.keys()].sort(), ["frontend.ts", "proxy.ts"])
+    assert.deepEqual([...files.keys()].sort(), ["index.ts"])
 })
 
-test("public contract generation writes explicit frontend, backend and proxy artifacts and removes legacy files", async t => {
+test("public contract generation writes one module for actors, clients and ActorProxy and removes legacy files", async t => {
     const { generateTypeScript } = await import("little-actors/codegen")
     const { createActorStub } = await import("little-actors/backend")
-    const { generateClient } = await import("../dist/compiler/client-generator.js")
+    const { generateClient } = await import("../dist/compiler/generators/client-generator.js")
     assert.equal(typeof createActorStub, "function")
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-contract-api-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
@@ -74,15 +74,21 @@ test("public contract generation writes explicit frontend, backend and proxy art
         ]
     }
     const files = await generateTypeScript(contract)
-    assert.deepEqual([...files.keys()].sort(), [
-        "Room.backend.ts",
+    assert.deepEqual([...files.keys()], ["index.ts"])
+    assert.match(files.get("index.ts"), /export const actors/)
+    assert.match(files.get("index.ts"), /export const clients/)
+    assert.match(files.get("index.ts"), /export class ActorProxy/)
+    for (const file of [
+        "Room.actor.ts",
         "Room.frontend.ts",
+        "Room.backend.ts",
         "Room.proxy.ts",
-        "backend.ts",
         "frontend.ts",
-        "proxy.ts"
+        "backend.ts",
+        "proxy.ts",
+        "socket.ts",
+        "rpc.ts"
     ])
-    for (const file of ["Room.actor.ts", "Room.socket.ts", "Room.rpc.ts", "index.ts", "socket.ts", "rpc.ts"])
         await writeFile(path.join(directory, file), "old generated artifact")
     await generateClient(contract, directory)
     assert.deepEqual((await readdir(directory)).sort(), [...files.keys()].sort())

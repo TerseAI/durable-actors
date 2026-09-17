@@ -49,12 +49,12 @@ const files = await generateTypeScript(contract)
 
 The caller chooses where to write the files. Generation does not execute actor code. The CLI writes only generated TypeScript clients.
 
-Generated `backend.ts` exposes typed RPC stubs that work in a separate backend repository:
+Generated `index.ts` exposes typed RPC stubs that work in a separate backend repository:
 
 ```ts
-import { ChatRoom } from "./generated/backend.js"
+import { actors } from "./generated/index.js"
 
-const room = ChatRoom.get("lobby")
+const room = actors.ChatRoom.get("lobby")
 await room.sendMessage({ text: "Hello" }) // Arguments and return types come from your actor API.
 ```
 
@@ -133,9 +133,9 @@ Generate a browser client and backend proxy from your actor entrypoint:
 npx little-actors generate
 ```
 
-The generated filenames describe their roles: `ChatRoom.frontend.ts` contains the frontend WebSocket descriptor and connection types, `ChatRoom.backend.ts` contains the RPC client, and `ChatRoom.proxy.ts` contains authorization metadata types and the proxy descriptor.
+The generated `index.ts` contains frontend WebSocket clients and connection types under `clients`, backend RPC clients under `actors`, and the authorization proxy `ActorProxy`.
 
-The frontend imports `ActorClient` from the generated `frontend.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Share this directory between your frontend and backend, or copy the generated files into separate projects. Regenerate when the actor contract changes. The actor host validates metadata, incoming and outgoing messages, and persisted public state against the contract; browser and proxy descriptors contain no actor-specific runtime validators. Invalid socket operations fail at the host rather than throwing synchronously from the browser’s `send()`. Compatible added fields are accepted at runtime.
+The frontend imports `clients` and the backend imports `ActorProxy` from the generated `index.ts`. The generated file does not import the actor implementation, and browser builds exclude server dependencies. Share this file between your frontend and backend, or copy it into separate projects. Regenerate when the actor contract changes. The actor host validates metadata, incoming and outgoing messages, and persisted public state against the contract; browser and proxy descriptors contain no actor-specific runtime validators. Invalid socket operations fail at the host rather than throwing synchronously from the browser’s `send()`. Compatible added fields are accepted at runtime.
 
 Stack `@Emittable` with `@Persisted` to publish a field's final value after each successful operation commits:
 
@@ -157,7 +157,7 @@ export class ChatRoom extends Actor<{ userId: string }, { type: "post"; text: st
 Your backend authenticates the user and checks access before calling the proxy helper:
 
 ```ts
-import { ActorProxy } from "./generated/proxy.js"
+import { ActorProxy } from "./generated/index.js"
 
 export async function POST(request: Request) {
     const user = await requireUser(request) // Your application's authentication.
@@ -179,10 +179,9 @@ The proxy discovers local connection settings automatically. See [configuration]
 The frontend uses the default application route:
 
 ```ts
-import { ActorClient } from "./generated/frontend.js"
+import { clients } from "./generated/index.js"
 
-const client = ActorClient()
-const room = client.ChatRoom.get("lobby")
+const room = clients.ChatRoom.get("lobby")
 const unsubscribe = room.subscribe("messages", messages => renderMessages(messages))
 room.on("error", error => console.error(error.message))
 await room.connect()
@@ -193,7 +192,7 @@ unsubscribe()
 room.close()
 ```
 
-`ActorClient()` posts to `/api/socket/{actorType}/{actorId}` on the current origin without a request body. Mount your application handler at that route; it authenticates the user and supplies the actor and metadata to `ActorProxy`. Override the route with `ActorClient({ endpoint })`, where `endpoint` is a URL or a function of `{ actorType, actorId }`.
+`clients.ChatRoom.get(id)` creates a connection that posts to `/api/socket/{actorType}/{actorId}` on the current origin without a request body. Mount your application handler at that route; it authenticates the user and supplies the actor and metadata to `ActorProxy`. Override the route with `clients.ChatRoom.get(id, { endpoint })`, where `endpoint` is a URL or a function of `{ actorType, actorId }`.
 
 Use `room.on("message", handler)` for explicit actor messages. `room.state` holds the latest snapshot; `subscribe` immediately supplies a cached field value to late listeners. Reconnect supplies a fresh snapshot. `room.on("status", handler)` observes `idle`, `connecting`, `open`, `reconnecting`, `closed`, and `error`.
 

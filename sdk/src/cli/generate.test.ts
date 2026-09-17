@@ -54,7 +54,7 @@ test("generate discovers the local runtime and keeps explicit remote settings se
         })
     const result = await generate()
     assert.match(result.stdout, /local-revision/)
-    assert.ok((await readdir(path.join(directory, "generated"))).includes("backend.ts"))
+    assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
     assert.deepEqual(requests, ["/v1/namespaces/local/contract"])
     await assert.rejects(generate(origin), /API key/)
     await assert.rejects(generate("--api-key", "remote-key"), /--url/)
@@ -104,8 +104,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await run(process.execPath, [cli, "generate"], { cwd: author, env })
     const local = path.join(author, "generated")
     const files = await readdir(local)
-    for (const file of ["frontend.ts", "proxy.ts", "backend.ts", "ChatRoom.backend.ts"])
-        assert.ok(files.includes(file), `missing ${file}`)
+    for (const file of ["index.ts"]) assert.ok(files.includes(file), `missing ${file}`)
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
@@ -201,7 +200,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-errors-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "generated"))
-    await writeFile(path.join(directory, "generated/backend.ts"), "keep existing output")
+    await writeFile(path.join(directory, "generated/index.ts"), "keep existing output")
     const contract = JSON.parse(await readFile(path.join(sdk, "fixtures/public-contract.json"), "utf8"))
     let status = 200
     let body: unknown = {
@@ -242,6 +241,6 @@ test("generate rejects remote errors and invalid inputs before changing output",
     status = 404
     body = { error: { code: "contract_not_found", message: "No public actor contract is published" } }
     await assert.rejects(generate(), /No public actor contract is published/)
-    assert.deepEqual(await readdir(path.join(directory, "generated")), ["backend.ts"])
-    assert.equal(await readFile(path.join(directory, "generated/backend.ts"), "utf8"), "keep existing output")
+    assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.ts"])
+    assert.equal(await readFile(path.join(directory, "generated/index.ts"), "utf8"), "keep existing output")
 })

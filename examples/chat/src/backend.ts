@@ -1,7 +1,7 @@
 import express from "express"
 import { createServer } from "vite"
 
-import { ActorProxy } from "../generated/proxy.js"
+import { ActorProxy } from "../generated/index.js"
 
 const app = express()
 

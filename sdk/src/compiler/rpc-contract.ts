@@ -4,7 +4,7 @@ import { validateActorComponent } from "../actor/identity.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { RpcContract, RpcMethod, RpcParameter, TypeReference } from "../wire/public-contract.js"
 
-import { assertJsonType, jsonSchema } from "./json-schema.js"
+import { assertJsonType, jsonSchema, sourceTypeName } from "./json-schema.js"
 import { extractPublicSchema } from "./public-schema.js"
 
 function rpcContract(checker: ts.TypeChecker, actor: ts.ClassDeclaration): RpcContract {
@@ -23,19 +23,6 @@ function rpcSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>) {
         if (title) definition.title ??= title
     }
     return extractPublicSchema(schema, Object.keys(types))
-}
-
-function sourceTypeName(type: ts.Type): string | undefined {
-    const symbol = type.aliasSymbol ?? type.getSymbol()
-    return symbol?.declarations?.some(
-        declaration =>
-            !declaration.getSourceFile().hasNoDefaultLib &&
-            (ts.isInterfaceDeclaration(declaration) ||
-                ts.isTypeAliasDeclaration(declaration) ||
-                ts.isEnumDeclaration(declaration))
-    )
-        ? symbol.name
-        : undefined
 }
 
 function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {

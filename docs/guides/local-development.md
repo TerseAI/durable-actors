@@ -18,7 +18,7 @@ Export your actor classes from `src/durable-objects.ts`, as shown in the [README
 npx little-actors generate
 ```
 
-Both sides use this output: the frontend imports `ActorClient` from `generated/frontend.ts`, and the backend imports `ActorProxy` from `generated/proxy.ts`.
+Both sides use this output: the frontend imports `clients` and the backend imports `ActorProxy` from `generated/index.js`.
 
 ## Start the actor server
 
@@ -30,7 +30,7 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.litt
 
 ## Connect your application
 
-Backend actor calls and generated `ActorProxy` helpers use [automatic local configuration](../reference/configuration.md). Start your backend from the same project directory as the actor runtime. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `ActorClient()` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
+Backend actor calls and generated `ActorProxy` helpers use [automatic local configuration](../reference/configuration.md). Start your backend from the same project directory as the actor runtime. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `clients.ChatRoom.get(id)` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
 
 Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` and reads the local runtime settings automatically.
 

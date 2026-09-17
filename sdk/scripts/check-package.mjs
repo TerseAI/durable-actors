@@ -29,4 +29,5 @@ async function checkExport(entry) {
     if (typeof entry !== "object" || entry === null)
         throw new Error("package exports must declare import and types paths")
     await Promise.all([access(entry.import), access(entry.types)])
+    if (entry.browser) await access(entry.browser)
 }

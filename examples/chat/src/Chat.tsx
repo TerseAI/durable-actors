@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import type { State } from "../generated/ChatRoom.frontend.js"
-import { ActorClient } from "../generated/frontend.js"
+import { type actors, clients } from "../generated/index.js"
 
-const room = ActorClient().ChatRoom.get("lobby")
+const room = clients.ChatRoom.get("lobby")
 
 function Chat() {
-    const [history, setHistory] = useState<State["history"]>([])
+    const [history, setHistory] = useState<actors.ChatRoom.State["history"]>([])
 
     useEffect(() => {
         const unsubscribe = room.subscribe("history", setHistory)
