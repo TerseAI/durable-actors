@@ -145,8 +145,40 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
     assert.equal((await runtime.handle({ ...command, method: "fail" })).type, "failed")
     const restored = { ...command, state: { count: 2, cache: "stale" } }
     const expected = { type: "invoked", result: { count: 3, calls: 1 }, state: { count: 3 } }
-    assert.deepEqual(await runtime.handle(restored), expected)
+    assert.deepEqual(await runtime.handle({ ...command, resident_only: true, state: undefined }), expected)
     assert.deepEqual(await new ActorRuntime(definition).handle(restored), expected)
+})
+
+test("failed state recovery reports a fatal error instead of keeping a damaged instance", async () => {
+    let rejectConstruction = false
+    class RecoveryFailure extends Actor {
+        constructor() {
+            super()
+            if (rejectConstruction) throw new Error("cannot restore")
+        }
+
+        async fail(): Promise<void> {
+            rejectConstruction = true
+            throw new Error("request failed")
+        }
+    }
+    const runtime = new ActorRuntime(registerActorClass(RecoveryFailure))
+    const command = {
+        type: "invoke" as const,
+        actor: { actor_type: "RecoveryFailure", actor_id: "one" },
+        request_id: "failed-recovery",
+        method: "fail",
+        args: [],
+        state: null
+    }
+    assert.deepEqual(await runtime.handle(command), {
+        type: "failed",
+        code: "invalid_actor_state",
+        message: "cannot restore"
+    })
+    assert.deepEqual(await runtime.handle({ ...command, resident_only: true, state: undefined }), {
+        type: "state_required"
+    })
 })
 
 test("streams actor output before execution finishes without replaying it in the final reply", async () => {
@@ -364,9 +396,9 @@ test("keeps a successful actor instance resident and restores it after failure",
             actor: actorIdentity,
             method: "getCount",
             args: [],
-            state: { count: 2 }
+            resident_only: true
         }),
-        { type: "invoked", result: 2, state: { count: 2 } }
+        { type: "invoked", result: 5, state: { count: 5 } }
     )
 })
 

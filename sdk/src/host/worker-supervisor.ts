@@ -253,7 +253,7 @@ class ResidentActorWorker {
         }
         if (this.worker !== worker)
             return failedReply("actor_worker_terminated", "resident actor was terminated during invocation")
-        if (reply.type === "failed") {
+        if (reply.type === "failed" && reply.code !== "actor_method_failed" && reply.code !== "actor_socket_failed") {
             worker.terminate("actor invocation failed")
             this.worker = undefined
             this.onResidencyChange()

@@ -510,6 +510,78 @@ mod tests {
 
     struct ExhaustedExecutor;
 
+    #[tokio::test]
+    async fn application_errors_preserve_the_worker_and_committed_state() -> Result<()> {
+        struct FailingExecutor {
+            evictions: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl ActorExecutor for FailingExecutor {
+            fn supports(&self, _: &str) -> bool {
+                true
+            }
+
+            async fn invoke(
+                &self,
+                invocation: ActorMethodInvocation,
+                state: Option<&Value>,
+            ) -> Result<ActorMethodOutcome> {
+                if invocation.request_id.starts_with("fail") {
+                    return Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
+                        code: if invocation.request_id == "fail-application" {
+                            "actor_method_failed"
+                        } else {
+                            "invalid_actor_state"
+                        }
+                        .into(),
+                        message: "failed".into(),
+                    }));
+                }
+                let count = state.and_then(|state| state["count"].as_u64()).unwrap_or(0) + 1;
+                Ok(ActorMethodOutcome::Completed {
+                    result: json!(count),
+                    state: json!({"count": count}),
+                    effects: vec![],
+                })
+            }
+
+            async fn evict(&self, _: crate::actor::ActorMethodEviction) -> Result<()> {
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+
+        let executor = Arc::new(FailingExecutor {
+            evictions: AtomicUsize::new(0),
+        });
+        let state = Arc::new(FakeStateTransport::default());
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            executor.clone(),
+            Arc::new(FakeAuthority::default()),
+            state.clone(),
+            Arc::new(EmptySocketPublisher),
+        );
+        assert_eq!(invoke(&host, "first").await?, completed(1));
+        for request in ["fail-application", "fail-fatal"] {
+            assert!(
+                matches!(invoke(&host, request).await?, ActorExecutionResult::Failed { failure } if failure.code == "actor_error")
+            );
+            assert_eq!(
+                executor.evictions.load(Ordering::Relaxed),
+                usize::from(request == "fail-fatal")
+            );
+            assert_eq!(state.writes.lock().unwrap().len(), 1);
+        }
+        assert_eq!(invoke(&host, "after-failure").await?, completed(2));
+        host.drain(Duration::from_secs(1)).await?;
+        Ok(())
+    }
+
     struct InvalidEffectsExecutor;
 
     struct ControlledExecutor {

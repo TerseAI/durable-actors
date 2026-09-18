@@ -58,6 +58,53 @@ test("starts one speculative Worker and gives it to the first actor", async () =
     }
 })
 
+test("thrown methods and socket handlers roll back state without restarting the worker", async () => {
+    const root = await createTypeScriptConsumer()
+    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint)
+    })
+    const seen: number[] = []
+    supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+    const command = invokeCommand("counter-1", "SessionCounter")
+    try {
+        await supervisor.handle(command)
+        const workerId = await supervisor.handle({ ...command, method: "workerId" })
+        for (const failure of [
+            { ...command, method: "explode", resident_only: true, state: undefined },
+            {
+                type: "websocket_event" as const,
+                request_id: "socket-failure",
+                actor: actorIdentity,
+                resident_only: true,
+                event: {
+                    type: "message" as const,
+                    connection_id: "socket-1",
+                    message: { type: "text" as const, data: JSON.stringify({ text: "fail" }) }
+                },
+                connections: [{ id: "socket-1", metadata: { userId: "user-1" }, tags: [] }]
+            }
+        ]) {
+            assert.equal((await supervisor.handle(failure)).type, "failed")
+            assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+            assert.deepEqual(seen, [1])
+            assert.deepEqual(
+                await supervisor.handle({ ...command, method: "getCount", resident_only: true, state: undefined }),
+                {
+                    type: "invoked",
+                    result: 1,
+                    state: { count: 1 }
+                }
+            )
+            assert.deepEqual(await supervisor.handle({ ...command, method: "workerId" }), workerId)
+        }
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("expires an unused speculative Worker without replenishing it", async () => {
     let created = 0
     let terminated = 0
@@ -355,6 +402,7 @@ async function createTypeScriptConsumer(actorType = "SessionCounter", preamble =
     await writeFile(
         path.join(source, "durable-objects.ts"),
         `import { Actor, Persisted, Ephemeral } from ${JSON.stringify(path.join(compiledSdkRoot, "index.js"))}
+import { threadId } from "node:worker_threads"
 ${preamble}
 
 export class ${actorType} extends Actor<{ userId: string }, { text: string }> {
@@ -370,12 +418,22 @@ export class ${actorType} extends Actor<{ userId: string }, { text: string }> {
         return this.count
     }
 
+    async workerId(): Promise<number> {
+        return threadId
+    }
+
+    async explode(): Promise<void> {
+        this.count = 999
+        throw new Error("failed")
+    }
+
     async onConnect(): Promise<void> {
         this.count += 1
     }
 
     async onMessage(socket: { metadata: { userId: string }, send(message: { text: string }): void }, message: { text: string }): Promise<void> {
         this.count += 1
+        if (message.text === "fail") throw new Error("failed")
         socket.send({ text: \`${"${socket.metadata.userId}"}:${"${message.text}"}\` })
     }
 }
