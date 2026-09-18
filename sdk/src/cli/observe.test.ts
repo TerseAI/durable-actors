@@ -123,3 +123,42 @@ test("observer proxies actor inventory and hides upstream failures", async t => 
     assert.equal(response.status, 503)
     assert.deepEqual(await response.json(), { error: "Actor inventory unavailable" })
 })
+
+test("observer forwards live events and aborts upstream when the viewer disconnects", async t => {
+    let signal: AbortSignal | undefined
+    const observer = new Observer(
+        {
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            openActorStream: async incoming => {
+                signal = incoming
+                return new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(
+                                new TextEncoder().encode(
+                                    'event: inventory\ndata: {"namespaceId":"local","actors":[]}\n\n'
+                                )
+                            )
+                        }
+                    }),
+                    { headers: { "content-type": "text/event-stream" } }
+                )
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    const controller = new AbortController()
+    const response = await fetch(`${url}/api/observe/events`, { signal: controller.signal })
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get("content-type")!, /text\/event-stream/u)
+    const reader = response.body!.getReader()
+    assert.match(new TextDecoder().decode((await reader.read()).value), /event: inventory/u)
+    const stopped = new Promise<void>(resolve => signal!.addEventListener("abort", () => resolve(), { once: true }))
+    controller.abort()
+    await stopped
+    assert.equal(signal!.aborted, true)
+})

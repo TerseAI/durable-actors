@@ -65,6 +65,10 @@ impl HostLeaseMaintainer {
     }
 
     pub(crate) async fn start(self: Arc<Self>) -> Result<LeaseRenewalTask> {
+        let changes = self
+            .executor
+            .as_ref()
+            .and_then(|executor| executor.residency_changes());
         let initial = self.renew_once_with_deadline().await?;
         info!(
             host_id = %initial.lease.id,
@@ -80,6 +84,7 @@ impl HostLeaseMaintainer {
             initial.local_deadline,
             task_shutdown,
             lease_lost_tx,
+            changes,
         ));
 
         Ok(LeaseRenewalTask {
@@ -102,10 +107,11 @@ impl HostLeaseMaintainer {
         mut local_deadline: Instant,
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
+        mut changes: Option<watch::Receiver<()>>,
     ) {
         loop {
             if !self
-                .wait_until_renewal(local_deadline, &shutdown, &lease_lost)
+                .wait_until_renewal(local_deadline, &shutdown, &lease_lost, &mut changes)
                 .await
             {
                 return;
@@ -125,6 +131,7 @@ impl HostLeaseMaintainer {
         local_deadline: Instant,
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
+        changes: &mut Option<watch::Receiver<()>>,
     ) -> bool {
         tokio::select! {
             biased;
@@ -138,6 +145,7 @@ impl HostLeaseMaintainer {
                 false
             }
             _ = tokio::time::sleep(self.renew_every) => true,
+            _ = residency_changed(changes) => true,
         }
     }
 
@@ -223,6 +231,15 @@ impl HostLeaseMaintainer {
             local_deadline,
         })
     }
+}
+
+async fn residency_changed(changes: &mut Option<watch::Receiver<()>>) {
+    if let Some(receiver) = changes {
+        if receiver.changed().await.is_ok() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
 }
 
 struct ConfirmedHostLease {
@@ -366,6 +383,54 @@ mod tests {
                 .clone()
                 .filter(|lease| &lease.id == id))
         }
+    }
+
+    #[tokio::test]
+    async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
+        struct Executor(watch::Sender<()>);
+        #[async_trait::async_trait]
+        impl crate::actor::ActorExecutor for Executor {
+            fn supports(&self, _: &str) -> bool {
+                true
+            }
+            fn residency_changes(&self) -> Option<watch::Receiver<()>> {
+                Some(self.0.subscribe())
+            }
+            async fn invoke(
+                &self,
+                _: crate::actor::ActorMethodInvocation,
+                _: Option<&serde_json::Value>,
+            ) -> Result<crate::actor::ActorMethodOutcome> {
+                anyhow::bail!("unused")
+            }
+        }
+        let clock = Arc::new(ManualClock::new(1_000));
+        let store = Arc::new(FlakyLeaseStore {
+            calls: AtomicUsize::new(0),
+            lease: Mutex::new(None),
+            changed: Notify::new(),
+            clock: clock.clone(),
+        });
+        let (changed, _) = watch::channel(());
+        let manager = Arc::new(
+            HostLeaseMaintainer::new(
+                HostEndpoint {
+                    id: HostId::new("events"),
+                    route: "http://host".into(),
+                },
+                "session".into(),
+                store.clone(),
+                clock,
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )?
+            .with_executor(Arc::new(Executor(changed.clone()))),
+        );
+        let renewal = manager.start().await?;
+        changed.send_replace(());
+        tokio::time::timeout(Duration::from_millis(500), wait_for_calls(&store, 2)).await??;
+        renewal.shutdown().await?;
+        Ok(())
     }
 
     #[test]

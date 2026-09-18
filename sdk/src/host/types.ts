@@ -28,7 +28,8 @@ type ActorCommandHandler = (
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
-) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close"> & Partial<Pick<ActorWorkerSupervisor, "residentActors">>
+) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close"> &
+    Partial<Pick<ActorWorkerSupervisor, "residentActors" | "onResidencyChange">>
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
@@ -38,6 +39,7 @@ interface ActorWorkerSupervisorOptions {
 }
 
 interface ResidentActorWorkerOptions {
+    readonly onResidencyChange?: () => void
     readonly moduleUrl: string
     readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number

@@ -1,3 +1,5 @@
+import { createParser } from "eventsource-parser"
+
 type ActorResidency = "live" | "dormant" | "unknown"
 
 interface ActorInstance {
@@ -17,6 +19,7 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
     listActors(signal?: AbortSignal): Promise<ActorInventory>
     checkConnection(signal?: AbortSignal): Promise<void>
 }
@@ -31,6 +34,47 @@ class HttpObserverClient implements ObserverClient {
         const result = await this.get("actors", signal)
         if (!isInventory(result)) throw new Error("Invalid actor inventory response.")
         return result
+    }
+
+    async watchActors(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void> {
+        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/events`, {
+            signal,
+            credentials: "same-origin",
+            redirect: "error",
+            headers: { accept: "text/event-stream" }
+        })
+        if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
+            await response.body?.cancel()
+            throw new Error("Live inventory is unavailable")
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        const parser = createParser({
+            onEvent(event) {
+                if (signal.aborted) return
+                if (event.event === "error") throw new Error("Live inventory is unavailable")
+                if (event.event !== "inventory") return
+                const inventory: unknown = JSON.parse(event.data)
+                if (!isInventory(inventory)) throw new Error("Invalid actor inventory response")
+                onInventory(inventory)
+            }
+        })
+        const cancel = () => {
+            void reader.cancel().catch(() => {})
+        }
+        signal.addEventListener("abort", cancel, { once: true })
+        try {
+            while (!signal.aborted) {
+                const { value, done } = await reader.read()
+                if (done) break
+                parser.feed(decoder.decode(value, { stream: true }))
+            }
+            if (!signal.aborted) throw new Error("Live inventory disconnected")
+        } finally {
+            signal.removeEventListener("abort", cancel)
+            await reader.cancel().catch(() => {})
+            reader.releaseLock()
+        }
     }
 
     async checkConnection(signal?: AbortSignal): Promise<void> {

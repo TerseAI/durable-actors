@@ -28,6 +28,7 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route("/v1/durability", get(durability))
         .route("/v1/observe/actors", get(actor_inventory))
+        .route("/v1/observe/events", get(actor_events))
         .route("/v1/objects", get(list_objects))
         .route(
             "/v1/actors/{actor_type}/{actor_id}/state",
@@ -346,4 +347,84 @@ async fn read_inventory(
         }
     }
     Ok(rows.into_values().collect())
+}
+
+async fn actor_events(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    Query(query): Query<InventoryQuery>,
+) -> Result<Response, ApiError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    authorized_admin(&state.admin, &headers)?;
+    let namespace = query
+        .namespace
+        .unwrap_or_else(|| state.admin.default_namespace.clone());
+    ActorScope {
+        namespace_id: namespace.clone(),
+    }
+    .validate()
+    .map_err(ApiError::bad_request)?;
+    let mut changes = state.inspector.sockets.changes.subscribe();
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
+    tokio::spawn(async move {
+        let mut previous = None;
+        loop {
+            let result = tokio::select! {
+                _ = sender.closed() => return,
+                result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &namespace)) => result,
+            };
+            let data = match result {
+                Ok(Ok(actors)) => {
+                    serde_json::json!({"namespaceId": namespace, "actors": actors}).to_string()
+                }
+                _ => {
+                    let _ = sender
+                        .send(Ok(Event::default()
+                            .event("error")
+                            .data("Inventory unavailable")))
+                        .await;
+                    return;
+                }
+            };
+            if previous.as_ref() != Some(&data) {
+                if sender
+                    .send(Ok(Event::default().event("inventory").data(data.clone())))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                previous = Some(data);
+            }
+            tokio::select! {
+                _ = sender.closed() => return,
+                _ = tokio::time::sleep(Duration::from_secs(15)) => {},
+                _ = wait_for_inventory_change(&mut changes, &namespace) => {},
+            }
+        }
+    });
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Sse::new(ReceiverStream::new(receiver))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
+    )
+        .into_response())
+}
+
+async fn wait_for_inventory_change(
+    changes: &mut tokio::sync::broadcast::Receiver<String>,
+    namespace: &str,
+) {
+    loop {
+        match changes.recv().await {
+            Ok(changed) if changed != namespace => continue,
+            _ => return,
+        }
+    }
 }

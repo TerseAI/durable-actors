@@ -202,3 +202,85 @@ test("switching namespaces clears actor selection and search", async () => {
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
     assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "")
 })
+
+test("a live subscription updates inventory without polling and is aborted on unmount", async () => {
+    let publish: ((value: typeof inventory) => void) | undefined
+    let signal: AbortSignal | undefined
+    let reads = 0
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => {
+            reads++
+            return inventory
+        },
+        watchActors: async (onInventory: (value: typeof inventory) => void, incoming: AbortSignal) => {
+            publish = onInventory
+            signal = incoming
+            onInventory(inventory)
+            await new Promise<void>(resolve => incoming.addEventListener("abort", () => resolve(), { once: true }))
+        }
+    }
+    const view = render(<ActorObserver client={client} />)
+    await view.findByText("Live updates")
+    await act(async () => publish!({ ...inventory, actors: [] }))
+    assert.ok(view.getByText("No actors yet"))
+    assert.equal(reads, 0)
+    view.unmount()
+    assert.equal(signal?.aborted, true)
+})
+
+test("the HTTP stream parses fragmented SSE and rejects malformed inventories", async () => {
+    let aborted = false
+    const controller = new AbortController()
+    const bytes = new TextEncoder().encode(`: heartbeat\n\nevent: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
+    const client = new HttpObserverClient("/api/custom", async (url, options) => {
+        assert.equal(url, "/api/custom/events")
+        assert.equal(options?.credentials, "same-origin")
+        assert.equal(options?.signal, controller.signal)
+        return new Response(
+            new ReadableStream({
+                start(stream) {
+                    stream.enqueue(bytes.slice(0, 27))
+                    stream.enqueue(bytes.slice(27))
+                },
+                cancel() {
+                    aborted = true
+                }
+            }),
+            { headers: { "content-type": "text/event-stream" } }
+        )
+    })
+    const snapshots: unknown[] = []
+    await client
+        .watchActors(value => {
+            snapshots.push(value)
+            controller.abort()
+        }, controller.signal)
+        .catch(() => {})
+    assert.deepEqual(snapshots, [inventory])
+    assert.equal(aborted, true)
+    const invalid = new HttpObserverClient("/api/observe", async () => new Response("event: inventory\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } }))
+    await assert.rejects(invalid.watchActors(() => assert.fail("invalid snapshot delivered"), new AbortController().signal))
+})
+
+test("a dropped stream keeps its last snapshot and automatically reconnects", async () => {
+    let attempts = 0
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => inventory,
+        watchActors: async (publish: (value: typeof inventory) => void, signal: AbortSignal) => {
+            attempts++
+            publish(inventory)
+            if (attempts === 1) throw new Error("upstream secret")
+            publish({ ...inventory, actors: [] })
+            await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+        }
+    }
+    const view = render(<ActorObserver client={client} />)
+    await view.findByRole("alert")
+    assert.ok(view.getByRole("button", { name: "Room" }))
+    assert.doesNotMatch(view.container.textContent!, /upstream secret/u)
+    await waitFor(() => assert.ok(view.getByText("No actors yet")), { timeout: 2000 })
+    assert.equal(view.queryByRole("alert"), null)
+    assert.equal(attempts, 2)
+})

@@ -146,4 +146,6 @@ The token grants application access throughout the `local` namespace: not an adm
 
 The observe page lists actor types in the selected namespace with live (resident in memory), dormant, and total instance counts. Use `observe --namespace <id>` to select a namespace; otherwise the server default is used. Deployed types with zero instances remain visible. Unknown counts indicate a live host without a fresh residency report.
 
-Inventory refreshes every five seconds from host heartbeat snapshots (ten-second renewal by default). Updated Rust hosts and the SDK are required for residency reporting. The admin-only control-plane endpoint is `GET /v1/observe/actors?namespace=<id>`; reading it does not activate actors.
+Inventory changes stream from the Rust control plane over SSE, with automatic reconnection and stale-data warnings. Worker residency changes trigger an early host report; socket connections and disconnections publish immediately. Updated Rust hosts, control planes, and SDKs are required. The admin-only stream is `GET /v1/observe/events?namespace=<id>`; `GET /v1/observe/actors?namespace=<id>` remains available for single reads. Neither activates actors.
+
+A fifteen-second reconciliation catches missed notifications and lease expiry. Notifications and socket counts are local to a control-plane process; storage changes made through other processes appear during reconciliation.

@@ -66,7 +66,8 @@ class ActorSession {
                 actorTypes,
                 commandHandler,
                 this.settings.startupTimeoutMs,
-                supervisor.residentActors?.bind(supervisor)
+                supervisor.residentActors?.bind(supervisor),
+                supervisor.onResidencyChange?.bind(supervisor)
             )
             void this.connection.closed().then(() => supervisor.close())
         } catch (error) {
@@ -97,6 +98,7 @@ async function discoverActorTypes(
 }
 
 class ActorSessionConnection {
+    private unsubscribeResidency: (() => void) | undefined
     private residencyTimer: NodeJS.Timeout | undefined
     private buffer = ""
     private attachedResolve: (() => void) | undefined
@@ -115,12 +117,13 @@ class ActorSessionConnection {
         actorTypes: readonly string[],
         commandHandler: ActorCommandHandler,
         timeoutMs: number,
-        residentActors?: () => readonly ActorIdentity[]
+        residentActors?: () => readonly ActorIdentity[],
+        watchResidency?: (listener: () => void) => () => void
     ): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
-        const connection = new ActorSessionConnection(socket, commandHandler, residentActors)
+        const connection = new ActorSessionConnection(socket, commandHandler, residentActors, watchResidency)
         connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
@@ -133,7 +136,8 @@ class ActorSessionConnection {
     private constructor(
         private readonly socket: Socket,
         private readonly commandHandler: ActorCommandHandler,
-        private readonly residentActors?: () => readonly ActorIdentity[]
+        private readonly residentActors?: () => readonly ActorIdentity[],
+        private readonly watchResidency?: (listener: () => void) => () => void
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -201,6 +205,7 @@ class ActorSessionConnection {
                                 this.fail(sessionError(error))
                             }
                         }
+                        this.unsubscribeResidency = this.watchResidency?.(report)
                         report()
                         this.residencyTimer = setInterval(report, 1_000)
                         this.residencyTimer.unref()
@@ -304,6 +309,8 @@ class ActorSessionConnection {
 
     private close(): void {
         clearInterval(this.residencyTimer)
+        this.unsubscribeResidency?.()
+        this.unsubscribeResidency = undefined
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

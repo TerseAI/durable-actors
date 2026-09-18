@@ -34,6 +34,13 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn notify_inventory_changed(&self) -> Result<()> {
+        match self.execute(ControlPlaneCommand::InventoryChanged).await? {
+            ControlPlaneCommandReply::Unit => Ok(()),
+            _ => anyhow::bail!("unexpected inventory notification response"),
+        }
+    }
+
     pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
         use base64::Engine;
         let authorization = self

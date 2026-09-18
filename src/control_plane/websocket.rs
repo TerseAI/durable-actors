@@ -42,7 +42,26 @@ pub(super) struct SocketServerState {
 
 #[derive(Clone, Default)]
 pub(crate) struct SocketRegistry {
+    pub(super) changes: InventoryChanges,
     entries: Arc<RwLock<HashMap<ActorKey, HashMap<String, RegisteredSocket>>>>,
+}
+
+#[derive(Clone)]
+pub(super) struct InventoryChanges(tokio::sync::broadcast::Sender<String>);
+
+impl Default for InventoryChanges {
+    fn default() -> Self {
+        Self(tokio::sync::broadcast::channel(256).0)
+    }
+}
+
+impl InventoryChanges {
+    pub(super) fn notify(&self, namespace: &str) {
+        let _ = self.0.send(namespace.to_owned());
+    }
+    pub(super) fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.0.subscribe()
+    }
 }
 
 #[derive(Clone)]
@@ -415,6 +434,9 @@ impl SocketRegistry {
         if connections.is_empty() {
             entries.remove(actor);
         }
+        if removed.is_some() {
+            self.changes.notify(&actor.namespace_id);
+        }
         removed
     }
 
@@ -580,6 +602,7 @@ impl SocketRegistry {
                     .and_then(|connections| connections.get_mut(&connection_id))
                 {
                     entry.connection.metadata = metadata;
+                    self.changes.notify(&actor.namespace_id);
                 }
             }
             ActorSocketEffect::SetTags {
@@ -643,6 +666,7 @@ impl SocketRegistry {
             .and_then(|connections| connections.get_mut(connection_id))
         {
             entry.open = true;
+            self.changes.notify(&actor.namespace_id);
         }
     }
 }

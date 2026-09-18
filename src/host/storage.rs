@@ -28,6 +28,7 @@ use crate::{
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     leases: Arc<dyn HostLeaseStore>,
+    observer: Option<Arc<ControlPlaneClient>>,
     namespace: String,
     host: HostId,
     session: String,
@@ -46,7 +47,7 @@ impl HostStorage {
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
     ) -> Result<Self> {
-        let credentials = HostCredentials::new(config.token, client, stop);
+        let credentials = HostCredentials::new(config.token, client.clone(), stop);
         let authority: Arc<dyn Bucket> = match config.bucket {
             crate::bucket::access::BucketLocation::Gcs { bucket } => {
                 Arc::new(GcsBucket::with_credentials(&bucket, credentials.into()).await?)
@@ -70,6 +71,7 @@ impl HostStorage {
             origin,
         )?);
         Ok(Self {
+            observer: Some(client),
             runtime,
             leases,
             namespace,
@@ -79,6 +81,16 @@ impl HostStorage {
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         })
+    }
+
+    fn notify_observer(&self) {
+        if let Some(client) = self.observer.clone() {
+            tokio::spawn(async move {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(2), client.notify_inventory_changed())
+                        .await;
+            });
+        }
     }
 
     fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
@@ -218,6 +230,7 @@ impl HostLeaseRegistry for HostStorage {
                 }
             });
         }
+        self.notify_observer();
         Ok(lease)
     }
     async fn unregister(&self, host: &HostId, session: &str) -> Result<()> {
@@ -226,7 +239,9 @@ impl HostLeaseRegistry for HostStorage {
             "host lease scope mismatch"
         );
         self.fence.lock().unwrap().fenced = true;
-        self.leases.unregister(host, session).await
+        self.leases.unregister(host, session).await?;
+        self.notify_observer();
+        Ok(())
     }
 }
 
@@ -375,6 +390,7 @@ mod tests {
         )?);
         let host = HostId::new("host.v2.project.a:revision.host");
         let storage = HostStorage {
+            observer: None,
             runtime,
             leases,
             namespace: "project.a".into(),

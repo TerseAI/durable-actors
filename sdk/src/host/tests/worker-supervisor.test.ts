@@ -423,3 +423,27 @@ test("residency reports actual workers and drops evicted and failed instances", 
         supervisor.close()
     }
 })
+
+test("residency subscribers see worker creation and eviction immediately", async () => {
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: "file:///unused.mjs",
+        actorSchemas: undefined,
+        createWorker: () => ({
+            ready: async () => ["SessionCounter"],
+            execute: async () => ({ type: "invoked", result: null, state: {} }),
+            terminate() {}
+        })
+    })
+    const seen: number[] = []
+    try {
+        const unsubscribe = supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        await supervisor.handle({ type: "evict", actor: actorIdentity })
+        assert.deepEqual(seen, [1, 0])
+        unsubscribe()
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        assert.deepEqual(seen, [1, 0])
+    } finally {
+        supervisor.close()
+    }
+})

@@ -1,6 +1,6 @@
 # @little-actors/observer
 
-A shared React observer for the local `little-actors observe` command and embedded hosted or self-hosted applications. Lists actor types with live, dormant, and total instance counts, including deployed types with no instances. Search actor types, then select an actor to inspect its instances, residency, active WebSocket connection count, and connection metadata. Refreshes every five seconds with manual retry and visible stale-data errors.
+A shared React observer for the local `little-actors observe` command and embedded hosted or self-hosted applications. Lists actor types with live, dormant, and total instance counts, including deployed types with no instances. Search actor types, then select an actor to inspect its instances, residency, active WebSocket connection count, and connection metadata. Changes arrive over a live event stream, with automatic reconnection, manual retry, and visible stale-data errors.
 
 ## Embed in a React application
 
@@ -21,7 +21,7 @@ For project-scoped routes, use a prefix such as `/api/projects/${encodeURICompon
 
 ## Backend contract
 
-The default HTTP adapter calls `GET <prefix>/actors` with same-origin session credentials. A successful response is:
+The default HTTP adapter subscribes to `GET <prefix>/events` with same-origin session credentials. Return `Content-Type: text/event-stream` and disable caching and proxy buffering. Each `inventory` SSE event carries a complete snapshot, including an initial snapshot on every connection. `GET <prefix>/actors` remains available for single reads. Both use this inventory shape:
 
 ```json
 {
@@ -46,19 +46,23 @@ The default HTTP adapter calls `GET <prefix>/actors` with same-origin session cr
 }
 ```
 
-The Rust control plane supplies this through the admin-only `GET /v1/observe/actors?namespace=<id>` endpoint. Omitting the namespace uses the control plane's default. The CLI forwards its configured namespace; hosted backends must choose the namespace after authorizing the project. The browser cannot override the CLI's namespace.
+The Rust control plane supplies the stream through admin-only `GET /v1/observe/events?namespace=<id>` and single reads through `GET /v1/observe/actors?namespace=<id>`. Omitting the namespace uses the control plane's default. The CLI forwards its configured namespace; hosted backends must choose the namespace after authorizing the project. The browser cannot override the CLI's namespace.
+
+The stream sends ten-second keepalive comments and emits `inventory` events only when the snapshot changes. An `error` event or a closed connection triggers reconnection with exponential backoff from one to ten seconds. The UI retains the last snapshot and marks it stale until a fresh snapshot arrives. Cancel the upstream stream when the viewer disconnects.
 
 Live means the owning host's latest worker snapshot reports that instance in memory. Dormant means it is absent from that snapshot or its owning host session is no longer live. Unknown means the owner is live but has no fresh residency report, such as an older host. The UI shows an Unknown column only when needed. Totals include all three categories.
 
 Each instance includes the active sockets currently held by this control-plane process. A socket exposes its generated connection ID and the JSON metadata supplied when that connection was initialized. The UI reports connection count rather than people count because multiple sockets can belong to one person and the runtime does not infer identity from metadata. Closed and not-yet-activated sockets are excluded.
 
-The worker supervisor reports residency once per second to Rust over the existing executor connection. The host includes its latest report in its normal lease renewal (10 seconds by default); the UI polls every 5 seconds. This is an eventually consistent inventory, not an instantaneous event stream. Reports expire with the host lease, and reports older than 5 seconds are excluded from the next renewal. Viewing the inventory never starts a sandbox or loads actor state. Inventory reads scan ownership metadata for the namespace; a larger fleet will benefit from an indexed inventory.
+The worker supervisor reports residency changes immediately over the existing Rust executor connection and retains a one-second freshness heartbeat. A changed report triggers an early serialized lease renewal; after persistence, the host notifies the control plane to publish the updated inventory. Socket activation, disconnection, and metadata changes also trigger updates. Updated Rust hosts, control planes, and SDKs are required for this path.
 
-`GET <prefix>/connection` remains available for explicit connectivity checks and returns `{ "connected": true }`. Failures return a non-2xx status. Disable caching for both endpoints. Redirects, malformed JSON, and invalid counts are treated as failures.
+Notifications are local to the receiving control-plane process. A fifteen-second reconciliation catches missed notifications, lease expiry, and storage changes made through other control-plane processes; connection counts remain process-local. Reports expire with the host lease, and reports older than five seconds are excluded from the next renewal. Viewing the inventory never starts a sandbox or loads actor state. Inventory reads scan ownership metadata for the namespace; a larger fleet will benefit from an indexed inventory and shared notifications across control planes.
+
+`GET <prefix>/connection` remains available for explicit connectivity checks and returns `{ "connected": true }`. Failures return a non-2xx status. Disable caching for all observer endpoints. Redirects, malformed JSON, and invalid counts are treated as failures.
 
 The backend verifies access, checks the control plane using server-side credentials, and returns the result. The browser never needs a control-plane admin key.
 
-- **Local CLI:** the loopback server implements `/api/observe/actors` and `/api/observe/connection`, using the API key from CLI settings.
+- **Local CLI:** the loopback server implements `/api/observe/events`, `/api/observe/actors`, and `/api/observe/connection`, using the API key from CLI settings.
 - **Hosted:** the app backend authenticates the session and authorizes the selected organization/project before choosing the control plane and namespace. Never trust a browser-supplied namespace or target URL as authorization.
 - **Self-hosted:** the same UI can be embedded behind the installation's own backend and authentication. The CLI also works against a remote self-hosted control plane using `--url`.
 
@@ -78,7 +82,7 @@ const client: ObserverClient = {
 }
 ```
 
-If you use a different response format, adapt it here. Keep future subscriptions behind this boundary as they are introduced. User sessions, project authorization, billing, and admin credentials remain outside the UI package.
+If you use a different response format, adapt it here. To enable streaming, also implement `watchActors(onInventory, signal): Promise<void>`: deliver full snapshots through the callback, remain pending while connected, and stop when the signal aborts. Clients without `watchActors` retain five-second polling. User sessions, project authorization, billing, and admin credentials remain outside the UI package.
 
 ## Styling
 

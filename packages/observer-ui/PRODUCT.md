@@ -16,7 +16,7 @@ Repository-derived assumption: developers diagnosing actor residency and connect
 
 ## Capabilities and Constraints
 
-Preserve the existing read-only API, five-second polling, stale-data warnings, retry behavior, client injection, and embeddable package. Live means resident in memory according to the latest host heartbeat; dormant means unloaded; unknown means residency reporting is unavailable. Connections count active WebSockets, not people. No invented metrics or history.
+Preserve the read-only API, stale-data warnings, retry behavior, client injection, and embeddable package. Prefer live server-sent inventory events with automatic reconnection; retain five-second polling for custom clients without subscriptions. Live means resident in memory according to the latest persisted host report; dormant means unloaded; unknown means residency reporting is unavailable. Connections count active WebSockets, not people. No invented metrics or history.
 
 The user requires React, TypeScript, Tailwind, shadcn components, and Vite. The standalone app uses Vite; the embeddable library retains its package contract.
 

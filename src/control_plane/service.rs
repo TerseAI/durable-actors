@@ -146,7 +146,9 @@ impl ControlPlaneService {
         {
             self.terminate_deployment_hosts(&previous).await?;
         }
-        admin.register_deployment(spec, contract).await
+        let changed = admin.register_deployment(spec, contract).await?;
+        self.sockets.changes.notify(&spec.namespace_id);
+        Ok(changed)
     }
 
     pub(super) async fn delete_deployment(
@@ -501,6 +503,17 @@ impl ControlPlaneService {
             "only hosts may use the internal control-plane API"
         );
         match command {
+            ControlPlaneCommand::InventoryChanged => {
+                let status = self.leases.lease_status(&principal.host_id).await?;
+                ensure!(
+                    status
+                        .lease
+                        .is_some_and(|lease| lease.session_id == principal.session_id),
+                    "host session does not match"
+                );
+                self.sockets.changes.notify(&principal.scope.namespace_id);
+                Ok(ControlPlaneCommandReply::Unit)
+            }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
                 let token = self

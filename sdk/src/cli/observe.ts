@@ -38,7 +38,8 @@ class Observer {
     })
 
     constructor(
-        private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors">,
+        private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
+            Partial<Pick<ControlPlaneClient, "openActorStream">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL("../observer/", import.meta.url)
     ) {}
@@ -98,6 +99,10 @@ class Observer {
             return
         }
         const pathname = new URL(request.url!, `http://${host}`).pathname
+        if (pathname === "/api/observe/events") {
+            await this.actorEvents(request, response)
+            return
+        }
         if (pathname === "/api/observe/actors") {
             await this.actorInventory(request, response)
             return
@@ -113,6 +118,50 @@ class Observer {
         }
         response.writeHead(200, { "content-type": asset.contentType })
         response.end(request.method === "HEAD" ? undefined : asset.body)
+    }
+
+    private async actorEvents(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        if (request.method === "HEAD") {
+            response.writeHead(200, { "content-type": "text/event-stream" }).end()
+            return
+        }
+        const controller = new AbortController()
+        const disconnect = () => controller.abort()
+        response.once("close", disconnect)
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+        try {
+            if (!this.client.openActorStream) throw new Error("Streaming is not supported")
+            const upstream = await this.client.openActorStream(controller.signal)
+            if (controller.signal.aborted) {
+                await upstream.body?.cancel()
+                return
+            }
+            reader = upstream.body!.getReader()
+            const cancel = () => {
+                void reader?.cancel().catch(() => {})
+            }
+            controller.signal.addEventListener("abort", cancel, { once: true })
+            response.writeHead(200, { "content-type": "text/event-stream", "x-accel-buffering": "no" })
+            response.flushHeaders()
+            while (!controller.signal.aborted) {
+                const { value, done } = await reader.read()
+                if (done) break
+                if (!response.write(value)) await once(response, "drain", { signal: controller.signal })
+            }
+            response.end()
+        } catch {
+            if (!response.destroyed) {
+                if (response.headersSent) response.end("event: error\ndata: Inventory unavailable\n\n")
+                else
+                    response
+                        .writeHead(503, { "content-type": "application/json" })
+                        .end(JSON.stringify({ error: "Live inventory unavailable" }))
+            }
+        } finally {
+            controller.abort()
+            response.off("close", disconnect)
+            await reader?.cancel().catch(() => {})
+        }
     }
 
     private async actorInventory(request: IncomingMessage, response: ServerResponse): Promise<void> {

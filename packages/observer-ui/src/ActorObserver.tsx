@@ -47,10 +47,10 @@ function ActorObserver({ client, className = "" }: ActorObserverProps) {
                     )}
                     <div className="la-observer-footnote">
                         <span className="la-observer-refresh-status">
-                            <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : ""}`} />
-                            {failed ? "Refresh unavailable" : "Auto-refresh every 5s"}
+                            <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : client.watchActors ? "la-observer-dot-live" : ""}`} />
+                            {failed ? "Reconnecting…" : client.watchActors ? "Live updates" : "Auto-refresh every 5s"}
                         </span>
-                        <span>Counts follow the latest host heartbeat.</span>
+                        <span>{client.watchActors ? "Changes stream from the control plane." : "Counts follow the latest host heartbeat."}</span>
                     </div>
                 </>
             )}
@@ -66,26 +66,37 @@ function useInventory(client: ObserverClient) {
     useEffect(() => {
         const controller = new AbortController()
         let timer: ReturnType<typeof setTimeout> | undefined
+        let retryDelay = 1_000
         setFailed(false)
+        setLoading(true)
         void refresh()
         return () => {
             controller.abort()
             clearTimeout(timer)
         }
+        function receive(inventory: ActorInventory) {
+            if (controller.signal.aborted) return
+            setSnapshot({ client, inventory })
+            setFailed(false)
+            setLoading(false)
+            retryDelay = 1_000
+        }
         async function refresh() {
-            setLoading(true)
             try {
-                const inventory = await client.listActors(controller.signal)
-                if (!controller.signal.aborted) {
-                    setSnapshot({ client, inventory })
-                    setFailed(false)
+                if (client.watchActors) {
+                    await client.watchActors(receive, controller.signal)
+                    if (!controller.signal.aborted) throw new Error("Stream ended")
+                } else {
+                    setLoading(true)
+                    receive(await client.listActors(controller.signal))
                 }
             } catch {
                 if (!controller.signal.aborted) setFailed(true)
             } finally {
                 if (!controller.signal.aborted) {
                     setLoading(false)
-                    timer = setTimeout(refresh, 5_000)
+                    timer = setTimeout(refresh, client.watchActors ? retryDelay : 5_000)
+                    retryDelay = Math.min(retryDelay * 2, 10_000)
                 }
             }
         }

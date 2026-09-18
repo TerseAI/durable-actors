@@ -37,6 +37,24 @@ class ControlPlaneClient {
         return this.requestJson("GET", `/v1/observe/actors${query.size ? `?${query}` : ""}`)
     }
 
+    async openActorStream(signal: AbortSignal): Promise<Response> {
+        const query = new URLSearchParams()
+        if (this.connection.namespaceId) query.set("namespace", this.connection.namespaceId)
+        const response = await this.request(
+            `${this.connection.controlPlaneUrl}/v1/observe/events${query.size ? `?${query}` : ""}`,
+            {
+                signal,
+                redirect: "error",
+                headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }
+            }
+        )
+        if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
+            await response.body?.cancel()
+            throw new Error("Live inventory is unavailable")
+        }
+        return response
+    }
+
     listObjects(query: URLSearchParams): Promise<unknown> {
         return this.requestJson("GET", `/v1/objects${query.size ? `?${query}` : ""}`)
     }

@@ -73,6 +73,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
     for path in [
         "/v1/durability",
         "/v1/observe/actors",
+        "/v1/observe/events",
         "/v1/objects",
         "/v1/namespaces/team.prod/actors/Room.with.dots/one/state",
     ] {
@@ -478,4 +479,34 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
     }
+}
+
+#[tokio::test]
+async fn inventory_stream_pushes_socket_changes_without_waiting_for_reconciliation() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let actor = fixture.actor("one");
+    fixture
+        .store
+        .claim_actor(&actor, None, &fixture.host, "north-america-east")
+        .await?;
+    let mut response = fixture
+        .get("/v1/observe/events")
+        .await?
+        .error_for_status()?;
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let first = tokio::time::timeout(Duration::from_secs(2), response.chunk())
+        .await??
+        .unwrap();
+    assert!(String::from_utf8_lossy(&first).contains("event: inventory"));
+    fixture.connect(&actor).await;
+    let update = tokio::time::timeout(Duration::from_secs(2), response.chunk())
+        .await??
+        .unwrap();
+    assert!(String::from_utf8_lossy(&update).contains("socket-one"));
+    fixture.sockets.remove(&actor, "socket-one").await;
+    let removed = tokio::time::timeout(Duration::from_secs(2), response.chunk())
+        .await??
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&removed).contains("socket-one"));
+    Ok(())
 }

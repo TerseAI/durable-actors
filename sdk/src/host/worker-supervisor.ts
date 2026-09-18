@@ -35,6 +35,8 @@ class ActorWorkerSupervisor {
     private readonly actorSchemas: readonly ActorSchema[] | undefined
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
+    private lastResidency = ""
+    private readonly residencyListeners = new Set<() => void>()
     private readonly actors = new Map<string, ResidentActorWorker>()
     private speculativeWorker: ActorWorkerHandle | undefined
     private speculativeTimer: NodeJS.Timeout | undefined
@@ -85,6 +87,20 @@ class ActorWorkerSupervisor {
             default:
                 throw command satisfies never
         }
+    }
+
+    onResidencyChange(listener: () => void): () => void {
+        this.residencyListeners.add(listener)
+        return () => {
+            this.residencyListeners.delete(listener)
+        }
+    }
+
+    private notifyResidencyChange(): void {
+        const current = JSON.stringify(this.residentActors())
+        if (current === this.lastResidency) return
+        this.lastResidency = current
+        for (const listener of this.residencyListeners) listener()
     }
 
     residentActors(): readonly ActorIdentity[] {
@@ -148,7 +164,8 @@ class ActorWorkerSupervisor {
                 idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
-                onIdle: candidate => this.removeIfCurrent(key, candidate)
+                onIdle: candidate => this.removeIfCurrent(key, candidate),
+                onResidencyChange: () => this.notifyResidencyChange()
             })
             this.actors.set(key, actor)
         }
@@ -198,6 +215,7 @@ class ResidentActorWorker {
     readonly createWorker: ActorWorkerFactory
     readonly onIdle: (actor: ResidentActorWorker) => void
     lastCompletedAt = Date.now()
+    private readonly onResidencyChange: () => void
     private worker: ActorWorkerHandle | undefined
     private idleTimer: NodeJS.Timeout | undefined
 
@@ -207,6 +225,7 @@ class ResidentActorWorker {
         this.idleTimeoutMs = options.idleTimeoutMs
         this.createWorker = options.createWorker
         this.onIdle = options.onIdle
+        this.onResidencyChange = options.onResidencyChange ?? (() => {})
         this.worker = options.worker
     }
 
@@ -220,6 +239,7 @@ class ResidentActorWorker {
         this.idleTimer = undefined
         this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl, schemas: this.schemas })
         const worker = this.worker
+        this.onResidencyChange()
         let reply: ActorExecutorReply
         try {
             reply = await worker.execute(command, publish, connections)
@@ -236,6 +256,7 @@ class ResidentActorWorker {
         if (reply.type === "failed") {
             worker.terminate("actor invocation failed")
             this.worker = undefined
+            this.onResidencyChange()
         }
         this.idleTimer = setTimeout(() => this.onIdle(this), this.idleTimeoutMs)
         this.idleTimer.unref()
@@ -255,6 +276,7 @@ class ResidentActorWorker {
         this.idleTimer = undefined
         this.worker?.terminate(reason)
         this.worker = undefined
+        this.onResidencyChange()
     }
 }
 

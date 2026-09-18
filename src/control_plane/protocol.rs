@@ -7,6 +7,7 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
+    InventoryChanged,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +44,7 @@ pub(crate) fn decode_reply(reply: ControlPlaneReply) -> Result<ControlPlaneComma
 mod tests {
     use super::*;
     #[test]
-    fn storage_credentials_are_the_only_runtime_control_plane_command() -> Result<()> {
+    fn runtime_commands_do_not_include_storage_operations() -> Result<()> {
         let encoded = encode_command(ControlPlaneCommand::RefreshStorageAccess)?;
         assert!(matches!(
             decode_command(encoded)?,

@@ -18,7 +18,7 @@ use tokio::{
         UnixListener,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -163,6 +163,10 @@ pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_type: &str) -> bool;
 
     fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+        None
+    }
+
+    fn residency_changes(&self) -> Option<watch::Receiver<()>> {
         None
     }
 
@@ -329,6 +333,7 @@ impl Drop for ActorExecutorConnection {
 type Residency = Arc<Mutex<Option<(Instant, Vec<ActorKey>)>>>;
 
 struct JsActorExecutor {
+    changes: watch::Sender<()>,
     residency: Residency,
     actor_types: HashSet<String>,
     commands: mpsc::Sender<ExecutorRequest>,
@@ -336,6 +341,9 @@ struct JsActorExecutor {
 
 #[async_trait]
 impl ActorExecutor for JsActorExecutor {
+    fn residency_changes(&self) -> Option<watch::Receiver<()>> {
+        Some(self.changes.subscribe())
+    }
     fn resident_actors(&self) -> Option<Vec<ActorKey>> {
         self.residency
             .lock()
@@ -453,12 +461,16 @@ impl JsActorExecutor {
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
         let residency = Arc::new(Mutex::new(None));
+        let (changes, _) = watch::channel(());
         let executor = Arc::new(Self {
+            changes: changes.clone(),
             residency: residency.clone(),
             actor_types: actor_types.into_iter().collect(),
             commands,
         });
-        let task = tokio::spawn(run_executor_connection(reader, writer, incoming, residency));
+        let task = tokio::spawn(run_executor_connection(
+            reader, writer, incoming, residency, changes,
+        ));
         (executor, task)
     }
 
@@ -503,10 +515,12 @@ async fn run_executor_connection(
     writer: OwnedWriteHalf,
     commands: mpsc::Receiver<ExecutorRequest>,
     residency: Residency,
+    changes: watch::Sender<()>,
 ) -> Result<()> {
     let (outbound, writes) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS + 1);
     let (inbound, replies) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
     let driver = ExecutorDriver {
+        changes,
         residency,
         pending: HashMap::new(),
         residents: HashSet::new(),
@@ -528,6 +542,7 @@ async fn run_executor_connection(
 }
 
 struct ExecutorDriver {
+    changes: watch::Sender<()>,
     residency: Residency,
     pending: HashMap<u64, PendingCommand>,
     residents: HashSet<ActorKey>,
@@ -555,7 +570,10 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::Residency { actors } => {
                             ensure!(actors.len() <= 32, "too many resident actors");
                             for actor in &actors { actor.validate()?; }
-                            *self.residency.lock().unwrap() = Some((Instant::now(), actors));
+                            let mut current = self.residency.lock().unwrap();
+                            let changed = current.as_ref().is_none_or(|(_, previous)| previous != &actors);
+                            *current = Some((Instant::now(), actors));
+                            if changed { self.changes.send_replace(()); }
                         }
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
@@ -1028,6 +1046,9 @@ mod tests {
         connection.mark_ready(None, None).await?;
         let executor = connection.executor();
         assert!(executor.resident_actors().is_none());
+        let mut changes = executor
+            .residency_changes()
+            .expect("residency notifications");
         let actor = ActorKey {
             namespace_id: "local".into(),
             actor_type: "Room".into(),
@@ -1035,6 +1056,7 @@ mod tests {
         };
         for actors in [vec![actor], vec![]] {
             write_json_line(&mut peer, &json!({"type":"residency", "actors":actors})).await?;
+            timeout(Duration::from_secs(1), changes.changed()).await??;
             timeout(Duration::from_secs(1), async {
                 while executor.resident_actors() != Some(actors.clone()) {
                     tokio::task::yield_now().await;

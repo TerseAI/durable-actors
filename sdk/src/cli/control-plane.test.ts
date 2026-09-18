@@ -70,3 +70,25 @@ test("transport failures do not retry writes and warn that their outcome is unkn
     })
     assert.equal(requests, 3)
 })
+
+test("live inventory streams carry server-side credentials, namespace, and cancellation", async () => {
+    const controller = new AbortController()
+    const client = new ControlPlaneClient(connection, async (url, options) => {
+        assert.equal(url, "https://control.example/v1/observe/events?namespace=team")
+        assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+        assert.equal(new Headers(options?.headers).get("accept"), "text/event-stream")
+        assert.equal(options?.signal, controller.signal)
+        assert.equal(options?.redirect, "error")
+        return new Response("event: inventory\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+    })
+    assert.match(await (await client.openActorStream(controller.signal)).text(), /event: inventory/u)
+})
+
+test("live inventory rejects denied responses and non-streaming upstreams", async () => {
+    for (const response of [new Response("secret", { status: 403 }), Response.json({})]) {
+        const client = new ControlPlaneClient(connection, async () => response)
+        await assert.rejects(client.openActorStream(new AbortController().signal), {
+            message: "Live inventory is unavailable"
+        })
+    }
+})
