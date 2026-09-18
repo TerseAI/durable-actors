@@ -4,9 +4,10 @@ import type { AddressInfo } from "node:net"
 import { test } from "node:test"
 import { createServer } from "vite"
 
-import config from "../vite.config.js"
+import createConfig from "../vite.config.js"
 
 test("the Vite proxy preserves the observer's loopback host validation", async t => {
+    const config = createConfig({ command: "serve", mode: "development" })
     const upstream = createHttpServer((request, response) => {
         const expected = `127.0.0.1:${(upstream.address() as AddressInfo).port}`
         response.writeHead(request.headers.host === expected ? 200 : 403)

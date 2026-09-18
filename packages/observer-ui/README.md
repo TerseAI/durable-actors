@@ -114,7 +114,7 @@ OBSERVER_API_URL=http://127.0.0.1:<observer-port> pnpm --dir packages/observer-u
 
 Vite proxies `/api/observe` to that URL (default: `http://127.0.0.1:4174`). No demo data is included in the app. The console supports actor search and combined instance ID/state filters; namespace totals remain unfiltered.
 
-The build produces an ESM library plus TypeScript declarations and scoped CSS, and a separate standalone browser app in `dist/standalone`. Only the standalone app bundles React. The SDK copies those prebuilt assets into its own npm package; running the CLI needs no build tool or UI package download.
+Vite builds both outputs from `vite.config.ts`: library mode produces the ESM package and separate scoped styles and optional theme; the default build produces the standalone browser app in `dist/standalone`. TypeScript emits the library declarations. Only the standalone app bundles React. The SDK copies those prebuilt assets into its own npm package; running the CLI needs no build tool or UI package download.
 
 To test in another repository before publishing:
 

@@ -204,9 +204,6 @@ importers:
       jsdom:
         specifier: ^26.0.0
         version: 26.1.0
-      postcss:
-        specifier: ^8.5.28
-        version: 8.5.28
       react:
         specifier: ^19.1.0
         version: 19.3.0

@@ -30,10 +30,10 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "node scripts/build.mjs && tsc -p tsconfig.json",
+        "build": "vite build --mode library && vite build && tsc -p tsconfig.json",
         "test": "node --import tsx --test test/*.test.tsx",
-        "format": "prettier --write src test scripts vite.config.ts index.html",
-        "format:check": "prettier --check src test scripts vite.config.ts index.html",
+        "format": "prettier --write src test vite.config.ts index.html",
+        "format:check": "prettier --check src test vite.config.ts index.html",
         "prepack": "pnpm run build && pnpm run test && pnpm run package:check",
         "package:check": "node --test test/package.test.mjs",
         "dev": "vite",
@@ -51,7 +51,6 @@
         "@types/react-dom": "^19.0.0",
         "esbuild": "^0.28.2",
         "jsdom": "^26.0.0",
-        "postcss": "^8.5.28",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
         "tailwindcss": "^4.3.3",
