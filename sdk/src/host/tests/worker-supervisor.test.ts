@@ -446,3 +446,72 @@ test("residency subscribers see worker creation and eviction immediately", async
         supervisor.close()
     }
 })
+
+test("activity resets the idle timeout without publishing dormant residency", async context => {
+    context.mock.timers.enable({ apis: ["setTimeout"] })
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: "file:///unused.mjs",
+        actorSchemas: undefined,
+        actorIdleTimeoutMs: 10_000,
+        createWorker: () => ({
+            ready: async () => ["SessionCounter"],
+            execute: async () => ({ type: "invoked", result: null, state: {} }),
+            terminate() {}
+        })
+    })
+    const seen: number[] = []
+    supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+    try {
+        await supervisor.ready()
+        for (let request = 0; request < 5; request++) {
+            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+            context.mock.timers.tick(9_000)
+            assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        }
+        assert.deepEqual(seen, [1])
+        context.mock.timers.tick(1_000)
+        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(seen, [1, 0])
+    } finally {
+        supervisor.close()
+    }
+})
+
+test("a running request stays resident beyond the idle timeout", async context => {
+    context.mock.timers.enable({ apis: ["setTimeout"] })
+    let finish: (() => void) | undefined
+    const pending = new Promise<void>(resolve => {
+        finish = resolve
+    })
+    let block = false
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: "file:///unused.mjs",
+        actorSchemas: undefined,
+        actorIdleTimeoutMs: 10_000,
+        createWorker: () => ({
+            ready: async () => ["SessionCounter"],
+            async execute() {
+                if (block) await pending
+                return { type: "invoked", result: null, state: {} }
+            },
+            terminate() {}
+        })
+    })
+    try {
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        context.mock.timers.tick(9_000)
+        block = true
+        const running = supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        context.mock.timers.tick(30_000)
+        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        finish!()
+        assert.equal((await running).type, "invoked")
+        context.mock.timers.tick(9_999)
+        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        context.mock.timers.tick(1)
+        assert.deepEqual(supervisor.residentActors(), [])
+    } finally {
+        finish?.()
+        supervisor.close()
+    }
+})

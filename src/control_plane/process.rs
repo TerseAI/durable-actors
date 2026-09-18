@@ -17,7 +17,7 @@ const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
-const DEFAULT_ACTOR_IDLE_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
@@ -304,15 +304,12 @@ fn sandbox_provider_config(
             control_plane_url,
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
-            actor_idle_timeout_ms: idle_timeout(
-                get,
-                "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS",
-                DEFAULT_ACTOR_IDLE_TIMEOUT_MS,
-            )?,
+            actor_idle_timeout_seconds: actor_idle_timeout_seconds(get)?,
             host_idle_timeout_ms: idle_timeout(
                 get,
                 "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
                 DEFAULT_HOST_IDLE_TIMEOUT_MS,
+                MAX_IDLE_TIMEOUT_MS,
             )?,
         },
     })
@@ -339,10 +336,22 @@ fn validated_http_url(value: &str, name: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
+pub(super) fn actor_idle_timeout_seconds(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<u64> {
+    idle_timeout(
+        get,
+        "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS",
+        DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS,
+        86_400,
+    )
+}
+
 fn idle_timeout(
     get: &mut impl FnMut(&str) -> Option<String>,
     name: &str,
     default: u64,
+    maximum: u64,
 ) -> Result<u64> {
     let value = get(name)
         .map(|value| value.parse())
@@ -350,8 +359,8 @@ fn idle_timeout(
         .with_context(|| format!("{name} must be an integer"))?
         .unwrap_or(default);
     ensure!(
-        (1..=MAX_IDLE_TIMEOUT_MS).contains(&value),
-        "{name} is outside the supported range"
+        (1..=maximum).contains(&value),
+        "{name} must be an integer between 1 and {maximum}"
     );
     Ok(value)
 }
@@ -364,6 +373,22 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     use super::*;
+
+    #[test]
+    fn actor_idle_timeout_uses_bounded_seconds() -> Result<()> {
+        assert_eq!(actor_idle_timeout_seconds(&mut |_| None)?, 60);
+        for value in ["1", "10", "86400"] {
+            let parsed = actor_idle_timeout_seconds(&mut |name| {
+                assert_eq!(name, "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS");
+                Some(value.into())
+            })?;
+            assert_eq!(parsed, value.parse::<u64>()?);
+        }
+        for value in ["0", "-1", "1.5", "86401", "not-a-number"] {
+            assert!(actor_idle_timeout_seconds(&mut |_| Some(value.into())).is_err());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn server_carries_websocket_upgrades() -> Result<()> {

@@ -36,7 +36,7 @@ pub struct EnsureHostRequest {
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
-    pub actor_idle_timeout_ms: u64,
+    pub actor_idle_timeout_seconds: u64,
     pub host_idle_timeout_ms: u64,
 }
 
@@ -149,7 +149,7 @@ pub struct HostSandboxRuntimeConfig {
     pub control_plane_url: String,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
-    pub actor_idle_timeout_ms: u64,
+    pub actor_idle_timeout_seconds: u64,
     pub host_idle_timeout_ms: u64,
 }
 

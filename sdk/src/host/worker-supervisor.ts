@@ -105,7 +105,7 @@ class ActorWorkerSupervisor {
 
     residentActors(): readonly ActorIdentity[] {
         return [...this.actors.entries()]
-            .filter(([, actor]) => actor.isResident())
+            .filter(([, actor]) => actor.isActive())
             .map(([key]) => {
                 const [actor_type, actor_id] = key.split("\u001f") as [string, string]
                 return { actor_type, actor_id }
@@ -263,7 +263,7 @@ class ResidentActorWorker {
         return reply
     }
 
-    isResident(): boolean {
+    isActive(): boolean {
         return this.worker !== undefined && (this.worker.isAlive?.() ?? true)
     }
 

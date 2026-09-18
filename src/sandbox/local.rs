@@ -266,8 +266,8 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             directory.path().join("ready").display().to_string(),
         ),
         (
-            "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS",
-            request.actor_idle_timeout_ms.to_string(),
+            "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS",
+            request.actor_idle_timeout_seconds.to_string(),
         ),
         (
             "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
@@ -326,12 +326,16 @@ mod tests {
             working_directory: project.display().to_string(),
             actor_entrypoint: None,
             secret_refs: vec![],
-            actor_idle_timeout_ms: 60_000,
+            actor_idle_timeout_seconds: 60,
             host_idle_timeout_ms: 300_000,
         };
         assert_eq!(
             host_environment(&request, &directory).get("DURABLE_OBJECT_LOG_MODE"),
             Some(&"development".to_owned())
+        );
+        assert_eq!(
+            host_environment(&request, &directory).get("DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS"),
+            Some(&"60".to_owned())
         );
         let error = provider.ensure_host(&request).await.unwrap_err();
         assert!(error.to_string().contains("shutting down"), "{error:#}");

@@ -43,6 +43,16 @@ func TestFreshHostPublishesOnlyRouteAndWaitsForReadiness(t *testing.T) {
 	}
 }
 
+func TestActorIdleTimeoutEnvironmentUsesSeconds(t *testing.T) {
+	env := hostEnvironment(testRequest())
+	if env["DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS"] != "60" {
+		t.Fatal("actor idle timeout must be expressed in seconds")
+	}
+	if _, present := env["DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS"]; present {
+		t.Fatal("legacy millisecond setting should not be emitted")
+	}
+}
+
 func TestHostAttachesNamedSecrets(t *testing.T) {
 	api := &fakeAPI{created: &fakeSandbox{}}
 	request := testRequest()
@@ -106,7 +116,7 @@ func TestKnownFailedHostIsReplacedOnce(t *testing.T) {
 }
 
 func TestInvalidHostRequestsDoNotTouchModal(t *testing.T) {
-	for _, change := range []func(*ensureRequest){func(r *ensureRequest) { r.HostID = "other" }, func(r *ensureRequest) { r.CanonicalRegion = "unknown" }, func(r *ensureRequest) { r.HostIdleTimeoutMS = 0 }, func(r *ensureRequest) { r.ActorIdleTimeoutMS = 86400001 }} {
+	for _, change := range []func(*ensureRequest){func(r *ensureRequest) { r.HostID = "other" }, func(r *ensureRequest) { r.CanonicalRegion = "unknown" }, func(r *ensureRequest) { r.HostIdleTimeoutMS = 0 }, func(r *ensureRequest) { r.ActorIdleTimeoutSeconds = 86401 }} {
 		r := testRequest()
 		change(&r)
 		api := &fakeAPI{}
@@ -193,7 +203,7 @@ func newTestProvider(api modalAPI) *provider {
 	return &provider{api: api, now: time.Now, started: time.Now()}
 }
 func testRequest() ensureRequest {
-	return ensureRequest{CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v3.r1.new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutMS: 60000, HostIdleTimeoutMS: 300000}
+	return ensureRequest{CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v3.r1.new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutSeconds: 60, HostIdleTimeoutMS: 300000}
 }
 
 type fakeAPI struct {

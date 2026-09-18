@@ -828,7 +828,7 @@ impl SandboxHostProvisioner {
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec.actor_entrypoint.clone(),
             secret_refs: spec.secret_refs.clone(),
-            actor_idle_timeout_ms: self.runtime.actor_idle_timeout_ms,
+            actor_idle_timeout_seconds: self.runtime.actor_idle_timeout_seconds,
             host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
         })
     }

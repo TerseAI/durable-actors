@@ -16,20 +16,20 @@ test("a managed socket needs no local actor credentials", () => {
     assert.equal(settings.actorIdleTimeoutMs, 60_000)
 })
 
-test("resident actor idle timeout is configurable and bounded", () => {
+test("resident actor idle timeout uses seconds and is bounded", () => {
     assert.equal(
         parseHostSettings({
             DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-            DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS: "2500"
+            DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS: "10"
         }).actorIdleTimeoutMs,
-        2_500
+        10_000
     )
-    for (const value of ["0", "86400001", "not-a-number"]) {
+    for (const value of ["0", "-1", "1.5", "86401", "not-a-number"]) {
         assert.throws(
             () =>
                 parseHostSettings({
                     DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-                    DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS: value
+                    DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS: value
                 }),
             ActorConfigurationError
         )

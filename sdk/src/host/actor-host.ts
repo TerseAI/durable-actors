@@ -411,7 +411,7 @@ function parseHostSettings(environment: NodeJS.ProcessEnv): ActorHostSettings {
         socketPath: result.data.DURABLE_OBJECT_EXECUTOR_SOCKET,
         actorEntrypoint: result.data.DURABLE_OBJECT_ENTRYPOINT,
         startupTimeoutMs: parseStartupTimeout(environment.DURABLE_OBJECT_HOST_STARTUP_MS),
-        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS)
+        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS)
     }
 }
 
@@ -426,16 +426,16 @@ function parseStartupTimeout(value: string | undefined): number {
 function parseActorIdleTimeout(value: string | undefined): number {
     if (value === undefined) return DEFAULT_ACTOR_IDLE_TIMEOUT_MS
     const parsed = Number(value)
-    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_IDLE_TIMEOUT_MS) {
+    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_ACTOR_IDLE_TIMEOUT_SECONDS) {
         throw new ActorConfigurationError(
-            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS must be an integer between 1 and ${MAX_IDLE_TIMEOUT_MS}`
+            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS must be an integer between 1 and ${MAX_ACTOR_IDLE_TIMEOUT_SECONDS}`
         )
     }
-    return parsed
+    return parsed * 1_000
 }
 
 const DEFAULT_ACTOR_STARTUP_TIMEOUT_MS = 10_000
-const MAX_IDLE_TIMEOUT_MS = 86_400_000
+const MAX_ACTOR_IDLE_TIMEOUT_SECONDS = 86_400
 
 const actorSessionSettingsSchema = z.object({
     DURABLE_OBJECT_EXECUTOR_SOCKET: z.string().trim().min(1),

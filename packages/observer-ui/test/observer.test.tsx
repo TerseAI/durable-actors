@@ -283,3 +283,40 @@ test("a dropped stream keeps its last snapshot and automatically reconnects", as
     assert.equal(view.queryByRole("alert"), null)
     assert.equal(attempts, 2)
 })
+
+test("SSE snapshots and heartbeats preserve the selected instance and its live state", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined
+    let requests = 0
+    const client = new HttpObserverClient("/api/observe", async () => {
+        requests++
+        return new Response(
+            new ReadableStream<Uint8Array>({
+                start(controller) {
+                    stream = controller
+                }
+            }),
+            {
+                headers: { "content-type": "text/event-stream" }
+            }
+        )
+    })
+    const encoder = new TextEncoder()
+    const publish = async (text: string) =>
+        act(async () => {
+            stream!.enqueue(encoder.encode(text))
+        })
+    const view = render(<ActorObserver client={client} />)
+    await publish(`event: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
+    fireEvent.click(view.getByRole("button", { name: "Room" }))
+    fireEvent.click(view.getByRole("button", { name: "general" }))
+    const row = view.getByRole("row", { name: /general Live 3/u })
+    for (let update = 0; update < 10; update++) {
+        await publish(": heartbeat\n\n")
+        assert.equal(view.getByRole("row", { name: /general Live 3/u }), row)
+        await publish(`event: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
+        assert.equal(view.getByRole("row", { name: /general Live 3/u }), row)
+        assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
+        assert.equal(view.queryByRole("status", { name: "Loading actors" }), null)
+    }
+    assert.equal(requests, 1)
+})
