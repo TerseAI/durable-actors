@@ -1,10 +1,10 @@
 import { Command } from "commander"
 import { once } from "node:events"
-import { readFile } from "node:fs/promises"
-import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
+import { fileURLToPath } from "node:url"
 import open from "open"
+import type { Connect, PreviewServer } from "vite"
 
 import { connection, connectionOptions } from "./connection.js"
 import type { ConnectionOptions } from "./connection.js"
@@ -23,7 +23,7 @@ function registerObserveCommand(program: Command): void {
             }
             process.once("SIGINT", stop)
             process.once("SIGTERM", stop)
-            console.log("hello I am connected to the control plane")
+            console.log("Connected to the control plane.")
             console.log(`Observe: ${result.url}`)
             console.log("Press Ctrl+C to stop.")
             if (options.open && !result.browserOpened)
@@ -32,10 +32,7 @@ function registerObserveCommand(program: Command): void {
 }
 
 class Observer {
-    private readonly assets = new Map<string, { contentType: string; body: Buffer }>()
-    private readonly server = createServer((request, response) => {
-        void this.respond(request, response).catch(() => response.writeHead(500).end())
-    })
+    private server: PreviewServer | undefined
 
     constructor(
         private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
@@ -46,10 +43,8 @@ class Observer {
 
     async start(launchBrowser = true): Promise<{ url: string; browserOpened: boolean }> {
         await this.client.checkConnection()
-        await this.loadAssets()
-        this.server.listen(0, "127.0.0.1")
-        await once(this.server, "listening")
-        const url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`
+        this.server = await this.startServer()
+        const url = `http://127.0.0.1:${(this.server.httpServer.address() as AddressInfo).port}`
         const browserOpened = launchBrowser
             ? await this.openBrowser(url).then(
                   () => true,
@@ -60,32 +55,49 @@ class Observer {
     }
 
     async close(): Promise<void> {
-        if (!this.server.listening) return
-        const closed = new Promise<void>((resolve, reject) => {
-            this.server.close(error => (error ? reject(error) : resolve()))
+        await this.server?.close()
+        this.server = undefined
+    }
+
+    private async startServer(): Promise<PreviewServer> {
+        const { preview } = await import("vite")
+        return preview({
+            configFile: false,
+            envFile: false,
+            root: fileURLToPath(this.assetDirectory),
+            publicDir: false,
+            appType: "mpa",
+            logLevel: "silent",
+            build: { outDir: "." },
+            preview: { host: "127.0.0.1", port: 0, cors: false },
+            plugins: [
+                {
+                    name: "actor-observer-api",
+                    configurePreviewServer: server => {
+                        server.middlewares.use((request, response, next) => {
+                            void this.respond(request, response, next).catch(() => {
+                                if (response.headersSent) response.destroy()
+                                else response.writeHead(500).end()
+                            })
+                        })
+                    }
+                }
+            ]
         })
-        this.server.closeAllConnections()
-        await closed
     }
 
-    private async loadAssets(): Promise<void> {
-        for (const [route, file, contentType] of [
-            ["/", "index.html", "text/html; charset=utf-8"],
-            ["/app.js", "app.js", "text/javascript; charset=utf-8"],
-            ["/app.css", "app.css", "text/css; charset=utf-8"]
-        ]) {
-            this.assets.set(route, { contentType, body: await readFile(new URL(file, this.assetDirectory)) })
-        }
-    }
-
-    private async respond(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    private async respond(
+        request: IncomingMessage,
+        response: ServerResponse,
+        next: Connect.NextFunction
+    ): Promise<void> {
         response.setHeader("cache-control", "no-store")
         response.setHeader("x-content-type-options", "nosniff")
         response.setHeader(
             "content-security-policy",
             "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         )
-        const host = `127.0.0.1:${(this.server.address() as AddressInfo).port}`
+        const host = `127.0.0.1:${(this.server!.httpServer.address() as AddressInfo).port}`
         if (
             request.headers.host !== host ||
             (request.headers.origin && request.headers.origin !== `http://${host}`) ||
@@ -111,13 +123,7 @@ class Observer {
             await this.connectionStatus(request, response)
             return
         }
-        const asset = this.assets.get(pathname)
-        if (!asset) {
-            response.writeHead(404).end()
-            return
-        }
-        response.writeHead(200, { "content-type": asset.contentType })
-        response.end(request.method === "HEAD" ? undefined : asset.body)
+        next()
     }
 
     private async actorEvents(request: IncomingMessage, response: ServerResponse): Promise<void> {

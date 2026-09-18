@@ -1,6 +1,6 @@
 # little-actors
 
-Named actors with serial method calls and saved state. Requires Node.js 20+.
+Named actors with serial method calls and saved state. Requires Node.js 20.19+ or 22.12+ (matching Vite's runtime requirement).
 
 ```sh
 npm install little-actors

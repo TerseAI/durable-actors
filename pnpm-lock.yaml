@@ -273,6 +273,9 @@ importers:
       typescript-json-schema:
         specifier: ^0.68.0
         version: 0.68.0
+      vite:
+        specifier: ^8.3.0
+        version: 8.3.0(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)
       ws:
         specifier: ^8.18.3
         version: 8.21.3

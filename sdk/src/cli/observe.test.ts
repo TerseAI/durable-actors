@@ -1,10 +1,38 @@
 import assert from "node:assert/strict"
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { get } from "node:http"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
+import { pathToFileURL } from "node:url"
 
 import { Observer } from "./observe.js"
 
 const assets = new URL("../../../dist/observer/", import.meta.url)
+
+test("observer serves generated assets without a hardcoded filename list", async t => {
+    const directory = await mkdtemp(join(tmpdir(), "observer-assets-"))
+    await cp(assets, directory, { recursive: true })
+    await mkdir(join(directory, "assets"))
+    await writeFile(join(directory, "assets", "details-abc123.js"), "export const details = true")
+    const observer = new Observer(
+        { checkConnection: async () => {}, listActors: async () => ({ namespaceId: "local", actors: [] }) },
+        async () => {},
+        pathToFileURL(`${directory}/`)
+    )
+    t.after(async () => {
+        await observer.close()
+        await rm(directory, { recursive: true, force: true })
+    })
+    const { url } = await observer.start(false)
+    const response = await fetch(`${url}/assets/details-abc123.js`)
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get("content-type")!, /javascript/u)
+    assert.equal(await response.text(), "export const details = true")
+    const head = await fetch(`${url}/assets/details-abc123.js`, { method: "HEAD" })
+    assert.equal(head.status, 200)
+    assert.equal(await head.text(), "")
+})
 
 test("observer proxies connection checks and reports a later outage without exposing upstream errors", async t => {
     let available = true
@@ -54,7 +82,7 @@ test("observer opens the browser only after authentication and local serving suc
         async url => {
             assert.equal(connected, true)
             const response = await fetch(url)
-            assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8")
+            assert.match(response.headers.get("content-type")!, /^text\/html(?:;|$)/u)
             assert.match(await response.text(), /src="\.\/app.js"/u)
             assert.match(await (await fetch(`${url}/app.js`)).text(), /No actors yet/u)
             assert.match((await fetch(`${url}/app.css`)).headers.get("content-type")!, /text\/css/u)
