@@ -9,7 +9,7 @@ import { ActorInvocationError } from "../errors.js"
 
 import { RemoteActorClient } from "./remoteClient.js"
 
-test("API-key clients invoke, connect, and broadcast without a namespace or session token", async () => {
+test("API-key clients invoke, connect, and broadcast", async () => {
     const requests: string[] = []
     const client = new RemoteActorClient(undefined, {
         environment: {
@@ -20,9 +20,12 @@ test("API-key clients invoke, connect, and broadcast without a namespace or sess
         fetch: async (url, options) => {
             requests.push(String(url))
             assert.equal(new Headers(options?.headers).get("authorization"), "Bearer backend-key")
-            if (String(url).endsWith("socket-effects")) return new Response(null, { status: 204 })
+            if (JSON.parse(String(options?.body)).transport === "websocket")
+                return Response.json({
+                    websocketUrl: "wss://host.example.com/v1/socket?key=socket-ticket",
+                    key: "socket-ticket"
+                })
             return Response.json({
-                namespaceId: "local",
                 route: "https://host.example.com",
                 token: "invocation-ticket",
                 ownerEpoch: 1,
@@ -31,15 +34,15 @@ test("API-key clients invoke, connect, and broadcast without a namespace or sess
             })
         },
         actorHost: {
+            async publish() {},
             async invoke(target, invocation) {
                 assert.equal(target.token, "invocation-ticket")
-                assert.equal(invocation.namespaceId, "local")
+                assert.equal(invocation.actorId, "one")
                 return { type: "completed", result: 7, effects: [] }
             }
         },
-        async connectWebSocket(url, credential) {
-            assert.equal(url, "wss://control.example.com/v1/actors/Counter/one/websocket")
-            assert.equal(credential, "backend-key")
+        async connectWebSocket(url) {
+            assert.equal(url, "wss://host.example.com/v1/socket?key=socket-ticket")
             return {} as ActorConnection
         }
     })
@@ -47,39 +50,9 @@ test("API-key clients invoke, connect, and broadcast without a namespace or sess
     await client.connect("Counter", "one", {})
     await client.broadcast("Counter", "one", "updated")
     assert.deepEqual(requests, [
-        "https://control.example.com/v1/actors/Counter/one/target",
-        "https://control.example.com/v1/actors/Counter/one/socket-effects"
+        "https://control.example.com/v1/actors/Counter/one/connect",
+        "https://control.example.com/v1/actors/Counter/one/connect"
     ])
-})
-
-test("delegated clients can let the server resolve the namespace from their session token", async () => {
-    const client = new RemoteActorClient(undefined, {
-        environment: {
-            DURABLE_OBJECT_TOKEN: "delegated-token",
-            DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
-        },
-        async connectWebSocket(url, credential) {
-            assert.equal(url, "wss://control.example.com/v1/actors/Counter/one/websocket")
-            assert.equal(credential, "delegated-token")
-            return {} as ActorConnection
-        }
-    })
-    await client.connect("Counter", "one", {})
-})
-
-test("clients reject ambiguous API-key and session-token configuration", async () => {
-    const client = new RemoteActorClient(undefined, {
-        environment: {
-            DURABLE_OBJECT_API_KEY: "backend-key",
-            DURABLE_OBJECT_TOKEN: "delegated-token",
-            DURABLE_OBJECT_NAMESPACE_ID: "project",
-            DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
-        },
-        async connectWebSocket() {
-            return {} as ActorConnection
-        }
-    })
-    await assert.rejects(client.connect("Counter", "one", {}), /exactly one/i)
 })
 
 test("target expiry uses real time even when workflow Date.now is frozen", async () => {
@@ -89,7 +62,7 @@ test("target expiry uses real time even when workflow Date.now is frozen", async
     Date.now = () => 1
     try {
         const client = new RemoteActorClient(
-            { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+            { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
             {
                 telemetry: () => {},
                 fetch: async () =>
@@ -101,6 +74,7 @@ test("target expiry uses real time even when workflow Date.now is frozen", async
                         expiresAtMs: Math.floor(performance.timeOrigin + performance.now()) + 1_000
                     }),
                 actorHost: {
+                    async publish() {},
                     async invoke(target) {
                         usedTokens.push(target.token)
                         return { type: "completed", result: null, effects: [] }
@@ -121,7 +95,7 @@ test("refreshes a rejected actor ticket once using the same invocation ID", asyn
     let calls = 0
     let rejectAll = false
     const client = new RemoteActorClient(
-        { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+        { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
         {
             telemetry: () => {},
             requestId: () => "same-request",
@@ -134,6 +108,7 @@ test("refreshes a rejected actor ticket once using the same invocation ID", asyn
                     expiresAtMs: 4_000_000_000_000
                 }),
             actorHost: {
+                async publish() {},
                 async invoke(_target, invocation) {
                     calls++
                     assert.equal(invocation.requestId, "same-request")
@@ -159,7 +134,7 @@ test("does not retry ambiguous host failures or actor-method authentication erro
     for (const ambiguous of [true, false]) {
         let calls = 0
         const client = new RemoteActorClient(
-            { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+            { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
             {
                 telemetry: () => {},
                 fetch: async () =>
@@ -171,6 +146,7 @@ test("does not retry ambiguous host failures or actor-method authentication erro
                         expiresAtMs: 4_000_000_000_000
                     }),
                 actorHost: {
+                    async publish() {},
                     async invoke() {
                         calls++
                         if (ambiguous) throw new Error("connection lost")
@@ -196,8 +172,8 @@ test("remote actor client resolves once and invokes the actor host directly", as
     const server = createServer(async (request, response) => {
         resolutions += 1
         assert.equal(request.method, "POST")
-        assert.equal(request.url, "/v1/namespaces/project-1/actors/Counter/counter-1/target")
-        assert.equal(request.headers.authorization, "Bearer workflow-token")
+        assert.equal(request.url, "/v1/actors/Counter/counter-1/connect")
+        assert.equal(request.headers.authorization, "Bearer backend-key")
         assert.equal(request.headers["x-request-id"], "00000000-0000-4000-8000-000000000000")
         json(response, 200, {
             route: "https://actor.example.com",
@@ -210,13 +186,13 @@ test("remote actor client resolves once and invokes the actor host directly", as
     const port = await listen(server)
     const client = new RemoteActorClient(
         {
-            token: "workflow-token",
-            namespaceId: "project-1",
+            apiKey: "backend-key",
             controlPlaneUrl: `http://127.0.0.1:${port}`
         },
         {
             requestId: () => "00000000-0000-4000-8000-000000000000",
             actorHost: {
+                async publish() {},
                 async invoke(target, invocation) {
                     hostInvocations.push({ target, invocation })
                     return { type: "completed", result: 7, effects: [] }
@@ -235,7 +211,6 @@ test("remote actor client resolves once and invokes the actor host directly", as
             {
                 event: "actor_client_invocation",
                 request_id: "00000000-0000-4000-8000-000000000000",
-                namespace_id: "project-1",
                 actor_type: "Counter",
                 actor_id: "counter-1",
                 method: "increment",
@@ -251,7 +226,6 @@ test("remote actor client resolves once and invokes the actor host directly", as
             {
                 event: "actor_client_invocation",
                 request_id: "00000000-0000-4000-8000-000000000000",
-                namespace_id: "project-1",
                 actor_type: "Counter",
                 actor_id: "counter-1",
                 method: "increment",
@@ -275,7 +249,6 @@ test("remote actor client resolves once and invokes the actor host directly", as
             },
             invocation: {
                 requestId: "00000000-0000-4000-8000-000000000000",
-                namespaceId: "project-1",
                 actorType: "Counter",
                 actorId: "counter-1",
                 method: "increment",
@@ -287,20 +260,26 @@ test("remote actor client resolves once and invokes the actor host directly", as
     }
 })
 
-test("opens actor WebSockets on the control plane without provisioning a host first", async () => {
+test("resolves a fresh host socket grant before connecting", async () => {
     const requests: unknown[] = []
     const connection = fakeConnection()
     const client = new RemoteActorClient(
         {
-            token: "workflow-token",
-            namespaceId: "project-1",
-            controlPlaneUrl: "https://control.example.com",
-            socketGatewayUrl: "https://sockets.example.com"
+            apiKey: "backend-key",
+            controlPlaneUrl: "https://control.example.com"
         },
         {
             requestId: () => "connection-request",
-            connectWebSocket: async (url, token, metadata) => {
-                requests.push({ url, token, metadata })
+            fetch: async (url, init) => {
+                assert.equal(String(url), "https://control.example.com/v1/actors/ChatRoom/room-1/connect")
+                assert.equal(JSON.parse(init!.body as string).backend, true)
+                return Response.json({
+                    websocketUrl: "wss://host.modal.test/v1/socket?key=host-ticket",
+                    key: "host-ticket"
+                })
+            },
+            connectWebSocket: async (url, metadata) => {
+                requests.push({ url, metadata })
                 return connection
             }
         }
@@ -308,131 +287,64 @@ test("opens actor WebSockets on the control plane without provisioning a host fi
     assert.equal(await client.connect("ChatRoom", "room-1", { userId: "user-1" }), connection)
     assert.deepEqual(requests, [
         {
-            url: "wss://sockets.example.com/v1/namespaces/project-1/actors/ChatRoom/room-1/websocket",
-            token: "workflow-token",
+            url: "wss://host.modal.test/v1/socket?key=host-ticket",
             metadata: { userId: "user-1" }
         }
     ])
 })
 
-test("broadcasts to actor sockets without resolving or invoking an actor host", async () => {
-    const requests: {
-        readonly method?: string
-        readonly url?: string
-        readonly authorization?: string
-        readonly body?: unknown
-    }[] = []
-    let hostInvocations = 0
-    const server = createServer(async (request, response) => {
-        requests.push({
-            method: request.method,
-            url: request.url,
-            authorization: request.headers.authorization,
-            body: await requestBody(request)
-        })
-        response.writeHead(204).end()
-    })
-    const port = await listen(server)
+test("delivers returned effects to the same host and does not repeat a committed method on delivery failure", async () => {
+    let invocations = 0
+    let deliveries = 0
+    let reject = false
     const client = new RemoteActorClient(
+        { apiKey: "key", controlPlaneUrl: "https://control.example" },
         {
-            token: "workflow-token",
-            namespaceId: "project-1",
-            controlPlaneUrl: "https://control.example.com",
-            socketGatewayUrl: `http://127.0.0.1:${port}`
-        },
-        {
+            telemetry: () => {},
+            fetch: async url => {
+                assert.equal(String(url), "https://control.example/v1/actors/Room/one/connect")
+                return Response.json({
+                    route: "https://host.example",
+                    token: "ticket",
+                    ownerEpoch: 3,
+                    expiresAtMs: 4_000_000_000_000
+                })
+            },
             actorHost: {
                 async invoke() {
-                    hostInvocations += 1
-                    return { type: "completed", result: null, effects: [] }
-                }
-            }
-        }
-    )
-    try {
-        await client.broadcast("ChatRoom", "room-1", { text: "hello" })
-        assert.equal(hostInvocations, 0)
-        assert.deepEqual(requests, [
-            {
-                method: "POST",
-                url: "/v1/namespaces/project-1/actors/ChatRoom/room-1/socket-effects",
-                authorization: "Bearer workflow-token",
-                body: {
-                    effects: [
-                        {
-                            type: "broadcast",
-                            message: { type: "text", data: JSON.stringify({ text: "hello" }) },
-                            except_connection_ids: [],
-                            tags: []
-                        }
-                    ]
-                }
-            }
-        ])
-    } finally {
-        await close(server)
-    }
-})
-
-test("forwards actor socket effects to the control-plane gateway after a direct invocation", async () => {
-    const requests: { readonly method?: string; readonly url?: string; readonly body?: unknown }[] = []
-    const server = createServer(async (request, response) => {
-        const body = request.method === "POST" ? await requestBody(request) : undefined
-        requests.push({ method: request.method, url: request.url, body })
-        if (request.url?.endsWith("/target")) {
-            json(response, 200, {
-                route: "https://actor.example.com",
-                token: "direct-token",
-                ownerEpoch: 3,
-
-                expiresAtMs: 4_000_000_000_000
-            })
-            return
-        }
-        response.writeHead(204).end()
-    })
-    const port = await listen(server)
-    const client = new RemoteActorClient(
-        { token: "workflow-token", namespaceId: "project-1", controlPlaneUrl: `http://127.0.0.1:${port}` },
-        {
-            requestId: () => "request-1",
-            actorHost: {
-                async invoke() {
+                    invocations++
                     return {
                         type: "completed",
-                        result: null,
+                        result: 7,
                         effects: [
                             {
                                 type: "broadcast",
-                                message: { type: "text", data: JSON.stringify({ text: "hello" }) },
+                                message: { type: "text", data: "7" },
                                 except_connection_ids: [],
                                 tags: []
                             }
                         ]
                     }
+                },
+                async publish(target, actor, effects) {
+                    deliveries++
+                    assert.equal(target.route, "https://host.example")
+                    assert.equal(target.ownerEpoch, 3)
+                    assert.equal(actor.actorId, "one")
+                    assert.equal(effects[0]?.type, "broadcast")
+                    if (reject) throw new Error("lost delivery acknowledgement")
                 }
             }
         }
     )
-    try {
-        await client.invoke("ChatRoom", "room-1", "announce", ["hello"])
-        assert.deepEqual(requests[1], {
-            method: "POST",
-            url: "/v1/namespaces/project-1/actors/ChatRoom/room-1/socket-effects",
-            body: {
-                effects: [
-                    {
-                        type: "broadcast",
-                        message: { type: "text", data: JSON.stringify({ text: "hello" }) },
-                        except_connection_ids: [],
-                        tags: []
-                    }
-                ]
-            }
-        })
-    } finally {
-        await close(server)
-    }
+    assert.equal(await client.invoke("Room", "one", "announce", []), 7)
+    reject = true
+    await assert.rejects(
+        client.invoke("Room", "one", "announce", []),
+        error => error instanceof ActorInvocationError && error.code === "outcome_unknown"
+    )
+    assert.equal(invocations, 2)
+    assert.equal(deliveries, 2)
 })
 
 test("does not retry a control-plane transport failure", async () => {
@@ -443,8 +355,7 @@ test("does not retry a control-plane transport failure", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
-        token: "workflow-token",
-        namespaceId: "project-1",
+        apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
     try {
@@ -466,8 +377,7 @@ test("requires the direct actor target endpoint", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
-        token: "workflow-token",
-        namespaceId: "project-1",
+        apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
     try {
@@ -475,7 +385,7 @@ test("requires the direct actor target endpoint", async () => {
             client.invoke("Counter", "counter-1", "increment", [2]),
             error => error instanceof ActorInvocationError && error.code === "not_found"
         )
-        assert.deepEqual(calls, ["/v1/namespaces/project-1/actors/Counter/counter-1/target"])
+        assert.deepEqual(calls, ["/v1/actors/Counter/counter-1/connect"])
     } finally {
         await close(server)
     }
@@ -493,8 +403,7 @@ test("preserves a structured actor failure from HTTP", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
-        token: "workflow-token",
-        namespaceId: "project-1",
+        apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
     try {
@@ -552,3 +461,51 @@ function tickingClock(): () => number {
     let current = 0
     return () => current++
 }
+
+test("broadcasts use the owning host gRPC connection without HTTP delivery", async () => {
+    let published = false
+    const client = new RemoteActorClient(
+        { apiKey: "backend-key", controlPlaneUrl: "https://control.example" },
+        {
+            telemetry: () => {},
+            fetch: async (url, options) => {
+                assert.equal(String(url), "https://control.example/v1/actors/Room/lobby/connect")
+                assert.equal(JSON.parse(String(options?.body)).transport, "grpc")
+                return Response.json({
+                    transport: "grpc",
+                    homeRegion: "north-america-west",
+                    route: "https://host.example",
+                    token: "actor",
+                    ownerEpoch: 7,
+                    expiresAtMs: 4_000_000_000_000
+                })
+            },
+            actorHost: {
+                ...{
+                    async publish(
+                        target: { ownerEpoch: number },
+                        actor: { actorId: string },
+                        effects: readonly unknown[]
+                    ) {
+                        assert.equal(target.ownerEpoch, 7)
+                        assert.equal(actor.actorId, "lobby")
+                        assert.deepEqual(effects, [
+                            {
+                                type: "broadcast",
+                                message: { type: "text", data: '"hello"' },
+                                except_connection_ids: [],
+                                tags: []
+                            }
+                        ])
+                        published = true
+                    }
+                },
+                async invoke() {
+                    throw new Error("broadcast must not invoke an actor method")
+                }
+            }
+        }
+    )
+    await client.broadcast("Room", "lobby", "hello")
+    assert.equal(published, true)
+})

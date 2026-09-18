@@ -20,7 +20,7 @@ use tracing::{Level, info_span};
 
 use crate::{
     bucket::{
-        Bucket, BucketHostLeases, FileBucket, GcsBucket, HttpReplicaPeers, RuntimeStorage,
+        Bucket, BucketHostLeases, FileBucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
         access::{BucketLocation, RuntimeAccess},
     },
     clock::SystemClock,
@@ -241,7 +241,7 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         bucket,
         leases.clone(),
         fleet,
-        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         origin.into(),
     )?);
@@ -271,13 +271,11 @@ async fn local_routes(
         Duration::from_secs(86_400),
     )?;
     let spec = HostLaunchSpec {
-        namespace_id: "local".into(),
         code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
         actor_entrypoint: Some(options.entrypoint.clone()),
         secret_refs: vec![],
-        socket_gateway_url: None,
     };
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
@@ -303,9 +301,7 @@ async fn local_routes(
         provisioner,
     )
     .with_runtime_access(storage.access.clone());
-    let admin = AdminService::new(api_key.to_owned(), registry, issuer)?
-        .with_default_namespace("local")?
-        .with_socket_origin(origin)?;
+    let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), storage.runtime.clone());
     let public = public_api::router(service.clone(), admin.clone())
@@ -336,7 +332,7 @@ fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i
     if let Some(fd) = ready_fd {
         // The launcher transfers ownership of this inherited readiness descriptor.
         let mut ready = unsafe { File::from_raw_fd(fd) };
-        let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "namespaceId": "local", "apiKey": api_key, "storageRegion": region });
+        let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "apiKey": api_key, "storageRegion": region });
         serde_json::to_writer(&mut ready, &connection)?;
         ready.flush()?;
     }
@@ -365,7 +361,7 @@ mod tests {
         };
         let state = local_storage(&options, relative, "http://localhost:7100").await?;
         let config: crate::bucket::access::HostStorageConfig =
-            serde_json::from_str(&state.access.bootstrap("local", &state.region).await?)?;
+            serde_json::from_str(&state.access.bootstrap(&state.region).await?)?;
         let BucketLocation::File {
             directory: configured,
         } = config.bucket

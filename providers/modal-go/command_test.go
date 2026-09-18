@@ -35,7 +35,7 @@ func TestCommandRejectsInvalidInputBeforeConnecting(t *testing.T) {
 func TestCommandReportsSDKInitializationFailure(t *testing.T) {
 	var output bytes.Buffer
 	factory := func() (modalAPI, func(), error) { return nil, nil, errors.New("SDK unavailable") }
-	err := runCommand(context.Background(), strings.NewReader(`{"operation":"warm_image","request":{"namespaceId":"qa","codeRevision":"r1","canonicalRegion":"north-america-east","imageRef":"im-test"}}`), &output, factory, time.Now)
+	err := runCommand(context.Background(), strings.NewReader(`{"operation":"warm_image","request":{"codeRevision":"r1","canonicalRegion":"north-america-east","imageRef":"im-test"}}`), &output, factory, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

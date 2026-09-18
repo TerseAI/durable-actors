@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result, ensure};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    actor::{ActorKey, ActorScope},
+    actor::ActorKey,
     actor_state::ActorStorageKey,
     placement::{ObjectPlacement, ObjectPlacementStore},
     state_log::StateSnapshot,
@@ -26,16 +26,8 @@ use super::{
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
-        .route("/v1/durability", get(durability))
-        .route("/v1/objects", get(list_objects))
-        .route(
-            "/v1/actors/{actor_type}/{actor_id}/state",
-            get(inspect_object),
-        )
-        .route(
-            "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/state",
-            get(inspect_object),
-        )
+        .route("/v1/actors", get(list_objects))
+        .route("/v1/actors/{actor_type}/{actor_id}", get(inspect_object))
         .with_state(InspectionApi { inspector, admin })
 }
 
@@ -45,20 +37,13 @@ struct InspectionApi {
     admin: AdminService,
 }
 
-async fn durability(
-    State(state): State<InspectionApi>,
-    headers: HeaderMap,
-) -> Result<Json<crate::replication::DurabilityPolicy>, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
-    Ok(Json(state.inspector.storage.durability()))
-}
-
 async fn list_objects(
     State(state): State<InspectionApi>,
     headers: HeaderMap,
-    Query(query): Query<ListQuery>,
+    query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
     let page = state
         .inspector
@@ -71,16 +56,22 @@ async fn list_objects(
 async fn inspect_object(
     State(state): State<InspectionApi>,
     Path(path): Path<ActorPath>,
+    query: Result<Query<InspectQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let actor = path.into_actor(&state.admin.default_namespace);
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let actor = path.into_actor();
     actor.validate().map_err(ApiError::bad_request)?;
-    let object = tokio::time::timeout(Duration::from_secs(25), state.inspector.inspect(&actor))
-        .await
-        .map_err(|_| ApiError::unavailable("Object inspection timed out"))?
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Object not found"))?;
+    let object = tokio::time::timeout(
+        Duration::from_secs(25),
+        state.inspector.inspect(&actor, query.include.is_some()),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("Object inspection timed out"))?
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Object not found"))?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(object)).into_response())
 }
 
@@ -104,11 +95,7 @@ impl ActorInspector {
     async fn list(&self, query: &ListQuery) -> Result<ObjectPage> {
         let mut placements = self
             .placements
-            .list_committed(
-                query.namespace.as_deref(),
-                query.after.as_deref(),
-                query.limit + 1,
-            )
+            .list_committed(query.after.as_deref(), query.limit + 1)
             .await?;
         let has_more = placements.len() > query.limit as usize;
         placements.truncate(query.limit as usize);
@@ -123,17 +110,23 @@ impl ActorInspector {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(ObjectPage {
-            objects,
+            actors: objects,
             next_cursor,
         })
     }
 
-    async fn inspect(&self, actor: &ActorKey) -> Result<Option<ObjectInspection>> {
+    async fn inspect(
+        &self,
+        actor: &ActorKey,
+        include_state: bool,
+    ) -> Result<Option<ObjectInspection>> {
         let Some(placement) = self.placements.get(&actor.storage_key()).await? else {
             return Ok(None);
         };
-        let state = if placement.state_version == 0 {
+        let state = if !include_state {
             None
+        } else if placement.state_version == 0 {
+            Some(Value::Null)
         } else {
             let stored_actor = actor_from_placement(&placement)?;
             ensure!(
@@ -187,7 +180,6 @@ fn actor_from_placement(placement: &ObjectPlacement) -> Result<ActorKey> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListQuery {
-    namespace: Option<String>,
     after: Option<String>,
     #[serde(default = "page_size")]
     limit: u32,
@@ -199,12 +191,6 @@ impl ListQuery {
             (1..=500).contains(&self.limit),
             "limit must be between 1 and 500"
         );
-        if let Some(namespace_id) = &self.namespace {
-            ActorScope {
-                namespace_id: namespace_id.clone(),
-            }
-            .validate()?;
-        }
         if let Some(after) = &self.after {
             ActorStorageKey::new(after).validate()?;
         }
@@ -219,33 +205,27 @@ fn page_size() -> u32 {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectPage {
-    objects: Vec<SavedObject>,
+    actors: Vec<SavedObject>,
     next_cursor: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedObject {
-    namespace_id: String,
     actor_type: String,
     actor_id: String,
-    object_id: String,
     home_region: String,
     state_version: u64,
-    state_object: Option<String>,
     last_request_id: Option<String>,
 }
 
 impl SavedObject {
     fn new(actor: ActorKey, placement: &ObjectPlacement) -> Self {
         Self {
-            namespace_id: actor.namespace_id,
             actor_type: actor.actor_type,
             actor_id: actor.actor_id,
-            object_id: placement.object.as_str().to_owned(),
             home_region: placement.home_region.clone(),
             state_version: placement.state_version,
-            state_object: placement.state_object.clone(),
             last_request_id: placement.last_request_id.clone(),
         }
     }
@@ -255,5 +235,22 @@ impl SavedObject {
 struct ObjectInspection {
     #[serde(flatten)]
     object: SavedObject,
+    #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectQuery {
+    include: Option<String>,
+}
+
+impl InspectQuery {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.include.as_deref().is_none_or(|value| value == "state"),
+            "include must be state"
+        );
+        Ok(())
+    }
 }

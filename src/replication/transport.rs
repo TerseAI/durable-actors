@@ -14,19 +14,19 @@ use super::{ReplicaStore, ReplicationTicket};
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
     bucket: Arc<dyn SnapshotWriter>,
-    http: Arc<dyn StateTransport>,
+    transport: Arc<dyn StateTransport>,
     local: Arc<dyn ReplicaStore>,
 }
 
 impl ReplicatedStateTransport {
     pub fn new(
         bucket: Arc<dyn SnapshotWriter>,
-        http: Arc<dyn StateTransport>,
+        transport: Arc<dyn StateTransport>,
         local: Arc<dyn ReplicaStore>,
     ) -> Self {
         Self {
             bucket,
-            http,
+            transport,
             local,
         }
     }
@@ -116,14 +116,14 @@ impl ReplicatedStateTransport {
         let remote = async {
             let mut writes = JoinSet::new();
             for replica in &replication.replicas {
-                let http = self.http.clone();
+                let transport = self.transport.clone();
                 let url = replica.url.clone();
                 let bytes = bytes.clone();
                 let host_id = replica.host_id.clone();
                 let region = replica.region.clone();
                 let object = ticket.object_name.clone();
                 writes.spawn(async move {
-                    let result = http.write(&url, bytes).await;
+                    let result = transport.write(&url, bytes).await;
                     tracing::info!(event = "replica_ack", %object, %host_id, %region, acknowledged = result.is_ok(),
                         replica_ms = started.elapsed().as_secs_f64() * 1000.0);
                     result

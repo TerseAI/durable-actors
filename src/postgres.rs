@@ -193,35 +193,40 @@ mod tests {
                 .set_target(refinery::Target::Version(2))
                 .run_async(&mut **client)
                 .await?;
-            client.batch_execute(
-                "INSERT INTO durable_object_namespaces (namespace_id) VALUES ('project');
-                 INSERT INTO durable_object_project_specs
-                    (namespace_id, code_revision, image_ref, working_directory)
-                 VALUES ('project', 'revision-1', 'image', '/app');",
-            ).await?;
+            client
+                .batch_execute(
+                    "INSERT INTO durable_object_deployment
+                    (code_revision, image_ref, working_directory)
+                 VALUES ('revision-1', 'image', '/app');",
+                )
+                .await?;
             embedded::migrations::runner()
                 .set_target(refinery::Target::Version(3))
                 .run_async(&mut **client)
                 .await?;
             client.execute(
-                "INSERT INTO durable_object_contracts VALUES ('project', 'revision-1', 'hash', '{}')",
+                "INSERT INTO durable_object_contracts VALUES (TRUE, 'revision-1', 'hash', '{}')",
                 &[],
             ).await?;
             let duplicate = client.execute(
-                "INSERT INTO durable_object_contracts VALUES ('project', 'revision-2', 'hash', '{}')",
+                "INSERT INTO durable_object_contracts VALUES (TRUE, 'revision-2', 'hash', '{}')",
                 &[],
             ).await.unwrap_err();
-            assert_eq!(duplicate.code(), Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION));
-            client.execute(
-                "DELETE FROM durable_object_project_specs WHERE namespace_id = 'project'",
-                &[],
-            ).await?;
-            let count: i64 = client.query_one(
-                "SELECT count(*) FROM durable_object_contracts", &[],
-            ).await?.get(0);
+            assert_eq!(
+                duplicate.code(),
+                Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+            );
+            client
+                .execute("DELETE FROM durable_object_deployment", &[])
+                .await?;
+            let count: i64 = client
+                .query_one("SELECT count(*) FROM durable_object_contracts", &[])
+                .await?
+                .get(0);
             assert_eq!(count, 0);
             Ok(())
-        }).await
+        })
+        .await
     }
 
     #[tokio::test]
@@ -268,10 +273,10 @@ mod tests {
         first: &tokio_postgres::Client,
         second: &tokio_postgres::Client,
     ) -> Result<()> {
-        let insert = "INSERT INTO durable_object_namespaces VALUES ('same-id', DEFAULT)";
+        let insert = "INSERT INTO durable_object_deployment (code_revision, image_ref, working_directory) VALUES ('revision', 'image', '/app')";
         first.execute(insert, &[]).await?;
         let count: i64 = second
-            .query_one("SELECT count(*) FROM durable_object_namespaces", &[])
+            .query_one("SELECT count(*) FROM durable_object_deployment", &[])
             .await?
             .get(0);
         assert_eq!(count, 0);
@@ -302,7 +307,7 @@ mod tests {
         let client = reopened.connection().await?;
         assert_eq!(current_schema(&client).await?, expected_schema);
         let count: i64 = client
-            .query_one("SELECT count(*) FROM durable_object_namespaces", &[])
+            .query_one("SELECT count(*) FROM durable_object_deployment", &[])
             .await?
             .get(0);
         assert_eq!(count, 1);

@@ -8,20 +8,16 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use jsonwebtoken::{
-    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+    Algorithm, EncodingKey, Header, encode,
     jwk::{Jwk, JwkSet, PublicKeyUse},
 };
 use serde::Serialize;
 
 use crate::{
-    actor::ActorKey,
-    control_plane::auth::ActorInvocationCapability,
-    host::{ActorProcessRole, HostId},
+    actor::ActorKey, control_plane::auth::ActorInvocationCapability, host::HostId,
     placement::validate_region,
 };
 
-const WORKFLOW_DEADLINE_GRACE: Duration = Duration::from_secs(30);
-const MAX_WORKFLOW_LIFETIME: Duration = Duration::from_secs(86_400);
 const HOST_TOKEN_TTL: Duration = Duration::from_secs(1_800);
 const INVOCATION_TARGET_TTL: Duration = Duration::from_secs(60);
 
@@ -101,11 +97,11 @@ impl ActorJwtIssuer {
         Ok(String::from_utf8(self.jwks_json()?)?)
     }
 
-    pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<String> {
+    pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<(String, i64, i64)> {
         self.issue_socket_at(grant, unix_millis()?)
     }
 
-    fn issue_socket_at(&self, grant: SocketGrant, now_ms: i64) -> Result<String> {
+    fn issue_socket_at(&self, grant: SocketGrant, now_ms: i64) -> Result<(String, i64, i64)> {
         grant.validate()?;
         let lifetime = grant
             .authorization_lifetime_ms
@@ -127,39 +123,42 @@ impl ActorJwtIssuer {
             exp: (connect_by_ms + 999) / 1000,
             actor: grant.actor,
             region: grant.region,
+            target: grant.target,
+            backend: grant.backend,
             metadata: grant.metadata,
             authorized_until_ms,
             connect_by_ms,
         };
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
-        Ok(encode(&header, &claims, &self.encoding_key)?)
+        Ok((
+            encode(&header, &claims, &self.encoding_key)?,
+            connect_by_ms,
+            authorized_until_ms,
+        ))
     }
 
+    #[cfg(test)]
     pub(super) fn verify_socket(&self, token: &str) -> Result<SocketTicket> {
         self.verify_socket_at(token, unix_millis()?)
     }
 
+    #[cfg(test)]
     fn verify_socket_at(&self, token: &str, now_ms: i64) -> Result<SocketTicket> {
-        ensure!(token.len() <= 128 * 1024, "socket ticket is too large");
-        let header = decode_header(token)?;
-        ensure!(
-            header.kid.as_deref() == Some(&self.key_id) && header.alg == Algorithm::EdDSA,
-            "socket signing key is invalid"
-        );
-        let mut validation = Validation::new(Algorithm::EdDSA);
-        validation.set_issuer(&[&self.issuer]);
-        validation.set_audience(&[format!("{}:websocket", self.authority_audience)]);
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-        let claims = decode::<SocketTicket>(
-            token,
-            &DecodingKey::from_jwk(&self.public_key)?,
-            &validation,
-        )?
-        .claims;
-        claims.validate(now_ms)?;
-        Ok(claims)
+        self.socket_verifier()?.verify_at(token, now_ms)
+    }
+
+    pub(crate) fn socket_audience(&self) -> String {
+        format!("{}:websocket", self.authority_audience)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn socket_verifier(&self) -> Result<super::socket_ticket::SocketTicketVerifier> {
+        super::socket_ticket::SocketTicketVerifier::new(
+            &self.verifier_keys_json()?,
+            self.issuer.clone(),
+            self.socket_audience(),
+        )
     }
 
     pub(crate) fn jwks_json(&self) -> Result<Vec<u8>> {
@@ -168,50 +167,8 @@ impl ActorJwtIssuer {
         })?)
     }
 
-    pub(crate) fn issue_workflow(
-        &self,
-        namespace_id: &str,
-        execution_id: &str,
-        storage_region: &str,
-        deadline_unix_ms: i64,
-    ) -> Result<IssuedActorToken> {
-        validate_region(storage_region)?;
-        let now_ms = unix_millis()?;
-        ensure!(
-            deadline_unix_ms > now_ms,
-            "workflow deadline must be in the future"
-        );
-        let maximum_expiration = now_ms.saturating_add(duration_millis(
-            self.max_lifetime.min(MAX_WORKFLOW_LIFETIME),
-        )?);
-        let requested_expiration =
-            deadline_unix_ms.saturating_add(duration_millis(WORKFLOW_DEADLINE_GRACE)?);
-        let expires_at_ms = requested_expiration.min(maximum_expiration);
-        let process_id = format!("workflow.v1.{namespace_id}.{}", uuid::Uuid::new_v4());
-        self.issue(ActorJwtClaims {
-            iss: self.issuer.clone(),
-            aud: vec![
-                self.authority_audience.clone(),
-                self.invocation_audience.clone(),
-            ],
-            sub: execution_id.to_owned(),
-            namespace_id: namespace_id.to_owned(),
-            process_id,
-            session_id: uuid::Uuid::new_v4().to_string(),
-            process_role: ActorProcessRole::Workflow,
-            region: storage_region.to_owned(),
-            code_revision: None,
-            scope: "actor:invoke".into(),
-            iat: now_ms / 1000,
-            nbf: now_ms / 1000,
-            exp: expires_at_ms / 1000,
-            invocation: None,
-        })
-    }
-
     pub(crate) fn issue_host(
         &self,
-        namespace_id: &str,
         host_id: &HostId,
         session_id: &str,
         code_revision: &str,
@@ -227,10 +184,8 @@ impl ActorJwtIssuer {
                 self.invocation_audience.clone(),
             ],
             sub: host_id.as_str().to_owned(),
-            namespace_id: namespace_id.to_owned(),
             process_id: host_id.as_str().to_owned(),
             session_id: session_id.to_owned(),
-            process_role: ActorProcessRole::Host,
             region: region.to_owned(),
             code_revision: Some(code_revision.to_owned()),
             scope: "actor:authority actor:invoke".into(),
@@ -250,8 +205,6 @@ impl ActorJwtIssuer {
         code_revision: &str,
         region: &str,
         owner_epoch: u64,
-
-        workflow_expires_at: i64,
     ) -> Result<IssuedActorToken> {
         actor.validate()?;
         validate_region(region)?;
@@ -260,18 +213,14 @@ impl ActorJwtIssuer {
         let now = now_ms / 1_000;
         let target_expires_at = now.saturating_add(i64::try_from(INVOCATION_TARGET_TTL.as_secs())?);
         let issuer_expires_at = now.saturating_add(i64::try_from(self.max_lifetime.as_secs())?);
-        let expires_at = workflow_expires_at
-            .min(target_expires_at)
-            .min(issuer_expires_at);
-        ensure!(expires_at > now, "workflow credential expires too soon");
+        let expires_at = target_expires_at.min(issuer_expires_at);
+        ensure!(expires_at > now, "invocation credential expires too soon");
         self.issue(ActorJwtClaims {
             iss: self.issuer.clone(),
             aud: vec![self.invocation_audience.clone()],
             sub: host_id.as_str().to_owned(),
-            namespace_id: actor.namespace_id.clone(),
             process_id: host_id.as_str().to_owned(),
             session_id: session_id.to_owned(),
-            process_role: ActorProcessRole::Host,
             region: region.to_owned(),
             code_revision: Some(code_revision.to_owned()),
             scope: "actor:invoke".into(),
@@ -306,12 +255,9 @@ struct ActorJwtClaims {
     iss: String,
     aud: Vec<String>,
     sub: String,
-    namespace_id: String,
     #[serde(rename = "processId")]
     process_id: String,
     session_id: String,
-    #[serde(rename = "processRole")]
-    process_role: ActorProcessRole,
     #[serde(rename = "storageRegion")]
     region: String,
     code_revision: Option<String>,
@@ -348,15 +294,18 @@ mod tests {
         let now = 1_700_000_000_000;
         let grant = || SocketGrant {
             actor: ActorKey {
-                namespace_id: "project".into(),
                 actor_type: "Room".into(),
                 actor_id: "lobby".into(),
             },
             region: "us-east".into(),
+            target: None,
+            backend: false,
             metadata: serde_json::json!({"userId":"alice"}),
             authorization_lifetime_ms: 900_000,
         };
-        let token = issuer.issue_socket_at(grant(), now)?;
+        let (token, connect_by, authorized_until) = issuer.issue_socket_at(grant(), now)?;
+        assert_eq!(connect_by, now + 60_000);
+        assert_eq!(authorized_until, now + 900_000);
         let claims = issuer.verify_socket_at(&token, now + 1)?;
         assert_eq!(claims.actor, grant().actor);
         assert_eq!(claims.metadata, grant().metadata);
@@ -364,9 +313,13 @@ mod tests {
         assert!(issuer.verify_socket_at(&token, now + 60_000).is_err());
         assert!(issuer.verify_socket_at(&token, now - 1_000).is_err());
         assert!(socket_issuer()?.verify_socket_at(&token, now).is_err());
-        let workflow =
-            issuer.issue_workflow("project", "execution", "us-east", unix_millis()? + 30_000)?;
-        assert!(issuer.verify_socket(&workflow.token).is_err());
+        let host = issuer.issue_host(
+            &HostId::new("host.v3.r1.one"),
+            &uuid::Uuid::new_v4().to_string(),
+            "r1",
+            "us-east",
+        )?;
+        assert!(issuer.verify_socket(&host.token).is_err());
         Ok(())
     }
 
@@ -383,59 +336,23 @@ mod tests {
     }
 
     #[test]
-    fn workflow_tokens_never_outlive_twenty_four_hours() -> Result<()> {
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
-        let issuer = ActorJwtIssuer::from_base64_pkcs8(
-            &STANDARD.encode(pkcs8.as_ref()),
-            "test-key",
-            "issuer",
-            "authority",
-            "invocation",
-            Duration::from_secs(172_800),
-        )?;
+    fn host_tokens_round_trip_with_a_bounded_lifetime() -> Result<()> {
+        let issuer = socket_issuer()?;
         let before = unix_millis()?;
+        let host = HostId::new("host.v3.r1.one");
         let issued =
-            issuer.issue_workflow("project", "run", "us-central1", before + 172_800_000)?;
-        assert!(issued.expires_at_ms >= before + 86_399_000);
-        assert!(issued.expires_at_ms <= unix_millis()? + 86_400_000);
-        let short = issuer.issue_workflow("project", "run", "us-central1", before + 60_000)?;
-        assert!(short.expires_at_ms <= before + 90_000);
-        Ok(())
-    }
-
-    #[test]
-    fn issued_workflow_tokens_round_trip_through_the_public_key_set() -> Result<()> {
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
-        let issuer = ActorJwtIssuer::from_base64_pkcs8(
-            &STANDARD.encode(pkcs8.as_ref()),
-            "test-key",
-            "issuer",
-            "authority",
-            "invocation",
-            Duration::from_secs(60),
-        )?;
+            issuer.issue_host(&host, &uuid::Uuid::new_v4().to_string(), "r1", "us-east")?;
         let verifier = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(1800),
         )?;
-        let issued = issuer.issue_workflow(
-            "project-1",
-            "execution-1",
-            "us-central1-a",
-            unix_millis()? + 10_000,
-        )?;
-
         let principal = verifier.authenticate_authorization(&format!("Bearer {}", issued.token))?;
-
-        assert_eq!(principal.scope.namespace_id, "project-1");
-        assert_eq!(principal.process_role, ActorProcessRole::Workflow);
-        assert_eq!(principal.region, "us-central1-a");
-        let jwks: serde_json::Value = serde_json::from_slice(&issuer.jwks_json()?)?;
-        assert_eq!(jwks["keys"][0]["kid"], "test-key");
-        assert_eq!(jwks["keys"][0]["crv"], "Ed25519");
+        assert_eq!(principal.host_id, host);
+        assert_eq!(principal.region, "us-east");
+        assert!(issued.expires_at_ms <= before + 1_800_000);
         Ok(())
     }
 
@@ -452,11 +369,10 @@ mod tests {
             Duration::from_secs(60),
         )?;
         let actor = crate::actor::ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v2.project-1:revision-1.host-1");
+        let host_id = HostId::new("host.v3.revision-1.host-1");
         let issued = issuer.issue_invocation_target(
             &actor,
             &host_id,
@@ -464,7 +380,6 @@ mod tests {
             "revision-1",
             "north-america-east",
             3,
-            unix_millis()? / 1_000 + 30,
         )?;
         let invocation_verifier = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -481,7 +396,7 @@ mod tests {
             principal.invocation.expect("invocation capability").actor,
             actor
         );
-        assert!(issued.expires_at_ms <= (unix_millis()? + 30_000));
+        assert!(issued.expires_at_ms <= (unix_millis()? + 60_000));
 
         let authority_verifier = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,

@@ -14,7 +14,6 @@ import type { JsonValue } from "../json.js"
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 interface ActorHostTarget {
-    readonly namespaceId?: string
     readonly route: string
     readonly token: string
     readonly ownerEpoch: number
@@ -24,7 +23,6 @@ interface ActorHostTarget {
 
 interface DirectActorInvocation {
     readonly requestId: string
-    readonly namespaceId: string
     readonly actorType: string
     readonly actorId: string
     readonly method: string
@@ -38,6 +36,11 @@ type ActorHostReply =
     | { readonly type: "unauthenticated" }
 
 interface ActorHostTransport {
+    publish(
+        target: ActorHostTarget,
+        actor: { actorType: string; actorId: string },
+        effects: readonly SocketEffect[]
+    ): Promise<void>
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
 }
 
@@ -51,7 +54,6 @@ class GrpcActorHostTransport implements ActorHostTransport {
             invocation: {
                 requestId: invocation.requestId,
                 actor: {
-                    namespaceId: invocation.namespaceId,
                     actorType: invocation.actorType,
                     actorId: invocation.actorId
                 },
@@ -69,6 +71,22 @@ class GrpcActorHostTransport implements ActorHostTransport {
                 return { type: "unauthenticated" }
             throw error
         }
+    }
+
+    async publish(
+        target: ActorHostTarget,
+        actor: { actorType: string; actorId: string },
+        effects: readonly SocketEffect[]
+    ): Promise<void> {
+        const metadata = new Metadata()
+        metadata.set("authorization", `Bearer ${target.token}`)
+        await new Promise<void>((resolve, reject) => {
+            this.client(target.route).publishSocketEffects(
+                { actor, ownerEpoch: target.ownerEpoch, effectsJson: Buffer.from(JSON.stringify(effects)) },
+                metadata,
+                error => (error ? reject(error) : resolve())
+            )
+        })
     }
 
     private client(route: string): ActorHostServiceClient {

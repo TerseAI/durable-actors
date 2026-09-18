@@ -4,8 +4,8 @@ use tonic::{Request, Response, Status};
 use tracing::warn;
 
 use super::proto::{
-    ActivateActorReply, ActivateActorRequest, HostInvokeActorRequest, HostSocketEventRequest,
-    InvokeActorReply,
+    ActivateActorReply, ActivateActorRequest, Empty, HostInvokeActorRequest,
+    HostSocketEventRequest, InvokeActorReply, PublishSocketEffectsRequest,
     actor_host_service_server::{ActorHostService, ActorHostServiceServer},
 };
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
         MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
     },
     control_plane::{ActorJwtVerifier, ActorPrincipal},
-    host::{ActorHost, ActorProcessRole, HostId},
+    host::{ActorHost, HostId},
 };
 
 pub(crate) struct ActorHostGrpcService {
@@ -22,15 +22,22 @@ pub(crate) struct ActorHostGrpcService {
     session_id: String,
     host: Arc<ActorHost>,
     invocation_auth: ActorJwtVerifier,
+    sockets: Arc<crate::host::sockets::HostSockets>,
 }
 
 impl ActorHostGrpcService {
-    pub(crate) fn new(host: Arc<ActorHost>, session_id: String, auth: ActorJwtVerifier) -> Self {
+    pub(crate) fn new(
+        host: Arc<ActorHost>,
+        session_id: String,
+        auth: ActorJwtVerifier,
+        sockets: Arc<crate::host::sockets::HostSockets>,
+    ) -> Self {
         Self {
             host_id: host.id().clone(),
             session_id,
             host,
             invocation_auth: auth,
+            sockets,
         }
     }
 
@@ -53,11 +60,7 @@ impl ActorHostService for ActorHostGrpcService {
             .into_inner()
             .actor
             .ok_or_else(|| Status::invalid_argument("actor is required"))?
-            .try_into()
-            .map_err(|error| Status::invalid_argument(format!("{error:#}")))?;
-        if !principal.scope.contains(&actor) {
-            return Err(Status::permission_denied("activation crossed namespace"));
-        }
+            .into();
         let activation = self
             .host
             .activate_actor(actor)
@@ -74,6 +77,39 @@ impl ActorHostService for ActorHostGrpcService {
     ) -> Result<Response<InvokeActorReply>, Status> {
         let invocation = self.authorize_invocation(request).await?;
         self.invoke_authorized(invocation).await
+    }
+
+    async fn publish_socket_effects(
+        &self,
+        request: Request<PublishSocketEffectsRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let principal = self.invocation_auth.authenticate(&request).await?;
+        if principal.session_id != self.session_id {
+            return Err(Status::permission_denied(
+                "actor credential belongs to another host session",
+            ));
+        }
+        let request = request.into_inner();
+        let actor: crate::actor::ActorKey = request
+            .actor
+            .ok_or_else(|| Status::invalid_argument("actor is required"))?
+            .into();
+        actor
+            .validate()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        validate_host_request(&principal, &self.host_id, &actor, request.owner_epoch)?;
+        let effects =
+            serde_json::from_slice::<Vec<crate::actor::ActorSocketEffect>>(&request.effects_json)
+                .map_err(|_| Status::invalid_argument("invalid socket effects JSON"))?;
+        crate::actor::validate_socket_effects(&effects)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        self.sockets
+            .publish_authorized(&actor, &self.host_id, request.owner_epoch, effects)
+            .await
+            .map_err(|error| {
+                Status::unavailable(format!("socket effects could not be delivered: {error:#}"))
+            })?;
+        Ok(Response::new(Empty {}))
     }
 
     async fn handle_socket(
@@ -163,8 +199,7 @@ fn validate_activation(
     host: &HostId,
     session: &str,
 ) -> Result<(), Status> {
-    if principal.process_role != ActorProcessRole::Host
-        || principal.host_id != *host
+    if principal.host_id != *host
         || principal.session_id != session
         || principal.invocation.is_some()
     {
@@ -181,17 +216,12 @@ fn validate_host_request(
     actor: &crate::actor::ActorKey,
     owner_epoch: u64,
 ) -> Result<(), Status> {
-    if !principal.scope.contains(actor) {
-        return Err(Status::permission_denied(
-            "actor invocation crossed namespace scope",
-        ));
-    }
     if owner_epoch == 0 {
         return Err(Status::invalid_argument(
             "actor ownership capability is incomplete",
         ));
     }
-    if principal.process_role != ActorProcessRole::Host || principal.host_id != *host_id {
+    if principal.host_id != *host_id {
         return Err(Status::permission_denied(
             "actor invocation credential is not for this host",
         ));
@@ -217,28 +247,22 @@ struct AuthorizedHostInvocation {
 mod tests {
     use super::*;
     use crate::{
-        actor::{ActorKey, ActorScope},
+        actor::ActorKey,
         control_plane::{ActorInvocationCapability, ActorPrincipal},
     };
 
     #[test]
     fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v2.project-1:revision-1.host-1");
+        let host_id = HostId::new("host.v3.revision-1.host-1");
         let principal = ActorPrincipal {
-            scope: ActorScope {
-                namespace_id: "project-1".into(),
-            },
             host_id: host_id.clone(),
             session_id: "00000000-0000-4000-8000-000000000001".into(),
-            process_role: ActorProcessRole::Host,
             region: "north-america-east".into(),
             code_revision: Some("revision-1".into()),
-            expires_at: i64::MAX,
             invocation: Some(ActorInvocationCapability {
                 actor: actor.clone(),
                 host_id: host_id.clone(),

@@ -23,7 +23,6 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(first["namespaceId"], "local");
     assert_eq!(first["contract"], contract);
     let revision = first["codeRevision"].as_str().context("missing revision")?;
     let pinned: Value = runtime
@@ -134,10 +133,7 @@ impl LocalRuntime {
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
-            .get(format!(
-                "{}/v1/namespaces/local/contract{query}",
-                self.origin
-            ))
+            .get(format!("{}/v1/deployment/contract{query}", self.origin))
             .bearer_auth("test-key")
             .send()
             .await?)

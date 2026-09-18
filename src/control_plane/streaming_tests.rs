@@ -1,4 +1,4 @@
-use super::tests::{FakeWarmProvisioner, test_issuer};
+use super::tests::test_issuer;
 use super::*;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
@@ -11,10 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::process::Stdio;
 use tokio::{net::TcpListener, task::JoinSet};
 use tokio_stream::wrappers::TcpListenerStream;
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
-    tungstenite::{Message, client::IntoClientRequest},
-};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -30,7 +27,6 @@ async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_
             &self,
             actor: &ActorKey,
         ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
-            assert_eq!(actor.namespace_id, "project-1");
             assert_eq!(actor.actor_id, "counter-1");
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             anyhow::bail!("gateway unavailable")
@@ -57,12 +53,17 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
         .grant(serde_json::json!({"user":"one"}), 5_000)
         .await?;
     let url = grant["websocketUrl"].as_str().context("socket URL")?;
+    assert_ne!(
+        reqwest::Url::parse(url)?.port_or_known_default(),
+        reqwest::Url::parse(&stack.gateway)?.port_or_known_default(),
+        "browser sockets must connect to the actor host"
+    );
     assert_eq!(
         reqwest::Url::parse(url)?
             .query_pairs()
             .find(|(name, _)| name == "key")
             .map(|(_, key)| key.into_owned()),
-        grant["key"].as_str().map(str::to_owned)
+        Some(socket_key(&grant)?)
     );
     let (mut socket, response) = tokio_tungstenite::connect_async(url).await?;
     assert!(response.headers().get("sec-websocket-protocol").is_none());
@@ -82,7 +83,22 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
         stack.invoke("clients", vec![]).await?[0]["metadata"]["name"],
         "member"
     );
-    socket.close(None).await?;
+    let clients = stack.invoke("clients", vec![]).await?;
+    stack
+        .invoke("notifyClient", vec![clients[0]["id"].clone()])
+        .await?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"text":"from method"})
+    );
+    stack
+        .storage
+        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
+        .await?;
+    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .context("close")??;
+    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 1012));
     stack.child.kill().await?;
     Ok(())
 }
@@ -96,8 +112,8 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
     for key in [
         "",
         "test-api-key",
-        &stack.workflow_token,
-        &format!("{}tampered", grant["key"].as_str().unwrap()),
+        &stack.host_token,
+        &format!("{}tampered", socket_key(&grant)?),
     ] {
         url.set_query(None);
         if !key.is_empty() {
@@ -108,6 +124,35 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
             .unwrap_err();
         assert!(
             matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 401)
+        );
+    }
+    let original = stack.issuer.verify_socket(&socket_key(&grant)?)?;
+    for mismatch in ["host", "session", "epoch", "unbound"] {
+        let mut ticket = original.clone();
+        match mismatch {
+            "host" => ticket.target.as_mut().unwrap().host_id = HostId::new("other-host"),
+            "session" => ticket.target.as_mut().unwrap().session_id = "replacement-session".into(),
+            "epoch" => ticket.target.as_mut().unwrap().owner_epoch += 1,
+            _ => ticket.target = None,
+        }
+        let (key, _, _) = stack
+            .issuer
+            .issue_socket(super::super::socket_ticket::SocketGrant {
+                actor: ticket.actor,
+                region: ticket.region,
+                target: ticket.target,
+                backend: false,
+                metadata: serde_json::json!({}),
+                authorization_lifetime_ms: 3_000,
+            })?;
+        url.set_query(None);
+        url.query_pairs_mut().append_pair("key", &key);
+        let error = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 401),
+            "{mismatch}"
         );
     }
     assert_eq!(
@@ -178,8 +223,10 @@ await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory 
     bundle:true,platform:'node',format:'esm',external:['little-actors/generated']}});
 const {{ actors }} = await import(directory + '/backend.mjs');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
-    {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}});
-assert.equal(new URL(grant.websocketUrl).searchParams.get('key'), grant.key);
+    {{controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
+assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
+assert.equal(grant.transport, 'websocket');
+assert.equal(grant.key, undefined);
 await writeFile(directory + '/release', '');
 const socket = new WebSocket(grant.websocketUrl);
 const messages = [];
@@ -300,20 +347,8 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     );
     assert_eq!(clients[0]["tags"], serde_json::json!(["member"]));
     let mut outside = stack.actor.clone();
-    outside.namespace_id = "another-project".into();
-    assert!(stack.publisher.connections(&outside).await.is_err());
-    outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
-    assert!(stack.publisher.connections(&outside).await.is_err());
-    let response = reqwest::Client::new()
-        .get(format!(
-            "{}/v1/namespaces/project-1/actors/Counter/counter-1/connections",
-            stack.gateway
-        ))
-        .bearer_auth(&stack.workflow_token)
-        .send()
-        .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(stack.publisher.connections(&outside).await?.is_empty());
     stack
         .invoke("notifyClient", vec![clients[0]["id"].clone()])
         .await?;
@@ -336,7 +371,7 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     })
     .await??;
     stack
-        .leases
+        .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
     assert!(stack.publisher.connections(&stack.actor).await.is_err());
@@ -361,7 +396,7 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
         .await?;
     assert_eq!(receive(&mut first).await?["delta"], "first");
 
-    let mut late = stack.connect().await?;
+    let mut late = tokio::time::timeout(Duration::from_secs(5), stack.connect()).await??;
     assert!(
         tokio::time::timeout(Duration::from_millis(100), late.next())
             .await
@@ -373,10 +408,10 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     assert_eq!(receive(&mut late).await?["state"]["history"], "firstlast");
 
     let mut outside = stack.actor.clone();
-    outside.namespace_id = "another-project".into();
-    assert!(stack.publisher.publish(&outside, vec![]).await.is_err());
+    outside.actor_id = "another-actor".into();
+    assert!(stack.publisher.connections(&outside).await?.is_empty());
     stack
-        .leases
+        .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
     assert!(stack.publisher.publish(&stack.actor, vec![]).await.is_err());
@@ -386,29 +421,56 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn socket_lease_fencing_is_not_postponed_by_incoming_control_frames() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let mut socket = stack.connect().await?;
+    receive(&mut socket).await?;
+    let (mut outgoing, mut incoming) = socket.split();
+    stack
+        .storage
+        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
+        .await?;
+    let mut pongs = tokio::time::interval(Duration::from_millis(20));
+    let frame = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            tokio::select! {
+                _ = pongs.tick() => outgoing.send(Message::Pong(vec![1].into())).await?,
+                frame = incoming.next() => return anyhow::Ok(frame.context("socket closed before fence notification")??),
+            }
+        }
+    })
+    .await??;
+    assert!(matches!(frame, Message::Close(Some(frame)) if u16::from(frame.code) == 1012));
+    stack.child.kill().await?;
+    Ok(())
+}
+
 struct Stack {
+    issuer: ActorJwtIssuer,
     directory: tempfile::TempDir,
     tasks: JoinSet<()>,
     child: tokio::process::Child,
     gateway: String,
-    workflow_token: String,
+    host_token: String,
     actor: ActorKey,
     host_id: HostId,
-    leases: Arc<crate::bucket::BucketHostLeases>,
     _runtime: crate::bucket::testing::RuntimeFixture,
-    publisher: Arc<ControlPlaneClient>,
+    publisher: Arc<crate::host::sockets::HostSockets>,
     host: Arc<ActorHost>,
+    storage: Arc<crate::host::storage::HostStorage>,
 }
 
 impl Stack {
     async fn grant(&self, metadata: serde_json::Value, lifetime: u64) -> Result<serde_json::Value> {
         reqwest::Client::new()
             .post(format!(
-                "{}/v1/namespaces/project-1/actors/Counter/counter-1/socket-ticket",
+                "{}/v1/actors/Counter/counter-1/connect",
                 self.gateway
             ))
             .bearer_auth("test-api-key")
-            .json(&serde_json::json!({"metadata":metadata,"authorizationLifetimeMs":lifetime}))
+            .json(&serde_json::json!({"transport":"websocket", "metadata":metadata,"authorizationLifetimeMs":lifetime}))
             .send()
             .await?
             .error_for_status()?
@@ -427,25 +489,22 @@ impl Stack {
         let mut tasks = JoinSet::new();
         let issuer = test_issuer()?;
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v2.project-1:revision.session");
+        let host_id = HostId::new("host.v3.revision.session");
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
         let runtime = crate::bucket::testing::RuntimeFixture::new()?;
         let leases = runtime.leases.clone();
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
-            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                namespace_id: actor.namespace_id.clone(),
+            .register_test_deployment(&HostLaunchSpec {
                 code_revision: "revision".into(),
                 image_ref: "test-image".into(),
                 working_directory: "/app".into(),
                 actor_entrypoint: None,
                 secret_refs: vec![],
-                socket_gateway_url: None,
             })
             .await?;
         let auth = ActorJwtVerifier::for_scope(
@@ -461,9 +520,7 @@ impl Stack {
             auth,
             registry.clone(),
             issuer.clone(),
-            Arc::new(FakeWarmProvisioner {
-                warmed: tokio::sync::mpsc::unbounded_channel().0,
-            }),
+            Arc::new(SocketTestProvisioner),
         );
         let control_plane = serve_control_plane(&mut tasks, service.clone()).await?;
         let gateway = serve_gateway(
@@ -474,18 +531,13 @@ impl Stack {
         .await?;
         let token = issuer
             .issue_host(
-                "project-1",
                 &host_id,
                 "00000000-0000-4000-8000-000000000001",
                 "revision",
                 "us-east",
             )?
             .token;
-        let publisher = Arc::new(
-            ControlPlaneClient::connect(control_plane, token)
-                .await?
-                .with_socket_gateway(&gateway),
-        );
+        let publisher = Arc::new(ControlPlaneClient::connect(control_plane, token.clone()).await?);
         let storage = Arc::new(
             crate::host::storage::HostStorage::new(
                 crate::bucket::access::HostStorageConfig {
@@ -493,13 +545,12 @@ impl Stack {
                         directory: runtime.directory.path().into(),
                     },
                     region: "us-east".into(),
-                    replica_secret: runtime.access.delegate_secret("project-1")?,
+                    replica_secret: runtime.access.secret().to_owned(),
                     replicas: vec![],
                     token: None,
                 },
                 host_id.clone(),
                 "00000000-0000-4000-8000-000000000001".into(),
-                "project-1".into(),
                 "http://unused".into(),
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
@@ -515,11 +566,12 @@ impl Stack {
             })
             .await?;
 
+        let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(storage.clone()));
         let (child, connection) = start_worker(directory.path()).await?;
         connection
             .mark_ready(
-                Some(publisher.clone()),
-                Some(source.unwrap_or_else(|| publisher.clone())),
+                Some(local_sockets.clone()),
+                Some(source.unwrap_or_else(|| local_sockets.clone())),
             )
             .await?;
         let host = Arc::new(ActorHost::new(
@@ -527,11 +579,10 @@ impl Stack {
                 id: host_id.clone(),
                 route: host_route,
             },
-            "project-1".into(),
             connection.executor(),
             storage.clone(),
             storage.runtime.clone(),
-            publisher.clone(),
+            local_sockets.clone(),
         ));
         host.activate_actor(actor.clone()).await?;
         tasks.spawn(async move {
@@ -547,39 +598,43 @@ impl Stack {
             Duration::from_secs(60),
         )?;
         let serving_host = host.clone();
+        let socket_routes =
+            crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
+                registry: local_sockets.registry.clone(),
+                verifier: issuer.socket_verifier()?,
+                dispatcher: Arc::new(crate::host::sockets::HostSocketDispatcher::new(
+                    host.clone(),
+                    local_sockets.clone(),
+                    "00000000-0000-4000-8000-000000000001".into(),
+                )),
+                stop: tokio_util::sync::CancellationToken::new(),
+            });
+        let grpc_sockets = local_sockets.clone();
         tasks.spawn(async move {
-            let _ = tonic::transport::Server::builder()
-                .add_service(
-                    ActorHostGrpcService::new(
-                        serving_host,
-                        "00000000-0000-4000-8000-000000000001".into(),
-                        auth,
-                    )
-                    .into_service(),
+            let routes = tonic::service::Routes::from(socket_routes).add_service(
+                ActorHostGrpcService::new(
+                    serving_host,
+                    "00000000-0000-4000-8000-000000000001".into(),
+                    auth,
+                    grpc_sockets,
                 )
-                .serve_with_incoming(TcpListenerStream::new(host_listener))
-                .await;
+                .into_service(),
+            );
+            let _ = axum::serve(host_listener, routes.into_axum_router()).await;
         });
-        let workflow_token = issuer
-            .issue_workflow(
-                "project-1",
-                "test-workflow",
-                "us-east",
-                (unix_seconds()? + 60) * 1000,
-            )?
-            .token;
         Ok(Self {
+            issuer,
             directory,
             _runtime: runtime,
             tasks,
             child,
             gateway,
-            workflow_token,
+            host_token: token,
             actor,
             host_id,
-            leases,
-            publisher,
+            publisher: local_sockets,
             host,
+            storage,
         })
     }
 
@@ -607,16 +662,21 @@ impl Stack {
     }
 
     async fn connect(&self) -> Result<Socket> {
-        let mut request = format!(
-            "{}/v1/namespaces/project-1/actors/Counter/counter-1/websocket",
-            self.gateway.replace("http://", "ws://")
-        )
-        .into_client_request()?;
-        request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {}", self.workflow_token).parse()?,
-        );
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+        let grant: serde_json::Value = reqwest::Client::new()
+            .post(format!(
+                "{}/v1/actors/Counter/counter-1/connect",
+                self.gateway
+            ))
+            .bearer_auth("test-api-key")
+            .json(&serde_json::json!({"transport":"websocket", "metadata":{},"backend":true}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().context("socket URL")?)
+                .await?;
         socket
             .send(Message::Text(
                 r#"{"type":"initialize","metadata":{}}"#.into(),
@@ -654,7 +714,6 @@ async fn serve_gateway(
 ) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
-    let admin = admin.with_socket_origin(&url)?;
     tasks.spawn(async move {
         let _ = axum::serve(listener, super::super::public_api::router(service, admin)).await;
     });
@@ -753,4 +812,157 @@ async fn receive(socket: &mut Socket) -> Result<serde_json::Value> {
     ensure!(frame.is_text(), "unexpected socket frame: {frame:?}");
     serde_json::from_str(frame.to_text()?)
         .with_context(|| format!("invalid socket JSON: {frame:?}"))
+}
+
+struct SocketTestProvisioner;
+
+#[async_trait]
+impl HostProvisioner for SocketTestProvisioner {
+    async fn socket_credentials(
+        &self,
+        _spec: &HostLaunchSpec,
+        _region: &str,
+        lease: &HostLease,
+    ) -> Result<crate::sandbox::SocketCredentials> {
+        Ok(crate::sandbox::SocketCredentials {
+            url: lease.route.clone(),
+            token: String::new(),
+        })
+    }
+    async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
+        anyhow::bail!("fixture host must be active")
+    }
+    async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
+        anyhow::bail!("unused")
+    }
+    async fn terminate_hosts(
+        &self,
+        _spec: &HostLaunchSpec,
+        _regions: &[String],
+    ) -> Result<HostTermination> {
+        anyhow::bail!("unused")
+    }
+}
+
+fn socket_key(grant: &serde_json::Value) -> Result<String> {
+    let url = reqwest::Url::parse(
+        grant["websocketUrl"]
+            .as_str()
+            .context("socket URL missing")?,
+    )?;
+    url.query_pairs()
+        .find(|(name, _)| name == "key")
+        .map(|(_, value)| value.into_owned())
+        .context("socket key missing")
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> Result<()> {
+    use crate::grpc::proto::{
+        PublishSocketEffectsRequest, actor_host_service_client::ActorHostServiceClient,
+    };
+    let mut stack = Stack::start().await?;
+    let mut socket = stack.connect().await?;
+    receive(&mut socket).await?;
+    let http = reqwest::Client::new();
+    let target: serde_json::Value = http
+        .post(format!(
+            "{}/v1/actors/Counter/counter-1/connect",
+            stack.gateway
+        ))
+        .bearer_auth("test-api-key")
+        .json(&serde_json::json!({"transport":"grpc"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let channel =
+        crate::grpc::transport::channel(target["route"].as_str().context("route missing")?)?;
+    let mut client = ActorHostServiceClient::new(channel);
+    let command = PublishSocketEffectsRequest {
+        actor: Some(stack.actor.clone().into()),
+        owner_epoch: target["ownerEpoch"].as_u64().context("epoch missing")?,
+        effects_json: serde_json::to_vec(&vec![crate::actor::ActorSocketEffect::Broadcast {
+            message: crate::actor::ActorSocketMessage::Text {
+                data: "{\"notice\":\"hello\"}".into(),
+            },
+            except_connection_ids: vec![],
+            tags: vec![],
+            tag_match: Default::default(),
+        }])?,
+    };
+    let token = target["token"].as_str().context("token missing")?;
+    client
+        .publish_socket_effects(crate::grpc::transport::request(command.clone(), token)?)
+        .await?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"notice":"hello"})
+    );
+    for wrong in [
+        PublishSocketEffectsRequest {
+            owner_epoch: command.owner_epoch + 1,
+            ..command.clone()
+        },
+        PublishSocketEffectsRequest {
+            actor: Some(
+                crate::actor::ActorKey {
+                    actor_type: "Counter".into(),
+                    actor_id: "another".into(),
+                }
+                .into(),
+            ),
+            ..command.clone()
+        },
+    ] {
+        assert_eq!(
+            client
+                .publish_socket_effects(crate::grpc::transport::request(wrong, token)?)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+    }
+    assert_eq!(
+        http.post(format!(
+            "{}/v1/actors/Counter/counter-1/socket-effects",
+            stack.gateway
+        ))
+        .bearer_auth("test-api-key")
+        .json(&serde_json::json!({"effects":[]}))
+        .send()
+        .await?
+        .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    let grant = stack.grant(serde_json::json!({}), 10_000).await?;
+    let host_url = grant["websocketUrl"]
+        .as_str()
+        .unwrap()
+        .replacen("ws:", "http:", 1);
+    assert_eq!(
+        http.post(host_url)
+            .json(&serde_json::json!({"effects":[]}))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::METHOD_NOT_ALLOWED
+    );
+    stack
+        .storage
+        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
+        .await?;
+    assert_eq!(
+        client
+            .publish_socket_effects(crate::grpc::transport::request(command, token)?)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Unavailable
+    );
+    stack.child.kill().await?;
+    Ok(())
 }

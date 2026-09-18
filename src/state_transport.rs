@@ -1,8 +1,6 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
-
-use crate::storage::STATE_CONTENT_TYPE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateWrite {
@@ -26,88 +24,62 @@ pub trait SnapshotWriter: Send + Sync {
     ) -> Result<StateWrite>;
 }
 
-#[derive(Clone)]
-pub struct HttpStateTransport {
-    client: reqwest::Client,
-}
+#[derive(Clone, Default)]
+pub struct GrpcStateTransport;
 
-impl HttpStateTransport {
+impl GrpcStateTransport {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(25))
-                .build()
-                .expect("valid state transport client configuration"),
-        }
-    }
-}
-
-impl Default for HttpStateTransport {
-    fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
 #[async_trait]
-impl StateTransport for HttpStateTransport {
+impl StateTransport for GrpcStateTransport {
     async fn read(&self, signed_url: &str) -> Result<Bytes> {
-        validate_url(signed_url)?;
-        let response = self
-            .client
-            .get(signed_url)
-            .send()
-            .await
-            .context("read actor state through signed URL")?;
-        ensure!(
-            response.status().is_success(),
-            "actor-state read failed with HTTP {}",
-            response.status()
-        );
-        response
-            .bytes()
-            .await
-            .context("read actor-state response body")
+        let (channel, token) = crate::grpc::transport::capability(signed_url)?;
+        let response = storage_client(channel)
+            .read(crate::grpc::transport::request(
+                crate::grpc::proto::Empty {},
+                &token,
+            )?)
+            .await?;
+        Ok(Bytes::from(response.into_inner().data))
     }
 
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        validate_url(signed_url)?;
-        let response = self
-            .client
-            .put(signed_url)
-            .header(reqwest::header::CONTENT_TYPE, STATE_CONTENT_TYPE)
-            .body(bytes)
-            .send()
-            .await
-            .context("write actor state through signed URL")?;
-        if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
-            return Ok(StateWrite::AlreadyExists);
-        }
-        ensure!(
-            response.status().is_success(),
-            "actor-state write failed with HTTP {}",
-            response.status()
-        );
-        Ok(StateWrite::Written)
+        let (channel, token) = crate::grpc::transport::capability(signed_url)?;
+        let response = storage_client(channel)
+            .write(crate::grpc::transport::request(
+                crate::grpc::proto::SnapshotData { data: bytes },
+                &token,
+            )?)
+            .await?;
+        Ok(if response.into_inner().already_exists {
+            StateWrite::AlreadyExists
+        } else {
+            StateWrite::Written
+        })
     }
 }
 
-fn validate_url(url: &str) -> Result<()> {
-    let url = reqwest::Url::parse(url).context("parse signed actor-state URL")?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
-        "signed actor-state URL must be HTTP or HTTPS"
-    );
-    Ok(())
+fn storage_client(
+    channel: tonic::transport::Channel,
+) -> crate::grpc::proto::snapshot_service_client::SnapshotServiceClient<tonic::transport::Channel> {
+    crate::grpc::proto::snapshot_service_client::SnapshotServiceClient::new(channel)
+        .max_decoding_message_size(crate::grpc::transport::MAX_STORAGE_MESSAGE_BYTES)
+        .max_encoding_message_size(crate::grpc::transport::MAX_STORAGE_MESSAGE_BYTES)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_non_http_state_urls() {
-        assert!(validate_url("file:///tmp/state").is_err());
+    #[tokio::test]
+    async fn rejects_http_and_file_storage_capabilities() {
+        for url in [
+            "file:///tmp/state",
+            "https://host/_replica/state?token=secret",
+            "grpc://host?token=first&token=second",
+        ] {
+            assert!(crate::grpc::transport::capability(url).is_err());
+        }
     }
 }

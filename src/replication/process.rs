@@ -5,7 +5,7 @@ use tokio::{fs, net::TcpListener};
 
 use crate::clock::SystemClock;
 
-use super::{DEFAULT_SPOOL_BYTES, FileReplicaStore, ReplicaAccess, replica_router, start_archiver};
+use super::{DEFAULT_SPOOL_BYTES, FileReplicaStore, ReplicaAccess, replica_routes, start_archiver};
 
 pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let host_id = env::var("DURABLE_OBJECT_HOST_ID").context("replica host ID is required")?;
@@ -19,7 +19,7 @@ pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'sta
     .await?;
     let route = advertised_route(&listener).await?;
     let archive = start_archiver(store.clone());
-    let router = replica_router(
+    let router = replica_routes(
         store,
         ReplicaAccess::new(&secret, Arc::new(SystemClock)),
         host_id.clone(),

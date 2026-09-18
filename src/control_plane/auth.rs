@@ -8,8 +8,7 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use tonic::{Request, Status};
 
-use crate::actor::ActorScope;
-use crate::host::{ActorProcessRole, HostId};
+use crate::host::HostId;
 
 const AUTHORIZATION: &str = "authorization";
 const CLOCK_SKEW: Duration = Duration::from_secs(5);
@@ -21,25 +20,20 @@ pub(crate) enum ActorTokenPurpose {
 }
 
 impl ActorTokenPurpose {
-    fn claim(self, role: ActorProcessRole) -> &'static str {
-        match (self, role) {
-            (Self::ControlPlane, ActorProcessRole::Host) => "actor:authority",
-            (Self::ControlPlane, ActorProcessRole::Workflow) => "actor:invoke",
-            (Self::Invocation, ActorProcessRole::Workflow) => "actor:invoke",
-            (Self::Invocation, ActorProcessRole::Host) => "actor:invoke",
+    fn claim(self) -> &'static str {
+        match self {
+            Self::ControlPlane => "actor:authority",
+            Self::Invocation => "actor:invoke",
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActorPrincipal {
-    pub scope: ActorScope,
     pub host_id: HostId,
     pub session_id: String,
-    pub process_role: ActorProcessRole,
     pub region: String,
     pub code_revision: Option<String>,
-    pub expires_at: i64,
     pub invocation: Option<ActorInvocationCapability>,
 }
 
@@ -49,31 +43,6 @@ pub(crate) struct ActorInvocationCapability {
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub owner_epoch: u64,
-}
-
-impl ActorPrincipal {
-    pub(crate) fn for_application(namespace_id: &str, region: String, expires_at: i64) -> Self {
-        Self {
-            scope: ActorScope {
-                namespace_id: namespace_id.to_owned(),
-            },
-            host_id: HostId::new(format!(
-                "workflow.v1.{}.client.{}",
-                namespace_id,
-                uuid::Uuid::new_v4()
-            )),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            process_role: ActorProcessRole::Workflow,
-            region,
-            code_revision: None,
-            expires_at,
-            invocation: None,
-        }
-    }
-
-    pub(crate) fn host_id_prefix(&self) -> String {
-        format!("host.v2.{}:", self.scope.namespace_id)
-    }
 }
 
 #[derive(Clone)]
@@ -88,12 +57,9 @@ pub(crate) struct ActorJwtVerifier {
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
     sub: String,
-    namespace_id: String,
     #[serde(rename = "processId")]
     host_id: String,
     session_id: String,
-    #[serde(rename = "processRole")]
-    process_role: ActorProcessRole,
     #[serde(rename = "storageRegion")]
     region: String,
     code_revision: Option<String>,
@@ -217,16 +183,14 @@ impl ActorJwtVerifier {
             claims
                 .scope
                 .split_ascii_whitespace()
-                .any(|scope| scope == self.purpose.claim(claims.process_role)),
+                .any(|scope| scope == self.purpose.claim()),
             "actor token credential scope is invalid"
         );
         ensure!(!claims.sub.is_empty(), "actor token subject is empty");
-        if claims.process_role == ActorProcessRole::Host {
-            ensure!(
-                claims.sub == claims.host_id,
-                "host token subject does not match its process identity"
-            );
-        }
+        ensure!(
+            claims.sub == claims.host_id,
+            "host token subject does not match its process identity"
+        );
         ensure!(
             uuid::Uuid::parse_str(&claims.session_id).is_ok(),
             "actor token session ID is invalid"
@@ -252,27 +216,15 @@ impl ActorJwtVerifier {
             "actor token was issued in the future"
         );
         let principal = ActorPrincipal {
-            scope: ActorScope {
-                namespace_id: claims.namespace_id,
-            },
             host_id: HostId::new(claims.host_id),
             session_id: claims.session_id,
-            process_role: claims.process_role,
             region: claims.region,
             code_revision: claims.code_revision,
-            expires_at: claims.exp,
             invocation: claims.invocation,
         };
-        principal.scope.validate()?;
-        let process_prefix = match principal.process_role {
-            ActorProcessRole::Host => principal.host_id_prefix(),
-            ActorProcessRole::Workflow => {
-                format!("workflow.v1.{}.", principal.scope.namespace_id)
-            }
-        };
         ensure!(
-            principal.host_id.as_str().starts_with(&process_prefix),
-            "actor token process does not belong to its namespace"
+            principal.host_id.as_str().starts_with("host.v3."),
+            "invalid host identity"
         );
         ensure!(
             !principal.region.is_empty()
@@ -287,17 +239,10 @@ impl ActorJwtVerifier {
         );
         if let Some(capability) = &principal.invocation {
             ensure!(
-                principal.process_role == ActorProcessRole::Host,
-                "actor invocation capability has an invalid process role"
-            );
-            ensure!(
                 capability.host_id == principal.host_id,
                 "actor invocation capability targets another host"
             );
-            ensure!(
-                principal.scope.contains(&capability.actor),
-                "actor invocation capability crossed namespace scope"
-            );
+            capability.actor.validate()?;
             ensure!(
                 capability.owner_epoch > 0,
                 "actor invocation capability owner epoch is invalid"
@@ -372,10 +317,9 @@ mod tests {
             valid_claims(now),
         )?)?;
 
-        assert_eq!(principal.scope.namespace_id, "namespace-1");
         assert_eq!(
             principal.host_id,
-            HostId::new("host.v2.namespace-1:00000000-0000-4000-8000-000000000001")
+            HostId::new("host.v3.00000000-0000-4000-8000-000000000001")
         );
         assert_eq!(principal.session_id, "00000000-0000-4000-8000-000000000002");
         Ok(())
@@ -403,9 +347,6 @@ mod tests {
         let mut claims = valid_claims(unix_seconds()?);
         claims["aud"] = json!("durable-object-invoke");
         claims["scope"] = json!("actor:invoke");
-        claims["processRole"] = json!("workflow");
-        claims["sub"] = json!("execution-1");
-        claims["processId"] = json!("workflow.v1.namespace-1.00000000-0000-4000-8000-000000000001");
         claims["codeRevision"] = json!("revision-1");
         let token = token(
             &key_pair,
@@ -428,11 +369,9 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
-                "namespaceId": "namespace-1",
-                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
+                "sub": "host.v3.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v3.00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
-                "processRole": "host",
                 "storageRegion": "us-east",
                 "scope": "actor:authority",
                 "iat": now - 60,
@@ -465,9 +404,8 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "somewhere-else",
-                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
-                "namespaceId": "namespace-1",
-                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
+                "sub": "host.v3.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v3.00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now,
@@ -483,9 +421,8 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
-                "namespaceId": "namespace-1",
-                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
+                "sub": "host.v3.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v3.00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now - 60,
@@ -508,9 +445,8 @@ mod tests {
             json!({
                 "iss": "durable-object-control-plane",
                 "aud": "durable-object-authority",
-                "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
-                "namespaceId": "namespace-1",
-                "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
+                "sub": "host.v3.00000000-0000-4000-8000-000000000001",
+                "processId": "host.v3.00000000-0000-4000-8000-000000000001",
                 "sessionId": "00000000-0000-4000-8000-000000000002",
                 "scope": "actor:authority",
                 "iat": now,
@@ -566,11 +502,9 @@ mod tests {
         json!({
             "iss": "durable-object-control-plane",
             "aud": "durable-object-authority",
-            "sub": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
-            "namespaceId": "namespace-1",
-            "processId": "host.v2.namespace-1:00000000-0000-4000-8000-000000000001",
+            "sub": "host.v3.00000000-0000-4000-8000-000000000001",
+            "processId": "host.v3.00000000-0000-4000-8000-000000000001",
             "sessionId": "00000000-0000-4000-8000-000000000002",
-            "processRole": "host",
             "storageRegion": "default",
             "scope": "actor:authority",
             "iat": now,

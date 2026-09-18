@@ -7,8 +7,8 @@ import (
 )
 
 type ensureRequest struct {
+	SocketJWTAudience     string   `json:"socketJwtAudience"`
 	RuntimeConfig         string   `json:"runtimeConfig"`
-	NamespaceID           string   `json:"namespaceId"`
 	CodeRevision          string   `json:"codeRevision"`
 	CanonicalRegion       string   `json:"canonicalRegion"`
 	HostID                string   `json:"hostId"`
@@ -22,18 +22,15 @@ type ensureRequest struct {
 	WorkingDirectory      string   `json:"workingDirectory"`
 	ActorEntrypoint       string   `json:"actorEntrypoint"`
 	SecretRefs            []string `json:"secretRefs"`
-	SocketGatewayURL      string   `json:"socketGatewayUrl"`
 	ActorIdleTimeoutMS    int64    `json:"actorIdleTimeoutMs"`
 	HostIdleTimeoutMS     int64    `json:"hostIdleTimeoutMs"`
 }
 type imageRequest struct {
-	NamespaceID     string `json:"namespaceId"`
 	CodeRevision    string `json:"codeRevision"`
 	CanonicalRegion string `json:"canonicalRegion"`
 	ImageRef        string `json:"imageRef"`
 }
 type terminateRequest struct {
-	NamespaceID      string   `json:"namespaceId"`
 	CodeRevision     string   `json:"codeRevision"`
 	CanonicalRegions []string `json:"canonicalRegions"`
 }
@@ -67,7 +64,7 @@ type hostTermination struct {
 }
 
 func validateEnsure(request ensureRequest) error {
-	if request.NamespaceID == "" || request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v2."+request.NamespaceID+":") {
+	if request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v3."+request.CodeRevision+".") {
 		return fmt.Errorf("invalid host identity or image")
 	}
 	for _, timeout := range []int64{request.ActorIdleTimeoutMS, request.HostIdleTimeoutMS} {
@@ -93,17 +90,17 @@ func modalCloud(region string) string {
 	return "gcp"
 }
 
-func resourceName(namespace, revision, region string) string {
-	digest := sha256.Sum256([]byte(namespace + "\x00" + revision + "\x00" + region))
-	return fmt.Sprintf("do-host-v2-%x", digest[:16])
+func resourceName(revision, region string) string {
+	digest := sha256.Sum256([]byte(revision + "\x00" + region))
+	return fmt.Sprintf("do-host-v3-%x", digest[:16])
 }
 
 func hostEnvironment(r ensureRequest) map[string]string {
 	env := map[string]string{
 		"DURABLE_OBJECT_PROCESS_ROLE": "host", "DURABLE_OBJECT_HOST_TOKEN": r.HostToken,
-		"DURABLE_OBJECT_JWT_PUBLIC_KEYS": r.JWTPublicKeys, "DURABLE_OBJECT_NAMESPACE_ID": r.NamespaceID,
+		"DURABLE_OBJECT_JWT_PUBLIC_KEYS":   r.JWTPublicKeys,
 		"DURABLE_OBJECT_CONTROL_PLANE_URL": r.ControlPlaneURL, "DURABLE_OBJECT_JWT_ISSUER": r.JWTIssuer,
-		"DURABLE_OBJECT_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_OBJECT_HOST_ID": r.HostID,
+		"DURABLE_OBJECT_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_OBJECT_SOCKET_JWT_AUDIENCE": r.SocketJWTAudience, "DURABLE_OBJECT_HOST_ID": r.HostID,
 		"DURABLE_OBJECT_SESSION_ID": r.SessionID, "DURABLE_OBJECT_REGION": r.CanonicalRegion,
 		"DURABLE_OBJECT_CODE_REVISION": r.CodeRevision, "DURABLE_OBJECT_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
 		"DURABLE_OBJECT_HOST_READY_FILE": readyFile, "DURABLE_OBJECT_HOST_METADATA_FILE": metadataFile,
@@ -116,8 +113,17 @@ func hostEnvironment(r ensureRequest) map[string]string {
 	if r.ActorEntrypoint != "" {
 		env["DURABLE_OBJECT_ENTRYPOINT"] = r.ActorEntrypoint
 	}
-	if r.SocketGatewayURL != "" {
-		env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] = r.SocketGatewayURL
-	}
 	return env
+}
+
+type socketRequest struct {
+	CodeRevision    string `json:"codeRevision"`
+	CanonicalRegion string `json:"canonicalRegion"`
+	HostID          string `json:"hostId"`
+	SessionID       string `json:"sessionId"`
+}
+
+type socketCredentials struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }

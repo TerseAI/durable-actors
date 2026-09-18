@@ -18,32 +18,26 @@ enum RecoveryState {
 impl RuntimeStorage {
     pub(crate) async fn prepare_session(
         &self,
-        namespace: &str,
         lease: &HostLease,
         region: &str,
     ) -> Result<Vec<ReplicaTarget>> {
         if self.fleet.replica_regions().is_empty() {
             return Ok(Vec::new());
         }
-        let id = identity(namespace, &lease.id, &lease.session_id);
+        let id = identity(&lease.id, &lease.session_id);
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(&id) {
             ensure!(session.region == region, "session region cannot change");
             return Ok(session.replicas.clone());
         }
-        let session = self.open_session(namespace, lease, region).await?;
+        let session = self.open_session(lease, region).await?;
         sessions.insert(id, session.clone());
         Ok(session.replicas)
     }
 
-    async fn open_session(
-        &self,
-        namespace: &str,
-        lease: &HostLease,
-        region: &str,
-    ) -> Result<Session> {
-        let id = identity(namespace, &lease.id, &lease.session_id);
-        let key = key(namespace, &lease.id, &lease.session_id);
+    async fn open_session(&self, lease: &HostLease, region: &str) -> Result<Session> {
+        let id = identity(&lease.id, &lease.session_id);
+        let key = key(&lease.id, &lease.session_id);
         if let Some(object) = self.authority.get(&key).await? {
             let session: Session = serde_json::from_slice(&object.bytes)?;
             ensure!(
@@ -55,7 +49,6 @@ impl RuntimeStorage {
             return Ok(session);
         }
         let actor = ActorKey {
-            namespace_id: namespace.into(),
             actor_type: "session".into(),
             actor_id: "replication".into(),
         };
@@ -118,14 +111,13 @@ impl RuntimeStorage {
     }
 
     pub(super) async fn session_replicas(&self, owner: &Ownership) -> Result<Vec<ReplicaTarget>> {
-        let key = key(&owner.actor.namespace_id, &owner.owner, &owner.session);
+        let key = key(&owner.owner, &owner.session);
         let Some(object) = self.authority.get(&key).await? else {
             return Ok(Vec::new());
         };
         let session: Session = serde_json::from_slice(&object.bytes)?;
         ensure!(
-            session.id == identity(&owner.actor.namespace_id, &owner.owner, &owner.session)
-                && session.region == owner.region,
+            session.id == identity(&owner.owner, &owner.session) && session.region == owner.region,
             "session identity mismatch"
         );
         Ok(if session.state == RecoveryState::Sealed {
@@ -149,8 +141,8 @@ impl RuntimeStorage {
     }
 
     async fn start_recovery(&self, owner: &Ownership) -> Result<Option<Session>> {
-        let key = key(&owner.actor.namespace_id, &owner.owner, &owner.session);
-        let id = identity(&owner.actor.namespace_id, &owner.owner, &owner.session);
+        let key = key(&owner.owner, &owner.session);
+        let id = identity(&owner.owner, &owner.session);
         loop {
             let object = self.authority.get(&key).await?;
             let Some(object) = object else {
@@ -188,7 +180,7 @@ impl RuntimeStorage {
     }
 
     async fn finish_recovery(&self, owner: &Ownership, mut session: Session) -> Result<()> {
-        let key = key(&owner.actor.namespace_id, &owner.owner, &owner.session);
+        let key = key(&owner.owner, &owner.session);
         session.state = RecoveryState::Sealed;
         loop {
             let current = self
@@ -290,16 +282,10 @@ impl RuntimeStorage {
     }
 }
 
-pub(super) fn identity(namespace: &str, host: &HostId, session: &str) -> String {
-    format!(
-        "{}/",
-        crate::storage_paths::session(namespace, host, session)
-    )
+pub(super) fn identity(host: &HostId, session: &str) -> String {
+    format!("{}/", crate::storage_paths::session(host, session))
 }
 
-fn key(namespace: &str, host: &HostId, session: &str) -> String {
-    format!(
-        "{}.json",
-        crate::storage_paths::session(namespace, host, session)
-    )
+fn key(host: &HostId, session: &str) -> String {
+    format!("{}.json", crate::storage_paths::session(host, session))
 }

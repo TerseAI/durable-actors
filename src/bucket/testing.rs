@@ -1,4 +1,4 @@
-use super::{BucketHostLeases, FileBucket, HttpReplicaPeers, RuntimeStorage};
+use super::{BucketHostLeases, FileBucket, GrpcReplicaPeers, RuntimeStorage};
 use crate::{
     clock::SystemClock,
     replication::{ReplicaAccess, ReplicaSet},
@@ -24,7 +24,7 @@ impl RuntimeFixture {
             bucket.clone(),
             leases.clone(),
             Arc::new(ReplicaSet::default()),
-            Arc::new(HttpReplicaPeers::new(access.clone())?),
+            Arc::new(GrpcReplicaPeers::new(access.clone())?),
             access.clone(),
             "http://unused".into(),
         )?);

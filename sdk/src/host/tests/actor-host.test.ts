@@ -154,7 +154,6 @@ test("the actor session carries only owned execution commands", async t => {
                     type: "invoke",
                     request_id: "request-1",
                     actor: {
-                        namespace_id: "namespace-1",
                         actor_type: "SessionCounter",
                         actor_id: "counter-1"
                     },
@@ -177,7 +176,7 @@ test("the actor session carries only owned execution commands", async t => {
                 command: {
                     type: "invoke",
                     request_id: "stream",
-                    actor: { namespace_id: "namespace-1", actor_type: "SessionCounter", actor_id: "counter-1" },
+                    actor: { actor_type: "SessionCounter", actor_id: "counter-1" },
                     method: "stream",
                     args: [],
                     state: { count: 4 }
@@ -302,7 +301,6 @@ test("a failed session connection cleans up the speculative Worker", async () =>
 
 function actorIdentity(): Record<string, string> {
     return {
-        namespace_id: "namespace-1",
         actor_type: "SessionCounter",
         actor_id: "counter-1"
     }

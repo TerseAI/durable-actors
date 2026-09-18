@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::{Id, JoinError, JoinSet},
@@ -34,7 +34,7 @@ pub(crate) struct ActorHost {
 impl ActorHost {
     pub(crate) fn new(
         endpoint: HostEndpoint,
-        namespace_id: String,
+
         executor: Arc<dyn ActorExecutor>,
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
@@ -44,7 +44,6 @@ impl ActorHost {
         let (activity_tx, activity) = watch::channel(0);
         let dispatcher = HostDispatcher::new(
             endpoint.clone(),
-            namespace_id,
             executor,
             storage,
             state,
@@ -133,7 +132,7 @@ impl ActorHost {
 
 struct HostDispatcher {
     endpoint: HostEndpoint,
-    namespace_id: String,
+
     executor: Arc<dyn ActorExecutor>,
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
@@ -149,7 +148,7 @@ struct HostDispatcher {
 impl HostDispatcher {
     fn new(
         endpoint: HostEndpoint,
-        namespace_id: String,
+
         executor: Arc<dyn ActorExecutor>,
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
@@ -158,7 +157,6 @@ impl HostDispatcher {
     ) -> Self {
         Self {
             endpoint,
-            namespace_id,
             executor,
             storage,
             state,
@@ -225,7 +223,7 @@ impl HostDispatcher {
         if !*self.accepting.borrow() && !request.operation.is_disconnect() {
             return Some(Ok(ActorExecutionResult::HostUnavailable));
         }
-        if let Err(error) = request.operation.validate(&self.namespace_id) {
+        if let Err(error) = request.operation.validate() {
             return Some(Err(error));
         }
         if !self
@@ -429,11 +427,7 @@ impl ActorOperation {
         )
     }
 
-    fn validate(&self, namespace: &str) -> Result<()> {
-        ensure!(
-            self.actor().namespace_id == namespace,
-            "actor invocation crossed the host namespace"
-        );
+    fn validate(&self) -> Result<()> {
         self.invocation().validate()
     }
 
@@ -500,7 +494,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             executor.clone(),
             Arc::new(FakeAuthority::default()),
             state.clone(),
@@ -587,7 +580,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(ControlledExecutor {
                 started,
                 release: release.clone(),
@@ -651,7 +643,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             executor.clone(),
             authority.clone(),
             state.clone(),
@@ -695,7 +686,6 @@ mod tests {
                             ActorSocketInvocation {
                                 request_id: "first".into(),
                                 actor: ActorKey {
-                                    namespace_id: "project-1".into(),
                                     actor_type: "Counter".into(),
                                     actor_id: "counter-1".into(),
                                 },
@@ -763,7 +753,6 @@ mod tests {
             ActorInvocation {
                 request_id: "other".into(),
                 actor: ActorKey {
-                    namespace_id: "project-1".into(),
                     actor_type: "Counter".into(),
                     actor_id: "other".into(),
                 },
@@ -884,7 +873,6 @@ mod tests {
             ..Default::default()
         });
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "one".into(),
         };
@@ -893,7 +881,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host".into(),
             },
-            "project-1".into(),
             Arc::new(IncrementingExecutor {
                 invocations: AtomicU64::new(0),
             }),
@@ -932,7 +919,6 @@ mod tests {
         });
         let transport = Arc::new(FakeStateTransport::default());
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "restored".into(),
         };
@@ -941,7 +927,6 @@ mod tests {
                 id: super::super::HostId::new("host"),
                 route: "http://host".into(),
             },
-            "project-1".into(),
             Arc::new(IncrementingExecutor {
                 invocations: AtomicU64::new(0),
             }),
@@ -1084,7 +1069,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(IncrementingExecutor {
                 invocations: AtomicU64::new(0),
             }),
@@ -1131,7 +1115,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(ExpiringExecutor(authority.clone())),
             authority,
             state.clone(),
@@ -1160,7 +1143,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             executor.clone(),
             authority.clone(),
             state.clone(),
@@ -1193,7 +1175,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(IncrementingExecutor {
                 invocations: AtomicU64::new(0),
             }),
@@ -1218,7 +1199,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             executor.clone(),
             authority.clone(),
             state.clone(),
@@ -1258,7 +1238,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             executor.clone(),
             authority.clone(),
             state.clone(),
@@ -1285,7 +1264,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(ExhaustedExecutor),
             Arc::new(FakeAuthority::default()),
             Arc::new(FakeStateTransport::default()),
@@ -1308,7 +1286,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(InvalidEffectsExecutor),
             authority.clone(),
             state.clone(),
@@ -1380,7 +1357,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(Emitter),
             authority.clone(),
             state.clone(),
@@ -1388,11 +1364,12 @@ mod tests {
         );
         assert_eq!(invoke(&host, "one").await?, completed(1));
         assert_eq!(invoke(&host, "two").await?, completed(2));
-        let values = publisher.values.lock().unwrap();
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0][0]["changes"]["count"], 1);
-        assert_eq!(values[1][0]["changes"]["count"], 2);
-        drop(values);
+        {
+            let values = publisher.values.lock().unwrap();
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0][0]["changes"]["count"], 1);
+            assert_eq!(values[1][0]["changes"]["count"], 2);
+        }
         state.failures.store(1, Ordering::SeqCst);
         assert!(matches!(
             invoke(&host, "failed").await?,
@@ -1407,7 +1384,6 @@ mod tests {
         let authority = Arc::new(FakeAuthority::default());
         let state = Arc::new(FakeStateTransport::default());
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "counter-1".into(),
         };
@@ -1421,7 +1397,6 @@ mod tests {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
             },
-            "project-1".into(),
             Arc::new(IncrementingExecutor {
                 invocations: AtomicU64::new(0),
             }),
@@ -1467,7 +1442,6 @@ mod tests {
             ActorInvocation {
                 request_id: request_id.into(),
                 actor: ActorKey {
-                    namespace_id: "project-1".into(),
                     actor_type: "Counter".into(),
                     actor_id: "counter-1".into(),
                 },

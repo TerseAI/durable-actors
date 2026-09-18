@@ -12,7 +12,7 @@ npx little-actors init chat-example
 
 | Template                                | Description                                                                                                                                                                        |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat`                                  | Express and React chat app with actor definitions, a socket-ticket route, and native WebSockets.                                                                                   |
+| `chat`                                  | Express and React chat app with actor definitions, an application authorization route, and native WebSockets.                                                                      |
 | `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
 | `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                     |
 
@@ -39,7 +39,6 @@ npx little-actors objects list
 npx little-actors objects inspect ChatRoom lobby
 ```
 
-- `--namespace <id>` — Restrict to one namespace. Listing covers all namespaces unless this is set. Local dev defaults to `local`.
 - `--limit <rows>` — Page size for `list`, from 1 to 500. Defaults to 50.
 - `--after <cursor>` — Fetch the page following a cursor. Printed to stderr whenever more objects remain.
 - `--all` — Fetch every page. Cannot be combined with `--limit` or `--after`.
@@ -72,9 +71,8 @@ Registers a built image plus the public API contract extracted from the TypeScri
 - `--actor-entrypoint <path>` — Entrypoint inside the image. Use `dist/actors.mjs` for the build artifact; this is also the default.
 - `--config <file>` — TypeScript configuration for extraction.
 - `--secret <name>` — Provider secret reference. Repeatable.
-- `--socket-gateway-url <origin>` — Separate socket gateway.
 - `--warm-region <region>` — Background image warmup.
-- `--url <origin>`, `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) overrides.
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ## Generate a client and proxy
 
@@ -97,7 +95,7 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.
 - `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_OBJECT_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
 - `--revision <id>` — Optional check that the active deployment matches this revision. Defaults to the latest deployment's contract.
-- `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) overrides.
+- `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ### Generate from the control plane
 
@@ -114,18 +112,3 @@ npx little-actors start
 ```
 
 Starts the packaged server using the [hosted server configuration](configuration.md). It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
-
-## Issue a local token
-
-```sh
-npx little-actors token
-```
-
-Requests a session token using connection flags or environment variables. Standard output contains only the token followed by a newline; errors go to standard error.
-
-- `--url <origin>`, `--api-key <key>`, `--namespace <id>` — [Connection](configuration.md) settings.
-- `--region <region>` — Execution region, or `DURABLE_OBJECT_REGION`; defaults to `north-america-east`.
-
-The requested deadline is one hour in the future. Issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
-
-The token grants application access throughout the `local` namespace: not an admin credential, and not restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules. `token` is a diagnostic command for trusted backend tools; browsers obtain actor-scoped URLs and keys through your authenticated backend.

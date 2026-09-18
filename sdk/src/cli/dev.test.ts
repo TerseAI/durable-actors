@@ -35,7 +35,6 @@ const file = args[index + 1]
 createWriteStream(null, { fd: 3 }).end(JSON.stringify({
     pid: process.pid,
     controlPlaneUrl: "http://127.0.0.1:7100",
-    namespaceId: "local",
     apiKey: "test-key",
     storageRegion: "local"
 }))

@@ -11,7 +11,7 @@ use async_trait::async_trait;
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub use leases::BucketHostLeases;
-pub use peers::{HttpReplicaPeers, ReplicaPeers};
+pub use peers::{GrpcReplicaPeers, ReplicaPeers};
 pub use runtime::RuntimeStorage;
 
 #[derive(Clone, Debug)]

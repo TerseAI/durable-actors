@@ -164,7 +164,6 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
                 .arg(before.to_string())
                 .env("DURABLE_OBJECT_CONTROL_PLANE_URL", origin)
                 .env("DURABLE_OBJECT_API_KEY", "local-test-key")
-                .env("DURABLE_OBJECT_NAMESPACE_ID", "local")
                 .env("DURABLE_OBJECT_TELEMETRY", "0")
                 .kill_on_drop(true)
                 .output(),
@@ -183,7 +182,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
     assert!(
         shell_directory
             .path()
-            .join("state/objects/little-actors/v1/namespaces")
+            .join("state/objects/little-actors/v2")
             .is_dir()
     );
     Ok(())

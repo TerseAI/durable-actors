@@ -29,6 +29,7 @@ type modalAPI interface {
 type sandbox interface {
 	ID() string
 	Route(context.Context) (string, error)
+	Connect(context.Context) (socketCredentials, error)
 	WriteFile(context.Context, string, string) error
 	Ready(context.Context) error
 	Metadata(context.Context) ([]byte, error)
@@ -85,8 +86,38 @@ func (p *provider) ensureSandbox(ctx context.Context, request ensureRequest, par
 	return hostHandle{}, fmt.Errorf("concurrent Modal V2 host could not be reused")
 }
 
+func (p *provider) socketCredentials(ctx context.Context, request socketRequest) (socketCredentials, error) {
+	if request.CodeRevision == "" || request.HostID == "" || request.SessionID == "" {
+		return socketCredentials{}, fmt.Errorf("invalid socket host identity")
+	}
+	if _, err := modalRegion(request.CanonicalRegion); err != nil {
+		return socketCredentials{}, err
+	}
+	sb, err := p.api.Find(ctx, resourceName(request.CodeRevision, request.CanonicalRegion))
+	if err != nil {
+		return socketCredentials{}, err
+	}
+	defer sb.Detach()
+	document, err := sb.Metadata(ctx)
+	if err != nil {
+		return socketCredentials{}, err
+	}
+	var metadata struct {
+		HostID          string `json:"hostId"`
+		SessionID       string `json:"sessionId"`
+		CanonicalRegion string `json:"canonicalRegion"`
+	}
+	if err := json.Unmarshal(document, &metadata); err != nil {
+		return socketCredentials{}, err
+	}
+	if metadata.HostID != request.HostID || metadata.SessionID != request.SessionID || metadata.CanonicalRegion != request.CanonicalRegion {
+		return socketCredentials{}, fmt.Errorf("socket host session was replaced; resolve a new target")
+	}
+	return sb.Connect(ctx)
+}
+
 func (p *provider) warmImage(ctx context.Context, request imageRequest) (imageWarmup, error) {
-	if request.NamespaceID == "" || request.CodeRevision == "" || request.ImageRef == "" {
+	if request.CodeRevision == "" || request.ImageRef == "" {
 		return imageWarmup{}, fmt.Errorf("image warmup request is invalid")
 	}
 	region, err := modalRegion(request.CanonicalRegion)
@@ -115,7 +146,7 @@ func (p *provider) warmImage(ctx context.Context, request imageRequest) (imageWa
 
 func (p *provider) terminateHosts(ctx context.Context, request terminateRequest) (hostTermination, error) {
 	result := hostTermination{Provider: "modal", ResourceIDs: []string{}}
-	if request.NamespaceID == "" || request.CodeRevision == "" || len(request.CanonicalRegions) == 0 {
+	if request.CodeRevision == "" || len(request.CanonicalRegions) == 0 {
 		return result, fmt.Errorf("host termination request is invalid")
 	}
 	for _, region := range request.CanonicalRegions {
@@ -124,7 +155,7 @@ func (p *provider) terminateHosts(ctx context.Context, request terminateRequest)
 		}
 	}
 	for _, region := range request.CanonicalRegions {
-		id, err := p.terminateNamed(ctx, resourceName(request.NamespaceID, request.CodeRevision, region))
+		id, err := p.terminateNamed(ctx, resourceName(request.CodeRevision, region))
 		if err != nil {
 			return result, err
 		}
@@ -236,8 +267,8 @@ func hostParams(request ensureRequest) (*modal.SandboxCreateParams, error) {
 	}
 	bootstrap := `"$1" 2>"$2"; status=$?; if ! test -f "$3"; then sleep 60; fi; exit "$status"`
 	return &modal.SandboxCreateParams{
-		Name:    resourceName(request.NamespaceID, request.CodeRevision, request.CanonicalRegion),
-		Timeout: 24 * time.Hour, IdleTimeout: time.Duration(request.HostIdleTimeoutMS) * time.Millisecond,
+		Name:    resourceName(request.CodeRevision, request.CanonicalRegion),
+		Timeout: 24 * time.Hour,
 		Command: []string{"sh", "-c", bootstrap, "durable-object-host-bootstrap", "/usr/local/bin/little-actors", stderrFile, readyFile},
 		Workdir: request.WorkingDirectory, Env: hostEnvironment(request), H2Ports: []int{7101},
 		ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),

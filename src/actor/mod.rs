@@ -8,9 +8,7 @@ pub use self::{
         ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
         ActorSocketMessage, ActorSocketOutcome, ActorSocketTagMatch,
     },
-    protocol::{
-        ActorExecutionResult, ActorInvocation, ActorInvocationFailure, ActorKey, ActorScope,
-    },
+    protocol::{ActorExecutionResult, ActorInvocation, ActorInvocationFailure, ActorKey},
 };
 pub(crate) use executor_connection::{
     ActorExecutorConnection, ActorExecutorListener, ActorSocketPublisher,

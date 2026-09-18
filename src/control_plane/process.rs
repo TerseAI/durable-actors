@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tracing::info;
 
 use crate::{
-    bucket::{BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage},
+    bucket::{BucketHostLeases, GcsBucket, GrpcReplicaPeers, RuntimeStorage},
     clock::SystemClock,
     host_leases::HostLeaseStore,
     postgres::PostgresDatabase,
@@ -33,6 +33,7 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
+    pub region: Option<String>,
 }
 
 pub struct ControlPlaneStorageConfig {
@@ -122,12 +123,11 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         authority,
         leases.clone(),
         fleet,
-        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         config.sandbox_provider.runtime.control_plane_url.clone(),
     )?);
     let placements = storage.clone();
-    let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
@@ -141,7 +141,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         })
         .transpose()?
         .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
-    let service = ControlPlaneService::new(
+    let mut service = ControlPlaneService::new(
         leases,
         placements.clone(),
         auth,
@@ -151,8 +151,8 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )
     .with_runtime_access(runtime_access)
     .with_socket_event_sink(socket_events);
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
-        .with_socket_origin(&socket_origin)?;
+    service.region = config.region;
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector = super::inspection::ActorInspector::new(placements, storage.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
@@ -216,6 +216,10 @@ impl ControlPlaneProcessConfig {
         let bucket = required(&mut get, "DURABLE_OBJECT_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
         let replica_regions = crate::replication::replica_regions(&mut get)?;
+        let region = get("DURABLE_OBJECT_REGION");
+        if let Some(region) = &region {
+            crate::placement::validate_region(region)?;
+        }
         let storage = ControlPlaneStorageConfig {
             replica_regions,
             postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
@@ -236,6 +240,7 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
+            region,
         })
     }
 }

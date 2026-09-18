@@ -2,6 +2,7 @@ mod actor_host;
 mod actor_runtime;
 mod lease_maintenance;
 mod process;
+pub(crate) mod sockets;
 pub(crate) mod storage;
 
 use serde::{Deserialize, Serialize};
@@ -12,13 +13,6 @@ pub(crate) use self::{
     actor_host::ActorHost,
     lease_maintenance::{HostLeaseMaintainer, LeaseRenewalTask},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ActorProcessRole {
-    Workflow,
-    Host,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HostId(String);
@@ -46,20 +40,4 @@ impl fmt::Display for HostId {
 pub(crate) struct HostEndpoint {
     pub id: HostId,
     pub route: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn process_roles_use_current_names() -> anyhow::Result<()> {
-        assert_eq!(
-            serde_json::to_value(ActorProcessRole::Workflow)?,
-            "workflow"
-        );
-        assert_eq!(serde_json::to_value(ActorProcessRole::Host)?, "host");
-        assert!(serde_json::from_value::<ActorProcessRole>(serde_json::json!("caller")).is_err());
-        Ok(())
-    }
 }

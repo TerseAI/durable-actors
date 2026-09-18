@@ -10,12 +10,11 @@ function validateActorComponent(name: string, value: string): string {
 }
 
 function actorKey(actor: ActorIdentity): string {
-    return `${actor.namespace_id}\u001f${actor.actor_type}\u001f${actor.actor_id}`
+    return `${actor.actor_type}\u001f${actor.actor_id}`
 }
 
 const actorComponentSchema = z.string().regex(/^[A-Za-z0-9._-]+$/u)
-const actorIdentitySchema = z.object({
-    namespace_id: actorComponentSchema,
+const actorIdentitySchema = z.strictObject({
     actor_type: actorComponentSchema,
     actor_id: actorComponentSchema
 })

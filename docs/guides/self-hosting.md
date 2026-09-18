@@ -9,8 +9,6 @@ Recommended setup:
 - One GCS bucket for ownership, host leases, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
-
 Use matching runtime-container and SDK versions that include `little-actors build`. The container includes the Rust runtime and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
@@ -31,7 +29,7 @@ docker run --rm --name durable-objects \
 
 For an attached Google service account, follow the [Google credentials configuration](../reference/configuration.md) and omit the mount.
 
-Port `7100` serves the HTTP API and WebSockets. Use an HTTPS proxy that forwards HTTP/2 and WebSockets. The public URL must be reachable by Modal hosts and clients.
+Port `7100` serves the HTTP and gRPC control-plane APIs. Use an HTTPS proxy that forwards HTTP/2. The public URL must be reachable by Modal hosts and clients. Direct WebSockets use the actor host on port `7101` through Modal ingress.
 
 From the configured deployment terminal, check the public endpoint:
 
@@ -122,7 +120,7 @@ Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [b
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session broadcasts the updated history to both sessions. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
-The proxy checks user access and obtains connection credentials. Application messages travel directly over WebSockets to the actor gateway. Keep the API key on the backend. See [gateway configuration](../reference/configuration.md) for a separate gateway origin.
+The application backend checks user access and obtains connection credentials. Application messages travel directly over WebSockets to the actor host. Keep the API key on the backend and preserve the returned URL, including its Modal token and actor ticket.
 
 ## Local execution with GCS
 
@@ -136,10 +134,10 @@ Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DU
 
 ## Browser connections
 
-For a separate gateway, see [client gateway configuration](../reference/configuration.md) and the [deployment request](../reference/http.md#put-v1deployment).
-
-For browser connections, generate the backend helpers with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` from the generated `index.ts`. Keep the API key on that backend. The helper obtains an actor-scoped ticket from the control plane, and the frontend calls `new WebSocket(grant.websocketUrl)` to connect directly to the gateway.
-
-The returned URL contains its signed key. There is no browser SDK, custom handshake, state subscription, or automatic renewal. The gateway enforces expiration even while idle or running a handler. Your application handles closure and requests a new grant if it wants to reconnect.
-
 See the [browser example](../../sdk/README.md#browser-clients) and [wire protocol](../reference/http.md#external-connections). The optional incoming-message event callback remains independent of authorization.
+
+## Regional installations
+
+Regional control planes share one active code deployment in PostgreSQL, one state bucket, and the same signing key and API key. Set `DURABLE_OBJECT_REGION` on each regional instance. The production deployment repository owns the load balancer, persistent actor-home directory, geographic selection, and forwarding setup requests with an assigned `homeRegion`.
+
+Each `(actor type, actor ID)` has its own state and permanent home. Customer proxies authenticate users and enforce access before requesting actor capabilities. WebSockets connect directly to the owning Modal host using the returned URL. Independent installations require separate databases, buckets, credentials, and Modal resources.

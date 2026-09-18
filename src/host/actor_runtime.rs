@@ -314,13 +314,13 @@ impl ActorRuntime {
                 _ => unreachable!(),
             }
         }
-        if !automatic.is_empty() {
-            if let Err(error) = self.publisher.publish(actor, automatic).await {
-                warn!(actor = %actor.storage_key(), error = %error, "committed state notification failed");
-                return Ok(ActorExecutionResult::Failed {
-                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-                });
-            }
+        if !automatic.is_empty()
+            && let Err(error) = self.publisher.publish(actor, automatic).await
+        {
+            warn!(actor = %actor.storage_key(), error = %error, "committed state notification failed");
+            return Ok(ActorExecutionResult::Failed {
+                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+            });
         }
         Ok(ActorExecutionResult::Completed { result, effects })
     }
@@ -556,7 +556,7 @@ impl ActorRuntime {
             Ok(_) => info!(
                 event = "actor_state_write",
                 request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
+
                 actor_type = %invocation.actor.actor_type,
                 actor_id = %invocation.actor.actor_id,
                 host_id = %self.endpoint.id,
@@ -577,7 +577,7 @@ impl ActorRuntime {
             Err(error) => warn!(
                 event = "actor_state_write",
                 request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
+
                 actor_type = %invocation.actor.actor_type,
                 actor_id = %invocation.actor.actor_id,
                 host_id = %self.endpoint.id,
@@ -684,7 +684,7 @@ impl ActorRuntime {
         info!(
                 event = "actor_host_invocation",
                 request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
+
                 actor_type = %invocation.actor.actor_type,
                 actor_id = %invocation.actor.actor_id,
                 method = %invocation.method,

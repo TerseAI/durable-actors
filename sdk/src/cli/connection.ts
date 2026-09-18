@@ -5,7 +5,6 @@ import { configuredSettings } from "../client/clientSettings.js"
 export interface ConnectionOptions {
     url: string
     apiKey?: string
-    namespace?: string
 }
 
 export function connectionOptions(command: Command): Command {
@@ -16,14 +15,9 @@ export function connectionOptions(command: Command): Command {
                 .default("http://127.0.0.1:7100")
         )
         .addOption(new Option("--api-key <key>", "admin API key").env("DURABLE_OBJECT_API_KEY"))
-        .addOption(
-            new Option("--namespace <id>", "namespace (list: all; other commands: server default)").env(
-                "DURABLE_OBJECT_NAMESPACE_ID"
-            )
-        )
 }
 
 export function connection(options: ConnectionOptions) {
     if (!options.apiKey) throw new Error("Set --api-key or DURABLE_OBJECT_API_KEY to provide an admin API key.")
-    return configuredSettings({ controlPlaneUrl: options.url, apiKey: options.apiKey, namespaceId: options.namespace })
+    return configuredSettings({ controlPlaneUrl: options.url, apiKey: options.apiKey })
 }

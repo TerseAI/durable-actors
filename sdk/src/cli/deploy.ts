@@ -11,7 +11,6 @@ interface DeployOptions extends ControlPlaneOptions {
     config?: string
     actorEntrypoint?: string
     secret: string[]
-    socketGatewayUrl?: string
     warmRegion?: string
 }
 
@@ -26,14 +25,12 @@ function registerDeployCommand(program: Command): void {
         .option("--config <file>", "local TypeScript configuration file")
         .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
-        .option("--namespace <id>", "deployment namespace (or DURABLE_OBJECT_NAMESPACE_ID)")
         .option(
             "--secret <name>",
             "provider secret reference (repeatable)",
             (value: string, previous: string[]) => [...previous, value],
             []
         )
-        .option("--socket-gateway-url <origin>", "separate socket delivery origin")
         .option("--warm-region <region>", "request background image warmup in this region")
         .action(deploy)
 }
@@ -61,7 +58,6 @@ function deploymentSpecification(options: DeployOptions) {
         workingDirectory: options.workingDirectory,
         actorEntrypoint: options.actorEntrypoint ?? "dist/actors.mjs",
         secretRefs: options.secret,
-        socketGatewayUrl: options.socketGatewayUrl,
         warmRegion: options.warmRegion
     })
 }
@@ -73,7 +69,6 @@ const deploymentSchema = z.object({
     workingDirectory: z.string().startsWith("/").max(1024),
     actorEntrypoint: z.string().min(1).max(1024),
     secretRefs: z.array(component.max(255)).max(16),
-    socketGatewayUrl: z.string().url().optional(),
     warmRegion: component.optional()
 })
 

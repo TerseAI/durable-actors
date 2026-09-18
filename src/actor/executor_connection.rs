@@ -1019,7 +1019,7 @@ mod tests {
             let mut customer = BufReader::new(customer);
             assert_eq!(read_json_line(&mut customer).await?["type"], "attached");
             let slow = read_json_line(&mut customer).await?;
-            write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"namespace_id":"forged"}})).await?;
+            write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"actor_type":"forged","actor_id":"forged"}})).await?;
             let fast = read_json_line(&mut customer).await?;
             assert_eq!(fast["command"]["actor"]["actor_id"], "fast");
             write_json_line(&mut customer, &json!({"type":"reply", "message_id":fast["message_id"], "reply":{"type":"invoked", "result":42, "state":{}}})).await?;
@@ -1035,7 +1035,6 @@ mod tests {
                 ActorMethodInvocation {
                     request_id: id.into(),
                     actor: ActorKey {
-                        namespace_id: "test".into(),
                         actor_type: "counter".into(),
                         actor_id: id.into(),
                     },
@@ -1048,7 +1047,7 @@ mod tests {
         let callers = async {
             let fast = async {
                 let actor = requests.recv().await.context("no lookup")?;
-                assert_eq!(actor.namespace_id, "test");
+                assert_eq!(actor.actor_type, "counter");
                 assert_eq!(actor.actor_id, "slow");
                 assert!(
                     matches!(invoke("fast").await?, ActorMethodOutcome::Completed { result, .. } if result == json!(42))
@@ -1094,7 +1093,6 @@ mod tests {
                 ActorMethodInvocation {
                     request_id: id.into(),
                     actor: ActorKey {
-                        namespace_id: "test".into(),
                         actor_type: "counter".into(),
                         actor_id: id.into(),
                     },
@@ -1147,7 +1145,6 @@ mod tests {
                     ActorMethodInvocation {
                         request_id: "blocked-write".into(),
                         actor: ActorKey {
-                            namespace_id: "test".into(),
                             actor_type: "counter".into(),
                             actor_id: "one".into(),
                         },
@@ -1186,7 +1183,6 @@ mod tests {
                 ActorMethodInvocation {
                     request_id: "request-1".into(),
                     actor: ActorKey {
-                        namespace_id: "namespace-1".into(),
                         actor_type: "counter".into(),
                         actor_id: "counter-1".into(),
                     },
@@ -1209,7 +1205,6 @@ mod tests {
                 ActorSocketInvocation {
                     request_id: "socket-request-1".into(),
                     actor: ActorKey {
-                        namespace_id: "namespace-1".into(),
                         actor_type: "counter".into(),
                         actor_id: "counter-1".into(),
                     },
@@ -1280,7 +1275,6 @@ mod tests {
                         ActorMethodInvocation {
                             request_id: format!("request-{count}"),
                             actor: ActorKey {
-                                namespace_id: "test".into(),
                                 actor_type: "counter".into(),
                                 actor_id: "one".into(),
                             },
@@ -1318,7 +1312,6 @@ mod tests {
                 ActorMethodInvocation {
                     request_id: "request-1".into(),
                     actor: ActorKey {
-                        namespace_id: "namespace-1".into(),
                         actor_type: "counter".into(),
                         actor_id: "counter-1".into(),
                     },

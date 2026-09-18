@@ -3,9 +3,9 @@ import { test } from "node:test"
 
 import { ControlPlaneClient } from "./control-plane.js"
 
-const connection = { controlPlaneUrl: "https://control.example", credential: "admin-key", namespaceId: "team" }
+const connection = { controlPlaneUrl: "https://control.example", credential: "admin-key" }
 
-test("contract reads are scoped while object listings can span namespaces", async () => {
+test("contract and object reads use the active deployment", async () => {
     const requests: string[] = []
     const client = new ControlPlaneClient(connection, async (input, init) => {
         requests.push(String(input))
@@ -21,9 +21,9 @@ test("contract reads are scoped while object listings can span namespaces", asyn
     await client.listObjects(new URLSearchParams({ limit: "50" }))
     await client.inspectObject("Room", "one")
     assert.deepEqual(requests, [
-        "https://control.example/v1/namespaces/team/contract?revision=r1",
-        "https://control.example/v1/objects?limit=50",
-        "https://control.example/v1/namespaces/team/actors/Room/one/state"
+        "https://control.example/v1/deployment/contract?revision=r1",
+        "https://control.example/v1/actors?limit=50",
+        "https://control.example/v1/actors/Room/one?include=state"
     ])
 })
 
@@ -58,15 +58,10 @@ test("transport failures do not retry writes and warn that their outcome is unkn
         /Cannot complete PUT.*may have reached the server/u
     )
     assert.equal(requests, 1)
-    await assert.rejects(
-        client.issueSessionToken({ executionId: "run", deadlineUnixMs: 1000, storageRegion: "us-east" }),
-        /Cannot complete POST.*may have reached the server/u
-    )
-    assert.equal(requests, 2)
     await assert.rejects(client.getContract(), error => {
         assert.match((error as Error).message, /Cannot complete GET/u)
         assert.doesNotMatch((error as Error).message, /may have reached|admin-key/u)
         return true
     })
-    assert.equal(requests, 3)
+    assert.equal(requests, 2)
 })

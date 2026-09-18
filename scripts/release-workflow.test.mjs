@@ -41,3 +41,12 @@ test("CI and release validate the Go provider before publishing", () => {
     }
     assert.match(read(".github/workflows/release.yml"), /needs: \[preflight, rust, npm-ci, go-ci\]/)
 })
+
+test("CI and release exercise direct host sockets with the built SDK", () => {
+    for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
+        const rustJob = read(path)
+            .split("    rust:\n")[1]
+            .split(/\n    [a-z-]+:\n/)[0]
+        assert.match(rustJob, /pnpm --dir sdk build[\s\S]*cargo test --locked -- --ignored/)
+    }
+})

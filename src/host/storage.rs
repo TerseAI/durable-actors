@@ -15,7 +15,7 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        Bucket, BucketHostLeases, GcsBucket, HttpReplicaPeers, RuntimeStorage,
+        Bucket, BucketHostLeases, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
         access::{HostStorageConfig, StorageToken},
     },
     clock::{Clock, SystemClock},
@@ -28,7 +28,6 @@ use crate::{
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     leases: Arc<dyn HostLeaseStore>,
-    namespace: String,
     host: HostId,
     session: String,
     region: String,
@@ -41,7 +40,6 @@ impl HostStorage {
         config: HostStorageConfig,
         host: HostId,
         session: String,
-        namespace: String,
         origin: String,
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
@@ -59,20 +57,18 @@ impl HostStorage {
             authority.clone(),
             Arc::new(SystemClock),
         ));
-        let access =
-            ReplicaAccess::delegated(&config.replica_secret, &namespace, Arc::new(SystemClock));
+        let access = ReplicaAccess::new(&config.replica_secret, Arc::new(SystemClock));
         let runtime = Arc::new(RuntimeStorage::new(
             authority,
             leases.clone(),
             Arc::new(ReplicaSet(config.replicas)),
-            Arc::new(HttpReplicaPeers::new(access.clone())?),
+            Arc::new(GrpcReplicaPeers::new(access.clone())?),
             access,
             origin,
         )?);
         Ok(Self {
             runtime,
             leases,
-            namespace,
             host,
             session,
             region: config.region,
@@ -83,10 +79,7 @@ impl HostStorage {
 
     fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
         actor.validate()?;
-        ensure!(
-            actor.namespace_id == self.namespace && *host == self.host,
-            "host storage scope mismatch"
-        );
+        ensure!(*host == self.host, "host storage scope mismatch");
         self.ensure_authority()
     }
 }
@@ -186,14 +179,10 @@ impl HostLeaseRegistry for HostStorage {
         )?;
         let first = self.lease.lock().unwrap().replace(lease.clone()).is_none();
         if first {
-            let (runtime, namespace, region, lease) = (
-                self.runtime.clone(),
-                self.namespace.clone(),
-                self.region.clone(),
-                lease.clone(),
-            );
+            let (runtime, region, lease) =
+                (self.runtime.clone(), self.region.clone(), lease.clone());
             tokio::spawn(async move {
-                if let Err(error) = runtime.prepare_session(&namespace, &lease, &region).await {
+                if let Err(error) = runtime.prepare_session(&lease, &region).await {
                     tracing::warn!(%error, "host replication session preparation failed");
                 }
             });
@@ -343,21 +332,19 @@ mod tests {
     async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
         let bucket = Arc::new(MemoryBucket::default());
         let leases = Arc::new(BucketHostLeases::new(bucket.clone(), Arc::new(SystemClock)));
-        let access =
-            ReplicaAccess::new("secret", Arc::new(SystemClock)).for_namespace("project.a")?;
+        let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
         let runtime = Arc::new(RuntimeStorage::new(
             bucket.clone(),
             leases.clone(),
             Arc::new(ReplicaSet(vec![])),
-            Arc::new(HttpReplicaPeers::new(access.clone())?),
+            Arc::new(GrpcReplicaPeers::new(access.clone())?),
             access,
             "http://control-plane-unavailable.invalid".into(),
         )?);
-        let host = HostId::new("host.v2.project.a:revision.host");
+        let host = HostId::new("host.v3.revision.host");
         let storage = HostStorage {
             runtime,
             leases,
-            namespace: "project.a".into(),
             host: host.clone(),
             session: "session".into(),
             region: "us-east".into(),
@@ -365,7 +352,6 @@ mod tests {
             lease: Mutex::new(None),
         };
         let actor = ActorKey {
-            namespace_id: "project.a".into(),
             actor_type: "Counter".into(),
             actor_id: "one".into(),
         };
@@ -412,11 +398,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let other = ActorKey {
-            namespace_id: "project.a.b".into(),
-            ..actor.clone()
-        };
-        assert!(storage.acquire_actor(&other, &host).await.is_err());
+        assert!(
+            storage
+                .acquire_actor(&actor, &HostId::new("another-host"))
+                .await
+                .is_err()
+        );
         storage.unregister(&host, "session").await?;
         assert!(storage.ensure_authority().is_err());
         assert!(storage.acquire_actor(&actor, &host).await.is_err());

@@ -1,6 +1,5 @@
 pub(crate) mod admin;
 mod auth;
-mod browser_socket;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;
@@ -17,8 +16,7 @@ mod public_api;
 mod regions;
 mod replication;
 mod service;
-mod socket_ticket;
-mod websocket;
+pub(crate) mod socket_ticket;
 
 use std::time::Duration;
 

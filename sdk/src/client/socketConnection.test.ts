@@ -101,7 +101,7 @@ test("connections validate both message directions while accepting the initial s
 
 test("connection metadata is validated before opening a transport", async () => {
     const client = new RemoteActorClient(
-        { token: "token", namespaceId: "project", controlPlaneUrl: "https://example.com" },
+        { apiKey: "key", controlPlaneUrl: "https://example.com" },
         { connectWebSocket: async () => assert.fail("invalid metadata opened a socket") }
     )
     await assert.rejects(
@@ -121,17 +121,23 @@ async function connect(
         await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
     })
     server.on("connection", (socket, request) => {
-        assert.equal(request.headers.authorization, "Bearer token")
+        assert.equal(request.headers.authorization, undefined)
+        assert.equal(new URL(request.url!, "http://localhost").searchParams.get("key"), "token")
         connected(socket)
     })
     await once(server, "listening")
     const address = server.address()
     assert.ok(address && typeof address !== "string")
-    const client = new RemoteActorClient({
-        token: "token",
-        namespaceId: "project",
-        controlPlaneUrl: `http://127.0.0.1:${address.port}`
-    })
+    const client = new RemoteActorClient(
+        {
+            apiKey: "key",
+            controlPlaneUrl: `http://127.0.0.1:${address.port}`
+        },
+        {
+            fetch: async () =>
+                Response.json({ websocketUrl: `ws://127.0.0.1:${address.port}/v1/socket?key=token`, key: "token" })
+        }
+    )
     return client.connect("Room", "one", { userId: "user-1" }, schemas)
 }
 

@@ -8,7 +8,7 @@ use crate::actor::{ActorKey, ActorSocketMessage};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SocketMessageEvent {
     pub event_id: String,
-    pub namespace_id: String,
+
     pub actor_type: String,
     pub actor_id: String,
     pub trigger_id: Option<String>,
@@ -25,7 +25,7 @@ impl SocketMessageEvent {
     ) -> Self {
         Self {
             event_id: uuid::Uuid::new_v4().to_string(),
-            namespace_id: actor.namespace_id.clone(),
+
             actor_type: actor.actor_type.clone(),
             actor_id: actor.actor_id.clone(),
             trigger_id,

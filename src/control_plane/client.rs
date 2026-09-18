@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use async_trait::async_trait;
 use tonic::{
     Request,
     metadata::MetadataValue,
@@ -12,9 +11,7 @@ use tonic::{
 };
 
 use crate::{
-    actor::{
-        ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketPublisher, ActorSocketSource,
-    },
+    actor::ActorKey,
     grpc::proto::actor_control_plane_service_client::ActorControlPlaneServiceClient,
 };
 
@@ -29,11 +26,19 @@ const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ControlPlaneClient {
     client: ActorControlPlaneServiceClient<Channel>,
     authorization: Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>,
-    socket_gateway: String,
-    http: reqwest::Client,
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn notify_socket_message(
+        &self,
+        actor: ActorKey,
+        event: crate::actor::ActorSocketEvent,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::SocketMessage { actor, event })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
         use base64::Engine;
         let authorization = self
@@ -80,53 +85,11 @@ impl ControlPlaneClient {
             .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
             .connect_lazy();
         Ok(Self {
-            socket_gateway: endpoint,
-            http: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
-                .build()?,
             client: ActorControlPlaneServiceClient::new(channel)
                 .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
             authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
         })
-    }
-
-    pub(crate) fn with_socket_gateway(mut self, endpoint: &str) -> Self {
-        self.socket_gateway = endpoint.to_owned();
-        self
-    }
-}
-
-#[async_trait]
-impl ActorSocketSource for ControlPlaneClient {
-    async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>> {
-        let response = self
-            .socket_request(reqwest::Method::GET, actor, "connections")?
-            .send()
-            .await
-            .context("load actor connections")?
-            .error_for_status()
-            .context("socket gateway rejected connection lookup")?;
-        response.json().await.context("decode actor connections")
-    }
-}
-
-#[async_trait]
-impl ActorSocketPublisher for ControlPlaneClient {
-    async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
-        let response = self
-            .socket_request(reqwest::Method::POST, actor, "socket-effects")?
-            .json(&serde_json::json!({ "effects": effects }))
-            .send()
-            .await
-            .context("publish actor socket output")?;
-        ensure!(
-            response.status().is_success(),
-            "socket gateway rejected actor output with HTTP {}",
-            response.status()
-        );
-        Ok(())
     }
 }
 
@@ -176,32 +139,6 @@ impl LeaseFence {
 }
 
 impl ControlPlaneClient {
-    fn socket_request(
-        &self,
-        method: reqwest::Method,
-        actor: &ActorKey,
-        resource: &str,
-    ) -> Result<reqwest::RequestBuilder> {
-        actor.validate()?;
-        let authorization = self
-            .authorization
-            .read()
-            .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
-            .to_str()?
-            .to_owned();
-        let url = format!(
-            "{}/v1/namespaces/{}/actors/{}/{}/{resource}",
-            self.socket_gateway.trim_end_matches('/'),
-            actor.namespace_id,
-            actor.actor_type,
-            actor.actor_id
-        );
-        Ok(self
-            .http
-            .request(method, url)
-            .header("authorization", authorization))
-    }
-
     async fn execute(&self, command: ControlPlaneCommand) -> Result<ControlPlaneCommandReply> {
         let mut request = Request::new(encode_command(command)?);
         request.set_timeout(CONTROL_PLANE_REQUEST_TIMEOUT);

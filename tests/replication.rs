@@ -291,17 +291,17 @@ fn ticket() -> WritePlan {
 }
 
 #[tokio::test]
-async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> Result<()> {
+async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> Result<()> {
     use little_actors::{
         clock::SystemClock,
-        replication::{ReplicaAccess, ReplicaGrant, replica_router},
+        replication::{ReplicaAccess, ReplicaGrant, replica_routes},
     };
     let directory = tempfile::tempdir()?;
     let store = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 4096).await?);
     let access = ReplicaAccess::new("test-installation-key", Arc::new(SystemClock));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let router = replica_router(store.clone(), access.clone(), "node-a".into());
+    let router = replica_routes(store.clone(), access.clone(), "node-a".into());
     let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -310,7 +310,8 @@ async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             })
             .await
     });
-    let object = "little-actors/v1/namespaces/cHJvamVjdA/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
+    let object =
+        "little-actors/v2/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
     let grant = ReplicaGrant {
         stream: None,
         operation: "PUT".into(),
@@ -328,38 +329,39 @@ async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         serde_json::json!(1),
     )?
     .encode()?;
-    let http = reqwest::Client::builder().http2_prior_knowledge().build()?;
-    let write = access.url(&origin, "state", &grant)?;
+    let transport = little_actors::state_transport::GrpcStateTransport::new();
+    let write = access.url(&origin, &grant)?;
     assert_eq!(
-        http.put(&write).body(bytes.clone()).send().await?.status(),
-        201
+        transport.write(&write, bytes.clone()).await?,
+        StateWrite::Written
     );
     let read = access.url(
         &origin,
-        "state",
         &ReplicaGrant {
             operation: "GET".into(),
             ..grant.clone()
         },
     )?;
-    assert_eq!(http.get(read).send().await?.bytes().await?.as_ref(), bytes);
+    assert_eq!(transport.read(&read).await?.as_ref(), bytes);
     let wrong_node = access.url(
         &origin,
-        "state",
         &ReplicaGrant {
             host_id: "node-b".into(),
             ..grant
         },
     )?;
-    assert_eq!(
-        http.put(wrong_node)
-            .body(bytes.clone())
-            .send()
-            .await?
-            .status(),
-        403
-    );
-    assert_eq!(http.get(&write).send().await?.status(), 403);
+    for error in [
+        transport
+            .write(&wrong_node, bytes.clone())
+            .await
+            .unwrap_err(),
+        transport.read(&write).await.unwrap_err(),
+    ] {
+        assert_eq!(
+            error.downcast_ref::<tonic::Status>().unwrap().code(),
+            tonic::Code::PermissionDenied
+        );
+    }
     let _ = shutdown.send(());
     server.await??;
     drop(store);
@@ -370,62 +372,6 @@ async fn replica_http_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             .await?,
         Some(bytes)
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn failed_archival_keeps_the_disk_copy_until_object_storage_is_confirmed() -> Result<()> {
-    use axum::{Json, Router, http::StatusCode, routing::get};
-    use little_actors::replication::{ArchiveTicket, archive_pending};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let directory = tempfile::tempdir()?;
-    let store = FileReplicaStore::open(directory.path().join("snapshots"), 4096).await?;
-    let available = Arc::new(AtomicBool::new(false));
-    let ready = available.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let origin = format!("http://{}", listener.local_addr()?);
-    let bucket = format!("{origin}/bucket");
-    let router = Router::new()
-        .route(
-            "/archive",
-            get(move || {
-                let bucket = bucket.clone();
-                async move {
-                    Json(ArchiveTicket {
-                        write_url: bucket.clone(),
-                        read_url: bucket,
-                    })
-                }
-            }),
-        )
-        .route(
-            "/bucket",
-            get(|| async { "snapshot" }).put(move || {
-                let ready = ready.clone();
-                async move {
-                    if ready.load(Ordering::Relaxed) {
-                        StatusCode::PRECONDITION_FAILED
-                    } else {
-                        StatusCode::SERVICE_UNAVAILABLE
-                    }
-                }
-            }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await });
-    store
-        .put("snapshot", &format!("{origin}/archive"), b"snapshot")
-        .await?;
-    archive_pending(&store).await?;
-    assert_eq!(store.read("snapshot").await?, Some(b"snapshot".to_vec()));
-    available.store(true, Ordering::Relaxed);
-    archive_pending(&store).await?;
-    assert!(store.read("snapshot").await?.is_none());
-    store
-        .put("conflict", &format!("{origin}/archive"), b"different")
-        .await?;
-    archive_pending(&store).await?;
-    assert_eq!(store.read("conflict").await?, Some(b"different".to_vec()));
-    server.abort();
     Ok(())
 }
 

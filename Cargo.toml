@@ -13,6 +13,8 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
 axum = { version = "0.8", features = ["ws"] }
@@ -50,5 +52,3 @@ protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-futures-util = "0.3"
-tokio-tungstenite = "0.29"

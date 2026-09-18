@@ -49,7 +49,7 @@ pub(crate) struct RuntimeAccess {
     location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
-    tokens: moka::future::Cache<String, StorageToken>,
+    tokens: moka::future::Cache<(), StorageToken>,
 }
 
 impl RuntimeAccess {
@@ -72,20 +72,18 @@ impl RuntimeAccess {
             fleet,
             replicas,
             tokens: moka::future::Cache::builder()
-                .max_capacity(512)
+                .max_capacity(1)
                 .time_to_live(Duration::from_secs(300))
                 .build(),
         })
     }
 
-    pub async fn bootstrap(&self, namespace: &str, region: &str) -> Result<String> {
+    pub async fn bootstrap(&self, region: &str) -> Result<String> {
         let actor = ActorKey {
-            namespace_id: namespace.into(),
             actor_type: "bootstrap".into(),
             actor_id: "bootstrap".into(),
         };
-        let (token, replicas) =
-            tokio::try_join!(self.issue(namespace), self.fleet.ensure(&actor, region))?;
+        let (token, replicas) = tokio::try_join!(self.issue(), self.fleet.ensure(&actor, region))?;
         ensure!(
             replicas.len() == self.fleet.replica_regions().len(),
             "incomplete replica set"
@@ -93,34 +91,34 @@ impl RuntimeAccess {
         Ok(serde_json::to_string(&HostStorageConfig {
             bucket: self.location.clone(),
             region: region.into(),
-            replica_secret: self.replicas.delegate_secret(namespace)?,
+            replica_secret: self.replicas.secret().to_owned(),
             replicas,
             token,
         })?)
     }
 
-    pub async fn issue(&self, namespace: &str) -> Result<Option<StorageToken>> {
+    pub async fn issue(&self) -> Result<Option<StorageToken>> {
         if matches!(self.location, BucketLocation::File { .. }) {
             return Ok(None);
         }
-        if let Some(token) = self.tokens.get(namespace).await {
+        if let Some(token) = self.tokens.get(&()).await {
             if token.expires_at_ms > SystemClock.now_ms()? + 60_000 {
                 return Ok(Some(token));
             }
-            self.tokens.invalidate(namespace).await;
+            self.tokens.invalidate(&()).await;
         }
         self.tokens
-            .try_get_with(namespace.to_owned(), self.exchange(namespace))
+            .try_get_with((), self.exchange())
             .await
             .map(Some)
             .map_err(|error| anyhow::anyhow!("{error:#}"))
     }
 
-    async fn exchange(&self, namespace: &str) -> Result<StorageToken> {
+    async fn exchange(&self) -> Result<StorageToken> {
         let BucketLocation::Gcs { bucket } = &self.location else {
             anyhow::bail!("local buckets do not need credentials")
         };
-        let boundary = boundary(bucket, namespace)?;
+        let boundary = boundary(bucket);
         let source = self
             .credentials
             .as_ref()
@@ -173,16 +171,12 @@ impl RuntimeAccess {
     }
 }
 
-fn boundary(bucket: &str, namespace: &str) -> Result<Value> {
-    crate::actor::ActorScope {
-        namespace_id: namespace.into(),
-    }
-    .validate()?;
-    let prefix = crate::storage_paths::namespace(namespace);
-    Ok(json!({"accessBoundary": {"accessBoundaryRules": [
+fn boundary(bucket: &str) -> Value {
+    let prefix = crate::storage_paths::ROOT;
+    json!({"accessBoundary": {"accessBoundaryRules": [
         rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"]),
         rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])
-    ]}}))
+    ]}})
 }
 
 fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
@@ -216,7 +210,7 @@ mod tests {
             Arc::new(crate::replication::ReplicaSet(replicas.clone())),
             ReplicaAccess::new("secret", Arc::new(SystemClock)),
         )?;
-        let document = access.bootstrap("project", "north-america-east").await?;
+        let document = access.bootstrap("north-america-east").await?;
         let value: Value = serde_json::from_str(&document)?;
         assert!(value.get("replicaCount").is_none());
         let config: HostStorageConfig = serde_json::from_str(&document)?;
@@ -228,12 +222,7 @@ mod tests {
             Arc::new(PartialFleet(crate::replication::ReplicaSet(replicas))),
             ReplicaAccess::new("secret", Arc::new(SystemClock)),
         )?;
-        assert!(
-            partial
-                .bootstrap("project", "north-america-east")
-                .await
-                .is_err()
-        );
+        assert!(partial.bootstrap("north-america-east").await.is_err());
         Ok(())
     }
 
@@ -254,7 +243,7 @@ mod tests {
 
     #[test]
     fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {
-        let boundary = boundary("actors", "project.a")?;
+        let boundary = boundary("actors");
         let rules = boundary["accessBoundary"]["accessBoundaryRules"]
             .as_array()
             .unwrap();
@@ -264,7 +253,7 @@ mod tests {
             rules[0]["availabilityCondition"]["expression"]
                 .as_str()
                 .unwrap()
-                .contains("little-actors/v1/namespaces/cHJvamVjdC5h/owners/")
+                .contains("little-actors/v2/owners/")
         );
         assert_eq!(
             rules[1]["availablePermissions"],
@@ -277,9 +266,8 @@ mod tests {
             rules[1]["availabilityCondition"]["expression"]
                 .as_str()
                 .unwrap()
-                .contains("little-actors/v1/namespaces/cHJvamVjdC5h/snapshots/")
+                .contains("little-actors/v2/snapshots/")
         );
-        assert!(super::boundary("actors", "../escape").is_err());
         Ok(())
     }
 }

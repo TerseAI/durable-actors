@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::ActorKey;
 
-pub const STATE_CONTENT_TYPE: &str = "application/json";
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WritePlan {
@@ -19,7 +17,6 @@ pub struct WritePlan {
 
 #[async_trait]
 pub trait SnapshotReader: Send + Sync {
-    fn durability(&self) -> crate::replication::DurabilityPolicy;
     async fn read_snapshot(&self, region: &str, object: &str) -> Result<bytes::Bytes>;
 }
 
@@ -83,12 +80,11 @@ mod tests {
     #[test]
     fn snapshot_paths_group_an_actor_and_validate_its_identity() -> Result<()> {
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "account.42".into(),
         };
         let object = snapshot_object_name(&actor, 7, "0123456789abcdef0123456789abcdef")?;
-        assert!(object.starts_with("little-actors/v1/namespaces/cHJvamVjdC0x/snapshots/"));
+        assert!(object.starts_with("little-actors/v2/snapshots/"));
         assert!(
             object.ends_with("/Q291bnRlcg/YWNjb3VudC40Mg/0123456789abcdef0123456789abcdef/7.json")
         );
