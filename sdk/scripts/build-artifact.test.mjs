@@ -91,7 +91,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     assert.deepEqual(await receive(), { type: "attach", protocol: 16, actor_types: ["BuiltCounter"] })
     const send = message => socket.write(JSON.stringify(message) + "\n")
     send({ type: "attached", protocol: 16 })
-    const actor = { namespace_id: "build-test", actor_type: "BuiltCounter", actor_id: "counter" }
+    const actor = { actor_type: "BuiltCounter", actor_id: "counter" }
     const invoke = (messageId, state) =>
         send({
             type: "command",

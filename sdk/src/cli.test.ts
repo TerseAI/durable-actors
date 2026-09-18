@@ -63,7 +63,7 @@ test("observe serves a local UI using environment settings or flag overrides", {
         assert.deepEqual(await exited, [0, null])
         await assert.rejects(fetch(url))
     }
-    assert.deepEqual(requests, Array(4).fill("/v1/durability"))
+    assert.deepEqual(requests, Array(4).fill("/v1/actors?limit=1"))
 })
 
 test("observe exits unsuccessfully without a greeting when authentication or transport fails", async t => {
@@ -85,55 +85,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     }
     await assert.rejects(run(process.execPath, args), failure(/HTTP 401.*Unauthorized/u))
     await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
-    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/durability/u))
-})
-
-test("token uses the configured namespace and reports server errors without following redirects", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-token-"))
-    t.after(() => rm(directory, { recursive: true, force: true }))
-    let status = 200
-    const requests: string[] = []
-    const server = createServer(async (request, response) => {
-        requests.push(request.url!)
-        assert.equal(request.method, "POST")
-        assert.equal(request.headers.authorization, "Bearer local-key")
-        const chunks: Buffer[] = []
-        for await (const chunk of request) chunks.push(Buffer.from(chunk))
-        const body = JSON.parse(Buffer.concat(chunks).toString())
-        assert.equal(body.storageRegion, "us-east")
-        assert.match(body.executionId, /^cli-/u)
-        assert.ok(body.deadlineUnixMs > Date.now())
-        response.writeHead(status, {
-            "content-type": "application/json",
-            ...(status === 307 ? { location: "/redirected" } : {})
-        })
-        response.end(
-            JSON.stringify(
-                status === 200 ? { token: "execution-token" } : { error: { message: "No deployment registered" } }
-            )
-        )
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const args = [
-        cli,
-        "token",
-        "--url",
-        `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-        "--api-key",
-        "local-key",
-        "--namespace",
-        "team.prod",
-        "--region",
-        "us-east"
-    ]
-    assert.equal((await run(process.execPath, args)).stdout.trim(), "execution-token")
-    status = 409
-    await assert.rejects(run(process.execPath, args), /HTTP 409.*No deployment registered/u)
-    status = 307
-    await assert.rejects(run(process.execPath, args), /Cannot complete POST/u)
-    assert.deepEqual(requests, Array(3).fill("/v1/namespaces/team.prod/session-scoped-token"))
+    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/actors/u))
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
@@ -169,15 +121,14 @@ test("objects lists every page locally and inspects committed internal state", a
         assert.equal(request.headers.authorization, "Bearer local-key")
         requests.push(request.url!)
         response.setHeader("content-type", "application/json")
-        if (request.url!.includes("/state")) {
-            response.end(JSON.stringify({ namespaceId: "local", stateVersion: 7, state: { secret: "saved" } }))
+        if (request.url!.includes("?include=state")) {
+            response.end(JSON.stringify({ stateVersion: 7, state: { secret: "saved" } }))
         } else {
             const secondPage = request.url!.includes("after=")
             response.end(
                 JSON.stringify({
-                    objects: [
+                    actors: [
                         {
-                            namespaceId: "local",
                             actorType: "Room",
                             actorId: secondPage ? "two" : "one",
                             stateVersion: 7
@@ -197,44 +148,43 @@ test("objects lists every page locally and inspects committed internal state", a
         DURABLE_OBJECT_CONTROL_PLANE_URL: "",
         DURABLE_OBJECT_API_KEY: ""
     }
-    delete env.DURABLE_OBJECT_NAMESPACE_ID
     const flags = ["--url", origin, "--api-key", "local-key"]
     const listed = await run(process.execPath, [cli, "objects", "list", ...flags, "--all", "--json"], { env })
     assert.deepEqual(
         JSON.parse(listed.stdout).map((object: { actorId: string }) => object.actorId),
         ["one", "two"]
     )
-    assert.equal(requests[0], "/v1/objects?limit=500")
+    assert.equal(requests[0], "/v1/actors?limit=500")
     assert.match(requests[1]!, /after=object.v1.local.Room.one/u)
     const inspected = await run(process.execPath, [cli, "objects", "inspect", "Room", "one", ...flags], { env })
     assert.deepEqual(JSON.parse(inspected.stdout).state, { secret: "saved" })
-    assert.equal(requests[2], "/v1/actors/Room/one/state")
+    assert.equal(requests[2], "/v1/actors/Room/one?include=state")
 })
 
-test("objects uses cloud credentials, filters namespaces, and reports API errors", async t => {
+test("objects uses cloud credentials, and reports API errors", async t => {
     const requests: string[] = []
     const server = createServer((request, response) => {
         assert.equal(request.headers.authorization, "Bearer cloud-key")
         requests.push(request.url!)
         response.setHeader("content-type", "application/json")
-        if (request.url!.includes("/state")) {
+        if (request.url!.includes("?include=state")) {
             response.statusCode = 404
             response.end(JSON.stringify({ error: { code: "not_found", message: "Object not found" } }))
-        } else response.end(JSON.stringify({ objects: [], nextCursor: null }))
+        } else response.end(JSON.stringify({ actors: [], nextCursor: null }))
     })
     t.after(() => server.close())
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env = { ...process.env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin, DURABLE_OBJECT_API_KEY: "cloud-key" }
-    const result = await run(process.execPath, [cli, "objects", "list", "--namespace", "team.prod"], { env })
+    const result = await run(process.execPath, [cli, "objects", "list"], { env })
     assert.match(result.stdout, /No saved objects/u)
-    assert.equal(requests[0], "/v1/objects?namespace=team.prod&limit=50")
+    assert.equal(requests[0], "/v1/actors?limit=50")
     await assert.rejects(
-        run(process.execPath, [cli, "objects", "inspect", "Room", "missing", "--namespace", "team.prod"], { env }),
+        run(process.execPath, [cli, "objects", "inspect", "Room", "missing"], { env }),
         /Object not found/u
     )
-    assert.equal(requests[1], "/v1/namespaces/team.prod/actors/Room/missing/state")
+    assert.equal(requests[1], "/v1/actors/Room/missing?include=state")
     await assert.rejects(
         run(process.execPath, [cli, "objects", "list", "--url", origin], {
             env: { ...env, DURABLE_OBJECT_API_KEY: "" }
@@ -247,8 +197,6 @@ test("objects uses cloud credentials, filters namespaces, and reports API errors
 test("objects limits rows by default and resumes a filtered page without fetching ahead", async t => {
     const requests: URL[] = []
     const objects = Array.from({ length: 55 }, (_, index) => ({
-        objectId: `object.v1.team.prod.Room.${index}`,
-        namespaceId: "team.prod",
         actorType: "Room",
         actorId: String(index),
         homeRegion: "north-america-east",
@@ -258,13 +206,13 @@ test("objects limits rows by default and resumes a filtered page without fetchin
         const url = new URL(request.url!, "http://localhost")
         requests.push(url)
         const after = url.searchParams.get("after")
-        const start = after ? objects.findIndex(object => object.objectId === after) + 1 : 0
+        const start = after ? objects.findIndex(object => `object.v3.Room:${object.actorId}` === after) + 1 : 0
         const end = Math.min(start + Number(url.searchParams.get("limit") ?? 100), objects.length)
         response.setHeader("content-type", "application/json")
         response.end(
             JSON.stringify({
-                objects: objects.slice(start, end),
-                nextCursor: end < objects.length ? objects[end - 1]!.objectId : null
+                actors: objects.slice(start, end),
+                nextCursor: end < objects.length ? `object.v3.Room:${objects[end - 1]!.actorId}` : null
             })
         )
     })
@@ -276,26 +224,25 @@ test("objects limits rows by default and resumes a filtered page without fetchin
         DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
         DURABLE_OBJECT_API_KEY: "cloud-key"
     }
-    const args = [cli, "objects", "list", "--namespace", "team.prod"]
+    const args = [cli, "objects", "list"]
     const first = await run(process.execPath, args, { env })
     assert.equal(first.stdout.trim().split("\n").length, 51)
-    assert.match(first.stderr, /--after 'object.v1.team.prod.Room.49'/u)
+    assert.match(first.stderr, /--after 'object.v3.Room:49'/u)
     assert.equal(requests.length, 1)
     assert.equal(requests[0]!.searchParams.get("limit"), "50")
 
     const limited = await run(process.execPath, [...args, "--limit", "2", "--json"], { env })
     assert.deepEqual(JSON.parse(limited.stdout), objects.slice(0, 2))
-    assert.match(limited.stderr, /--after 'object.v1.team.prod.Room.1'/u)
+    assert.match(limited.stderr, /--after 'object.v3.Room:1'/u)
     assert.equal(requests.length, 2)
 
-    const last = await run(process.execPath, [...args, "--limit", "5", "--after", objects[49]!.objectId, "--json"], {
+    const last = await run(process.execPath, [...args, "--limit", "5", "--after", "object.v3.Room:49", "--json"], {
         env
     })
     assert.deepEqual(JSON.parse(last.stdout), objects.slice(50))
     assert.equal(last.stderr, "")
     assert.equal(requests.length, 3)
-    assert.equal(requests[2]!.searchParams.get("namespace"), "team.prod")
-    assert.equal(requests[2]!.searchParams.get("after"), objects[49]!.objectId)
+    assert.equal(requests[2]!.searchParams.get("after"), "object.v3.Room:49")
     assert.equal(requests[2]!.searchParams.get("limit"), "5")
 })
 
@@ -330,7 +277,7 @@ test("dev accepts configured keys and prints an export command for a generated k
         binary,
         `#!${process.execPath}
 require("node:fs").createWriteStream(null, { fd: 3 }).end(JSON.stringify({
-    pid: process.pid, controlPlaneUrl: "http://127.0.0.1:7200", namespaceId: "local", apiKey: "dev-key", storageRegion: "local"
+    pid: process.pid, controlPlaneUrl: "http://127.0.0.1:7200", apiKey: "dev-key", storageRegion: "local"
 }))
 console.log(JSON.stringify(process.argv.slice(2)))
 `
@@ -384,42 +331,4 @@ console.log(JSON.stringify(process.argv.slice(2)))
     assert.ok(invocation)
     assert.equal(JSON.parse(invocation).includes("--api-key"), false)
     assert.match(generated.stdout, /export DURABLE_OBJECT_API_KEY=dev-key/u)
-})
-
-test("token uses environment settings and flags without a discovery file", async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        requests.push(request.url!)
-        assert.equal(request.headers.authorization, "Bearer cli-key")
-        response.setHeader("content-type", "application/json")
-        response.end(JSON.stringify({ token: "session-token" }))
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env = {
-        ...process.env,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "cli-key",
-        DURABLE_OBJECT_NAMESPACE_ID: "local"
-    }
-    const result = await run(process.execPath, [cli, "token"], { env })
-    assert.equal(result.stdout.trim(), "session-token")
-    const overridden = await run(
-        process.execPath,
-        [cli, "token", "--url", origin, "--api-key", "cli-key", "--namespace", "explicit"],
-        {
-            env: {
-                ...env,
-                DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-                DURABLE_OBJECT_API_KEY: "wrong"
-            }
-        }
-    )
-    assert.equal(overridden.stdout.trim(), "session-token")
-    assert.deepEqual(requests, [
-        "/v1/namespaces/local/session-scoped-token",
-        "/v1/namespaces/explicit/session-scoped-token"
-    ])
 })

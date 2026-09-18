@@ -124,3 +124,11 @@ func (s *sdkSandbox) FailureDetail(ctx context.Context) string {
 	detail, _ := s.sb.Filesystem.ReadText(ctx, stderrFile, nil)
 	return detail
 }
+
+func (s *sdkSandbox) Connect(ctx context.Context) (socketCredentials, error) {
+	credentials, err := s.sb.CreateConnectToken(ctx, &modal.SandboxCreateConnectTokenParams{Port: 7101})
+	if err != nil {
+		return socketCredentials{}, err
+	}
+	return socketCredentials{URL: credentials.URL, Token: credentials.Token}, nil
+}

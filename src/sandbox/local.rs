@@ -113,6 +113,23 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
+    async fn socket_credentials(
+        &self,
+        request: &super::SocketCredentialsRequest,
+    ) -> Result<super::SocketCredentials> {
+        let status = self.leases.lease_status(&request.host_id).await?;
+        ensure!(status.is_active(), "socket host lease expired");
+        let lease = status.lease.context("socket host lease missing")?;
+        ensure!(
+            lease.session_id == request.session_id,
+            "socket host session replaced"
+        );
+        Ok(super::SocketCredentials {
+            url: lease.route,
+            token: String::new(),
+        })
+    }
+
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
         ensure!(
             PathBuf::from(&request.working_directory) == self.project,
@@ -122,10 +139,7 @@ impl SandboxProvider for LocalSandboxProvider {
             request.secret_refs.is_empty(),
             "Modal secret references are unavailable in local mode"
         );
-        let key = format!(
-            "{}/{}/{}",
-            request.namespace_id, request.code_revision, request.canonical_region
-        );
+        let key = format!("{}/{}", request.code_revision, request.canonical_region);
         let mut hosts = self.hosts.lock().await;
         ensure!(
             !self.stopping.load(Ordering::SeqCst),
@@ -163,7 +177,7 @@ impl SandboxProvider for LocalSandboxProvider {
     }
 
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination> {
-        let prefix = format!("{}/{}/", request.namespace_id, request.code_revision);
+        let prefix = format!("{}/", request.code_revision);
         let mut hosts = self.hosts.lock().await;
         let keys = hosts
             .keys()
@@ -220,7 +234,6 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
         ("DURABLE_OBJECT_LOG_MODE", "development".into()),
         ("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1".into()),
         ("DURABLE_OBJECT_HOST_BIND", "127.0.0.1:0".into()),
-        ("DURABLE_OBJECT_NAMESPACE_ID", request.namespace_id.clone()),
         (
             "DURABLE_OBJECT_HOST_ID",
             request.host_id.as_str().to_owned(),
@@ -235,11 +248,11 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             "DURABLE_OBJECT_CONTROL_PLANE_URL",
             request.control_plane_url.clone(),
         ),
-        (
-            "DURABLE_OBJECT_SOCKET_GATEWAY_URL",
-            request.socket_gateway_url.clone(),
-        ),
         ("DURABLE_OBJECT_JWT_ISSUER", request.jwt_issuer.clone()),
+        (
+            "DURABLE_OBJECT_SOCKET_JWT_AUDIENCE",
+            request.socket_jwt_audience.clone(),
+        ),
         (
             "DURABLE_OBJECT_INVOKE_JWT_AUDIENCE",
             request.invocation_jwt_audience.clone(),
@@ -298,7 +311,7 @@ mod tests {
         provider.shutdown().await;
         let request = EnsureHostRequest {
             runtime_config: None,
-            namespace_id: "local".into(),
+
             code_revision: "local".into(),
             canonical_region: "north-america-east".into(),
             host_id: HostId::new("host"),
@@ -308,11 +321,11 @@ mod tests {
             control_plane_url: "http://127.0.0.1:7100".into(),
             jwt_issuer: "local".into(),
             invocation_jwt_audience: "local".into(),
+            socket_jwt_audience: "local:websocket".into(),
             image_ref: "local".into(),
             working_directory: project.display().to_string(),
             actor_entrypoint: None,
             secret_refs: vec![],
-            socket_gateway_url: "http://127.0.0.1:7100".into(),
             actor_idle_timeout_ms: 60_000,
             host_idle_timeout_ms: 300_000,
         };

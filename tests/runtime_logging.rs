@@ -13,8 +13,8 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     let client = reqwest::Client::new();
     for (method, path, status) in [
         (reqwest::Method::GET, "/.well-known/jwks.json", 200),
-        (reqwest::Method::POST, "/v1/session-scoped-token", 401),
-        (reqwest::Method::GET, "/v1/objects", 400),
+        (reqwest::Method::POST, "/v1/actors/Counter/one/connect", 401),
+        (reqwest::Method::GET, "/v1/actors", 401),
         (reqwest::Method::GET, "/missing", 404),
     ] {
         let response = client
@@ -24,9 +24,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
             )
             .bearer_auth("header-secret")
             .json(&serde_json::json!({
-                "executionId": "body-secret",
-                "deadlineUnixMs": 1_900_000_000_000_i64,
-                "storageRegion": "north-america-east"
+                "homeRegion": "body-secret"
             }))
             .send()
             .await?;
@@ -37,8 +35,8 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     assert_eq!(requests.len(), 4, "missing terminal request logs: {output}");
     for (log, (method, path, status)) in requests.iter().zip([
         ("GET", "/.well-known/jwks.json", 200),
-        ("POST", "/v1/session-scoped-token", 401),
-        ("GET", "/v1/objects", 400),
+        ("POST", "/v1/actors/Counter/one/connect", 401),
+        ("GET", "/v1/actors", 401),
         ("GET", "/missing", 404),
     ]) {
         assert!(log.contains("INFO "), "missing level: {log}");

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { z } from "zod"
 
 import { configuredSettings } from "../client/clientSettings.js"
 import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
@@ -89,7 +90,9 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
         true
     )
     const connection = runtimeConnection(runtime.readiness!, runtime.exited)
-    const settings = connection.then(configuredSettings)
+    const settings = connection.then(value =>
+        configuredSettings(z.object({ controlPlaneUrl: z.string(), apiKey: z.string() }).parse(value))
+    )
     const client = settings.then(settings => new ControlPlaneClient(settings, fetch))
     void client.catch(() => {})
     let watcher: ActorSourceWatcher | undefined

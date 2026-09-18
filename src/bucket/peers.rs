@@ -1,14 +1,16 @@
-use std::time::Duration;
-
-use anyhow::Result;
-use async_trait::async_trait;
-
 use crate::{
     clock::{Clock, SystemClock},
+    grpc::{
+        proto::{Empty, replica_service_client::ReplicaServiceClient},
+        transport::{MAX_STORAGE_MESSAGE_BYTES, capability, request},
+    },
     replication::{
         ReplicaAccess, ReplicaGrant, ReplicaStream, ReplicaTarget, SessionHead, StreamHead,
     },
+    state_transport::{GrpcStateTransport, StateTransport},
 };
+use anyhow::Result;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait ReplicaPeers: Send + Sync {
@@ -18,109 +20,77 @@ pub trait ReplicaPeers: Send + Sync {
     async fn read(&self, peer: &ReplicaTarget, object: &str) -> Result<Vec<u8>>;
 }
 
-pub struct HttpReplicaPeers {
+pub struct GrpcReplicaPeers {
     access: ReplicaAccess,
-    http: reqwest::Client,
 }
 
-impl HttpReplicaPeers {
+impl GrpcReplicaPeers {
     pub fn new(access: ReplicaAccess) -> Result<Self> {
-        Ok(Self {
-            access,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
-        })
+        Ok(Self { access })
     }
 
-    fn session_url(
+    fn client(
         &self,
         peer: &ReplicaTarget,
-        session: &str,
-        operation: &str,
-        resource: &str,
-    ) -> Result<String> {
-        self.access.url(
+        grant: ReplicaGrant,
+    ) -> Result<(
+        ReplicaServiceClient<tonic::transport::Channel>,
+        tonic::Request<Empty>,
+    )> {
+        let address = self.access.url(
             &peer.url,
-            resource,
             &ReplicaGrant {
                 host_id: peer.host_id.clone(),
-                ..grant(operation, &peer.region, session, 60_000)?
+                ..grant
             },
-        )
-    }
-
-    fn url(
-        &self,
-        peer: &ReplicaTarget,
-        stream: &ReplicaStream,
-        operation: &str,
-        resource: &str,
-    ) -> Result<String> {
-        self.access.url(
-            &peer.url,
-            resource,
-            &ReplicaGrant {
-                stream: Some(stream.clone()),
-                host_id: peer.host_id.clone(),
-                ..grant(operation, &peer.region, &stream.prefix, 60_000)?
-            },
-        )
+        )?;
+        let (channel, token) = capability(&address)?;
+        Ok((
+            ReplicaServiceClient::new(channel)
+                .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
+            request(Empty {}, &token)?,
+        ))
     }
 }
 
 #[async_trait]
-impl ReplicaPeers for HttpReplicaPeers {
+impl ReplicaPeers for GrpcReplicaPeers {
     async fn initialize(&self, peer: &ReplicaTarget, session: &str) -> Result<()> {
-        self.http
-            .post(self.session_url(peer, session, "INITIALIZE_SESSION", "session")?)
-            .send()
-            .await?
-            .error_for_status()?;
+        let (mut client, request) = self.client(
+            peer,
+            grant("INITIALIZE_SESSION", &peer.region, session, 60_000)?,
+        )?;
+        client.initialize(request).await?;
         Ok(())
     }
 
     async fn head(&self, peer: &ReplicaTarget, stream: &ReplicaStream) -> Result<StreamHead> {
-        Ok(self
-            .http
-            .get(self.url(peer, stream, "HEAD", "stream")?)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+        let (mut client, request) = self.client(
+            peer,
+            ReplicaGrant {
+                stream: Some(stream.clone()),
+                ..grant("HEAD", &peer.region, &stream.prefix, 60_000)?
+            },
+        )?;
+        client.head(request).await?.into_inner().try_into()
     }
 
     async fn seal(&self, peer: &ReplicaTarget, session: &str) -> Result<SessionHead> {
-        Ok(self
-            .http
-            .post(self.session_url(peer, session, "SEAL_SESSION", "seal")?)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+        let (mut client, request) =
+            self.client(peer, grant("SEAL_SESSION", &peer.region, session, 60_000)?)?;
+        client.seal(request).await?.into_inner().try_into()
     }
 
     async fn read(&self, peer: &ReplicaTarget, object: &str) -> Result<Vec<u8>> {
-        let url = self.access.url(
+        let address = self.access.url(
             &peer.url,
-            "state",
             &ReplicaGrant {
                 host_id: peer.host_id.clone(),
                 ..grant("GET", &peer.region, object, 60_000)?
             },
         )?;
-        Ok(self
-            .http
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?
-            .to_vec())
+        Ok(GrpcStateTransport::new().read(&address).await?.to_vec())
     }
 }
 

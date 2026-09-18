@@ -5,21 +5,20 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use moka::future::Cache;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use crate::{
-    actor::{ActorKey, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation},
+    actor::{ActorKey, ActorSocketEvent},
     grpc::proto::{
-        ControlPlaneReply, ControlPlaneRequest, HostSocketEventRequest,
+        ControlPlaneReply, ControlPlaneRequest,
         actor_control_plane_service_server::{
             ActorControlPlaneService, ActorControlPlaneServiceServer,
         },
         actor_host_service_client::ActorHostServiceClient,
     },
-    host::{ActorProcessRole, HostId},
+    host::HostId,
     host_leases::{HostLease, HostLeaseStore},
     placement::{ObjectPlacement, ObjectPlacementStore},
     sandbox::{
@@ -40,7 +39,8 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
-    pub(super) sockets: super::websocket::SocketRegistry,
+    pub(super) changes: tokio::sync::watch::Sender<()>,
+    pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     leases: Arc<dyn HostLeaseStore>,
     placements: Arc<dyn ObjectPlacementStore>,
@@ -48,8 +48,6 @@ pub struct ControlPlaneService {
     host_token_issuer: ActorJwtIssuer,
     registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
-    socket_targets: Cache<(ActorKey, HostId, String, i64), Arc<WorkflowActorTarget>>,
-    host_channels: Cache<String, Channel>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
 }
 
@@ -71,22 +69,15 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
-            sockets: super::websocket::SocketRegistry::default(),
+            region: None,
             leases,
             placements,
             auth,
             host_token_issuer: issuer,
             registry,
             provisioner,
-            socket_targets: Cache::builder()
-                .max_capacity(4096)
-                .time_to_live(Duration::from_secs(55))
-                .build(),
-            host_channels: Cache::builder()
-                .max_capacity(256)
-                .time_to_idle(Duration::from_secs(300))
-                .build(),
             socket_events: None,
         }
     }
@@ -105,31 +96,12 @@ impl ControlPlaneService {
             .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
     }
 
-    pub(super) fn authenticate_workflow(&self, authorization: &str) -> Result<ActorPrincipal> {
-        self.auth.authenticate_authorization(authorization)
+    pub(super) fn default_region(&self) -> &str {
+        self.region.as_deref().unwrap_or(FALLBACK_REGION)
     }
 
-    pub(super) fn authenticate_application(
-        &self,
-        admin: &AdminService,
-        authorization: &str,
-        namespace_id: Option<&str>,
-    ) -> Result<ActorPrincipal> {
-        if admin.authenticate(authorization).is_err() {
-            return self.authenticate_workflow(authorization);
-        }
-        Ok(ActorPrincipal::for_application(
-            namespace_id.unwrap_or(&admin.default_namespace),
-            FALLBACK_REGION.into(),
-            i64::MAX,
-        ))
-    }
-
-    pub(super) async fn runtime_deployment(
-        &self,
-        namespace_id: &str,
-    ) -> Result<Option<HostLaunchSpec>> {
-        self.registry.launch_spec(namespace_id).await
+    pub(super) async fn runtime_deployment(&self) -> Result<Option<HostLaunchSpec>> {
+        self.registry.launch_spec().await
     }
 
     pub(super) async fn register_deployment(
@@ -138,7 +110,7 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
         contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
-        let previous = admin.current_deployment(&spec.namespace_id).await?;
+        let previous = admin.current_deployment().await?;
         spec.validate()?;
         admin.validate_contract_registration(spec, contract).await?;
         if let Some(previous) = previous
@@ -147,20 +119,17 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = admin.register_deployment(spec, contract).await?;
-        self.sockets.changes.notify(&spec.namespace_id);
+        self.changes.send_replace(());
         Ok(changed)
     }
 
-    pub(super) async fn delete_deployment(
-        &self,
-        admin: &AdminService,
-        namespace_id: &str,
-    ) -> Result<bool> {
-        let Some(previous) = admin.current_deployment(namespace_id).await? else {
+    pub(super) async fn delete_deployment(&self, admin: &AdminService) -> Result<bool> {
+        let Some(previous) = admin.current_deployment().await? else {
             return Ok(false);
         };
         self.terminate_deployment_hosts(&previous).await?;
-        admin.remove_deployment(namespace_id).await?;
+        admin.remove_deployment().await?;
+        self.changes.send_replace(());
         Ok(true)
     }
 
@@ -169,7 +138,6 @@ impl ControlPlaneService {
         if super::regions::storage_region(&region).is_err() {
             warn!(
                 event = "actor_image_warmup",
-                namespace_id = %spec.namespace_id,
                 code_revision = %spec.code_revision,
                 region,
                 outcome = "invalid_region",
@@ -182,7 +150,6 @@ impl ControlPlaneService {
             match provisioner.warm_image(&spec, &region).await {
                 Ok(warmup) => info!(
                     event = "actor_image_warmup",
-                    namespace_id = %spec.namespace_id,
                     code_revision = %spec.code_revision,
                     region,
                     provider = %warmup.provider,
@@ -194,7 +161,6 @@ impl ControlPlaneService {
                 ),
                 Err(error) => warn!(
                     event = "actor_image_warmup",
-                    namespace_id = %spec.namespace_id,
                     code_revision = %spec.code_revision,
                     region,
                     total_ms = elapsed_ms(started_at),
@@ -221,7 +187,6 @@ impl ControlPlaneService {
         {
             Ok(termination) => info!(
                 event = "actor_hosts_terminated",
-                namespace_id = %spec.namespace_id,
                 code_revision = %spec.code_revision,
                 provider = %termination.provider,
                 resource_count = termination.resource_ids.len(),
@@ -238,121 +203,54 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    pub(super) async fn resolve_workflow_target_timed(
+    pub(super) async fn resolve_actor_target_timed(
         &self,
-        principal: &ActorPrincipal,
         actor: &ActorKey,
+        home_region: Option<&str>,
         timings: &mut TargetResolutionTimings,
-    ) -> Result<WorkflowActorTarget> {
-        self.resolve_workflow_route(principal, actor, Some(timings))
+    ) -> Result<ActorTarget> {
+        self.resolve_actor_route(actor, home_region, Some(timings))
             .await
     }
 
-    pub(super) async fn dispatch_socket_event(
-        &self,
-        principal: &ActorPrincipal,
-        invocation: ActorSocketInvocation,
-    ) -> Result<Vec<ActorSocketEffect>> {
-        let key = (
-            invocation.actor.clone(),
-            principal.host_id.clone(),
-            principal.session_id.clone(),
-            principal.expires_at,
-        );
-        for attempt in 0..2 {
-            let target = self.socket_target(principal, &invocation.actor).await?;
-            match self.send_socket_event(&target, &invocation).await {
-                Ok(crate::actor::ActorExecutionResult::Completed { effects, .. }) => {
-                    return Ok(effects);
-                }
-                Ok(
-                    crate::actor::ActorExecutionResult::Reroute
-                    | crate::actor::ActorExecutionResult::HostUnavailable,
-                ) => {
-                    self.socket_targets.invalidate(&key).await;
-                    if attempt == 1 {
-                        anyhow::bail!("actor host remained unavailable after socket reroute");
-                    }
-                }
-                Ok(crate::actor::ActorExecutionResult::Failed { failure }) => {
-                    anyhow::bail!("{}: {}", failure.code, failure.message)
-                }
-                Err(error) => {
-                    self.socket_targets.invalidate(&key).await;
-                    self.host_channels.invalidate(&target.route).await;
-                    return Err(error);
-                }
+    pub(super) fn validate_home_region(&self, assignment: Option<&str>) -> Result<()> {
+        if let Some(assignment) = assignment {
+            crate::placement::validate_region(assignment)?;
+        }
+        if let Some(local) = &self.region {
+            let assignment =
+                assignment.context("homeRegion is required by this regional control plane")?;
+            if assignment != local {
+                return Err(RegionConflict.into());
             }
         }
-        unreachable!("socket dispatch returns after its final attempt")
+        Ok(())
     }
 
-    async fn send_socket_event(
+    pub(super) async fn socket_destination(
         &self,
-        target: &WorkflowActorTarget,
-        invocation: &ActorSocketInvocation,
-    ) -> Result<crate::actor::ActorExecutionResult> {
-        let channel = self
-            .host_channels
-            .try_get_with(target.route.clone(), async {
-                Endpoint::new(target.route.clone())?
-                    .connect_timeout(Duration::from_secs(5))
-                    .timeout(Duration::from_secs(24 * 60 * 60))
-                    .connect()
-                    .await
-                    .context("connect to actor host")
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-        let mut client = ActorHostServiceClient::new(channel)
-            .max_decoding_message_size(crate::actor::MAX_ACTOR_EXECUTOR_MESSAGE_BYTES)
-            .max_encoding_message_size(crate::actor::MAX_ACTOR_EXECUTOR_MESSAGE_BYTES);
-        let mut request = Request::new(HostSocketEventRequest {
-            request_id: invocation.request_id.clone(),
-            actor: Some(invocation.actor.clone().into()),
-            event_json: serde_json::to_vec(&invocation.event)?,
-            connections_json: serde_json::to_vec(&invocation.connections)?,
-            owner_epoch: target.owner_epoch,
-        });
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {}", target.token).parse()?);
-        let reply = client.handle_socket(request).await?.into_inner();
-        crate::actor::ActorExecutionResult::try_from(reply)
-    }
-
-    async fn socket_target(
-        &self,
-        principal: &ActorPrincipal,
         actor: &ActorKey,
-    ) -> Result<Arc<WorkflowActorTarget>> {
-        actor.validate()?;
-        ensure!(
-            principal.process_role == ActorProcessRole::Workflow && principal.scope.contains(actor),
-            "workflow token cannot resolve this actor"
-        );
-        let now = unix_seconds()?;
-        ensure!(principal.expires_at > now, "workflow token has expired");
-        let key = (
-            actor.clone(),
-            principal.host_id.clone(),
-            principal.session_id.clone(),
-            principal.expires_at,
-        );
-        if let Some(target) = self.socket_targets.get(&key).await {
-            if target.expires_at_ms > (now + 5) * 1000 {
-                return Ok(target);
-            }
-            self.socket_targets.invalidate(&key).await;
-        }
-        self.socket_targets
-            .try_get_with(key, async {
-                self.resolve_workflow_route(principal, actor, None)
-                    .await
-                    .map(Arc::new)
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("{error:#}"))
+        region: &str,
+        home_region: Option<&str>,
+    ) -> Result<(
+        String,
+        super::socket_ticket::SocketTarget,
+        crate::sandbox::SocketCredentials,
+    )> {
+        let routed = self.route_actor(actor, region, home_region, None).await?;
+        let credentials = self
+            .provisioner
+            .socket_credentials(&routed.spec, &routed.placement.home_region, &routed.lease)
+            .await?;
+        Ok((
+            routed.placement.home_region,
+            super::socket_ticket::SocketTarget {
+                host_id: routed.lease.id,
+                session_id: routed.lease.session_id,
+                owner_epoch: routed.placement.owner_epoch,
+            },
+            credentials,
+        ))
     }
 
     pub(super) fn deliver_socket_message_event(
@@ -383,7 +281,6 @@ impl ControlPlaneService {
         }
         info!(
             event = "actor_socket_message_committed",
-            namespace_id = %actor.namespace_id,
             actor_type = %actor.actor_type,
             actor_id = %actor.actor_id,
             connection_id,
@@ -395,19 +292,20 @@ impl ControlPlaneService {
         );
     }
 
-    async fn resolve_workflow_route(
+    async fn resolve_actor_route(
         &self,
-        principal: &ActorPrincipal,
         actor: &ActorKey,
+        home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
-    ) -> Result<WorkflowActorTarget> {
+    ) -> Result<ActorTarget> {
         actor.validate()?;
-        ensure!(
-            principal.process_role == ActorProcessRole::Workflow && principal.scope.contains(actor),
-            "workflow token cannot resolve this actor"
-        );
         let target = self
-            .route_actor(actor, &principal.region, timings.as_deref_mut())
+            .route_actor(
+                actor,
+                self.default_region(),
+                home_region,
+                timings.as_deref_mut(),
+            )
             .await?;
         let issued = self.host_token_issuer.issue_invocation_target(
             actor,
@@ -416,7 +314,6 @@ impl ControlPlaneService {
             &target.spec.host_revision(),
             &target.placement.home_region,
             target.placement.owner_epoch,
-            principal.expires_at,
         )?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
@@ -425,7 +322,8 @@ impl ControlPlaneService {
         if let Some(timings) = timings {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
         }
-        Ok(WorkflowActorTarget {
+        Ok(ActorTarget {
+            home_region: target.placement.home_region,
             route,
             token: issued.token,
             owner_epoch: target.placement.owner_epoch,
@@ -434,7 +332,8 @@ impl ControlPlaneService {
     }
 }
 
-pub(super) struct WorkflowActorTarget {
+pub(super) struct ActorTarget {
+    pub home_region: String,
     pub route: String,
     pub token: String,
     pub owner_epoch: u64,
@@ -444,7 +343,7 @@ pub(super) struct WorkflowActorTarget {
 pub(super) struct TargetResolutionTimings {
     started_at: Instant,
     pub request_validated_at_ms: Option<f64>,
-    pub workflow_authenticated_at_ms: Option<f64>,
+    pub client_authenticated_at_ms: Option<f64>,
     pub deployment_loaded_at_ms: Option<f64>,
     pub placement_loaded_at_ms: Option<f64>,
     pub lease_checked_at_ms: Option<f64>,
@@ -459,7 +358,7 @@ impl TargetResolutionTimings {
         Self {
             started_at: Instant::now(),
             request_validated_at_ms: None,
-            workflow_authenticated_at_ms: None,
+            client_authenticated_at_ms: None,
             deployment_loaded_at_ms: None,
             placement_loaded_at_ms: None,
             lease_checked_at_ms: None,
@@ -498,10 +397,6 @@ impl ControlPlaneService {
         principal: &ActorPrincipal,
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
-        ensure!(
-            principal.process_role == ActorProcessRole::Host,
-            "only hosts may use the internal control-plane API"
-        );
         match command {
             ControlPlaneCommand::InventoryChanged => {
                 let status = self.leases.lease_status(&principal.host_id).await?;
@@ -511,7 +406,12 @@ impl ControlPlaneService {
                         .is_some_and(|lease| lease.session_id == principal.session_id),
                     "host session does not match"
                 );
-                self.sockets.changes.notify(&principal.scope.namespace_id);
+                self.changes.send_replace(());
+                Ok(ControlPlaneCommandReply::Unit)
+            }
+            ControlPlaneCommand::SocketMessage { actor, event } => {
+                self.authorize_socket_host(principal, &actor).await?;
+                self.deliver_socket_message_event(&actor, None, &event);
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::RefreshStorageAccess => {
@@ -520,12 +420,11 @@ impl ControlPlaneService {
                     .runtime_access
                     .as_ref()
                     .context("direct storage is not configured")?
-                    .issue(&principal.scope.namespace_id)
+                    .issue()
                     .await?;
                 let replacement_token = self
                     .host_token_issuer
                     .issue_host(
-                        &principal.scope.namespace_id,
                         &principal.host_id,
                         &principal.session_id,
                         principal
@@ -543,41 +442,12 @@ impl ControlPlaneService {
         }
     }
 
-    pub(super) async fn publish_socket_effects(
-        &self,
-        principal: &ActorPrincipal,
-        actor: ActorKey,
-        effects: Vec<ActorSocketEffect>,
-    ) -> Result<ControlPlaneCommandReply> {
-        crate::actor::validate_socket_effects(&effects)?;
-        self.authorize_socket_host(principal, &actor).await?;
-        self.sockets.apply(&actor, effects).await;
-        Ok(ControlPlaneCommandReply::Unit)
-    }
-
-    pub(super) async fn socket_connections(
-        &self,
-        principal: &ActorPrincipal,
-        actor: &ActorKey,
-    ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
-        self.authorize_socket_host(principal, actor).await?;
-        Ok(self.sockets.connections(actor).await)
-    }
-
     async fn authorize_socket_host(
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
     ) -> Result<()> {
         actor.validate()?;
-        ensure!(
-            principal.process_role == ActorProcessRole::Host,
-            "socket access requires a host"
-        );
-        ensure!(
-            principal.scope.contains(actor),
-            "actor crossed the host namespace"
-        );
         let lease = self.require_active_host(principal).await?;
         let placement = self.current_placement(actor).await?;
         ensure!(
@@ -596,46 +466,55 @@ impl ControlPlaneService {
         &self,
         actor: &ActorKey,
         storage_region: &str,
+        home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
     ) -> Result<RoutedActor> {
+        self.validate_home_region(home_region)?;
+        let storage_region = match home_region {
+            Some(region) => region.to_owned(),
+            None => select_target_region(None, storage_region)?,
+        };
         let spec = self
-            .runtime_deployment(&actor.namespace_id)
+            .runtime_deployment()
             .await?
             .context("project has no registered actor code")?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
-        loop {
-            let current = self.placements.get_owner(&actor.storage_key()).await?;
-            if let Some(timings) = timings.as_deref_mut() {
-                timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
-            }
-            let lease_checked = current.as_ref().is_some_and(|placement| {
-                host_matches_revision(&placement.owner, &spec.namespace_id, &spec.host_revision())
-            });
-            let active = self.active_target(&current, &spec).await?;
-            if lease_checked && let Some(timings) = timings.as_deref_mut() {
-                timings.lease_checked_at_ms = Some(timings.elapsed_ms());
-            }
-            if let Some(target) = active {
-                return Ok(target);
-            }
-            let (region, lease) = self
-                .ensure_actor_host(&spec, current.as_ref(), storage_region)
-                .await?;
-            if let Some(timings) = timings.as_deref_mut() {
-                timings.host_ensured_at_ms = Some(timings.elapsed_ms());
-            }
-            let placement = self.activate_host(actor, &spec, &lease, &region).await?;
-            if let Some(timings) = timings.as_deref_mut() {
-                timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
-            }
-            return Ok(RoutedActor {
-                placement,
-                lease,
-                spec,
-            });
+        let current = self.placements.get_owner(&actor.storage_key()).await?;
+        if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
+            && assigned != placement.home_region
+        {
+            return Err(RegionConflict.into());
         }
+        if let Some(timings) = timings.as_deref_mut() {
+            timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
+        }
+        let lease_checked = current.as_ref().is_some_and(|placement| {
+            host_matches_revision(&placement.owner, &spec.host_revision())
+        });
+        let active = self.active_target(&current, &spec).await?;
+        if lease_checked && let Some(timings) = timings.as_deref_mut() {
+            timings.lease_checked_at_ms = Some(timings.elapsed_ms());
+        }
+        if let Some(target) = active {
+            return Ok(target);
+        }
+        let (region, lease) = self
+            .ensure_actor_host(&spec, current.as_ref(), &storage_region)
+            .await?;
+        if let Some(timings) = timings.as_deref_mut() {
+            timings.host_ensured_at_ms = Some(timings.elapsed_ms());
+        }
+        let placement = self.activate_host(actor, &spec, &lease, &region).await?;
+        if let Some(timings) = timings {
+            timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
+        }
+        Ok(RoutedActor {
+            placement,
+            lease,
+            spec,
+        })
     }
 
     async fn activate_host(
@@ -646,23 +525,16 @@ impl ControlPlaneService {
         region: &str,
     ) -> Result<ObjectPlacement> {
         let token = self.host_token_issuer.issue_host(
-            &actor.namespace_id,
             &lease.id,
             &lease.session_id,
             &spec.host_revision(),
             region,
         )?;
-        let channel = self
-            .host_channels
-            .try_get_with(lease.route.clone(), async {
-                Endpoint::new(lease.route.clone())?
-                    .connect_timeout(Duration::from_secs(5))
-                    .connect()
-                    .await
-                    .context("connect to actor host")
-            })
+        let channel = Endpoint::new(lease.route.clone())?
+            .connect_timeout(Duration::from_secs(5))
+            .connect()
             .await
-            .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            .context("connect to actor host")?;
         let mut request = Request::new(crate::grpc::proto::ActivateActorRequest {
             actor: Some(actor.clone().into()),
         });
@@ -695,25 +567,11 @@ impl ControlPlaneService {
         current: Option<&ObjectPlacement>,
         requested_region: &str,
     ) -> Result<(String, HostLease)> {
-        let region = self.target_region(current, requested_region)?;
-        match self.provisioner.ensure_host(spec, &region).await {
-            Ok(lease) => Ok((region, lease)),
-            Err(error) if current.is_none() && region != FALLBACK_REGION => {
-                warn!(
-                    event = "actor_region_fallback",
-                    namespace_id = %spec.namespace_id,
-                    requested_region,
-                    region,
-                    fallback_region = FALLBACK_REGION,
-                    error = %format!("{error:#}"),
-                    "actor host provisioning failed; trying fallback for new actor"
-                );
-                let lease = self.provisioner.ensure_host(spec, FALLBACK_REGION).await
-                    .with_context(|| format!("host provisioning failed in {region}: {error:#}; fallback {FALLBACK_REGION} also failed"))?;
-                Ok((FALLBACK_REGION.to_owned(), lease))
-            }
-            Err(error) => Err(error),
-        }
+        let region = current
+            .map(|p| p.home_region.clone())
+            .unwrap_or_else(|| requested_region.to_owned());
+        let lease = self.provisioner.ensure_host(spec, &region).await?;
+        Ok((region, lease))
     }
 
     async fn require_active_host(&self, principal: &ActorPrincipal) -> Result<HostLease> {
@@ -742,7 +600,7 @@ impl ControlPlaneService {
         let Some(placement) = current else {
             return Ok(None);
         };
-        if !host_matches_revision(&placement.owner, &spec.namespace_id, &spec.host_revision()) {
+        if !host_matches_revision(&placement.owner, &spec.host_revision()) {
             return Ok(None);
         }
         let status = self.leases.lease_status(&placement.owner).await?;
@@ -765,14 +623,6 @@ impl ControlPlaneService {
             spec: spec.clone(),
         }))
     }
-
-    fn target_region(
-        &self,
-        current: Option<&ObjectPlacement>,
-        storage_region: &str,
-    ) -> Result<String> {
-        select_target_region(current, storage_region)
-    }
 }
 
 fn select_target_region(current: Option<&ObjectPlacement>, requested: &str) -> Result<String> {
@@ -780,12 +630,34 @@ fn select_target_region(current: Option<&ObjectPlacement>, requested: &str) -> R
         return Ok(placement.home_region.clone());
     }
     let region = super::regions::storage_region(requested).unwrap_or(FALLBACK_REGION);
-    crate::placement::validate_region(&region)?;
+    crate::placement::validate_region(region)?;
     Ok(region.into())
 }
 
+#[derive(Debug)]
+pub(super) struct RegionConflict;
+
+impl std::fmt::Display for RegionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "homeRegion conflicts with the control-plane region or existing actor ownership",
+        )
+    }
+}
+
+impl std::error::Error for RegionConflict {}
+
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
+    async fn socket_credentials(
+        &self,
+        _spec: &HostLaunchSpec,
+        _region: &str,
+        _lease: &HostLease,
+    ) -> Result<crate::sandbox::SocketCredentials> {
+        anyhow::bail!("host provider does not support direct sockets")
+    }
+
     async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease>;
     async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup>;
     async fn terminate_hosts(
@@ -829,11 +701,27 @@ impl SandboxHostProvisioner {
 
 #[async_trait]
 impl HostProvisioner for SandboxHostProvisioner {
+    async fn socket_credentials(
+        &self,
+        spec: &HostLaunchSpec,
+        region: &str,
+        lease: &HostLease,
+    ) -> Result<crate::sandbox::SocketCredentials> {
+        self.provider
+            .socket_credentials(&crate::sandbox::SocketCredentialsRequest {
+                code_revision: spec.host_revision(),
+                canonical_region: region.into(),
+                host_id: lease.id.clone(),
+                session_id: lease.session_id.clone(),
+            })
+            .await
+    }
+
     async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
         let started_at = Instant::now();
         let mut request = self.request(spec, region)?;
         if let Some(access) = &self.runtime_access {
-            request.runtime_config = Some(access.bootstrap(&spec.namespace_id, region).await?);
+            request.runtime_config = Some(access.bootstrap(region).await?);
         }
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,
@@ -841,7 +729,6 @@ impl HostProvisioner for SandboxHostProvisioner {
                 let command = error.downcast_ref::<ProviderCommandFailure>();
                 warn!(
                     event = "actor_host_provisioning",
-                    namespace_id = %spec.namespace_id,
                     code_revision = %spec.code_revision,
                     region,
                     host_id = %request.host_id,
@@ -863,7 +750,6 @@ impl HostProvisioner for SandboxHostProvisioner {
         let lease_validated_at_ms = elapsed_ms(started_at);
         info!(
             event = "actor_host_provisioning",
-            namespace_id = %spec.namespace_id,
             code_revision = %spec.code_revision,
             region,
             host_id = %lease.id,
@@ -896,7 +782,6 @@ impl HostProvisioner for SandboxHostProvisioner {
     async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup> {
         self.provider
             .warm_image(&WarmImageRequest {
-                namespace_id: spec.namespace_id.clone(),
                 code_revision: spec.code_revision.clone(),
                 canonical_region: region.to_owned(),
                 image_ref: spec.image_ref.clone(),
@@ -911,7 +796,6 @@ impl HostProvisioner for SandboxHostProvisioner {
     ) -> Result<HostTermination> {
         self.provider
             .terminate_hosts(&TerminateHostsRequest {
-                namespace_id: spec.namespace_id.clone(),
                 code_revision: spec.host_revision(),
                 canonical_regions: regions.to_vec(),
             })
@@ -922,20 +806,14 @@ impl HostProvisioner for SandboxHostProvisioner {
 impl SandboxHostProvisioner {
     fn request(&self, spec: &HostLaunchSpec, region: &str) -> Result<EnsureHostRequest> {
         let revision = spec.host_revision();
-        let host_id = HostId::new(format!(
-            "host.v2.{}:{}.{}",
-            spec.namespace_id,
-            revision,
-            uuid::Uuid::new_v4()
-        ));
+        let host_id = HostId::new(format!("host.v3.{}.{}", revision, uuid::Uuid::new_v4()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
-            .issue_host(&spec.namespace_id, &host_id, &session_id, &revision, region)?
+            .issue_host(&host_id, &session_id, &revision, region)?
             .token;
         Ok(EnsureHostRequest {
             runtime_config: None,
-            namespace_id: spec.namespace_id.clone(),
             code_revision: revision,
             canonical_region: region.to_owned(),
             host_id,
@@ -945,14 +823,11 @@ impl SandboxHostProvisioner {
             control_plane_url: self.runtime.control_plane_url.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
+            socket_jwt_audience: self.issuer.socket_audience(),
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec.actor_entrypoint.clone(),
             secret_refs: spec.secret_refs.clone(),
-            socket_gateway_url: spec
-                .socket_gateway_url
-                .clone()
-                .unwrap_or_else(|| self.runtime.control_plane_url.clone()),
             actor_idle_timeout_ms: self.runtime.actor_idle_timeout_ms,
             host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
         })
@@ -1007,9 +882,8 @@ fn validate_state_owner(
     Ok(())
 }
 
-fn host_matches_revision(host: &HostId, namespace: &str, revision: &str) -> bool {
-    host.as_str()
-        .starts_with(&format!("host.v2.{namespace}:{revision}."))
+fn host_matches_revision(host: &HostId, revision: &str) -> bool {
+    host.as_str().starts_with(&format!("host.v3.{revision}."))
 }
 
 fn validate_host_route(route: &str) -> Result<()> {
@@ -1027,14 +901,6 @@ fn validate_host_route(route: &str) -> Result<()> {
         "host route must not contain a path, query, or fragment"
     );
     Ok(())
-}
-
-fn unix_seconds() -> Result<i64> {
-    Ok(i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-    )?)
 }
 
 fn failed_precondition(error: impl std::fmt::Display) -> Status {
@@ -1056,7 +922,6 @@ mod tests {
     use super::super::{ActorTokenPurpose, admin::LocalAdminRegistry};
     use super::*;
     use crate::{
-        actor::ActorScope,
         actor_state::ActorStorageKey,
         host_leases::{HostLeaseRegistry, HostLeaseRequest, HostLeaseStatus},
         placement::testing::LocalObjectPlacementStore,
@@ -1183,16 +1048,29 @@ mod tests {
 
         struct Host {
             auth: ActorJwtVerifier,
+            peers: Arc<Mutex<std::collections::HashSet<std::net::SocketAddr>>>,
         }
         #[tonic::async_trait]
         impl ActorHostService for Host {
+            async fn publish_socket_effects(
+                &self,
+                _: tonic::Request<crate::grpc::proto::PublishSocketEffectsRequest>,
+            ) -> Result<tonic::Response<crate::grpc::proto::Empty>, tonic::Status> {
+                Err(tonic::Status::unimplemented(
+                    "fixture does not publish socket effects",
+                ))
+            }
+
             async fn activate(
                 &self,
                 request: Request<proto::ActivateActorRequest>,
             ) -> Result<Response<proto::ActivateActorReply>, Status> {
+                self.peers
+                    .lock()
+                    .unwrap()
+                    .insert(request.remote_addr().unwrap());
                 let principal = self.auth.authenticate(&request).await?;
                 assert!(principal.invocation.is_none());
-                assert_eq!(principal.scope.namespace_id, "project-1");
                 assert_eq!(request.get_ref().actor.as_ref().unwrap().actor_id, "one");
                 Ok(Response::new(proto::ActivateActorReply { owner_epoch: 42 }))
             }
@@ -1236,24 +1114,25 @@ mod tests {
         )?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let route = format!("http://{}", listener.local_addr()?);
+        let peers = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let host_peers = peers.clone();
         let server = tokio::spawn(async move {
             tonic::transport::Server::builder()
                 .add_service(ActorHostServiceServer::new(Host {
                     auth: invocation_auth,
+                    peers: host_peers,
                 }))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
         });
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
-            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                namespace_id: "project-1".into(),
+            .register_test_deployment(&HostLaunchSpec {
                 code_revision: "revision".into(),
                 image_ref: "image".into(),
                 working_directory: "/app".into(),
                 actor_entrypoint: None,
                 secret_refs: vec![],
-                socket_gateway_url: None,
             })
             .await?;
         let placements = Arc::new(LocalObjectPlacementStore::default());
@@ -1272,25 +1151,26 @@ mod tests {
             registry,
             issuer.clone(),
             Arc::new(Provisioner(HostLease {
-                id: HostId::new("host.v2.project-1:revision.host"),
+                id: HostId::new("host.v3.revision.host"),
                 session_id: uuid::Uuid::new_v4().to_string(),
                 route: route.clone(),
                 expires_at_ms: u64::MAX,
             })),
         );
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "Counter".into(),
             actor_id: "one".into(),
         };
-        let principal =
-            ActorPrincipal::for_application("project-1", "us-east".into(), unix_seconds()? + 60);
-        let target = service
-            .resolve_workflow_route(&principal, &actor, None)
-            .await?;
+        let target = service.resolve_actor_route(&actor, None, None).await?;
         assert_eq!(target.route, route);
         assert_eq!(target.owner_epoch, 42);
         assert!(placements.get(&actor.storage_key()).await?.is_none());
+        service.resolve_actor_route(&actor, None, None).await?;
+        assert_eq!(
+            peers.lock().unwrap().len(),
+            2,
+            "activations open fresh connections"
+        );
         server.abort();
         Ok(())
     }
@@ -1327,13 +1207,11 @@ mod tests {
             provisioner.clone(),
         );
         let first = HostLaunchSpec {
-            namespace_id: "project-1".into(),
             code_revision: "revision-1".into(),
             image_ref: "image-1".into(),
             working_directory: "/workspace".into(),
             actor_entrypoint: None,
             secret_refs: vec![],
-            socket_gateway_url: None,
         };
         let mut replacement = first.clone();
         replacement.code_revision = "revision-2".into();
@@ -1347,10 +1225,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(
-            admin.current_deployment("project-1").await?,
-            Some(first.clone())
-        );
+        assert_eq!(admin.current_deployment().await?, Some(first.clone()));
         assert_eq!(
             retired_rx.recv().await,
             Some((
@@ -1379,10 +1254,7 @@ mod tests {
                     .collect()
             ))
         );
-        assert_eq!(
-            admin.current_deployment("project-1").await?,
-            Some(replacement.clone())
-        );
+        assert_eq!(admin.current_deployment().await?, Some(replacement.clone()));
         assert!(
             !service
                 .register_deployment(&admin, &replacement, None)
@@ -1409,22 +1281,14 @@ mod tests {
         provisioner
             .fail
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            service
-                .delete_deployment(&admin, "project-1")
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            admin.current_deployment("project-1").await?,
-            Some(secret_update)
-        );
+        assert!(service.delete_deployment(&admin).await.is_err());
+        assert_eq!(admin.current_deployment().await?, Some(secret_update));
         provisioner
             .fail
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(service.delete_deployment(&admin, "project-1").await?);
-        assert_eq!(admin.current_deployment("project-1").await?, None);
-        assert!(!service.delete_deployment(&admin, "project-1").await?);
+        assert!(service.delete_deployment(&admin).await?);
+        assert_eq!(admin.current_deployment().await?, None);
+        assert!(!service.delete_deployment(&admin).await?);
         Ok(())
     }
 
@@ -1454,13 +1318,11 @@ mod tests {
             Arc::new(FakeWarmProvisioner { warmed: warmed_tx }),
         );
         let spec = HostLaunchSpec {
-            namespace_id: "project-1".into(),
             code_revision: "revision-1".into(),
             image_ref: "image-1".into(),
             working_directory: "/workspace".into(),
             actor_entrypoint: None,
             secret_refs: vec![],
-            socket_gateway_url: None,
         };
 
         service.warm_deployment_image(spec.clone(), "north-america-east".into());
@@ -1499,7 +1361,6 @@ mod tests {
             delivered: delivered_tx,
         })));
         let actor = ActorKey {
-            namespace_id: "project-1".into(),
             actor_type: "ChatRoom".into(),
             actor_id: "room-1".into(),
         };
@@ -1518,7 +1379,6 @@ mod tests {
         let delivered = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
             .await?
             .context("socket event delivery task stopped")?;
-        assert_eq!(delivered["namespaceId"], "project-1");
         assert_eq!(delivered["actorType"], "ChatRoom");
         assert_eq!(delivered["actorId"], "room-1");
         assert_eq!(delivered["triggerId"], "trigger-1");
@@ -1528,175 +1388,12 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn socket_dispatch_reuses_a_connection_and_does_not_replay_transport_failures()
-    -> Result<()> {
-        use crate::grpc::proto::{
-            self,
-            actor_host_service_server::{ActorHostService, ActorHostServiceServer},
-        };
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use tokio_stream::{StreamExt, wrappers::TcpListenerStream};
-
-        struct Host {
-            calls: Arc<AtomicUsize>,
-            fail: Arc<AtomicBool>,
-        }
-        #[tonic::async_trait]
-        impl ActorHostService for Host {
-            async fn activate(
-                &self,
-                _: Request<proto::ActivateActorRequest>,
-            ) -> Result<Response<proto::ActivateActorReply>, Status> {
-                Err(Status::unimplemented("outside this test"))
-            }
-
-            async fn invoke(
-                &self,
-                _: Request<proto::HostInvokeActorRequest>,
-            ) -> Result<tonic::Response<proto::InvokeActorReply>, Status> {
-                Err(Status::unimplemented(
-                    "method invocation is outside this test",
-                ))
-            }
-            async fn handle_socket(
-                &self,
-                request: Request<HostSocketEventRequest>,
-            ) -> Result<tonic::Response<proto::InvokeActorReply>, Status> {
-                assert_eq!(
-                    request.metadata().get("authorization").unwrap(),
-                    "Bearer test-token"
-                );
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                if self.fail.load(Ordering::SeqCst) {
-                    return Err(Status::unavailable("reply lost after execution"));
-                }
-                Ok(tonic::Response::new(
-                    crate::actor::ActorExecutionResult::Completed {
-                        result: serde_json::Value::Null,
-                        effects: vec![],
-                    }
-                    .into(),
-                ))
-            }
-        }
-        let connections = Arc::new(AtomicUsize::new(0));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let fail = Arc::new(AtomicBool::new(false));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let route = format!("http://{}", listener.local_addr()?);
-        let accepted = connections.clone();
-        let incoming = TcpListenerStream::new(listener).map(move |stream| {
-            if stream.is_ok() {
-                accepted.fetch_add(1, Ordering::SeqCst);
-            }
-            stream
-        });
-        let stop = tokio_util::sync::CancellationToken::new();
-        let shutdown = stop.clone();
-        let host = Host {
-            calls: calls.clone(),
-            fail: fail.clone(),
-        };
-        let server = tokio::spawn(
-            tonic::transport::Server::builder()
-                .add_service(ActorHostServiceServer::new(host))
-                .serve_with_incoming_shutdown(incoming, async move { shutdown.cancelled().await }),
-        );
-        let issuer = test_issuer()?;
-        let auth = ActorJwtVerifier::for_scope(
-            issuer.verifier_keys_json()?,
-            "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
-        )?;
-        let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
-            Arc::new(LocalObjectPlacementStore::default()),
-            auth,
-            Arc::new(LocalAdminRegistry::default()),
-            issuer,
-            Arc::new(FakeWarmProvisioner {
-                warmed: tokio::sync::mpsc::unbounded_channel().0,
-            }),
-        );
-        let actor = ActorKey {
-            namespace_id: "project-1".into(),
-            actor_type: "Counter".into(),
-            actor_id: "one".into(),
-        };
-        let principal = ActorPrincipal {
-            scope: ActorScope {
-                namespace_id: actor.namespace_id.clone(),
-            },
-            host_id: HostId::new("workflow.v1.project-1.test"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            process_role: ActorProcessRole::Workflow,
-            region: "us-east".into(),
-            code_revision: None,
-            expires_at: unix_seconds()? + 60,
-            invocation: None,
-        };
-        let key = (
-            actor.clone(),
-            principal.host_id.clone(),
-            principal.session_id.clone(),
-            principal.expires_at,
-        );
-        service
-            .socket_targets
-            .insert(
-                key.clone(),
-                Arc::new(WorkflowActorTarget {
-                    route: route.clone(),
-                    token: "test-token".into(),
-                    owner_epoch: 1,
-                    expires_at_ms: (unix_seconds()? + 30) * 1000,
-                }),
-            )
-            .await;
-        let invocation = |id: &str| ActorSocketInvocation {
-            request_id: id.into(),
-            actor: actor.clone(),
-            event: ActorSocketEvent::Message {
-                connection_id: "one".into(),
-                message: crate::actor::ActorSocketMessage::Text {
-                    data: "hello".into(),
-                },
-            },
-            connections: vec![],
-        };
-        service
-            .dispatch_socket_event(&principal, invocation("first"))
-            .await?;
-        service
-            .dispatch_socket_event(&principal, invocation("second"))
-            .await?;
-        assert_eq!(connections.load(Ordering::SeqCst), 1);
-        fail.store(true, Ordering::SeqCst);
-        assert!(
-            service
-                .dispatch_socket_event(&principal, invocation("third"))
-                .await
-                .is_err()
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-        assert!(service.socket_targets.get(&key).await.is_none());
-        assert!(service.host_channels.get(&route).await.is_none());
-        stop.cancel();
-        server.await??;
-        Ok(())
-    }
-
     #[test]
-    fn new_actors_use_the_workflow_region_and_existing_actors_stay_pinned() -> Result<()> {
+    fn existing_actors_stay_pinned_to_the_assigned_region() -> Result<()> {
         let actor = ActorStorageKey::new("object.v1.project.Counter.one");
         let current = ObjectPlacement {
             object: actor,
-            owner: HostId::new("host.v2.project:revision.host"),
+            owner: HostId::new("host.v3.revision.host"),
             owner_epoch: 1,
             home_region: "north-america-east".into(),
             state_version: 0,
@@ -1757,6 +1454,18 @@ mod tests {
 
     #[async_trait]
     impl HostProvisioner for FakeRoutingProvisioner {
+        async fn socket_credentials(
+            &self,
+            _spec: &HostLaunchSpec,
+            _region: &str,
+            lease: &HostLease,
+        ) -> Result<crate::sandbox::SocketCredentials> {
+            Ok(crate::sandbox::SocketCredentials {
+                url: lease.route.clone(),
+                token: String::new(),
+            })
+        }
+
         async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
             self.calls.lock().unwrap().push(region.to_owned());
             ensure!(
@@ -1764,11 +1473,7 @@ mod tests {
                 "host unavailable in {region}"
             );
             Ok(HostLease {
-                id: HostId::new(format!(
-                    "host.v2.{}:{}.{region}",
-                    spec.namespace_id,
-                    spec.host_revision()
-                )),
+                id: HostId::new(format!("host.v3.{}.{region}", spec.host_revision())),
                 session_id: uuid::Uuid::new_v4().to_string(),
                 route: "https://host.example.com".into(),
                 expires_at_ms: u64::MAX,
@@ -1789,7 +1494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provisioning_fallback_only_applies_before_initial_placement() -> Result<()> {
+    async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let central = "north-america-central";
         let south = "north-america-south";
         for (failed_regions, existing, reported, expected_region, expected_calls) in [
@@ -1808,20 +1513,14 @@ mod tests {
                 Some(central),
                 vec![central],
             ),
-            (
-                vec![south],
-                false,
-                "southcentralus",
-                Some(central),
-                vec![south, central],
-            ),
+            (vec![south], false, "southcentralus", None, vec![south]),
             (vec![south], true, "eastus", None, vec![south]),
             (
                 vec![south, central],
                 false,
                 "southcentralus",
                 None,
-                vec![south, central],
+                vec![south],
             ),
             (vec![central], false, "unmapped-region", None, vec![central]),
         ] {
@@ -1835,19 +1534,16 @@ mod tests {
             )?;
             let registry = Arc::new(LocalAdminRegistry::default());
             registry
-                .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                    namespace_id: "project".into(),
+                .register_test_deployment(&HostLaunchSpec {
                     code_revision: "revision".into(),
                     image_ref: "image".into(),
                     working_directory: "/app".into(),
                     actor_entrypoint: None,
                     secret_refs: vec![],
-                    socket_gateway_url: None,
                 })
                 .await?;
             let placements = Arc::new(LocalObjectPlacementStore::default());
             let actor = ActorKey {
-                namespace_id: "project".into(),
                 actor_type: "Counter".into(),
                 actor_id: "one".into(),
             };
@@ -1871,9 +1567,13 @@ mod tests {
                 issuer,
                 provisioner.clone(),
             );
-            let spec = registry.launch_spec("project").await?.unwrap();
+            let spec = registry.launch_spec().await?.unwrap();
             let result = service
-                .ensure_actor_host(&spec, before.as_ref(), reported)
+                .ensure_actor_host(
+                    &spec,
+                    before.as_ref(),
+                    &select_target_region(before.as_ref(), reported)?,
+                )
                 .await;
             assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);
             if let Some(region) = expected_region {
@@ -1904,14 +1604,12 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
-            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                namespace_id: "default".into(),
+            .register_test_deployment(&HostLaunchSpec {
                 code_revision: "v1".into(),
                 image_ref: "image".into(),
                 working_directory: "/app".into(),
                 actor_entrypoint: None,
                 secret_refs: vec![],
-                socket_gateway_url: Some("https://gateway.example".into()),
             })
             .await?;
         let database = crate::postgres::PostgresDatabase::lazy(
@@ -1924,11 +1622,29 @@ mod tests {
             )),
             issuer.clone(),
         )?;
+        let leases = Arc::new(FakeLeaseStore {
+            leases: Mutex::new(HashMap::new()),
+        });
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let host_id = HostId::new("host.v3.v1.fixture");
+        leases
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: "https://host.example.com".into(),
+                duration_ms: 60_000,
+            })
+            .await?;
+        let actor = ActorKey {
+            actor_type: "Room".into(),
+            actor_id: "lobby".into(),
+        };
+        placements
+            .claim(&actor.storage_key(), None, &host_id, "north-america-east")
+            .await?;
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
-            Arc::new(LocalObjectPlacementStore::default()),
+            leases,
+            placements,
             auth,
             registry,
             issuer.clone(),
@@ -1942,16 +1658,10 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
-        let requests = [
-            (
-                "actors/Room/lobby/socket-ticket",
-                serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
-            ),
-            (
-                "session-scoped-token",
-                serde_json::json!({"executionId":"run","storageRegion":"north-america-east","deadlineUnixMs":(unix_seconds()? + 30) * 1000}),
-            ),
-        ];
+        let requests = [(
+            "actors/Room/lobby/connect",
+            serde_json::json!({"transport":"websocket", "metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
+        )];
         for (path, body) in requests {
             let response = client
                 .post(format!("{origin}/v1/{path}"))
@@ -1962,30 +1672,21 @@ mod tests {
             let status = response.status();
             let issued: serde_json::Value = response.json().await?;
             assert!(status.is_success(), "{path}: {status} {issued}");
-            if path.ends_with("socket-ticket") {
-                let mut url = reqwest::Url::parse(issued["websocketUrl"].as_str().unwrap())?;
-                assert_eq!(
-                    url.query_pairs().find(|(name, _)| name == "key").unwrap().1,
-                    issued["key"].as_str().unwrap()
-                );
-                url.set_query(None);
-                assert_eq!(url.as_str(), "wss://gateway.example/v1/socket");
-                let ticket = issuer.verify_socket(issued["key"].as_str().unwrap())?;
-                assert_eq!(ticket.actor.namespace_id, "default");
-                assert_eq!(ticket.metadata, body["metadata"]);
-            } else {
-                assert!(issued["token"].is_string());
-            }
-            assert!(
-                !client
-                    .post(format!("{origin}/v1/namespaces/missing/{path}"))
-                    .bearer_auth("api-key")
-                    .json(&body)
-                    .send()
-                    .await?
-                    .status()
-                    .is_success()
-            );
+            let mut url = reqwest::Url::parse(issued["websocketUrl"].as_str().unwrap())?;
+            let key = url
+                .query_pairs()
+                .find(|(name, _)| name == "key")
+                .unwrap()
+                .1
+                .into_owned();
+            url.set_query(None);
+            assert_eq!(url.as_str(), "wss://host.example.com/v1/socket");
+            let ticket = issuer.verify_socket(&key)?;
+            assert_eq!(ticket.actor.actor_id, "lobby");
+            assert_eq!(ticket.metadata, body["metadata"]);
+            assert_eq!(issued["transport"], "websocket");
+            assert_eq!(issued["homeRegion"], "north-america-east");
+            assert!(issued.get("key").is_none());
         }
         assert_eq!(
             client
@@ -2013,11 +1714,29 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        let leases = Arc::new(FakeLeaseStore {
+            leases: Mutex::new(HashMap::new()),
+        });
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let host_id = HostId::new("host.v3.v1.fixture");
+        leases
+            .register(&HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: "00000000-0000-4000-8000-000000000001".into(),
+                route: "https://host.example.com".into(),
+                duration_ms: 60_000,
+            })
+            .await?;
+        let actor = ActorKey {
+            actor_type: "Room".into(),
+            actor_id: "lobby".into(),
+        };
+        placements
+            .claim(&actor.storage_key(), None, &host_id, "north-america-east")
+            .await?;
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
-            Arc::new(LocalObjectPlacementStore::default()),
+            leases,
+            placements,
             auth,
             registry,
             issuer.clone(),
@@ -2031,18 +1750,17 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
-        let url = format!("{origin}/v1/actors/Room/lobby/socket-ticket");
-        let body =
-            serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000});
-        let workflow = issuer
-            .issue_workflow(
-                "default",
-                "run",
+        let url = format!("{origin}/v1/actors/Room/lobby/connect");
+        let body = serde_json::json!({"transport":"websocket", "metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000,"homeRegion":"north-america-east"});
+        let host_token = issuer
+            .issue_host(
+                &HostId::new("host.v3.v1.fixture"),
+                &uuid::Uuid::new_v4().to_string(),
+                "v1",
                 "north-america-east",
-                (unix_seconds()? + 30) * 1000,
             )?
             .token;
-        for credential in ["", "wrong", &workflow] {
+        for credential in ["", "wrong", &host_token] {
             assert_eq!(
                 client
                     .post(&url)
@@ -2055,8 +1773,25 @@ mod tests {
             );
         }
         client.put(format!("{origin}/v1/deployment")).bearer_auth("api-key")
-            .json(&serde_json::json!({"codeRevision":"v1","imageRef":"image","workingDirectory":"/app","socketGatewayUrl":"https://gateway.example"}))
+            .json(&serde_json::json!({"codeRevision":"v1","imageRef":"image","workingDirectory":"/app"}))
             .send().await?.error_for_status()?;
+        for operation in ["websocket", "grpc"] {
+            let response = client
+                .post(&url)
+                .bearer_auth("api-key")
+                .json(&if operation == "websocket" {
+                    serde_json::json!({"transport":"websocket", "metadata":{},"homeRegion":"north-america-west"})
+                } else {
+                    serde_json::json!({"transport":"grpc", "homeRegion":"north-america-west"})
+                })
+                .send()
+                .await?;
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::CONFLICT,
+                "{operation}"
+            );
+        }
         let issued = client
             .post(&url)
             .bearer_auth("api-key")
@@ -2066,20 +1801,25 @@ mod tests {
             .error_for_status()?;
         assert_eq!(issued.headers().get("cache-control").unwrap(), "no-store");
         let issued: serde_json::Value = issued.json().await?;
-        let key = issued["key"].as_str().unwrap();
         let socket_url = reqwest::Url::parse(issued["websocketUrl"].as_str().unwrap())?;
+        let key = socket_url
+            .query_pairs()
+            .find(|(name, _)| name == "key")
+            .unwrap()
+            .1
+            .into_owned();
         assert_eq!(socket_url.scheme(), "wss");
-        assert_eq!(socket_url.host_str(), Some("gateway.example"));
+        assert_eq!(socket_url.host_str(), Some("host.example.com"));
         assert_eq!(socket_url.path(), "/v1/socket");
         assert_eq!(
             socket_url.query_pairs().collect::<Vec<_>>(),
-            vec![("key".into(), key.into())]
+            vec![("key".into(), key.as_str().into())]
         );
         assert_ne!(key, "api-key");
         assert_eq!(
             client
                 .post(&url)
-                .bearer_auth(key)
+                .bearer_auth(&key)
                 .json(&body)
                 .send()
                 .await?
@@ -2088,8 +1828,8 @@ mod tests {
         );
         assert_eq!(
             client
-                .post(format!("{origin}/v1/actors/Room/lobby/target"))
-                .bearer_auth(key)
+                .post(format!("{origin}/v1/actors/Room/lobby/connect"))
+                .bearer_auth(&key)
                 .json(&serde_json::json!({}))
                 .send()
                 .await?
@@ -2101,7 +1841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_access_defaults_to_one_application_and_preserves_delegation() -> Result<()> {
+    async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Result<()> {
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -2116,8 +1856,8 @@ mod tests {
             leases: Mutex::new(HashMap::new()),
         });
         let placements = Arc::new(LocalObjectPlacementStore::default());
-        for namespace in ["default", "customer"] {
-            let host = HostId::new(format!("host.v2.{namespace}:revision.test"));
+        {
+            let host = HostId::new("host.v3.revision.test");
             leases
                 .register(&HostLeaseRequest {
                     id: host.clone(),
@@ -2127,7 +1867,6 @@ mod tests {
                 })
                 .await?;
             let actor = ActorKey {
-                namespace_id: namespace.into(),
                 actor_type: "Counter".into(),
                 actor_id: "one".into(),
             };
@@ -2159,7 +1898,7 @@ mod tests {
             .send()
             .await?;
         assert_eq!(registered.status(), reqwest::StatusCode::OK);
-        for suffix in ["target", "socket-effects"] {
+        for suffix in ["connect"] {
             let url = format!("{origin}/v1/actors/Counter/one/{suffix}");
             for key in ["", "wrong-key"] {
                 assert_eq!(
@@ -2175,14 +1914,36 @@ mod tests {
             }
         }
         let target: serde_json::Value = client
-            .post(format!("{origin}/v1/actors/Counter/one/target"))
+            .post(format!("{origin}/v1/actors/Counter/one/connect"))
             .bearer_auth("api-key")
+            .json(&serde_json::json!({"transport":"grpc"}))
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?;
-        assert_eq!(target["namespaceId"], "default");
+        assert_eq!(target["transport"], "grpc");
+        assert_eq!(target["homeRegion"], "north-america-east");
+        assert_eq!(target["route"], "https://host.example.com");
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"transport":"http"}),
+            serde_json::json!({"transport":"grpc","metadata":{}}),
+            serde_json::json!({"transport":"websocket"}),
+            serde_json::json!({"transport":"websocket","metadata":{},"unknown":true}),
+        ] {
+            let reply = client
+                .post(format!("{origin}/v1/actors/Counter/one/connect"))
+                .bearer_auth("api-key")
+                .json(&body)
+                .send()
+                .await?;
+            assert_eq!(reply.status(), reqwest::StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(
+                reply.json::<serde_json::Value>().await?["error"]["code"],
+                "invalid_request"
+            );
+        }
         assert_ne!(target["token"], "api-key");
         assert_eq!(
             client
@@ -2192,57 +1953,14 @@ mod tests {
                 .send()
                 .await?
                 .status(),
-            reqwest::StatusCode::NO_CONTENT
-        );
-        client
-            .put(format!("{origin}/v1/namespaces/customer/deployment"))
-            .bearer_auth("api-key")
-            .json(&deployment)
-            .send()
-            .await?
-            .error_for_status()?;
-        let deadline = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis() as i64
-            + 30_000;
-        let token = issuer
-            .issue_workflow("customer", "execution", "north-america-east", deadline)?
-            .token;
-        let delegated: serde_json::Value = client
-            .post(format!("{origin}/v1/actors/Counter/one/target"))
-            .bearer_auth(&token)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        assert_eq!(delegated["namespaceId"], "customer");
-        assert_eq!(
-            client
-                .post(format!(
-                    "{origin}/v1/namespaces/default/actors/Counter/one/target"
-                ))
-                .bearer_auth(&token)
-                .send()
-                .await?
-                .status(),
-            reqwest::StatusCode::FORBIDDEN
-        );
-        assert_eq!(
-            client
-                .get(format!("{origin}/v1/deployment"))
-                .bearer_auth(&token)
-                .send()
-                .await?
-                .status(),
-            reqwest::StatusCode::UNAUTHORIZED
+            reqwest::StatusCode::NOT_FOUND
         );
         server.abort();
         Ok(())
     }
 
     #[tokio::test]
-    async fn session_scoped_token_endpoint_requires_the_api_key() -> Result<()> {
+    async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -2254,14 +1972,12 @@ mod tests {
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
         admin
-            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                namespace_id: "project-1".into(),
+            .register_test_deployment(&HostLaunchSpec {
                 code_revision: "revision-1".into(),
                 image_ref: "image-1".into(),
                 working_directory: "/workspace".into(),
                 actor_entrypoint: None,
                 secret_refs: vec![],
-                socket_gateway_url: None,
             })
             .await?;
         let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2283,38 +1999,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
-        let deadline = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis()
-            + 30_000;
-        let body = serde_json::json!({ "executionId": "run-1", "storageRegion": "us-east", "deadlineUnixMs": deadline as i64 });
-        let url = format!("{origin}/v1/namespaces/project-1/session-scoped-token");
-        for credential in ["", "wrong-key"] {
-            let response = client
-                .post(&url)
-                .bearer_auth(credential)
-                .json(&body)
-                .send()
-                .await?;
-            assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
-        }
-        let response = client
-            .post(&url)
-            .bearer_auth("api-key")
-            .json(&body)
-            .send()
-            .await?;
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let reply: serde_json::Value = response.json().await?;
-        assert!(!reply["token"].as_str().unwrap_or_default().is_empty());
-        assert!(reply["expiresAtMs"].as_i64().unwrap_or_default() > 0);
-        let old = client
-            .post(format!("{origin}/v1/namespaces/project-1/workflow-tokens"))
-            .json(&body)
-            .send()
-            .await?;
-        assert_eq!(old.status(), reqwest::StatusCode::NOT_FOUND);
-        let deployment_url = format!("{origin}/v1/namespaces/project-1/deployment");
+        let deployment_url = format!("{origin}/v1/deployment");
         for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
             assert_eq!(
                 client
@@ -2346,15 +2031,15 @@ mod tests {
                 .await?;
             assert_eq!(reply["changed"], changed);
         }
-        let deployment: serde_json::Value = client
-            .get(&deployment_url)
-            .bearer_auth("api-key")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        assert!(deployment.is_null());
+        assert_eq!(
+            client
+                .get(&deployment_url)
+                .bearer_auth("api-key")
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
         server.abort();
         Ok(())
     }
@@ -2362,7 +2047,6 @@ mod tests {
     #[tokio::test]
     async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revision()
     -> Result<()> {
-        // Set up an HTTP server with an in-memory registry and fake infrastructure.
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
@@ -2373,13 +2057,12 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
-        // This execution credential should be rejected by the admin-only contract endpoint.
-        let session_token = admin
-            .issue_workflow_token(
-                "default",
-                "run",
+        let host_token = issuer
+            .issue_host(
+                &HostId::new("host.v3.r1.one"),
+                &uuid::Uuid::new_v4().to_string(),
+                "r1",
                 "us-east",
-                i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?)? + 30_000,
             )?
             .token;
         let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2401,9 +2084,8 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
-        // 1. Both namespace routes reject invalid or non-admin credentials.
-        for path in ["/v1/contract", "/v1/namespaces/team/contract"] {
-            for credential in ["", "wrong", &session_token] {
+        for path in ["/v1/deployment/contract"] {
+            for credential in ["", "wrong", &host_token] {
                 assert_eq!(
                     client
                         .get(format!("{origin}{path}"))
@@ -2414,7 +2096,6 @@ mod tests {
                     reqwest::StatusCode::UNAUTHORIZED
                 );
             }
-            // Authorized reads return contract_not_found before anything is published.
             let response = client
                 .get(format!("{origin}{path}"))
                 .bearer_auth("api-key")
@@ -2423,15 +2104,13 @@ mod tests {
             assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
             assert_eq!(
                 response.json::<serde_json::Value>().await?["error"]["code"],
-                "contract_not_found"
+                "not_found"
             );
         }
-        // 2. Publish r1 in both namespaces; repeating the same deployment is a no-op.
         let document: serde_json::Value =
             serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
         let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"image", "workingDirectory":"/app", "contract":document});
-        for scope in ["/v1", "/v1/namespaces/team"] {
-            // These are expected responses, not changes to the request.
+        for scope in ["/v1"] {
             for changed in [true, false] {
                 let reply: serde_json::Value = client
                     .put(format!("{origin}{scope}/deployment"))
@@ -2444,9 +2123,8 @@ mod tests {
                     .await?;
                 assert_eq!(reply["changed"], changed);
             }
-            // Read back the published document, revision, and hash without HTTP caching.
             let response = client
-                .get(format!("{origin}{scope}/contract"))
+                .get(format!("{origin}{scope}/deployment/contract"))
                 .bearer_auth("api-key")
                 .send()
                 .await?
@@ -2462,7 +2140,6 @@ mod tests {
                     .starts_with("sha256:")
             );
         }
-        // 3. In the default namespace, changing the contract while keeping r1 conflicts.
         deployment["contract"] = serde_json::json!({"version":1,"actors":[]});
         let response = client
             .put(format!("{origin}/v1/deployment"))
@@ -2471,7 +2148,6 @@ mod tests {
             .send()
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
-        // 4. The changed contract is accepted under r2 and becomes the active contract.
         deployment["codeRevision"] = "r2".into();
         client
             .put(format!("{origin}/v1/deployment"))
@@ -2481,7 +2157,7 @@ mod tests {
             .await?
             .error_for_status()?;
         let active: serde_json::Value = client
-            .get(format!("{origin}/v1/contract"))
+            .get(format!("{origin}/v1/deployment/contract"))
             .bearer_auth("api-key")
             .send()
             .await?
@@ -2490,10 +2166,9 @@ mod tests {
             .await?;
         assert_eq!(active["codeRevision"], "r2");
         assert_eq!(active["contract"]["actors"], serde_json::json!([]));
-        // 5. Explicit revision reads find r2, but the previous r1 contract is gone.
         assert_eq!(
             client
-                .get(format!("{origin}/v1/contract?revision=r1"))
+                .get(format!("{origin}/v1/deployment/contract?revision=r1"))
                 .bearer_auth("api-key")
                 .send()
                 .await?
@@ -2501,7 +2176,7 @@ mod tests {
             reqwest::StatusCode::NOT_FOUND
         );
         let pinned: serde_json::Value = client
-            .get(format!("{origin}/v1/contract?revision=r2"))
+            .get(format!("{origin}/v1/deployment/contract?revision=r2"))
             .bearer_auth("api-key")
             .send()
             .await?
@@ -2509,11 +2184,10 @@ mod tests {
             .json()
             .await?;
         assert_eq!(pinned, active);
-        // 6. Reject a revision containing '/' and an unsupported query parameter.
         for suffix in ["?revision=bad%2Frevision", "?unknown=1"] {
             assert_eq!(
                 client
-                    .get(format!("{origin}/v1/contract{suffix}"))
+                    .get(format!("{origin}/v1/deployment/contract{suffix}"))
                     .bearer_auth("api-key")
                     .send()
                     .await?
@@ -2521,7 +2195,6 @@ mod tests {
                 reqwest::StatusCode::BAD_REQUEST
             );
         }
-        // 7. Reject r3's unsupported contract format version and leave r2 deployed.
         deployment["codeRevision"] = "r3".into();
         deployment["contract"] = serde_json::json!({"version":2,"actors":[]});
         assert_eq!(

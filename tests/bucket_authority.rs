@@ -121,7 +121,6 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "one".into(),
     };
@@ -229,7 +228,6 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "new".into(),
     };
@@ -437,7 +435,6 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "race".into(),
     };
@@ -457,12 +454,12 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
 }
 
 #[tokio::test]
-async fn http_replication_archival_and_takeover_run_without_postgres() -> Result<()> {
+async fn grpc_replication_archival_and_takeover_run_without_postgres() -> Result<()> {
     use little_actors::{
-        bucket::HttpReplicaPeers,
+        bucket::GrpcReplicaPeers,
         clock::SystemClock,
-        replication::{ReplicatedStateTransport, archive_pending, replica_router},
-        state_transport::{HttpStateTransport, StateTransport, StateWrite},
+        replication::{ReplicatedStateTransport, archive_pending, replica_routes},
+        state_transport::{GrpcStateTransport, StateTransport, StateWrite},
     };
     let directory = tempfile::tempdir()?;
     let bucket = Arc::new(MemoryBucket::default());
@@ -474,7 +471,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     let peer_url = format!("http://{}", peer_listener.local_addr()?);
     let peer_stop = tokio_util::sync::CancellationToken::new();
     let peer_shutdown = peer_stop.clone();
-    let routes = replica_router(replica.clone(), access.clone(), "peer".into());
+    let routes = replica_routes(replica.clone(), access.clone(), "peer".into());
     let peer_server = tokio::spawn(async move {
         axum::serve(peer_listener, routes)
             .with_graceful_shutdown(peer_shutdown.cancelled_owned())
@@ -482,7 +479,6 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let access = access.for_namespace("project")?;
     let runtime = Arc::new(RuntimeStorage::new(
         bucket.clone(),
         leases.clone(),
@@ -491,7 +487,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
             url: peer_url,
             region: "us-east".into(),
         }])),
-        Arc::new(HttpReplicaPeers::new(access.clone())?),
+        Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         origin,
     )?);
@@ -505,7 +501,6 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
     });
     leases.register(&request("old")).await?;
     let actor = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "http".into(),
     };
@@ -524,7 +519,7 @@ async fn http_replication_archival_and_takeover_run_without_postgres() -> Result
         serde_json::json!(1),
     )?
     .encode()?;
-    let http = Arc::new(HttpStateTransport::new());
+    let http = Arc::new(GrpcStateTransport::new());
     let transport = ReplicatedStateTransport::new(
         runtime.clone(),
         http.clone(),
@@ -647,7 +642,6 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
     };
     let old = runtime()?;
     let first = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "first".into(),
     };
@@ -787,7 +781,6 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         "http://control".into(),
     )?);
     let actor = ActorKey {
-        namespace_id: "project".into(),
         actor_type: "Counter".into(),
         actor_id: "delayed".into(),
     };

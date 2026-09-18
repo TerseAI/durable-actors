@@ -8,6 +8,10 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
     InventoryChanged,
+    SocketMessage {
+        actor: crate::actor::ActorKey,
+        event: crate::actor::ActorSocketEvent,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

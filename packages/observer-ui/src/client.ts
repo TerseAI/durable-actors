@@ -14,7 +14,6 @@ interface ActorConnection {
 }
 
 interface ActorInventory {
-    namespaceId: string
     actors: { actorType: string; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
 }
 
@@ -96,7 +95,7 @@ class HttpObserverClient implements ObserverClient {
 }
 
 function isInventory(value: unknown): value is ActorInventory {
-    if (!value || typeof value !== "object" || !("namespaceId" in value) || typeof value.namespaceId !== "string" || !("actors" in value) || !Array.isArray(value.actors)) return false
+    if (!value || typeof value !== "object" || !("actors" in value) || !Array.isArray(value.actors)) return false
     return value.actors.every(
         row =>
             row &&

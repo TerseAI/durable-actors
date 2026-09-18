@@ -143,7 +143,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let first = FileBucket::new(directory.path().into())?;
         let second = FileBucket::new(directory.path().into())?;
-        let key = "namespace/owners/actor.json";
+        let key = "runtime/owners/actor.json";
         assert!(
             first
                 .compare_and_swap(key, None, b"initial".to_vec())
@@ -161,7 +161,7 @@ mod tests {
         let object = reopened.get(key).await?.unwrap();
         assert_eq!(object.generation, generation + 1);
         assert!(object.bytes == b"one" || object.bytes == b"two");
-        assert_eq!(reopened.list("namespace/owners/").await?, [key]);
+        assert_eq!(reopened.list("runtime/owners/").await?, [key]);
         assert!(reopened.list("other/").await?.is_empty());
         assert!(
             reopened

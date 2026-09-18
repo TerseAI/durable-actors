@@ -52,6 +52,12 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 	defer closeClient()
 	p := &provider{api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
 	switch cmd.Operation {
+	case "socket_credentials":
+		var request socketRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.socketCredentials(ctx, request)
 	case "ensure_replica":
 		var request replicaRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
@@ -92,7 +98,7 @@ func readCommand(input io.Reader) (command, error) {
 		return cmd, err
 	}
 	switch cmd.Operation {
-	case "ensure_host", "ensure_replica", "warm_image", "terminate_hosts":
+	case "ensure_host", "ensure_replica", "warm_image", "terminate_hosts", "socket_credentials":
 		return cmd, nil
 	default:
 		return cmd, fmt.Errorf("unsupported sandbox operation")

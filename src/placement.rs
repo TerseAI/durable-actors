@@ -40,12 +40,8 @@ pub trait ObjectPlacementStore: Send + Sync {
 
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;
 
-    async fn list_committed(
-        &self,
-        namespace: Option<&str>,
-        after: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<ObjectPlacement>>;
+    async fn list_committed(&self, after: Option<&str>, limit: u32)
+    -> Result<Vec<ObjectPlacement>>;
 }
 
 pub fn validate_region(region: &str) -> Result<()> {
@@ -97,5 +93,5 @@ pub struct ActorInventory {
 
 #[async_trait]
 pub trait ActorInventoryReader: Send + Sync {
-    async fn actor_inventory(&self, namespace: &str) -> Result<Vec<ActorInventory>>;
+    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>>;
 }

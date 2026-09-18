@@ -10,7 +10,6 @@ import { prepareActorEntrypoint } from "../actor-host.js"
 import { ActorWorkerSupervisor } from "../worker-supervisor.js"
 
 const actorIdentity = {
-    namespace_id: "namespace-1",
     actor_type: "SessionCounter",
     actor_id: "counter-1"
 }

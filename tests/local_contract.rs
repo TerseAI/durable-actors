@@ -3,8 +3,8 @@ use std::{path::Path, process::Stdio, time::Duration};
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, ChildStdout, Command},
     time::timeout,
 };
 
@@ -24,7 +24,6 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(first["namespaceId"], "local");
     assert_eq!(first["contract"], contract);
     let revision = first["codeRevision"].as_str().context("missing revision")?;
     let pinned: Value = runtime
@@ -95,6 +94,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
 
 struct LocalRuntime {
     child: Child,
+    output: BufReader<ChildStdout>,
     origin: String,
     api_key: String,
 }
@@ -141,6 +141,7 @@ impl LocalRuntime {
         assert!(!project.join(".little-actors/runtime.json").exists());
         Ok(Self {
             child,
+            output,
             origin,
             api_key,
         })
@@ -148,10 +149,7 @@ impl LocalRuntime {
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
-            .get(format!(
-                "{}/v1/namespaces/local/contract{query}",
-                self.origin
-            ))
+            .get(format!("{}/v1/deployment/contract{query}", self.origin))
             .bearer_auth(&self.api_key)
             .send()
             .await?)
@@ -159,8 +157,12 @@ impl LocalRuntime {
 
     async fn stop(mut self) -> Result<()> {
         drop(self.child.stdin.take());
-        let status = timeout(Duration::from_secs(5), self.child.wait()).await??;
-        ensure!(status.success(), "runtime exited with {status}");
+        let mut output = String::new();
+        let (status, _) = timeout(Duration::from_secs(5), async {
+            tokio::try_join!(self.child.wait(), self.output.read_to_string(&mut output))
+        })
+        .await??;
+        ensure!(status.success(), "runtime exited with {status}: {output}");
         Ok(())
     }
 }

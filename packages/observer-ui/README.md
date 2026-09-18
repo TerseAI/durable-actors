@@ -25,7 +25,6 @@ The default HTTP adapter subscribes to `GET <prefix>/events` with same-origin se
 
 ```json
 {
-  "namespaceId": "local",
   "actors": [
     {
       "actorType": "Room",
@@ -46,24 +45,24 @@ The default HTTP adapter subscribes to `GET <prefix>/events` with same-origin se
 }
 ```
 
-The Rust control plane supplies the stream through admin-only `GET /v1/observe/events?namespace=<id>` and single reads through `GET /v1/observe/actors?namespace=<id>`. Omitting the namespace uses the control plane's default. The CLI forwards its configured namespace; hosted backends must choose the namespace after authorizing the project. The browser cannot override the CLI's namespace.
+The Rust control plane supplies the stream through admin-only `GET /v1/observe/events` and single reads through `GET /v1/observe/actors`. Each control plane exposes its deployment. Hosted backends must authorize the project before choosing its control plane.
 
 The stream sends ten-second keepalive comments and emits `inventory` events only when the snapshot changes. An `error` event or a closed connection triggers reconnection with exponential backoff from one to ten seconds. The UI retains the last snapshot and marks it stale until a fresh snapshot arrives. Cancel the upstream stream when the viewer disconnects.
 
 Live means the owning host's latest worker snapshot reports that instance in memory. Dormant means it is absent from that snapshot or its owning host session is no longer live. Unknown means the owner is live but has no fresh residency report, such as an older host. The UI shows an Unknown column only when needed. Totals include all three categories.
 
-Each instance includes the active sockets currently held by this control-plane process. A socket exposes its generated connection ID and the JSON metadata supplied when that connection was initialized. The UI reports connection count rather than people count because multiple sockets can belong to one person and the runtime does not infer identity from metadata. Closed and not-yet-activated sockets are excluded.
+Each instance includes the active sockets reported by its owning actor host. A socket exposes its generated connection ID and the JSON metadata supplied when that connection was initialized. The UI reports connection count rather than people count because multiple sockets can belong to one person and the runtime does not infer identity from metadata. Closed and not-yet-activated sockets are excluded.
 
-The worker supervisor reports residency changes immediately over the existing Rust executor connection and retains a one-second freshness heartbeat. A changed report triggers an early serialized lease renewal; after persistence, the host notifies the control plane to publish the updated inventory. Socket activation, disconnection, and metadata changes also trigger updates. Updated Rust hosts, control planes, and SDKs are required for this path.
+The worker supervisor reports residency changes immediately over the existing Rust executor connection and retains a one-second freshness heartbeat. A changed report triggers an early serialized lease renewal; after persistence, the host notifies the control plane to publish the updated inventory. Socket activation, disconnection, and metadata changes trigger early renewal too, persisting a fresh connection snapshot before notifying observers. Updated Rust hosts, control planes, and SDKs are required for this path.
 
-Notifications are local to the receiving control-plane process. A fifteen-second reconciliation catches missed notifications, lease expiry, and storage changes made through other control-plane processes; connection counts remain process-local. Reports expire with the host lease, and reports older than five seconds are excluded from the next renewal. Viewing the inventory never starts a sandbox or loads actor state. Inventory reads scan ownership metadata for the namespace; a larger fleet will benefit from an indexed inventory and shared notifications across control planes.
+Notifications are local to the receiving control-plane process. A fifteen-second reconciliation catches missed notifications, lease expiry, and storage changes made through other control-plane processes; socket snapshots are persisted with the host lease and visible to all control-plane processes. Snapshots from expired or superseded host sessions are excluded. Reports expire with the host lease, and reports older than five seconds are excluded from the next renewal. Viewing the inventory never starts a sandbox or loads actor state. Inventory reads scan ownership metadata for the deployment; a larger fleet will benefit from an indexed inventory and shared notifications across control planes.
 
 `GET <prefix>/connection` remains available for explicit connectivity checks and returns `{ "connected": true }`. Failures return a non-2xx status. Disable caching for all observer endpoints. Redirects, malformed JSON, and invalid counts are treated as failures.
 
 The backend verifies access, checks the control plane using server-side credentials, and returns the result. The browser never needs a control-plane admin key.
 
 - **Local CLI:** the loopback server implements `/api/observe/events`, `/api/observe/actors`, and `/api/observe/connection`, using the API key from CLI settings.
-- **Hosted:** the app backend authenticates the session and authorizes the selected organization/project before choosing the control plane and namespace. Never trust a browser-supplied namespace or target URL as authorization.
+- **Hosted:** the app backend authenticates the session and authorizes the selected organization/project before choosing the control plane. Never trust a browser-supplied target URL as authorization.
 - **Self-hosted:** the same UI can be embedded behind the installation's own backend and authentication. The CLI also works against a remote self-hosted control plane using `--url`.
 
 Existing applications can supply a custom client instead of using the HTTP adapter:
@@ -112,7 +111,7 @@ The standalone app uses Vite, React, TypeScript, and Tailwind. To develop agains
 OBSERVER_API_URL=http://127.0.0.1:<observer-port> pnpm --dir packages/observer-ui dev
 ```
 
-Vite proxies `/api/observe` to that URL (default: `http://127.0.0.1:4174`). No demo data is included in the app. The console supports actor search and combined instance ID/state filters; namespace totals remain unfiltered.
+Vite proxies `/api/observe` to that URL (default: `http://127.0.0.1:4174`). No demo data is included in the app. The console supports actor search and combined instance ID/state filters; deployment totals remain unfiltered.
 
 Vite builds both outputs from `vite.config.ts`: library mode produces the ESM package and separate scoped styles and optional theme; the default build produces the standalone browser app in `dist/standalone`. TypeScript emits the library declarations. Only the standalone app bundles React. The SDK copies those prebuilt assets into its own npm package. The `observe` command starts Vite's preview server on a loopback port and opens it in the browser; Vite is included as a runtime dependency. A Vite middleware handles the authenticated API bridge, keeping admin credentials server-side. The command requires no source checkout or build step.
 

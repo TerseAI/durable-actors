@@ -107,8 +107,8 @@ class ActorWorkerSupervisor {
         return [...this.actors.entries()]
             .filter(([, actor]) => actor.isResident())
             .map(([key]) => {
-                const [namespace_id, actor_type, actor_id] = key.split("\u001f") as [string, string, string]
-                return { namespace_id, actor_type, actor_id }
+                const [actor_type, actor_id] = key.split("\u001f") as [string, string]
+                return { actor_type, actor_id }
             })
     }
 

@@ -3,13 +3,11 @@ import { connection } from "./connection.js"
 interface ControlPlaneOptions {
     url?: string | true
     apiKey?: string
-    namespace?: string
 }
 
 interface ControlPlaneConnection {
     controlPlaneUrl: string
     credential: string
-    namespaceId?: string
 }
 
 class ControlPlaneClient {
@@ -19,35 +17,28 @@ class ControlPlaneClient {
     ) {}
 
     async checkConnection(): Promise<void> {
-        await this.requestJson("GET", "/v1/durability", undefined, 10_000)
+        await this.requestJson("GET", "/v1/actors?limit=1", undefined, 10_000)
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
-        return this.requestJson("PUT", this.namespacePath("deployment"), deployment)
+        return this.requestJson("PUT", "/v1/deployment", deployment)
     }
 
     getContract(revision?: string): Promise<unknown> {
         const query = revision ? `?${new URLSearchParams({ revision })}` : ""
-        return this.requestJson("GET", this.namespacePath(`contract${query}`))
+        return this.requestJson("GET", `/v1/deployment/contract${query}`)
     }
 
     listActors(): Promise<unknown> {
-        const query = new URLSearchParams()
-        if (this.connection.namespaceId) query.set("namespace", this.connection.namespaceId)
-        return this.requestJson("GET", `/v1/observe/actors${query.size ? `?${query}` : ""}`)
+        return this.requestJson("GET", "/v1/observe/actors")
     }
 
     async openActorStream(signal: AbortSignal): Promise<Response> {
-        const query = new URLSearchParams()
-        if (this.connection.namespaceId) query.set("namespace", this.connection.namespaceId)
-        const response = await this.request(
-            `${this.connection.controlPlaneUrl}/v1/observe/events${query.size ? `?${query}` : ""}`,
-            {
-                signal,
-                redirect: "error",
-                headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }
-            }
-        )
+        const response = await this.request(`${this.connection.controlPlaneUrl}/v1/observe/events`, {
+            signal,
+            redirect: "error",
+            headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }
+        })
         if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
             await response.body?.cancel()
             throw new Error("Live inventory is unavailable")
@@ -56,28 +47,14 @@ class ControlPlaneClient {
     }
 
     listObjects(query: URLSearchParams): Promise<unknown> {
-        return this.requestJson("GET", `/v1/objects${query.size ? `?${query}` : ""}`)
+        return this.requestJson("GET", `/v1/actors${query.size ? `?${query}` : ""}`)
     }
 
     inspectObject(actorType: string, actorId: string): Promise<unknown> {
         return this.requestJson(
             "GET",
-            this.namespacePath(`actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/state`)
+            `/v1/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}?include=state`
         )
-    }
-
-    issueSessionToken(request: {
-        executionId: string
-        deadlineUnixMs: number
-        storageRegion: string
-    }): Promise<unknown> {
-        return this.requestJson("POST", this.namespacePath("session-scoped-token"), request, 10_000)
-    }
-
-    private namespacePath(resource: string): string {
-        const namespace = this.connection.namespaceId
-        const prefix = namespace ? `/v1/namespaces/${encodeURIComponent(namespace)}` : "/v1"
-        return `${prefix}/${resource}`
     }
 
     private async requestJson(
@@ -112,8 +89,7 @@ function createControlPlaneClient(options: ControlPlaneOptions, request: typeof 
                 typeof options.url === "string"
                     ? options.url
                     : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
-            apiKey: options.apiKey || process.env.DURABLE_OBJECT_API_KEY,
-            namespace: options.namespace || process.env.DURABLE_OBJECT_NAMESPACE_ID || undefined
+            apiKey: options.apiKey || process.env.DURABLE_OBJECT_API_KEY
         }),
         request
     )

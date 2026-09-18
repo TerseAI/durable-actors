@@ -1,13 +1,9 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander"
 import { config } from "dotenv"
-import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-import { connection, connectionOptions } from "./cli/connection.js"
-import type { ConnectionOptions } from "./cli/connection.js"
-import { ControlPlaneClient } from "./cli/control-plane.js"
 import { registerDeployCommand } from "./cli/deploy.js"
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
@@ -47,15 +43,6 @@ try {
     registerDeployCommand(program)
     registerDevCommand(program)
     registerObserveCommand(program)
-    connectionOptions(program.command("token").description("Print a one-hour session token"))
-        .addOption(
-            new Option("--region <region>", "actor execution region")
-                .env("DURABLE_OBJECT_REGION")
-                .default("north-america-east")
-        )
-        .action(async options => {
-            console.log(await sessionToken(options))
-        })
     program
         .command("start")
         .description("Start the packaged runtime using your self-hosting environment settings")
@@ -79,8 +66,7 @@ async function initializeProject(directory: string, options: { template: string 
     try {
         await cp(new URL(`./templates/${options.template}/`, import.meta.url), destination, {
             recursive: true,
-            force: false,
-            errorOnExist: true
+            force: false
         })
         await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
     } catch (error) {
@@ -102,16 +88,6 @@ Open http://127.0.0.1:3000. The README walks through the app.`)
 async function runRuntime(args: string[]): Promise<number> {
     const executable = await fetchRuntimeExecutablePath()
     return runProcess(executable, args, runtimeEnvironment(executable), true)
-}
-
-async function sessionToken(options: ConnectionOptions & { region: string }): Promise<string> {
-    const client = new ControlPlaneClient(connection(options), fetch)
-    const { token } = (await client.issueSessionToken({
-        executionId: `cli-${randomUUID()}`,
-        deadlineUnixMs: Date.now() + 3_600_000,
-        storageRegion: options.region
-    })) as { token: string }
-    return token
 }
 
 async function version(): Promise<string> {

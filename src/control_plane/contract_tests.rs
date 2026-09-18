@@ -160,7 +160,7 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
         let registry =
             PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
         let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
-        let deployment = spec(&format!("persisted-{}", uuid::Uuid::new_v4()));
+        let deployment = spec();
         registry
             .register_deployment(&deployment, Some(&contract))
             .await?;
@@ -168,11 +168,7 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
         let reopened =
             PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
         assert_eq!(
-            reopened
-                .deployment_contract(&deployment.namespace_id, None)
-                .await?
-                .unwrap()
-                .contract,
+            reopened.deployment_contract(None).await?.unwrap().contract,
             *contract.document()
         );
         Ok(())
@@ -181,18 +177,12 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
 }
 
 async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
-    let namespace = format!("contract-{}", uuid::Uuid::new_v4());
-    let mut deployment = spec(&namespace);
+    let mut deployment = spec();
     let empty = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
     let full = PublicActorContract::new(serde_json::from_str(include_str!(
         "../../sdk/fixtures/public-contract.json"
     ))?)?;
-    assert!(
-        registry
-            .deployment_contract(&namespace, None)
-            .await?
-            .is_none()
-    );
+    assert!(registry.deployment_contract(None).await?.is_none());
     assert!(
         registry
             .register_deployment(&deployment, Some(&empty))
@@ -203,10 +193,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .register_deployment(&deployment, Some(&empty))
             .await?
     );
-    let first = registry
-        .deployment_contract(&namespace, None)
-        .await?
-        .unwrap();
+    let first = registry.deployment_contract(None).await?.unwrap();
     assert_eq!(first.code_revision, "revision-1");
     assert_eq!(first.contract_hash, empty.hash());
     assert_eq!(first.contract, *empty.document());
@@ -218,13 +205,10 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(
-        registry.launch_spec(&namespace).await?,
-        Some(deployment.clone())
-    );
+    assert_eq!(registry.launch_spec().await?, Some(deployment.clone()));
     assert!(!registry.register_deployment(&deployment, None).await?);
     assert_eq!(
-        registry.deployment_contract(&namespace, None).await?,
+        registry.deployment_contract(None).await?,
         Some(first.clone())
     );
     deployment.code_revision = "revision-2".into();
@@ -234,50 +218,32 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .await?
     );
     assert_eq!(
-        registry
-            .deployment_contract(&namespace, None)
-            .await?
-            .unwrap()
-            .contract,
+        registry.deployment_contract(None).await?.unwrap().contract,
         *full.document()
     );
     assert_eq!(
-        registry
-            .deployment_contract(&namespace, Some("revision-1"))
-            .await?,
+        registry.deployment_contract(Some("revision-1")).await?,
         None
     );
     assert!(
         registry
-            .deployment_contract("another-namespace", Some("revision-1"))
+            .deployment_contract(Some("revision-1"))
             .await?
             .is_none()
     );
     deployment.code_revision = "revision-3".into();
     registry.register_deployment(&deployment, None).await?;
-    assert!(
-        registry
-            .deployment_contract(&namespace, None)
-            .await?
-            .is_none()
-    );
+    assert!(registry.deployment_contract(None).await?.is_none());
     deployment.code_revision = "revision-1".into();
     registry.register_deployment(&deployment, None).await?;
-    assert_eq!(registry.deployment_contract(&namespace, None).await?, None);
+    assert_eq!(registry.deployment_contract(None).await?, None);
     registry
         .register_deployment(&deployment, Some(&full))
         .await?;
-    registry.remove_deployment(&namespace).await?;
-    assert!(
-        registry
-            .deployment_contract(&namespace, None)
-            .await?
-            .is_none()
-    );
+    registry.remove_deployment().await?;
+    assert!(registry.deployment_contract(None).await?.is_none());
     assert_eq!(
-        registry
-            .deployment_contract(&namespace, Some("revision-1"))
-            .await?,
+        registry.deployment_contract(Some("revision-1")).await?,
         None
     );
     deployment.code_revision = "race".into();
@@ -288,24 +254,18 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     assert_ne!(left.is_ok(), right.is_ok());
     let winner = if left.is_ok() { empty } else { full };
     assert_eq!(
-        registry
-            .deployment_contract(&namespace, None)
-            .await?
-            .unwrap()
-            .contract,
+        registry.deployment_contract(None).await?.unwrap().contract,
         *winner.document()
     );
     Ok(())
 }
 
-fn spec(namespace: &str) -> HostLaunchSpec {
+fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
-        namespace_id: namespace.into(),
         code_revision: "revision-1".into(),
         image_ref: "image".into(),
         working_directory: "/app".into(),
         actor_entrypoint: None,
         secret_refs: vec![],
-        socket_gateway_url: None,
     }
 }

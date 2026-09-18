@@ -21,7 +21,6 @@ function ActorObserver({ client, className = "" }: ActorObserverProps) {
                 <div>
                     <div className="la-observer-title">
                         <h1>Actors</h1>
-                        {inventory && <Badge variant="outline">{inventory.namespaceId}</Badge>}
                     </div>
                     <p>Inspect instances, residency, and connections.</p>
                 </div>
@@ -41,7 +40,7 @@ function ActorObserver({ client, className = "" }: ActorObserverProps) {
                 <>
                     <InventorySummary inventory={inventory} />
                     {inventory.actors.length ? (
-                        <ActorTable key={inventory.namespaceId} inventory={inventory} />
+                        <ActorTable inventory={inventory} />
                     ) : (
                         <EmptyState title="No actors yet" description="Deploy your actor classes to see them here. Instance counts appear as actors are used." />
                     )}

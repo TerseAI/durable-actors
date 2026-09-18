@@ -16,7 +16,7 @@ test("observer serves generated assets without a hardcoded filename list", async
     await mkdir(join(directory, "assets"))
     await writeFile(join(directory, "assets", "details-abc123.js"), "export const details = true")
     const observer = new Observer(
-        { checkConnection: async () => {}, listActors: async () => ({ namespaceId: "local", actors: [] }) },
+        { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
         async () => {},
         pathToFileURL(`${directory}/`)
     )
@@ -38,7 +38,7 @@ test("observer proxies connection checks and reports a later outage without expo
     let available = true
     const observer = new Observer(
         {
-            listActors: async () => ({ namespaceId: "local", actors: [] }),
+            listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 if (!available) throw new Error("secret-admin-key")
             }
@@ -74,7 +74,7 @@ test("observer opens the browser only after authentication and local serving suc
     let opened: string | undefined
     const observer = new Observer(
         {
-            listActors: async () => ({ namespaceId: "local", actors: [] }),
+            listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 connected = true
             }
@@ -102,7 +102,7 @@ test("observer does not open a browser when the control plane rejects the connec
     let opened = false
     const observer = new Observer(
         {
-            listActors: async () => ({ namespaceId: "local", actors: [] }),
+            listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 throw new Error("Unauthorized")
             }
@@ -117,7 +117,7 @@ test("observer does not open a browser when the control plane rejects the connec
 
 test("observer keeps the local UI available if browser launching fails", async t => {
     const observer = new Observer(
-        { checkConnection: async () => {}, listActors: async () => ({ namespaceId: "local", actors: [] }) },
+        { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
         async () => {
             throw new Error("No browser")
         },
@@ -131,7 +131,7 @@ test("observer keeps the local UI available if browser launching fails", async t
 
 test("observer proxies actor inventory and hides upstream failures", async t => {
     let fail = false
-    const inventory = { namespaceId: "team", actors: [{ actorType: "Room", live: 1, dormant: 2, unknown: 0 }] }
+    const inventory = { actors: [{ actorType: "Room", live: 1, dormant: 2, unknown: 0 }] }
     const observer = new Observer(
         {
             checkConnection: async () => {},
@@ -163,11 +163,7 @@ test("observer forwards live events and aborts upstream when the viewer disconne
                 return new Response(
                     new ReadableStream({
                         start(controller) {
-                            controller.enqueue(
-                                new TextEncoder().encode(
-                                    'event: inventory\ndata: {"namespaceId":"local","actors":[]}\n\n'
-                                )
-                            )
+                            controller.enqueue(new TextEncoder().encode('event: inventory\ndata: {"actors":[]}\n\n'))
                         }
                     }),
                     { headers: { "content-type": "text/event-stream" } }

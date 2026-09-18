@@ -8,7 +8,7 @@ use little_actors::{
 };
 
 #[tokio::test]
-async fn bucket_lists_snapshots_with_exact_namespace_filtering_and_pagination() -> Result<()> {
+async fn bucket_lists_committed_snapshots_with_pagination() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let bucket = std::sync::Arc::new(little_actors::bucket::FileBucket::new(
         directory.path().into(),
@@ -23,7 +23,7 @@ async fn bucket_lists_snapshots_with_exact_namespace_filtering_and_pagination() 
         bucket,
         leases.clone(),
         std::sync::Arc::new(EmptyFleet),
-        std::sync::Arc::new(little_actors::bucket::HttpReplicaPeers::new(
+        std::sync::Arc::new(little_actors::bucket::GrpcReplicaPeers::new(
             access.clone(),
         )?),
         access,
@@ -52,8 +52,7 @@ async fn check_listing(
     store: &little_actors::bucket::RuntimeStorage,
     leases: &dyn HostLeaseRegistry,
 ) -> Result<()> {
-    let namespace = format!("test_{}", uuid::Uuid::new_v4().simple());
-    let host = HostId::new(format!("host.v2.{namespace}:test"));
+    let host = HostId::new(format!("host.v3.test.{}", uuid::Uuid::new_v4()));
     leases
         .register(&HostLeaseRequest {
             id: host.clone(),
@@ -62,15 +61,8 @@ async fn check_listing(
             duration_ms: 60_000,
         })
         .await?;
-    for (scope, id, committed) in [
-        (namespace.clone(), "a", true),
-        (namespace.clone(), "b.with.dots", true),
-        (namespace.clone(), "uncommitted", false),
-        (format!("{namespace}.nested"), "c", true),
-        (namespace.replace('_', "x"), "d", true),
-    ] {
+    for (id, committed) in [("a", true), ("b.with.dots", true), ("uncommitted", false)] {
         let actor = ActorKey {
-            namespace_id: scope,
             actor_type: "Room.with.dots".into(),
             actor_id: id.into(),
         };
@@ -87,36 +79,23 @@ async fn check_listing(
             SnapshotWriter::write_snapshot(store, &plan, snapshot.encode()?).await?;
         }
     }
-    let objects = store.list_committed(Some(&namespace), None, 10).await?;
+    let objects = store.list_committed(None, 10).await?;
     assert_eq!(objects.len(), 2);
     assert!(objects[0].object.as_str().ends_with(":a"));
     assert!(objects[1].object.as_str().ends_with(":b.with.dots"));
-    assert_eq!(
-        store.list_committed(Some(&namespace), None, 1).await?,
-        objects[..1]
-    );
+    assert_eq!(store.list_committed(None, 1).await?, objects[..1]);
     assert_eq!(
         store
-            .list_committed(Some(&namespace), Some(objects[0].object.as_str()), 1)
+            .list_committed(Some(objects[0].object.as_str()), 1)
             .await?,
         objects[1..]
     );
     assert!(
         store
-            .list_committed(Some(&namespace), Some(objects[1].object.as_str()), 1)
+            .list_committed(Some(objects[1].object.as_str()), 1)
             .await?
             .is_empty()
     );
-    let global = store
-        .list_committed(None, Some(&format!("object.v2.{namespace}")), 100)
-        .await?;
-    assert!(global.contains(&objects[1]));
-    assert!(global.iter().any(|object| {
-        object
-            .object
-            .as_str()
-            .contains(&format!("{namespace}.nested"))
-    }));
     leases.unregister(&host, "session").await?;
     Ok(())
 }

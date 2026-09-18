@@ -6,6 +6,7 @@ service ActorHostService {
   rpc Activate(ActivateActorRequest) returns (ActivateActorReply);
   rpc Invoke(HostInvokeActorRequest) returns (InvokeActorReply);
   rpc HandleSocket(HostSocketEventRequest) returns (InvokeActorReply);
+  rpc PublishSocketEffects(PublishSocketEffectsRequest) returns (Empty);
 }
 
 service ActorControlPlaneService {
@@ -21,7 +22,7 @@ message ControlPlaneReply {
 }
 
 message ActorKey {
-  string namespace_id = 1;
+  reserved 1;
   string actor_type = 2;
   string actor_id = 3;
 }
@@ -71,4 +72,53 @@ message Reroute {}
 message ActivateActorRequest { ActorKey actor = 1; }
 message ActivateActorReply {
   uint64 owner_epoch = 1;
+}
+
+message Empty {}
+message PublishSocketEffectsRequest {
+  ActorKey actor = 1;
+  uint64 owner_epoch = 2;
+  bytes effects_json = 3;
+}
+
+service SnapshotService {
+  rpc Read(Empty) returns (SnapshotData);
+  rpc Write(SnapshotData) returns (SnapshotWriteReply);
+}
+service ReplicaService {
+  rpc Initialize(Empty) returns (Empty);
+  rpc Head(Empty) returns (ReplicaStreamHead);
+  rpc Seal(Empty) returns (ReplicaSessionHead);
+}
+service ArchiveService {
+  rpc Prepare(ArchiveRequest) returns (ArchiveReply);
+}
+message SnapshotData { bytes data = 1; }
+message SnapshotWriteReply { bool already_exists = 1; }
+message ArchiveRequest { string object = 1; }
+message ArchiveReply {
+  string write_url = 1;
+  string read_url = 2;
+}
+message ReplicaStreamIdentity {
+  string session = 1;
+  string prefix = 2;
+  uint64 owner_epoch = 3;
+  uint64 base_version = 4;
+}
+message ReplicaSnapshotRef {
+  string object = 1;
+  uint64 state_version = 2;
+  string request_id = 3;
+  string digest = 4;
+}
+message ReplicaStreamHead {
+  ReplicaStreamIdentity stream = 1;
+  ReplicaSnapshotRef latest = 2;
+}
+message ReplicaSessionHead {
+  string session = 1;
+  bool initialized = 2;
+  bool sealed = 3;
+  repeated ReplicaStreamHead streams = 4;
 }

@@ -19,7 +19,6 @@ export interface LocalActorOptions {
 const connectionSchema = z.object({
     controlPlaneUrl: z.string().url(),
     apiKey: z.string().min(1),
-    namespaceId: z.string().min(1),
     storageRegion: z.string().min(1),
     pid: z.number().int().positive()
 })

@@ -79,7 +79,6 @@ export class RejectingRoom extends Actor {
 }
 
 const actorIdentity = {
-    namespace_id: "namespace-1",
     actor_type: "Counter",
     actor_id: "counter-1"
 }
@@ -273,7 +272,7 @@ test("a resident-only command requests hydration before constructing or executin
     assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 11, state: { count: 11 } })
 })
 
-test("a resident actor rejects another namespace or ID without changing its state", async () => {
+test("a resident actor rejects another type or ID without changing its state", async () => {
     const runtime = new ActorRuntime(counterDefinition)
     const command = {
         type: "invoke" as const,
@@ -285,12 +284,16 @@ test("a resident actor rejects another namespace or ID without changing its stat
     }
     assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 1, state: { count: 1 } })
     for (const actor of [
-        { ...actorIdentity, namespace_id: "other" },
+        { ...actorIdentity, actor_type: "OtherCounter" },
         { ...actorIdentity, actor_id: "other" }
     ]) {
         const reply = await runtime.handle({ ...command, actor })
         assert.equal(reply.type, "failed")
-        if (reply.type === "failed") assert.equal(reply.code, "actor_identity_mismatch")
+        if (reply.type === "failed")
+            assert.equal(
+                reply.code,
+                actor.actor_type === actorIdentity.actor_type ? "actor_identity_mismatch" : "actor_type_not_found"
+            )
     }
     assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 2, state: { count: 2 } })
 })

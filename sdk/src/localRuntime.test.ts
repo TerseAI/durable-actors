@@ -31,14 +31,13 @@ test("waits for the readiness pipe and stops idempotently", async () => {
         const fd = Number(process.argv[process.argv.indexOf("--ready-fd") + 1]);
         fs.writeSync(fd, '{"controlPlaneUrl":"http://127.0.0.1:7100",');
         setTimeout(() => {
-            fs.writeSync(fd, '"apiKey":"secret","namespaceId":"local","storageRegion":"local","pid":' + process.pid + '}');
+            fs.writeSync(fd, '"apiKey":"secret","storageRegion":"local","pid":' + process.pid + '}');
             fs.closeSync(fd);
         }, 20);
         process.stdin.resume();
         process.stdin.on("end", () => process.exit(0));`,
         async () => {
             const runtime = await startLocalActors({ entrypoint: "src/actors.ts", apiKey: "secret" })
-            assert.equal(runtime.connection.namespaceId, "local")
             assert.equal(runtime.connection.apiKey, "secret")
             await Promise.all([runtime.stop(), runtime.stop()])
             await runtime.closed
@@ -85,7 +84,7 @@ for (const quiet of [false, true]) {
             `const fs = require("node:fs");
             fs.writeSync(1, "actor stdout\\n");
             fs.writeSync(2, "actor stderr\\n");
-            fs.writeSync(3, JSON.stringify({controlPlaneUrl:"http://127.0.0.1:7100", apiKey:"secret", namespaceId:"local", storageRegion:"local", pid:process.pid}));
+            fs.writeSync(3, JSON.stringify({controlPlaneUrl:"http://127.0.0.1:7100", apiKey:"secret", storageRegion:"local", pid:process.pid}));
             fs.closeSync(3);
             process.stdin.resume();
             process.stdin.on("end", () => process.exit(0));`,

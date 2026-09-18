@@ -21,7 +21,7 @@ const MAX_PROVIDER_OUTPUT_BYTES: usize = 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
     pub runtime_config: Option<String>,
-    pub namespace_id: String,
+
     pub code_revision: String,
     pub canonical_region: String,
     pub host_id: HostId,
@@ -31,11 +31,11 @@ pub struct EnsureHostRequest {
     pub control_plane_url: String,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
+    pub socket_jwt_audience: String,
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
-    pub socket_gateway_url: String,
     pub actor_idle_timeout_ms: u64,
     pub host_idle_timeout_ms: u64,
 }
@@ -90,7 +90,6 @@ pub struct ActorHostProvisioning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WarmImageRequest {
-    pub namespace_id: String,
     pub code_revision: String,
     pub canonical_region: String,
     pub image_ref: String,
@@ -107,7 +106,6 @@ pub struct ImageWarmup {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminateHostsRequest {
-    pub namespace_id: String,
     pub code_revision: String,
     pub canonical_regions: Vec<String>,
 }
@@ -119,8 +117,28 @@ pub struct HostTermination {
     pub resource_ids: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketCredentialsRequest {
+    pub code_revision: String,
+    pub canonical_region: String,
+    pub host_id: HostId,
+    pub session_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SocketCredentials {
+    pub url: String,
+    #[serde(default)]
+    pub token: String,
+}
+
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn socket_credentials(
+        &self,
+        request: &SocketCredentialsRequest,
+    ) -> Result<SocketCredentials>;
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn warm_image(&self, request: &WarmImageRequest) -> Result<ImageWarmup>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;
@@ -189,6 +207,13 @@ impl CommandSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for CommandSandboxProvider {
+    async fn socket_credentials(
+        &self,
+        request: &SocketCredentialsRequest,
+    ) -> Result<SocketCredentials> {
+        self.execute("socket_credentials", request).await
+    }
+
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
         let (mut response, command): (ActorHostHandle, _) =
             self.execute_timed("ensure_host", request).await?;
@@ -327,7 +352,7 @@ mod tests {
     #[test]
     fn decodes_provider_provisioning_timings() {
         let handle: ActorHostHandle = serde_json::from_value(serde_json::json!({
-            "hostId": "host.v2.namespace:revision.session",
+            "hostId": "host.v3.revision.session",
             "route": "https://host.example.com",
             "canonicalRegion": "north-america-east",
             "provisioning": {

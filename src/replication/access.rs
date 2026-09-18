@@ -10,7 +10,7 @@ use crate::clock::Clock;
 #[derive(Clone)]
 pub struct ReplicaAccess {
     key: hmac::Key,
-    namespace: Option<String>,
+    secret: Arc<str>,
     clock: Arc<dyn Clock>,
 }
 
@@ -31,91 +31,56 @@ impl ReplicaAccess {
     pub fn new(secret: &str, clock: Arc<dyn Clock>) -> Self {
         Self {
             key: hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes()),
-            namespace: None,
+            secret: secret.into(),
             clock,
         }
     }
 
-    pub fn delegate_secret(&self, namespace: &str) -> Result<String> {
-        crate::actor::ActorScope {
-            namespace_id: namespace.into(),
-        }
-        .validate()?;
-        ensure!(
-            self.namespace.is_none(),
-            "cannot delegate a scoped replica key"
-        );
-        Ok(URL_SAFE_NO_PAD
-            .encode(hmac::sign(&self.key, format!("namespace:{namespace}").as_bytes()).as_ref()))
+    pub fn secret(&self) -> &str {
+        &self.secret
     }
 
-    pub fn delegated(secret: &str, namespace: &str, clock: Arc<dyn Clock>) -> Self {
-        let mut access = Self::new(secret, clock);
-        access.namespace = Some(namespace.into());
-        access
-    }
-
-    pub fn for_namespace(&self, namespace: &str) -> Result<Self> {
-        Ok(Self::delegated(
-            &self.delegate_secret(namespace)?,
-            namespace,
-            self.clock.clone(),
-        ))
-    }
-
-    pub fn url(&self, origin: &str, resource: &str, grant: &ReplicaGrant) -> Result<String> {
-        if let Some(namespace) = &self.namespace {
-            ensure!(
-                grant
-                    .object
-                    .starts_with(&crate::storage_paths::namespace(namespace)),
-                "replica grant crossed namespace scope"
-            );
-        }
+    pub fn url(&self, origin: &str, grant: &ReplicaGrant) -> Result<String> {
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(grant)?);
         let signature = URL_SAFE_NO_PAD.encode(hmac::sign(&self.key, payload.as_bytes()).as_ref());
-        let scope = self
-            .namespace
-            .as_ref()
-            .map(|n| format!("{n}~"))
-            .unwrap_or_default();
-        Ok(format!(
-            "{}/_replica/{resource}?token={scope}{payload}.{signature}",
-            origin.trim_end_matches('/')
-        ))
+        let url = reqwest::Url::parse(origin)?;
+        ensure!(
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && url.path() == "/"
+                && url.host_str().is_some(),
+            "invalid replica origin"
+        );
+        let scheme = match url.scheme() {
+            "http" => "grpc",
+            "https" => "grpcs",
+            _ => anyhow::bail!("replica origin must be HTTP or HTTPS"),
+        };
+        let origin = url.origin().ascii_serialization();
+        let address = origin.replacen(url.scheme(), scheme, 1);
+        Ok(format!("{address}?token={payload}.{signature}"))
     }
 
     pub(crate) fn verify(&self, token: &str, operation: &str) -> Result<ReplicaGrant> {
+        self.verify_any(token, &[operation])
+    }
+
+    pub(crate) fn verify_any(&self, token: &str, operations: &[&str]) -> Result<ReplicaGrant> {
         ensure!(token.len() <= 16 * 1024, "replica capability is too large");
-        let (namespace, token) = token
-            .split_once('~')
-            .map_or((None, token), |(ns, token)| (Some(ns), token));
-        let verifier = match (&self.namespace, namespace) {
-            (None, Some(namespace)) => self.for_namespace(namespace)?,
-            (None, None) => self.clone(),
-            (Some(own), Some(namespace)) if own == namespace => self.clone(),
-            _ => anyhow::bail!("replica grant crossed namespace scope"),
-        };
         let (payload, signature) = token
             .split_once('.')
             .ok_or_else(|| anyhow::anyhow!("invalid replica capability"))?;
         hmac::verify(
-            &verifier.key,
+            &self.key,
             payload.as_bytes(),
             &URL_SAFE_NO_PAD.decode(signature)?,
         )
         .map_err(|_| anyhow::anyhow!("invalid replica signature"))?;
         let grant: ReplicaGrant = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
-        if let Some(namespace) = namespace {
-            ensure!(
-                grant
-                    .object
-                    .starts_with(&crate::storage_paths::namespace(namespace)),
-                "replica grant crossed namespace scope"
-            );
-        }
         ensure!(
-            grant.operation == operation,
+            operations.contains(&grant.operation.as_str()),
             "replica operation is not authorized"
         );
         ensure!(
@@ -131,7 +96,10 @@ impl ReplicaAccess {
                 .stream
                 .as_ref()
                 .is_none_or(|stream| stream.prefix == grant.object
-                    && stream.session.split('/').nth(3) == grant.object.split('/').nth(3)),
+                    && stream
+                        .session
+                        .starts_with(&format!("{}hosts/", crate::storage_paths::ROOT))
+                    && stream.owner_epoch > 0),
             "replica stream does not match its capability"
         );
         crate::placement::validate_region(&grant.region)?;
@@ -139,58 +107,57 @@ impl ReplicaAccess {
     }
 }
 
-#[derive(Deserialize)]
-pub(crate) struct AccessQuery {
-    pub token: String,
-    pub object: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn namespace_delegate_cannot_authorize_another_namespace() -> Result<()> {
-        let root = ReplicaAccess::new("secret", Arc::new(crate::clock::SystemClock));
-        let delegate = root.for_namespace("project")?;
+    fn replica_capabilities_bind_operation_expiry_and_stream() -> Result<()> {
+        let access = ReplicaAccess::new("secret", Arc::new(crate::clock::SystemClock));
         let grant = ReplicaGrant {
             stream: None,
             operation: "GET".into(),
-            object: "little-actors/v1/namespaces/cHJvamVjdA/snapshots/aa/test/1.json".into(),
+            object: "little-actors/v2/snapshots/aa/test/1.json".into(),
             region: "us-east".into(),
             host_id: "replica".into(),
             archive_url: String::new(),
             expires_at_ms: u64::MAX,
         };
-        let url = delegate.url("http://replica", "state", &grant)?;
-        root.verify(url.split("token=").nth(1).unwrap(), "GET")?;
-        let forbidden = ReplicaGrant {
-            object: "little-actors/v1/namespaces/b3RoZXI/snapshots/aa/test/1.json".into(),
-            ..grant
-        };
-        assert!(delegate.url("http://replica", "state", &forbidden).is_err());
-        let unscoped = ReplicaAccess::new(
-            &root.delegate_secret("project")?,
-            Arc::new(crate::clock::SystemClock),
-        );
-        let forged = unscoped.url("http://replica", "state", &forbidden)?;
-        let forged = format!("project~{}", forged.split("token=").nth(1).unwrap());
-        assert!(root.verify(&forged, "GET").is_err());
-        let mismatched = ReplicaGrant {
-            object: "little-actors/v1/namespaces/cHJvamVjdA/snapshots/aa/test/".into(),
-            stream: Some(super::super::ReplicaStream {
-                prefix: "little-actors/v1/namespaces/b3RoZXI/snapshots/aa/test/".into(),
-                session: "little-actors/v1/namespaces/b3RoZXI/snapshots/sessions/one/".into(),
-                owner_epoch: 1,
-                base_version: 0,
-            }),
-            ..forbidden
-        };
-        let forged = delegate.url("http://replica", "state", &mismatched)?;
+        let url = access.url("http://replica", &grant)?;
+        let token = url.split("token=").nth(1).unwrap();
+        access.verify(token, "GET")?;
+        assert!(access.verify(token, "PUT").is_err());
         assert!(
-            root.verify(forged.split("token=").nth(1).unwrap(), "GET")
+            ReplicaAccess::new("other-secret", Arc::new(crate::clock::SystemClock))
+                .verify(token, "GET")
                 .is_err()
         );
+        for invalid in [
+            ReplicaGrant {
+                expires_at_ms: 0,
+                ..grant.clone()
+            },
+            ReplicaGrant {
+                object: "outside/runtime.json".into(),
+                ..grant.clone()
+            },
+            ReplicaGrant {
+                stream: Some(super::super::ReplicaStream {
+                    prefix: "another-object".into(),
+                    session: "little-actors/v2/hosts/host/sessions/one/".into(),
+                    owner_epoch: 1,
+                    base_version: 0,
+                }),
+                ..grant.clone()
+            },
+        ] {
+            let url = access.url("http://replica", &invalid)?;
+            assert!(
+                access
+                    .verify(url.split("token=").nth(1).unwrap(), "GET")
+                    .is_err()
+            );
+        }
         Ok(())
     }
 }

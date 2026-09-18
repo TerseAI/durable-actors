@@ -8,10 +8,9 @@ function configuredSettings(options: unknown) {
         throw new ActorConfigurationError(`durable-object client settings are invalid: ${result.error.message}`)
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
     return {
-        credential: (result.data.apiKey ?? result.data.token)!,
-        namespaceId: result.data.namespaceId,
-        controlPlaneUrl,
-        socketGatewayUrl: validateOrigin(result.data.socketGatewayUrl ?? controlPlaneUrl)
+        credential: result.data.apiKey,
+        homeRegion: result.data.homeRegion,
+        controlPlaneUrl
     }
 }
 
@@ -36,20 +35,13 @@ function validateOrigin(origin: string): string {
     return url.origin
 }
 
-const clientOptionsSchema = z
-    .object({
-        apiKey: z.string().trim().min(1).optional(),
-        token: z.string().trim().min(1).optional(),
-        namespaceId: z
-            .string()
-            .regex(/^[A-Za-z0-9._-]+$/u)
-            .optional(),
-        controlPlaneUrl: z.string().url(),
-        socketGatewayUrl: z.string().url().optional()
-    })
-    .refine(
-        settings => (settings.apiKey === undefined) !== (settings.token === undefined),
-        "Configure exactly one of apiKey or token"
-    )
+const clientOptionsSchema = z.strictObject({
+    apiKey: z.string().trim().min(1),
+    homeRegion: z
+        .string()
+        .regex(/^[A-Za-z0-9._-]+$/u)
+        .optional(),
+    controlPlaneUrl: z.string().url()
+})
 
 export { configuredSettings }

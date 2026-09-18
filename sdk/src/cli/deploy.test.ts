@@ -71,7 +71,6 @@ test("deploy validates source before publication, handles conflicts, and maps lo
     const env = {
         ...process.env,
         DURABLE_OBJECT_API_KEY: "test-key",
-        DURABLE_OBJECT_NAMESPACE_ID: "",
         DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`
     }
     const args = [

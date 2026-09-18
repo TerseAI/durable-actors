@@ -11,24 +11,28 @@ import type { ActorConnection } from "../actor/socket.js"
 import { RemoteActorClient } from "./remoteClient.js"
 import type { DurableObjectsClientOptions } from "./remoteClient.js"
 
-const options = { token: " token ", namespaceId: "project-1", controlPlaneUrl: "https://CONTROL.example.com:443/" }
+const options = { apiKey: " key ", controlPlaneUrl: "https://CONTROL.example.com:443/" }
 
-test("environment and explicit client settings normalize routes, tokens, and gateway defaults equally", async () => {
-    for (const socketGatewayUrl of [undefined, "http://SOCKET.example.com:80/"]) {
-        const settings = { ...options, socketGatewayUrl }
+test("environment and explicit client settings normalize routes and API keys equally", async () => {
+    {
+        const settings = options
         const connections: unknown[] = []
         const dependencies = {
             environment: environmentFor(settings),
-            async connectWebSocket(url: string, token: string, metadata: unknown) {
-                connections.push({ url, token, metadata })
+            fetch: async (url: string | URL | Request, init?: RequestInit) => {
+                assert.equal(String(url), "https://control.example.com/v1/actors/Counter/one/connect")
+                assert.equal(new Headers(init?.headers).get("authorization"), "Bearer key")
+                return Response.json({ websocketUrl: "wss://host.example.com/v1/socket?key=ticket", key: "ticket" })
+            },
+            async connectWebSocket(url: string, metadata: unknown) {
+                connections.push({ url, metadata })
                 return {} as ActorConnection
             }
         }
         await new RemoteActorClient(settings, dependencies).connect("Counter", "one", {})
         await new RemoteActorClient(undefined, dependencies).connect("Counter", "one", {})
         const expected = {
-            url: `${socketGatewayUrl ? "ws://socket.example.com" : "wss://control.example.com"}/v1/namespaces/project-1/actors/Counter/one/websocket`,
-            token: "token",
+            url: "wss://host.example.com/v1/socket?key=ticket",
             metadata: {}
         }
         assert.deepEqual(connections, [expected, expected])
@@ -36,12 +40,7 @@ test("environment and explicit client settings normalize routes, tokens, and gat
 })
 
 test("environment and explicit client settings report the same validation errors", async () => {
-    for (const invalid of [
-        { token: " " },
-        { namespaceId: "bad/namespace" },
-        { controlPlaneUrl: "invalid" },
-        { socketGatewayUrl: "https://socket.example.com/path" }
-    ]) {
+    for (const invalid of [{ apiKey: " " }, { homeRegion: "bad/region" }, { controlPlaneUrl: "invalid" }]) {
         const settings = { ...options, ...invalid }
         let expected: Error | undefined
         assert.throws(
@@ -60,10 +59,9 @@ test("environment and explicit client settings report the same validation errors
 
 function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEnv {
     return {
-        DURABLE_OBJECT_TOKEN: settings.token,
-        DURABLE_OBJECT_NAMESPACE_ID: settings.namespaceId,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: settings.controlPlaneUrl,
-        DURABLE_OBJECT_SOCKET_GATEWAY_URL: settings.socketGatewayUrl
+        DURABLE_OBJECT_API_KEY: settings.apiKey,
+        DURABLE_OBJECT_HOME_REGION: settings.homeRegion,
+        DURABLE_OBJECT_CONTROL_PLANE_URL: settings.controlPlaneUrl
     }
 }
 
@@ -75,8 +73,7 @@ test("clients require explicit credentials even if a discovery file exists", asy
         path.join(directory, ".little-actors/runtime.json"),
         JSON.stringify({
             controlPlaneUrl: "http://localhost:7100",
-            apiKey: "stale-key",
-            namespaceId: "stale"
+            apiKey: "stale-key"
         })
     )
     const source = `
@@ -87,7 +84,7 @@ test("clients require explicit credentials even if a discovery file exists", asy
             environment: {},
             connectWebSocket: async () => assert.fail('used file credentials')
         });
-        await assert.rejects(client.connect('Counter', 'one', {}), /Configure exactly one of apiKey or token/);
+        await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
         assert.throws(() => new SocketProxy({Room:{}}), /API key/);
     `
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))

@@ -22,6 +22,8 @@ pub struct BucketHostLeases {
 #[derive(Serialize, Deserialize)]
 struct Record {
     #[serde(default)]
+    sockets: Vec<crate::host_leases::ActorSocketInventory>,
+    #[serde(default)]
     residents: Option<Vec<crate::actor::ActorKey>>,
     lease: HostLease,
     retired: Vec<String>,
@@ -44,6 +46,15 @@ impl HostLeaseRegistry for BucketHostLeases {
         &self,
         request: &HostLeaseRequest,
         residents: Option<&[crate::actor::ActorKey]>,
+    ) -> Result<HostLease> {
+        self.register_with_inventory(request, residents, &[]).await
+    }
+
+    async fn register_with_inventory(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[crate::actor::ActorKey]>,
+        sockets: &[crate::host_leases::ActorSocketInventory],
     ) -> Result<HostLease> {
         request.validate_duration()?;
         ensure!(
@@ -85,6 +96,7 @@ impl HostLeaseRegistry for BucketHostLeases {
                 .ok_or_else(|| anyhow::anyhow!("lease expiration overflow"))?,
         };
         let record = Record {
+            sockets: sockets.to_vec(),
             residents: residents.map(<[_]>::to_vec),
             lease: lease.clone(),
             retired,
@@ -134,15 +146,27 @@ impl HostLeaseStore for BucketHostLeases {
         &self,
         id: &HostId,
     ) -> Result<(HostLeaseStatus, Option<Vec<crate::actor::ActorKey>>)> {
+        let (status, residents, _) = self.inventory_status(id).await?;
+        Ok((status, residents))
+    }
+
+    async fn inventory_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(
+        HostLeaseStatus,
+        Option<Vec<crate::actor::ActorKey>>,
+        Vec<crate::host_leases::ActorSocketInventory>,
+    )> {
         let record = self
             .bucket
             .get(&key(id))
             .await?
             .map(|object| serde_json::from_slice::<Record>(&object.bytes))
             .transpose()?;
-        let (lease, residents) = match record {
-            Some(record) => (Some(record.lease), record.residents),
-            None => (None, None),
+        let (lease, residents, sockets) = match record {
+            Some(record) => (Some(record.lease), record.residents, record.sockets),
+            None => (None, None, vec![]),
         };
         Ok((
             HostLeaseStatus {
@@ -150,6 +174,7 @@ impl HostLeaseStore for BucketHostLeases {
                 store_now_ms: self.clock.now_ms()?,
             },
             residents,
+            sockets,
         ))
     }
 

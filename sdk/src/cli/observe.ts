@@ -17,6 +17,7 @@ function registerObserveCommand(program: Command): void {
             const observer = new Observer(new ControlPlaneClient(connection(options), fetch), open)
             const result = await observer.start(options.open)
             const stop = () => {
+                process.exitCode ??= 0
                 process.off("SIGINT", stop)
                 process.off("SIGTERM", stop)
                 void observer.close()

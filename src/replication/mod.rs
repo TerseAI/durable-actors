@@ -5,6 +5,7 @@ mod server;
 mod store;
 mod stream;
 mod transport;
+mod wire;
 
 use std::collections::HashSet;
 
@@ -12,9 +13,9 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 pub use access::{ReplicaAccess, ReplicaGrant};
-pub use archive::{ArchiveTicket, archive_pending, start_archiver};
+pub use archive::{archive_pending, start_archiver};
 pub use process::serve_replica_host;
-pub use server::replica_router;
+pub use server::replica_routes;
 pub use store::{FileReplicaStore, PendingSnapshot, ReplicaStore};
 pub use stream::{ReplicaStream, SessionHead, SnapshotRef, StreamHead};
 pub use transport::ReplicatedStateTransport;
@@ -45,33 +46,6 @@ pub fn replica_regions(get: &mut impl FnMut(&str) -> Option<String>) -> Result<V
         crate::placement::validate_region(region)?;
     }
     Ok(regions)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DurabilityPolicy {
-    pub mode: String,
-    pub replica_count: usize,
-    pub runtime_version: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub replica_regions: Vec<String>,
-}
-
-impl DurabilityPolicy {
-    pub fn new(replica_regions: Vec<String>) -> Self {
-        let replica_count = replica_regions.len();
-        Self {
-            mode: if replica_count == 0 {
-                "object_storage"
-            } else {
-                "replicated"
-            }
-            .into(),
-            replica_count,
-            runtime_version: env!("CARGO_PKG_VERSION").into(),
-            replica_regions,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

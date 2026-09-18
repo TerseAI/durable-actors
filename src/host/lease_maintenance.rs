@@ -15,6 +15,7 @@ use super::HostEndpoint;
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct HostLeaseMaintainer {
+    sockets: Option<crate::sockets::SocketRegistry>,
     executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
     endpoint: HostEndpoint,
     session_id: String,
@@ -49,6 +50,7 @@ impl HostLeaseMaintainer {
         ensure!(!session_id.is_empty(), "host session ID must not be empty");
 
         Ok(Self {
+            sockets: None,
             executor: None,
             endpoint,
             session_id,
@@ -64,11 +66,20 @@ impl HostLeaseMaintainer {
         self
     }
 
+    pub(crate) fn with_sockets(mut self, sockets: crate::sockets::SocketRegistry) -> Self {
+        self.sockets = Some(sockets);
+        self
+    }
+
     pub(crate) async fn start(self: Arc<Self>) -> Result<LeaseRenewalTask> {
         let changes = self
             .executor
             .as_ref()
             .and_then(|executor| executor.residency_changes());
+        let socket_changes = self
+            .sockets
+            .as_ref()
+            .map(|sockets| sockets.inventory_changes());
         let initial = self.renew_once_with_deadline().await?;
         info!(
             host_id = %initial.lease.id,
@@ -85,6 +96,7 @@ impl HostLeaseMaintainer {
             task_shutdown,
             lease_lost_tx,
             changes,
+            socket_changes,
         ));
 
         Ok(LeaseRenewalTask {
@@ -108,10 +120,17 @@ impl HostLeaseMaintainer {
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
         mut changes: Option<watch::Receiver<()>>,
+        mut socket_changes: Option<watch::Receiver<()>>,
     ) {
         loop {
             if !self
-                .wait_until_renewal(local_deadline, &shutdown, &lease_lost, &mut changes)
+                .wait_until_renewal(
+                    local_deadline,
+                    &shutdown,
+                    &lease_lost,
+                    &mut changes,
+                    &mut socket_changes,
+                )
                 .await
             {
                 return;
@@ -132,6 +151,7 @@ impl HostLeaseMaintainer {
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
         changes: &mut Option<watch::Receiver<()>>,
+        socket_changes: &mut Option<watch::Receiver<()>>,
     ) -> bool {
         tokio::select! {
             biased;
@@ -146,6 +166,7 @@ impl HostLeaseMaintainer {
             }
             _ = tokio::time::sleep(self.renew_every) => true,
             _ = residency_changed(changes) => true,
+            _ = residency_changed(socket_changes) => true,
         }
     }
 
@@ -202,9 +223,13 @@ impl HostLeaseMaintainer {
             .executor
             .as_ref()
             .and_then(|executor| executor.resident_actors());
+        let sockets = match &self.sockets {
+            Some(sockets) => sockets.inventory().await,
+            None => vec![],
+        };
         let lease = self
             .store
-            .register_with_residents(&request, residents.as_deref())
+            .register_with_inventory(&request, residents.as_deref(), &sockets)
             .await?;
         debug!(
             host_id = %lease.id,

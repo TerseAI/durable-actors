@@ -35,36 +35,36 @@ func TestFreshHostPublishesOnlyRouteAndWaitsForReadiness(t *testing.T) {
 	if api.params.CPU != 0 || api.params.Timeout != 24*time.Hour || api.params.ReadinessProbe == nil {
 		t.Fatal("changed sandbox defaults")
 	}
+	if api.params.IdleTimeout != 0 {
+		t.Fatal("the actor host must own the idle timeout so live sockets keep it running")
+	}
 	if api.params.Env["DURABLE_OBJECT_HOST_METADATA_FILE"] != metadataFile || api.params.Env["DURABLE_OBJECT_HOST_TOKEN"] != r.HostToken {
 		t.Fatal(api.params.Env)
 	}
 }
 
-func TestHostAttachesNamedSecretsAndSocketGateway(t *testing.T) {
+func TestHostAttachesNamedSecrets(t *testing.T) {
 	api := &fakeAPI{created: &fakeSandbox{}}
 	request := testRequest()
 	request.SecretRefs = []string{"project-secrets"}
-	request.SocketGatewayURL = "https://sockets.example"
 	if _, err := newTestProvider(api).ensureHost(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.params.Secrets) != 1 || api.params.Secrets[0].Name != "project-secrets" {
 		t.Fatal("secret reference was not attached")
 	}
-	if api.params.Env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] != request.SocketGatewayURL {
-		t.Fatal("gateway address was lost")
-	}
+
 }
 
 func TestExistingHostKeepsItsIdentity(t *testing.T) {
 	r := testRequest()
-	existing := &fakeSandbox{metadata: `{"hostId":"host.v2.qa:existing","route":"https://existing.test","canonicalRegion":"north-america-east"}`}
+	existing := &fakeSandbox{metadata: `{"hostId":"host.v3.r1.existing","route":"https://existing.test","canonicalRegion":"north-america-east"}`}
 	api := &fakeAPI{createErr: modal.AlreadyExistsError{}, found: existing}
 	handle, err := newTestProvider(api).ensureHost(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handle.HostID != "host.v2.qa:existing" || !handle.Provisioning.Reused {
+	if handle.HostID != "host.v3.r1.existing" || !handle.Provisioning.Reused {
 		t.Fatalf("unexpected handle: %+v", handle)
 	}
 	if !reflect.DeepEqual(existing.calls, []string{"poll", "metadata", "detach"}) {
@@ -142,7 +142,7 @@ func TestHostsAndWarmupsUseRegionalPlacement(t *testing.T) {
 			}
 			api := &fakeAPI{created: &fakeSandbox{}}
 			_, err = newTestProvider(api).warmImage(context.Background(), imageRequest{
-				NamespaceID: r.NamespaceID, CodeRevision: r.CodeRevision,
+				CodeRevision:    r.CodeRevision,
 				CanonicalRegion: r.CanonicalRegion, ImageRef: r.ImageRef,
 			})
 			if err != nil {
@@ -159,7 +159,7 @@ func TestWarmupAlwaysTerminatesAndDetaches(t *testing.T) {
 	for _, exit := range []int{0, 1} {
 		sb := &fakeSandbox{exit: exit}
 		api := &fakeAPI{created: sb}
-		_, err := newTestProvider(api).warmImage(context.Background(), imageRequest{NamespaceID: "qa", CodeRevision: "r1", CanonicalRegion: "north-america-west", ImageRef: "im-test"})
+		_, err := newTestProvider(api).warmImage(context.Background(), imageRequest{CodeRevision: "r1", CanonicalRegion: "north-america-west", ImageRef: "im-test"})
 		if (err != nil) != (exit != 0) {
 			t.Fatal(err)
 		}
@@ -174,17 +174,17 @@ func TestWarmupAlwaysTerminatesAndDetaches(t *testing.T) {
 
 func TestTerminateUsesExactNamesAndIgnoresMissingHosts(t *testing.T) {
 	api := &fakeAPI{findErr: modal.NotFoundError{}}
-	result, err := newTestProvider(api).terminateHosts(context.Background(), terminateRequest{NamespaceID: "qa", CodeRevision: "r1", CanonicalRegions: []string{"north-america-east"}})
+	result, err := newTestProvider(api).terminateHosts(context.Background(), terminateRequest{CodeRevision: "r1", CanonicalRegions: []string{"north-america-east"}})
 	if err != nil || len(result.ResourceIDs) != 0 {
 		t.Fatal(result, err)
 	}
-	if api.name != resourceName("qa", "r1", "north-america-east") {
+	if api.name != resourceName("r1", "north-america-east") {
 		t.Fatal(api.name)
 	}
 }
 
 func TestResourceNamesMatchJavaScript(t *testing.T) {
-	if got := resourceName("qa", "r1", "north-america-east"); got != "do-host-v2-a4e56f1e61a3a5e94383080204b7bd4c" {
+	if got := resourceName("r1", "north-america-east"); got != "do-host-v3-8184d84b0dc55c5bc0a880e4b7244af1" {
 		t.Fatal(got)
 	}
 }
@@ -193,7 +193,7 @@ func newTestProvider(api modalAPI) *provider {
 	return &provider{api: api, now: time.Now, started: time.Now()}
 }
 func testRequest() ensureRequest {
-	return ensureRequest{NamespaceID: "qa", CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v2.qa:new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutMS: 60000, HostIdleTimeoutMS: 300000}
+	return ensureRequest{CodeRevision: "r1", CanonicalRegion: "north-america-east", HostID: "host.v3.r1.new", HostToken: "test-token", ImageRef: "im-test", ActorIdleTimeoutMS: 60000, HostIdleTimeoutMS: 300000}
 }
 
 type fakeAPI struct {
@@ -230,6 +230,35 @@ type fakeSandbox struct {
 	metadata string
 	pollErr  error
 	exit     int
+}
+
+func TestSocketCredentialsRequireTheResolvedHostSession(t *testing.T) {
+	r := socketRequest{CodeRevision: "revision", CanonicalRegion: "north-america-east", HostID: "host.v3.revision.original", SessionID: "session"}
+	for _, session := range []string{"session", "replacement"} {
+		sb := &fakeSandbox{metadata: `{"hostId":"host.v3.revision.original","sessionId":"` + session + `","canonicalRegion":"north-america-east"}`}
+		api := &fakeAPI{found: sb}
+		credentials, err := newTestProvider(api).socketCredentials(context.Background(), r)
+		if session == "replacement" {
+			if err == nil {
+				t.Fatal("credentials issued for a replaced host session")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if credentials.URL != "https://connect.test" || credentials.Token != "connect-token" || api.creates != 0 {
+			t.Fatalf("unexpected credentials: %+v", credentials)
+		}
+		if api.name != resourceName(r.CodeRevision, r.CanonicalRegion) {
+			t.Fatal(api.name)
+		}
+	}
+}
+
+func (s *fakeSandbox) Connect(context.Context) (socketCredentials, error) {
+	s.calls = append(s.calls, "connect")
+	return socketCredentials{URL: "https://connect.test", Token: "connect-token"}, nil
 }
 
 func (s *fakeSandbox) ID() string { return "sb-test" }
@@ -275,5 +304,13 @@ func TestMutableNetworkIsOptIn(t *testing.T) {
 		} else if api.params.OutboundCIDRAllowlist == nil || api.params.OutboundDomainAllowlist == nil || !reflect.DeepEqual(api.params.OutboundCIDRAllowlist.Entries, []string{"0.0.0.0/0"}) || !reflect.DeepEqual(api.params.OutboundDomainAllowlist.Entries, []string{"*"}) {
 			t.Fatal("opted-in hosts must start with an allow-all policy")
 		}
+	}
+}
+
+func TestHostIdentityUsesOnlyRevisionAndSession(t *testing.T) {
+	r := testRequest()
+	r.HostID = "host.v3.r1.session"
+	if err := validateEnsure(r); err != nil {
+		t.Fatal(err)
 	}
 }

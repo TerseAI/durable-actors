@@ -15,7 +15,6 @@ interface ListOptions extends ObjectOptions {
 }
 
 interface SavedObject {
-    namespaceId: string
     actorType: string
     actorId: string
     homeRegion: string
@@ -23,13 +22,13 @@ interface SavedObject {
 }
 
 interface ObjectPage {
-    objects: SavedObject[]
+    actors: SavedObject[]
     nextCursor: string | null
 }
 
 function registerObjectCommands(program: Command): void {
     const objects = program.command("objects").description("List saved actors and inspect committed internal state")
-    connectionOptions(objects.command("list").description("List saved objects across all namespaces"))
+    connectionOptions(objects.command("list").description("List saved objects"))
         .addOption(
             new Option("--limit <rows>", "maximum rows to show (1–500)")
                 .argParser(rowLimit)
@@ -54,20 +53,19 @@ function rowLimit(value: string): number {
 
 async function listObjects(options: ListOptions): Promise<void> {
     const client = new ControlPlaneClient(connection(options), fetch)
-    const objects: SavedObject[] = []
+    const actors: SavedObject[] = []
     let after: string | null = options.after ?? null
     do {
         const query = new URLSearchParams()
-        if (options.namespace) query.set("namespace", options.namespace)
         query.set("limit", String(options.all ? 500 : options.limit))
         if (after) query.set("after", after)
         const page = (await client.listObjects(query)) as ObjectPage
-        objects.push(...page.objects)
+        actors.push(...page.actors)
         if (page.nextCursor && page.nextCursor === after) throw new Error("Server returned a repeated object cursor.")
         after = page.nextCursor
     } while (options.all && after)
-    if (options.json) console.log(JSON.stringify(objects, null, 2))
-    else printObjects(objects)
+    if (options.json) console.log(JSON.stringify(actors, null, 2))
+    else printObjects(actors)
     if (after)
         console.error(`More objects available. Repeat this command with --after '${after.replaceAll("'", "'\\''")}'`)
 }
@@ -79,20 +77,14 @@ async function inspectObject(actorType: string, actorId: string, options: Object
     console.log(JSON.stringify(result, null, 2))
 }
 
-function printObjects(objects: SavedObject[]): void {
-    if (!objects.length) {
+function printObjects(actors: SavedObject[]): void {
+    if (!actors.length) {
         console.log("No saved objects found.")
         return
     }
     const rows = [
-        ["NAMESPACE", "TYPE", "ID", "VERSION", "REGION"],
-        ...objects.map(object => [
-            object.namespaceId,
-            object.actorType,
-            object.actorId,
-            String(object.stateVersion),
-            object.homeRegion
-        ])
+        ["TYPE", "ID", "VERSION", "REGION"],
+        ...actors.map(object => [object.actorType, object.actorId, String(object.stateVersion), object.homeRegion])
     ]
     const widths = rows[0]!.map((_, column) =>
         rows.reduce((width, row) => Math.max(width, (row[column] ?? "").length), 0)

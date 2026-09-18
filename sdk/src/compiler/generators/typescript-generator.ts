@@ -57,6 +57,7 @@ export interface Authorization {
     actorType: ${JSON.stringify(contract.actorType)}
     actorId: string
     metadata: Metadata
+    clientLocation?: { latitude: number; longitude: number }
     authorizationLifetimeMs?: number
 }
 }`

@@ -6,7 +6,7 @@ import { socketMetadata } from "./actor/socketValidation.js"
 interface SocketProxyOptions {
     readonly controlPlaneUrl?: string
     readonly apiKey?: string
-    readonly namespaceId?: string
+    readonly setupTimeoutMs?: number
 }
 
 interface SocketProxyDependencies {
@@ -22,13 +22,17 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
         readonly actorType: Name
         readonly actorId: string
         readonly metadata: Actors[Name] extends ProxyActor<infer Metadata> ? Metadata : never
+        readonly homeRegion?: string
         readonly authorizationLifetimeMs?: number
     }
 }[keyof Actors & string]
 
 const socketGrantSchema = z.object({
     websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol)),
-    key: z.string().min(1)
+    transport: z.literal("websocket"),
+    homeRegion: z.string().min(1),
+    connectByMs: z.number().int(),
+    authorizedUntilMs: z.number().int()
 })
 
 type SocketGrant = z.infer<typeof socketGrantSchema>
@@ -36,7 +40,7 @@ type SocketGrant = z.infer<typeof socketGrantSchema>
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly origin: string
     private readonly apiKey: string
-    private readonly namespace: string | undefined
+    private readonly setupTimeoutMs: number
     private readonly fetchRequest: typeof globalThis.fetch
 
     constructor(
@@ -44,6 +48,9 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         options: SocketProxyOptions = {},
         dependencies: SocketProxyDependencies = {}
     ) {
+        this.setupTimeoutMs = options.setupTimeoutMs ?? 180000
+        if (!Number.isSafeInteger(this.setupTimeoutMs) || this.setupTimeoutMs < 1000 || this.setupTimeoutMs > 600000)
+            throw new Error("Socket setup timeout must be between one second and ten minutes")
         const settings = proxySettings(options)
         const url = new URL(settings.controlPlaneUrl)
         if (
@@ -59,8 +66,6 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.apiKey = settings.apiKey ?? ""
         if (typeof this.apiKey !== "string" || !this.apiKey || this.apiKey.trim() !== this.apiKey)
             throw new Error("A backend API key is required; set DURABLE_OBJECT_API_KEY or pass apiKey")
-        this.namespace = settings.namespaceId
-        if (this.namespace) validateActorComponent("namespace ID", this.namespace)
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
@@ -76,14 +81,17 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
             authorizationLifetimeMs > 86400000
         )
             throw new Error("Socket authorization lifetime must be between one second and one day")
-        const scope = this.namespace ? `/namespaces/${encodeURIComponent(this.namespace)}` : ""
+        const homeRegion =
+            authorization.homeRegion === undefined
+                ? undefined
+                : validateActorComponent("home region", authorization.homeRegion)
         const response = await this.fetchRequest(
-            `${this.origin}/v1${scope}/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/socket-ticket`,
+            `${this.origin}/v1/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/connect`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-                body: JSON.stringify({ metadata, authorizationLifetimeMs }),
-                signal: AbortSignal.timeout(10000)
+                body: JSON.stringify({ transport: "websocket", metadata, authorizationLifetimeMs, homeRegion }),
+                signal: AbortSignal.timeout(this.setupTimeoutMs)
             }
         )
         if (!response.ok) throw new Error(`WebSocket authorization could not be issued (HTTP ${response.status})`)
@@ -96,8 +104,7 @@ function proxySettings(options: SocketProxyOptions) {
     const apiKey = options.apiKey ?? process.env.DURABLE_OBJECT_API_KEY
     return {
         controlPlaneUrl: controlPlaneUrl ?? "http://127.0.0.1:7100",
-        apiKey,
-        namespaceId: options.namespaceId ?? process.env.DURABLE_OBJECT_NAMESPACE_ID
+        apiKey
     }
 }
 

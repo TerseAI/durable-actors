@@ -9,8 +9,6 @@ This page documents deployment management, backend access, WebSocket connections
 - [Public signing keys](#public-signing-keys)
 - [Direct WebSocket connections](#direct-websocket-connections)
 - [WebSocket callbacks](#websocket-callbacks)
-- [Advanced scopes](#advanced-scopes)
-- [Session tokens](#session-tokens)
 - [HTTP errors](#http-errors)
 
 ## Authentication
@@ -21,20 +19,21 @@ Backend operations require:
 Authorization: Bearer <api-key>
 ```
 
-Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped URLs and keys from your authenticated backend and use native WebSockets.
+Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped connection URLs from your authenticated backend and use native WebSockets.
 
-| Operation                      | Method and path                                       | Credential                                    |
-| ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
-| Register or replace deployment | `PUT /v1/deployment`                                  | API key.                                      |
-| Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
-| Read public actor contract     | `GET /v1/contract`                                    | API key.                                      |
-| Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
-| List saved objects             | `GET /v1/objects`                                     | API key only.                                 |
-| Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}/state`          | API key only.                                 |
-| Read public signing keys       | `GET /.well-known/jwks.json`                          | None.                                         |
-| Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket`      | API key; WebSocket upgrade.                   |
-| Issue a socket ticket          | `POST /v1/actors/{actorType}/{actorId}/socket-ticket` | API key only.                                 |
-| Connect from an app            | `GET /v1/socket`                                      | Ticket in the first frame; WebSocket upgrade. |
+| Operation                      | Method and path                                      | Credential                    |
+| ------------------------------ | ---------------------------------------------------- | ----------------------------- |
+| Register or replace deployment | `PUT /v1/deployment`                                 | API key                       |
+| Read deployment                | `GET /v1/deployment`                                 | API key                       |
+| Read public actor contract     | `GET /v1/deployment/contract`                        | API key                       |
+| Remove deployment              | `DELETE /v1/deployment`                              | API key                       |
+| List saved actors              | `GET /v1/actors`                                     | API key                       |
+| Inspect actor metadata         | `GET /v1/actors/{actorType}/{actorId}`               | API key                       |
+| Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}?include=state` | API key                       |
+| Prepare a connection           | `POST /v1/actors/{actorType}/{actorId}/connect`      | API key                       |
+| Read public signing keys       | `GET /.well-known/jwks.json`                         | None                          |
+| Check control-plane health     | `GET /healthz`                                       | None                          |
+| Connect from an app            | `GET /v1/socket` on the actor host                   | Signed URL; WebSocket upgrade |
 
 Call actor methods and send application broadcasts through the [TypeScript SDK](api.md). Management JSON request bodies are limited to 16 MiB; larger bodies receive `413`.
 
@@ -42,7 +41,7 @@ Path parameters `actorType` and `actorId` follow the [actor identity limits](api
 
 ## Deployments
 
-All three operations require the API key and manage the default deployment.
+All three operations require the API key and manage the installation's active deployment.
 
 ### PUT /v1/deployment
 
@@ -55,7 +54,6 @@ Registers actor code for your application. There is one active deployment. The J
     "workingDirectory": "/workspace",
     "actorEntrypoint": "dist/actors.mjs",
     "secretRefs": [],
-    "socketGatewayUrl": null,
     "warmRegion": "north-america-east"
 }
 ```
@@ -67,9 +65,8 @@ Registers actor code for your application. There is one active deployment. The J
 - `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
 - `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
-- `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Supported execution region in which to request background image warmup. It is not retained in the deployment record.
-- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with this namespace and code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
+- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with the code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
 
 **Response:** `200 OK` with JSON:
 
@@ -85,14 +82,13 @@ Publishing a contract for the first time also returns `{"changed":true}`. It doe
 
 Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
 
-### GET /v1/contract
+### GET /v1/deployment/contract
 
-Returns the active deployment's public actor contract. Requires the API key; session tokens and socket tickets cannot read contracts. No actor host needs to be running.
+Returns the active deployment's public actor contract. Requires the API key. No actor host needs to be running.
 
 ```text
-GET /v1/contract
-GET /v1/contract?revision=chat-v1
-GET /v1/namespaces/customer/contract?revision=chat-v1
+GET /v1/deployment/contract
+GET /v1/deployment/contract?revision=chat-v1
 ```
 
 Omit `revision` to get the latest deployment's contract. The optional `revision` query checks that this revision is active and returns `404` otherwise. Only the active contract is stored; historical contracts are discarded on replacement or deletion. Unknown query parameters are rejected.
@@ -101,38 +97,35 @@ Omit `revision` to get the latest deployment's contract. The optional `revision`
 
 ```json
 {
-    "namespaceId": "default",
     "codeRevision": "chat-v1",
     "contractHash": "sha256:<digest>",
     "contract": { "version": 1, "actors": [] }
 }
 ```
 
-The example represents an empty actor API; a missing contract returns `404` with error code `contract_not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
+The example represents an empty actor API; a missing contract returns `404` with error code `not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
 
 `little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
 
-**Errors:** `400` for an invalid namespace, revision, or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
+**Errors:** `400` for an invalid revision or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
 ### GET /v1/deployment
 
 Reads the active deployment.
 
-**Response:** `200 OK` with the stored specification, including its internal application identity:
+**Response:** `200 OK` with the stored specification, including its code revision:
 
 ```json
 {
-    "namespaceId": "default",
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
     "actorEntrypoint": "dist/actors.mjs",
-    "secretRefs": [],
-    "socketGatewayUrl": null
+    "secretRefs": []
 }
 ```
 
-If no deployment exists, the response is JSON `null`. The record omits `warmRegion`.
+If no deployment exists, the response is `404` with error code `not_found`. The record omits `warmRegion`.
 
 **Errors:** `401` for a rejected admin credential; `500` if the deployment cannot be read.
 
@@ -148,15 +141,14 @@ There is no public actor-state deletion or individual actor reset API. Expose ap
 
 ## Object inspection
 
-These read-only endpoints require the admin API key. Session tokens and socket tickets are rejected. Successful responses use `Cache-Control: no-store`. The [CLI](cli.md#inspect-saved-objects) uses the same endpoints for local and cloud runtimes.
+These read-only endpoints require the admin API key. Successful responses use `Cache-Control: no-store`. The [CLI](cli.md#inspect-saved-objects) uses the same endpoints for local and cloud runtimes.
 
-### GET /v1/objects
+### GET /v1/actors
 
-Lists objects with committed state across all namespaces, including stopped objects and objects without a current deployment. Objects with no committed state are omitted.
+Lists objects with committed state, including stopped objects and objects without a current deployment. Objects with no committed state are omitted.
 
 Optional query parameters:
 
-- `namespace` — Exact namespace filter. Omitting it lists all namespaces.
 - `limit` — Page size from 1 to 500; defaults to 100.
 - `after` — The previous response's `nextCursor`, URL-encoded.
 
@@ -164,15 +156,12 @@ Optional query parameters:
 
 ```json
 {
-    "objects": [
+    "actors": [
         {
-            "namespaceId": "default",
             "actorType": "ChatRoom",
             "actorId": "lobby",
-            "objectId": "object.v1.default.ChatRoom.lobby",
             "homeRegion": "north-america-east",
             "stateVersion": 3,
-            "stateObject": "snapshots/01/0123456789abcdef0123456789abcdef/default/ChatRoom/lobby/3.json",
             "lastRequestId": "request-3"
         }
     ],
@@ -180,40 +169,60 @@ Optional query parameters:
 }
 ```
 
-Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor and the same filter. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
+Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
 
-### GET /v1/actors/{actorType}/{actorId}/state
+### GET /v1/actors/{actorType}/{actorId}
 
-Reads the default namespace. To select a namespace, use:
+**Response:** `200 OK` with the same actor metadata fields as listing. Add `?include=state` to include `state`, containing all committed persisted fields, including internal fields. The `state` field is omitted by default. An existing placement without committed state has `stateVersion: 0` and `lastRequestId: null`; requesting state returns `state: null`.
 
-```http
-GET /v1/namespaces/{namespaceId}/actors/{actorType}/{actorId}/state
-```
-
-**Response:** `200 OK` with the same object fields as listing, plus `state`, a JSON object containing all committed persisted fields, including internal fields. An existing placement with no committed snapshot has `stateVersion: 0`, `stateObject: null`, `lastRequestId: null`, and `state: null`.
-
-Reads the immutable snapshot referenced by the database record and verifies its identity, version, and request ID. It does not start a host, invoke actor code, or expose an uncommitted upload. Transient in-memory fields are unavailable. The response represents the committed record when read; a later commit can occur during inspection.
+Inspection does not start a host or invoke actor code. When state is requested, it reads the immutable committed snapshot and verifies its identity, version and request ID. Transient in-memory fields are unavailable. A later commit can occur during inspection. Only `include=state` is supported; unknown query parameters are rejected.
 
 **Errors:** `400` for invalid input, `401` for a rejected admin credential, `404` for an unknown object, `500` if committed state is unavailable or inconsistent, and `503` if snapshot inspection times out.
 
 ## Storage regions
 
-For API-key callers, new actors use `north-america-central` when configured; otherwise they use the first configured region in alphabetical order. Existing actors keep their selected region. Delegated sessions can request a different region as described below.
+The deployment router chooses and persists the nearest enabled region for a new actor. It sends `homeRegion` to the selected regional control plane in `/connect` requests. The runtime does not select a region from caller location or query a routing database.
 
-When a session or WebSocket callback requests a region for a new actor, the server uses an exact configured bucket-map key first. Otherwise it maps known cloud region names to these region groups:
+A control plane configured with `DURABLE_OBJECT_REGION` requires an explicit assignment matching its region. An existing actor keeps its persisted home: a conflicting assignment returns `409`. A failed provisioning attempt does not move it elsewhere. An unpinned local runtime may omit the assignment and defaults to `north-america-central` for new actors.
 
-| Group                   | Recognized aliases                                                                                                                                        |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `north-america-east`    | `us-east-1`, `us-east-2`, `us-east1`, `us-east4`, `us-east5`, `us-ashburn-1`, `eastus`, `eastus2`                                                         |
-| `north-america-central` | `us-central1`, `us-chicago-1`, `centralus`, `northcentralus`                                                                                              |
-| `north-america-south`   | `us-south1`, `southcentralus`                                                                                                                             |
-| `north-america-west`    | `us-west-1`, `us-west-2`, `us-west1`, `us-west2`, `us-west3`, `us-west4`, `us-phoenix-1`, `us-sanjose-1`, `westus`, `westus2`, `westus3`, `westcentralus` |
-| `europe-west`           | `eu-west-1`, `eu-west-3`, `eu-central-1`, `europe-west1`, `europe-west3`, `europe-west4`, `eu-frankfurt-1`, `eu-paris-1`, `westeurope`                    |
-| `asia-southeast`        | `ap-southeast-1`, `asia-southeast1`, `asia-southeast2`, `ap-singapore-1`, `southeastasia`                                                                 |
+### POST /v1/actors/{actorType}/{actorId}/connect
 
-The listed GCP-style regions also accept zone suffixes `-a`, `-b`, `-c`, `-d`, and `-f`, such as `us-central1-a`.
+Requires the API key. Select `transport: "grpc"` or `transport: "websocket"`. Unknown fields and fields belonging to the other transport are rejected. Setup can provision and activate an actor host.
 
-If the requested or mapped region has no configured bucket, the server uses `north-america-central` if configured; otherwise actor startup fails. A configured fallback can also be used when initial host provisioning fails in another region. Issuing a token validates the region string's syntax; it does not prove that an actor can start there.
+For backend gRPC calls:
+
+```json
+{ "transport": "grpc", "homeRegion": "north-america-west" }
+```
+
+**Response:** `200 OK`, with `Cache-Control: no-store`:
+
+```json
+{
+    "transport": "grpc",
+    "homeRegion": "north-america-west",
+    "route": "https://actor-host.example.com",
+    "token": "<actor-invocation-capability>",
+    "ownerEpoch": 1,
+    "expiresAtMs": 1900000000000
+}
+```
+
+The SDK uses this capability for direct gRPC calls to the host. It authorizes the named actor and ownership epoch. `expiresAtMs` is a Unix timestamp in milliseconds. The WebSocket request and response are described below.
+
+## Internal gRPC services
+
+Internal operations use authenticated gRPC over HTTP/2. They have no public JSON endpoints. The [protobuf contract](../../proto/durable_object.proto) defines:
+
+| Service                    | Operations                                                         | Caller                               |
+| -------------------------- | ------------------------------------------------------------------ | ------------------------------------ |
+| `ActorHostService`         | `Activate`, `Invoke`, `HandleSocket`, `PublishSocketEffects`       | Runtime and backend SDK              |
+| `ActorControlPlaneService` | `Execute`: host registration, storage access and write preparation | Actor hosts                          |
+| `SnapshotService`          | `Read`, `Write`                                                    | Hosts, replicas and archival workers |
+| `ReplicaService`           | `Initialize`, `Head`, `Seal`                                       | Ownership and recovery runtime       |
+| `ArchiveService`           | `Prepare`                                                          | Replica archival workers             |
+
+Socket effects go directly to the owning host and are checked against its actor, host session and ownership epoch. Snapshot and replica calls carry signed, operation-scoped capabilities in gRPC metadata. Storage capability addresses use `grpc://` or `grpcs://`; the runtime resolves them to HTTP/2 connections. Public health checks, JWKS and application callbacks remain HTTP.
 
 ## Public signing keys
 
@@ -225,49 +234,35 @@ If the requested or mapped region has no configured bucket, the server uses `nor
 
 ### Backend connections
 
-```http
-GET /v1/actors/{actorType}/{actorId}/websocket
-```
-
-Upgrades to a WebSocket connection (`101 Switching Protocols`). Connect to:
-
-```text
-wss://objects.example.com/v1/actors/{actorType}/{actorId}/websocket
-```
-
-Send `Authorization: Bearer <api-key>` with the upgrade request. Use `ws://` for a local HTTP server.
-
-Within 10 seconds of opening, send this as the first text frame:
-
-```json
-{ "type": "initialize", "metadata": { "userId": "alice" } }
-```
-
-The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling `[onMessage](api.md#actoronmessage)`. It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
-
-The SDK performs this handshake for `[reference.connect()](api.md#referenceconnect)`. The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
+The SDK requests `/connect` with `transport: "websocket"` and `backend: true` and opens the returned host URL. Within 10 seconds, it sends `{"type":"initialize","metadata":{}}`. Backend connections receive automatic persisted state updates. Initialization metadata is limited to 64 KiB. Application messages then travel as JSON text frames directly to the actor host.
 
 ### External connections
 
 Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
-POST /v1/actors/{actorType}/{actorId}/socket-ticket
+POST /v1/actors/{actorType}/{actorId}/connect
 Authorization: Bearer <api-key>
 Content-Type: application/json
 ```
 
 ```json
-{ "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
+{ "transport": "websocket", "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Only the backend API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
+Grants require the backend API key. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
 
 ```json
-{ "websocketUrl": "wss://objects.example.com/v1/socket?key=<signed-ticket>", "key": "<signed-ticket>" }
+{
+    "transport": "websocket",
+    "homeRegion": "north-america-west",
+    "websocketUrl": "wss://<modal-host>/v1/socket?_modal_connect_token=<modal-token>&key=<signed-ticket>",
+    "connectByMs": 1900000060000,
+    "authorizedUntilMs": 1900000900000
+}
 ```
 
-The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Its key authorizes socket operations on exactly one actor instance; it does not authorize backend RPCs or administration. Open the URL within 60 seconds. Both the URL and key are credentials; omit the key from access logs.
+The URL comes from the owning actor host's provider; local development returns a local host URL without a Modal token. Preserve the whole URL. Its signed key binds one actor to its host, session, and ownership epoch; it does not authorize backend RPCs or administration. Open the URL before `connectByMs` (normally within 60 seconds). `authorizedUntilMs` is the connection authorization deadline. Both are Unix timestamps in milliseconds. The URL and both tokens are credentials; omit them from access logs.
 
 Pass the URL directly to a native WebSocket:
 
@@ -277,15 +272,15 @@ socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }
 socket.onmessage = event => console.log(JSON.parse(event.data))
 ```
 
-The gateway verifies the key before upgrading. Missing, invalid, or expired keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
+The actor host verifies the key and host binding before upgrading. Missing, invalid, expired, or stale host-bound keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
 
 Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Actors send initial data explicitly from `onConnect`, and call `socket.send()` or `this.broadcast()` for subsequent messages. Signed browser connections do not receive automatic state snapshots or updates.
 
-Authorization expires even while idle or running a handler; the gateway closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
+Authorization expires even while idle or running a handler; the host closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
 
 ### Message limits
 
-Each actor supports up to 128 connections per gateway process. Application messages must be JSON text and fit 16 MiB of UTF-8, including JSON encoding overhead. The TypeScript SDK rejects binary application messages. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8.
+Each actor supports up to 128 connections on its host. Application messages must be JSON text and fit 16 MiB of UTF-8, including JSON encoding overhead. The TypeScript SDK rejects binary application messages. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8. A slow consumer whose 32-message output queue fills is disconnected.
 
 ### Close behavior
 
@@ -295,7 +290,8 @@ Each actor supports up to 128 connections per gateway process. Application messa
 | `1002`              | Missing or invalid initialization on the backend connection route.     |
 | `1006`              | An observed abnormal disconnect; not a close frame sent by the server. |
 | `1011`              | Connection handling or an actor socket handler failed.                 |
-| `1013`              | Actor connection limit reached.                                        |
+| `1012`              | Host stopping or ownership lease lost; obtain a fresh grant.           |
+| `1013`              | Actor connection limit or output queue limit reached.                  |
 | `4400`              | Invalid application message or actor handler failure.                  |
 | `4408`              | Authorization expired; reconnect with fresh authorization.             |
 | Other `3000`–`4999` | Application close or rejection; terminal.                              |
@@ -313,7 +309,6 @@ After successful actor handling, the callback receives:
 ```json
 {
     "eventId": "<event-id>",
-    "namespaceId": "default",
     "actorType": "ChatRoom",
     "actorId": "lobby",
     "triggerId": "chat",
@@ -325,7 +320,7 @@ After successful actor handling, the callback receives:
 **Request fields** (all present)
 
 - `eventId` (`string`) — Unique event ID.
-- `namespaceId` (`string`), `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
+- `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
 - `triggerId` (`string | null`) — External route's trigger ID, or `null` for a backend connection.
 - `connectionId` (`string`) — Connection that sent the message.
 - `message` (`object`) — The transport envelope `{"type":"text","data":"<JSON text>"}`. Parse `message.data` to read the application value. The transport also defines a binary envelope, but the TypeScript actor runtime rejects binary application messages.
@@ -334,74 +329,24 @@ Events cover successfully handled incoming messages. Connection changes and outg
 
 **Response:** A successful HTTP status; no response body is required. Delivery is asynchronous and best effort, with no automatic retry or durable delivery guarantee. A callback failure is logged and does not undo the actor's completed message handling.
 
-## Advanced scopes
-
-The default API requires no namespace setting. For explicit scopes, deployment, target, socket-effects, WebSocket, and session-token routes also accept `/v1/namespaces/{namespaceId}` in place of `/v1`. An API key can access all namespaces on its server. Session tokens are restricted to their own namespace and cannot manage deployments or issue credentials.
-
-Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](configuration.md).
-
-## Session tokens
-
-Session tokens are optional credentials for delegated workers or customer-provided code. See [delegated credential configuration](configuration.md).
-
-### POST /v1/session-scoped-token
-
-Requires a registered deployment and the API key. This route issues a token for the default application. Use `POST /v1/namespaces/{namespaceId}/session-scoped-token` to delegate another namespace.
-
-**JSON parameters**
-
-- `executionId` (`string`, required) — Application execution requesting access, 1–255 bytes.
-- `deadlineUnixMs` (`integer`, required) — Future Unix timestamp in milliseconds.
-- `storageRegion` (`string`, required) — 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`. See [storage regions](#storage-regions) for selection behavior.
-
-For example, from a trusted Node.js backend:
-
-```ts
-const response = await fetch(`${process.env.DURABLE_OBJECT_CONTROL_PLANE_URL}/v1/session-scoped-token`, {
-    method: "POST",
-    headers: {
-        authorization: `Bearer ${process.env.DURABLE_OBJECT_API_KEY}`,
-        "content-type": "application/json"
-    },
-    body: JSON.stringify({
-        executionId: "chat-session-1",
-        deadlineUnixMs: Date.now() + 3_600_000,
-        storageRegion: "north-america-east"
-    })
-})
-if (!response.ok) throw new Error(await response.text())
-const { token, expiresAtMs } = await response.json()
-```
-
-**Response:** `200 OK` with JSON:
-
-```json
-{ "token": "<signed-session-token>", "expiresAtMs": 1800000000000 }
-```
-
-Expiration is the earliest of the requested deadline plus 30 seconds, issuance time plus the configured maximum token lifetime, and issuance time plus 24 hours. It is rounded down to whole seconds and returned as milliseconds in `expiresAtMs`. Use the returned expiration instead of calculating it yourself.
-
-The token permits application actor operations within the requested namespace; it does not restrict access to a single class, actor, or method. It is not an admin key. There is no refresh endpoint: have your trusted backend issue a new token when needed.
-
-**Errors:** `409` for a missing deployment, `400` for invalid fields or an expired deadline, and `401` for a rejected admin credential.
-
 ## HTTP errors
 
-Management API handler errors have this shape:
+Management API validation and handler errors have this shape:
 
 ```json
-{ "error": { "code": "invalid_request", "message": "workflow deadline must be in the future" } }
+{ "error": { "code": "invalid_request", "message": "homeRegion is required" } }
 ```
 
-| HTTP status | Error code        | Meaning                                           |
-| ----------- | ----------------- | ------------------------------------------------- |
-| `400`       | `invalid_request` | Invalid deployment or token request.              |
-| `401`       | `unauthenticated` | Missing or rejected admin credential.             |
-| `403`       | `forbidden`       | Credential does not permit the operation.         |
-| `409`       | `conflict`        | No registered actor code for token issuance.      |
-| `500`       | `internal`        | Server failure.                                   |
-| `503`       | `unavailable`     | Service could not satisfy an application request. |
+| HTTP status | Error code          | Meaning                                           |
+| ----------- | ------------------- | ------------------------------------------------- |
+| `400`       | `invalid_request`   | Invalid deployment or setup request.              |
+| `401`       | `unauthenticated`   | Missing or rejected admin credential.             |
+| `404`       | `not_found`         | Deployment, contract or actor not found.          |
+| `413`       | `payload_too_large` | Management body exceeds 16 MiB.                   |
+| `409`       | `conflict`          | Conflicting contract or home-region assignment.   |
+| `500`       | `internal`          | Server failure.                                   |
+| `503`       | `unavailable`       | Service could not satisfy an application request. |
 
-Malformed JSON, missing required fields, unsupported content types, oversized bodies, unknown routes, and invalid upgrade requests may be rejected before the handler. Such responses need not use the JSON error envelope; inspect the status and content type before parsing. Oversized management bodies are rejected with `413`.
+Malformed JSON, missing required fields and invalid queries return `400`; oversized management bodies return `413`. Routing, path decoding and WebSocket upgrade errors may be rejected before the management handler and need not use the JSON envelope. Inspect the status and content type before parsing.
 
-WebSocket upgrade errors use a plain-text body. Common statuses are `400` for an invalid request, `401` for missing or rejected credentials, `403` for incorrect namespace access, and `503` for unavailable external authorization. After a successful upgrade, handle WebSocket events and close frames instead of HTTP errors.
+WebSocket upgrade errors use a plain-text body. Common statuses are `400` for an invalid request, `401` for missing or rejected credentials, `503` for an unavailable actor host. After a successful upgrade, handle WebSocket events and close frames instead of HTTP errors.

@@ -15,7 +15,6 @@ pub(crate) struct LocalObjectPlacementStore {
 impl ObjectPlacementStore for LocalObjectPlacementStore {
     async fn list_committed(
         &self,
-        namespace: Option<&str>,
         after: Option<&str>,
         limit: u32,
     ) -> Result<Vec<ObjectPlacement>> {
@@ -24,10 +23,7 @@ impl ObjectPlacementStore for LocalObjectPlacementStore {
             .values()
             .filter(|placement| {
                 placement.state_version > 0
-                    && placement.state_object.as_deref().is_some_and(|object| {
-                        namespace
-                            .is_none_or(|namespace| object.split('/').nth(1) == Some(namespace))
-                    })
+                    && placement.state_object.is_some()
                     && after.is_none_or(|after| placement.object.as_str() > after)
             })
             .cloned()

@@ -57,7 +57,7 @@ class ValidatedRoom extends Actor<
 }
 
 const definition = registerActorClass(ValidatedRoom)
-const actor = { namespace_id: "project", actor_type: "ValidatedRoom", actor_id: "one" }
+const actor = { actor_type: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
 test("host contracts reject invalid metadata, messages, output, and state without application Zod schemas", async () => {

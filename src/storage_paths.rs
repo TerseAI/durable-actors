@@ -2,46 +2,24 @@ use crate::{actor::ActorKey, actor_state::ActorStorageKey, host::HostId};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
-pub const ROOT: &str = "little-actors/v1/namespaces/";
-
-pub fn namespace(namespace: &str) -> String {
-    format!("{ROOT}{}/", component(namespace))
-}
+pub const ROOT: &str = "little-actors/v2/";
 
 pub fn snapshots(actor: &ActorKey) -> Result<String> {
     actor.validate()?;
-    Ok(format!(
-        "{}snapshots/{}/",
-        namespace(&actor.namespace_id),
-        actor_path(actor)
-    ))
+    Ok(format!("{ROOT}snapshots/{}/", actor_path(actor)))
 }
 
 pub fn owner(object: &ActorStorageKey) -> Result<String> {
     let actor = actor_from_key(object)?;
-    Ok(format!(
-        "{}owners/{}.json",
-        namespace(&actor.namespace_id),
-        actor_path(&actor)
-    ))
+    Ok(format!("{ROOT}owners/{}.json", actor_path(&actor)))
 }
 
 pub fn host(host: &HostId) -> String {
-    let ns = host
-        .as_str()
-        .strip_prefix("host.v2.")
-        .and_then(|value| value.split_once(':'))
-        .map_or("", |(ns, _)| ns);
-    format!("{}hosts/{}/", namespace(ns), component(host.as_str()))
+    format!("{ROOT}hosts/{}/", component(host.as_str()))
 }
 
-pub fn session(namespace_id: &str, host: &HostId, session: &str) -> String {
-    format!(
-        "{}hosts/{}/sessions/{}",
-        namespace(namespace_id),
-        component(host.as_str()),
-        component(session)
-    )
+pub fn session(host_id: &HostId, session: &str) -> String {
+    format!("{}sessions/{}", host(host_id), component(session))
 }
 
 pub fn actor_from_snapshot(object: &str) -> Result<ActorKey> {
@@ -51,13 +29,12 @@ pub fn actor_from_snapshot(object: &str) -> Result<ActorKey> {
         .split('/')
         .collect();
     ensure!(
-        parts.len() == 7 && parts[1] == "snapshots",
+        parts.len() == 6 && parts[0] == "snapshots",
         "invalid snapshot path"
     );
     let actor = ActorKey {
-        namespace_id: decode(parts[0])?,
-        actor_type: decode(parts[3])?,
-        actor_id: decode(parts[4])?,
+        actor_type: decode(parts[2])?,
+        actor_id: decode(parts[3])?,
     };
     actor.validate()?;
     ensure!(
@@ -70,15 +47,14 @@ pub fn actor_from_snapshot(object: &str) -> Result<ActorKey> {
 pub fn actor_from_key(key: &ActorStorageKey) -> Result<ActorKey> {
     let parts: Vec<_> = key
         .as_str()
-        .strip_prefix("object.v2.")
+        .strip_prefix("object.v3.")
         .context("invalid actor key")?
         .split(':')
         .collect();
-    ensure!(parts.len() == 3, "invalid actor identity");
+    ensure!(parts.len() == 2, "invalid actor identity");
     let actor = ActorKey {
-        namespace_id: parts[0].into(),
-        actor_type: parts[1].into(),
-        actor_id: parts[2].into(),
+        actor_type: parts[0].into(),
+        actor_id: parts[1].into(),
     };
     actor.validate()?;
     Ok(actor)

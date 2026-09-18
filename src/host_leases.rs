@@ -47,6 +47,12 @@ impl HostLeaseStatus {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActorSocketInventory {
+    pub actor: ActorKey,
+    pub connections: Vec<crate::actor::ActorSocketConnection>,
+}
+
 #[async_trait]
 pub trait HostLeaseRegistry: Send + Sync {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease>;
@@ -58,11 +64,31 @@ pub trait HostLeaseRegistry: Send + Sync {
         self.register(request).await
     }
 
+    async fn register_with_inventory(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[ActorKey]>,
+        _sockets: &[ActorSocketInventory],
+    ) -> Result<HostLease> {
+        self.register_with_residents(request, residents).await
+    }
+
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()>;
 }
 
 #[async_trait]
 pub trait HostLeaseStore: HostLeaseRegistry {
+    async fn inventory_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(
+        HostLeaseStatus,
+        Option<Vec<ActorKey>>,
+        Vec<ActorSocketInventory>,
+    )> {
+        let (status, residents) = self.residency_status(id).await?;
+        Ok((status, residents, vec![]))
+    }
     async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus>;
     async fn residency_status(
         &self,

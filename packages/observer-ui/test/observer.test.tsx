@@ -12,7 +12,6 @@ Object.assign(globalThis, { window: dom.window, document: dom.window.document, H
 afterEach(cleanup)
 
 const inventory = {
-    namespaceId: "local",
     actors: [
         {
             actorType: "Room",
@@ -105,7 +104,7 @@ test("switching clients cancels the old request and never displays its late inve
             })
         }
     }
-    const second = { checkConnection: async () => {}, listActors: async () => ({ namespaceId: "other", actors: [] }) }
+    const second = { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) }
     const view = render(<ActorObserver client={first} />)
     view.rerender(<ActorObserver client={second} />)
     await waitFor(() => assert.match(view.container.textContent!, /No actors yet/u))
@@ -193,12 +192,12 @@ test("instance search and residency filtering combine without changing inventory
     assert.equal(view.getByLabelText("Live instances").textContent, "2")
 })
 
-test("switching namespaces clears actor selection and search", async () => {
+test("switching clients clears actor selection and search", async () => {
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
     fireEvent.click(await view.findByRole("button", { name: "Room" }))
     fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "Room" } })
-    view.rerender(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => ({ ...inventory, namespaceId: "production" }) }} />)
-    await view.findByText("production")
+    view.rerender(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => ({ ...inventory }) }} />)
+    await view.findByRole("button", { name: "Room" })
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
     assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "")
 })

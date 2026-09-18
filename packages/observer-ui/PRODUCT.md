@@ -8,7 +8,7 @@ web
 
 ## Product Purpose
 
-The little-actors observer presents actor types, residency counts, instances, and active WebSocket metadata for a namespace. It serves both the local CLI and embedded React applications.
+The little-actors observer presents actor types, residency counts, instances, and active WebSocket metadata for a deployment. It serves both the local CLI and embedded React applications.
 
 ## Users
 

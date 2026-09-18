@@ -46,16 +46,14 @@ impl PublicActorContract {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishedContract {
-    pub namespace_id: String,
     pub code_revision: String,
     pub contract_hash: String,
     pub contract: Value,
 }
 
 impl PublishedContract {
-    pub(crate) fn new(namespace: &str, revision: &str, contract: &PublicActorContract) -> Self {
+    pub(crate) fn new(revision: &str, contract: &PublicActorContract) -> Self {
         Self {
-            namespace_id: namespace.into(),
             code_revision: revision.into(),
             contract_hash: contract.hash().into(),
             contract: contract.document().clone(),

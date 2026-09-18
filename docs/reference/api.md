@@ -37,7 +37,7 @@ Creates a typed reference to an actor of the subclass. Creating a reference is s
 
 **Parameters**
 
-- `actorId` (`string`, required) — Actor ID within the configured namespace and class. See [identity](#identity) for validation.
+- `actorId` (`string`, required) — Actor ID within the actor class. See [identity](#identity) for validation.
 
 **Returns:** An inferred [actor reference](#actor-references), exposing the subclass's asynchronous application methods, `connect()`, and `broadcast()`.
 
@@ -143,16 +143,15 @@ An abrupt server failure can prevent the hook from running. Connections can rema
 
 ### Identity
 
-An actor's namespace, class name, and actor ID identify its saved state. Reusing that identity addresses the same actor. Changing the class name or actor ID addresses a different actor.
+An actor's class name and actor ID identify its saved state. Reusing that identity addresses the same actor. Changing the class name or actor ID addresses a different actor.
 
 | Component        | Maximum length |
 | ---------------- | -------------- |
-| Namespace ID     | 96 bytes       |
 | Actor class name | 48 bytes       |
 | Actor ID         | 128 bytes      |
 | Method name      | 128 bytes      |
 
-Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`, and `-`. Namespace, class name, and actor ID together must fit 243 bytes. Validation can occur when creating a reference or when a request reaches the server.
+Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`, and `-`. Validation can occur when creating a reference or when a request reaches the server.
 
 ### Saved state and serialization
 
@@ -548,16 +547,16 @@ readonly code: string
 
 Server-reported error category. This is an open string, not a closed enum; additional codes can occur.
 
-| Code                 | Meaning                                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `unauthenticated`    | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
-| `actor_error`        | Actor execution failed, including user exceptions or invalid output.                                       |
-| `resource_exhausted` | Execution resource limit reached.                                                                          |
-| `unavailable`        | Actor could not be reached or made available.                                                              |
-| `outcome_unknown`    | Caller could not confirm the result; the operation may have run and saved state.                           |
-| `invalid_request`    | Invalid request reported by the server.                                                                    |
-| `conflict`           | Deployment conflict reported by the server.                                                                |
-| `internal`           | Server failure.                                                                                            |
+| Code                 | Meaning                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `unauthenticated`    | API key or actor capability rejected. HTTP `401` and `403` during method calls map to this code. |
+| `actor_error`        | Actor execution failed, including user exceptions or invalid output.                             |
+| `resource_exhausted` | Execution resource limit reached.                                                                |
+| `unavailable`        | Actor could not be reached or made available.                                                    |
+| `outcome_unknown`    | Caller could not confirm the result; the operation may have run and saved state.                 |
+| `invalid_request`    | Invalid request reported by the server.                                                          |
+| `conflict`           | Deployment conflict reported by the server.                                                      |
+| `internal`           | Server failure.                                                                                  |
 
 ### ActorInvocationError.requestId
 
