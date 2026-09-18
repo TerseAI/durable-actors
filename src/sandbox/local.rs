@@ -217,6 +217,7 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
         .collect::<HashMap<_, _>>();
     for (key, value) in [
         ("DURABLE_OBJECT_PROCESS_ROLE", "host".to_owned()),
+        ("DURABLE_OBJECT_LOG_MODE", "development".into()),
         ("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1".into()),
         ("DURABLE_OBJECT_HOST_BIND", "127.0.0.1:0".into()),
         ("DURABLE_OBJECT_NAMESPACE_ID", request.namespace_id.clone()),
@@ -315,6 +316,10 @@ mod tests {
             actor_idle_timeout_ms: 60_000,
             host_idle_timeout_ms: 300_000,
         };
+        assert_eq!(
+            host_environment(&request, &directory).get("DURABLE_OBJECT_LOG_MODE"),
+            Some(&"development".to_owned())
+        );
         let error = provider.ensure_host(&request).await.unwrap_err();
         assert!(error.to_string().contains("shutting down"), "{error:#}");
         Ok(())

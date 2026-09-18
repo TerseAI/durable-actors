@@ -12,7 +12,7 @@ import { ControlPlaneClient } from "./control-plane.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
-    apiKey: string
+    apiKey?: string
     port: number
     project: string
     entrypoint: string
@@ -25,9 +25,9 @@ function registerDevCommand(program: Command): void {
         .command("dev")
         .description("Start local actors with persistent file storage")
         .addOption(
-            new Option("--api-key <key>", "API key for local clients")
-                .env("DURABLE_OBJECT_API_KEY")
-                .makeOptionMandatory()
+            new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
+                "DURABLE_OBJECT_API_KEY"
+            )
         )
         .addOption(
             new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
@@ -88,9 +88,9 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
         true,
         true
     )
-    const client = runtimeConnection(runtime.readiness!, runtime.exited).then(
-        connection => new ControlPlaneClient(configuredSettings(connection), fetch)
-    )
+    const connection = runtimeConnection(runtime.readiness!, runtime.exited)
+    const settings = connection.then(configuredSettings)
+    const client = settings.then(settings => new ControlPlaneClient(settings, fetch))
     void client.catch(() => {})
     let watcher: ActorSourceWatcher | undefined
     try {
@@ -98,6 +98,7 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
             publishLocalContract(options, project, await client)
         )
         await client
+        if (!options.apiKey) printGeneratedApiKey((await settings).credential)
         return await runtime.exited
     } catch (error) {
         runtime.child.kill("SIGTERM")
@@ -142,12 +143,15 @@ function devArguments(options: DevOptions): string[] {
         "--entrypoint",
         options.entrypoint,
         "--storage",
-        options.storage,
-        "--api-key",
-        options.apiKey
+        options.storage
     ]
+    if (options.apiKey) args.push("--api-key", options.apiKey)
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args
+}
+
+function printGeneratedApiKey(apiKey: string): void {
+    console.log(`Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY=${apiKey}`)
 }
 
 export { registerDevCommand }

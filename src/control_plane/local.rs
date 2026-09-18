@@ -8,15 +8,16 @@ use std::{
     time::Duration,
 };
 
+use anstyle::{AnsiColor, Style};
 use anyhow::{Context, Result, ensure};
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
-use axum::{Router, extract::Request};
+use axum::{Router, extract::Request, response::Response};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, ValueEnum};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower_http::trace::{DefaultOnResponse, TraceLayer};
-use tracing::{Level, info_span};
+use tower_http::trace::TraceLayer;
+use tracing::{Span, info, info_span};
 
 use crate::{
     bucket::{
@@ -39,7 +40,7 @@ use super::{
 #[derive(Args)]
 pub struct DevOptions {
     #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
-    pub api_key: String,
+    pub api_key: Option<String>,
     #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
     pub project: PathBuf,
     #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
@@ -95,6 +96,11 @@ pub async fn serve_local(
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let generated_api_key = options.api_key.is_none();
+    let api_key = options
+        .api_key
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let storage = local_storage(&options, &directory, &origin).await?;
     let provider = Arc::new(LocalSandboxProvider::new(
         std::env::current_exe()?,
@@ -108,21 +114,25 @@ pub async fn serve_local(
         &origin,
         &storage,
         provider.clone(),
-        &options.api_key,
+        &api_key,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = notify_launcher(&origin, &options.api_key, &storage.region, options.ready_fd);
+    let ready = notify_launcher(&origin, &api_key, &storage.region, options.ready_fd);
     if ready.is_ok() {
-        println!(
-            "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate --url",
-            directory.display()
-        );
-        if matches!(options.storage, DevStorage::Local) {
+        if generated_api_key && options.ready_fd.is_none() {
             println!(
-                "Local storage is for development; losing this directory loses your actor state."
+                "Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY={api_key}"
             );
         }
+        anstream::println!(
+            "{}",
+            styled_local_ready_message(
+                &origin,
+                &directory,
+                matches!(options.storage, DevStorage::Local)
+            )
+        );
     }
     server.run_until(shutdown, ready).await
 }
@@ -186,12 +196,22 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
         TraceLayer::new_for_http()
             .make_span_with(|request: &Request| {
                 info_span!(
+                    target: "little_actors::dev",
                     "control_plane_request",
                     method = %request.method(),
-                    path = request.uri().path(),
+                    path = %request.uri().path(),
                 )
             })
-            .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            .on_response(|response: &Response, latency: Duration, span: &Span| {
+                info!(
+                    target: "little_actors::dev",
+                    parent: span,
+                    status = response.status().as_u16(),
+                    latency_ms = %format_args!("{:.1}", latency.as_secs_f64() * 1_000.0),
+                    "request completed"
+                );
+            })
+            .on_failure(()),
     )
 }
 
@@ -343,9 +363,71 @@ fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i
     Ok(())
 }
 
+fn styled_local_ready_message(origin: &str, directory: &Path, local_storage: bool) -> String {
+    let styles = LocalReadyStyles {
+        title: Style::new().bold().fg_color(Some(AnsiColor::Cyan.into())),
+        context: Style::new().fg_color(Some(AnsiColor::BrightBlack.into())),
+        ready: Style::new().bold().fg_color(Some(AnsiColor::Green.into())),
+        label: Style::new().bold(),
+        command: Style::new().fg_color(Some(AnsiColor::Cyan.into())),
+    };
+    format_local_ready_message(origin, directory, local_storage, styles)
+}
+
+#[cfg(test)]
+fn local_ready_message(origin: &str, directory: &Path) -> String {
+    format_local_ready_message(origin, directory, true, LocalReadyStyles::default())
+}
+
+fn format_local_ready_message(
+    origin: &str,
+    directory: &Path,
+    local_storage: bool,
+    styles: LocalReadyStyles,
+) -> String {
+    let LocalReadyStyles {
+        title,
+        context,
+        ready,
+        label,
+        command,
+    } = styles;
+    let note = if local_storage {
+        "\n\n  State persists between restarts. Delete the state directory to start fresh."
+    } else {
+        ""
+    };
+    format!(
+        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx little-actors generate --url {origin}{command:#}{note}",
+        directory.display(),
+    )
+}
+
+#[derive(Clone, Copy, Default)]
+struct LocalReadyStyles {
+    title: Style,
+    context: Style,
+    ready: Style,
+    label: Style,
+    command: Style,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_message_has_clear_hierarchy_and_next_step() {
+        let message = local_ready_message(
+            "http://127.0.0.1:7100",
+            Path::new("/projects/chat/.little-actors"),
+        );
+
+        assert_eq!(
+            message,
+            "little actors / local\n\n  Ready  http://127.0.0.1:7100\n  State  /projects/chat/.little-actors\n  Next   npx little-actors generate --url http://127.0.0.1:7100\n\n  State persists between restarts. Delete the state directory to start fresh."
+        );
+    }
 
     #[tokio::test]
     async fn relative_state_directories_are_absolute_in_host_configuration() -> Result<()> {
@@ -353,7 +435,7 @@ mod tests {
         let directory = tempfile::tempdir_in(&cwd)?;
         let relative = directory.path().strip_prefix(&cwd)?;
         let options = DevOptions {
-            api_key: "test-key".into(),
+            api_key: Some("test-key".into()),
             contract: None,
             project: cwd.clone(),
             port: 0,

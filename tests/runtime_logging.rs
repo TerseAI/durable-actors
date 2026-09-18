@@ -1,7 +1,6 @@
 use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
-use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::{Child, ChildStdout, Command},
@@ -9,7 +8,7 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn local_requests_are_logged_in_the_terminal_by_default() -> Result<()> {
+async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()> {
     let runtime = LocalRuntime::start(None).await?;
     let client = reqwest::Client::new();
     for (method, path, status) in [
@@ -42,11 +41,21 @@ async fn local_requests_are_logged_in_the_terminal_by_default() -> Result<()> {
         ("GET", "/v1/objects", 400),
         ("GET", "/missing", 404),
     ]) {
-        assert_eq!(log["level"], "INFO");
-        assert_eq!(log["span"]["method"], method);
-        assert_eq!(log["span"]["path"], path);
-        assert_eq!(log["status"], status);
-        assert!(log["latency"].is_string());
+        assert!(log.contains("INFO "), "missing level: {log}");
+        assert!(
+            log.contains(&format!("method={method}")),
+            "missing method: {log}"
+        );
+        assert!(log.contains(&format!("path={path}")), "missing path: {log}");
+        assert!(
+            log.contains(&format!("status={status}")),
+            "missing status: {log}"
+        );
+        assert!(log.contains("latency_ms="), "missing latency: {log}");
+        assert!(
+            !log.trim_start().starts_with('{'),
+            "development log is JSON: {log}"
+        );
     }
     for secret in ["query-secret", "header-secret", "body-secret"] {
         assert!(!output.contains(secret), "request log leaked {secret}");
@@ -65,11 +74,26 @@ async fn local_request_logs_respect_rust_log() -> Result<()> {
     Ok(())
 }
 
-fn request_logs(output: &str) -> Vec<Value> {
+#[tokio::test]
+async fn service_process_logs_remain_structured() -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_little-actors"))
+        .env("DURABLE_OBJECT_PROCESS_ROLE", "invalid")
+        .env_remove("DURABLE_OBJECT_LOG_MODE")
+        .env_remove("RUST_LOG")
+        .output()
+        .await?;
+    assert!(!output.status.success());
+    let log: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(log["level"], "ERROR");
+    assert_eq!(log["message"], "durable-object process failed");
+    assert!(log["error"].as_str().unwrap().contains("unsupported"));
+    Ok(())
+}
+
+fn request_logs(output: &str) -> Vec<&str> {
     output
         .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|log| log["message"] == "finished processing request")
+        .filter(|line| line.contains("request completed"))
         .collect()
 }
 
@@ -128,7 +152,7 @@ async fn wait_until_ready(output: &mut BufReader<ChildStdout>) -> Result<String>
             output.read_line(&mut line).await? != 0,
             "runtime exited before readiness: {line}"
         );
-        if let Some((_, origin)) = line.split_once("Local actors ready at ") {
+        if let Some((_, origin)) = line.split_once("  Ready  ") {
             return Ok(origin.trim().to_owned());
         }
         line.clear();

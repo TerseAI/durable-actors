@@ -17,6 +17,7 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
         serde_json::from_str(include_str!("../sdk/fixtures/public-contract.json"))?;
     std::fs::write(&file, serde_json::to_vec(&contract)?)?;
     let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
+    let first_api_key = runtime.api_key.clone();
     let first: Value = runtime
         .contract("")
         .await?
@@ -39,6 +40,7 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
     changed["actors"][0]["rpc"]["methods"][0]["name"] = "reset".into();
     std::fs::write(&file, serde_json::to_vec(&changed)?)?;
     let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
+    assert_ne!(runtime.api_key, first_api_key);
     let second: Value = runtime
         .contract("")
         .await?
@@ -94,6 +96,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
 struct LocalRuntime {
     child: Child,
     origin: String,
+    api_key: String,
 }
 
 impl LocalRuntime {
@@ -101,7 +104,6 @@ impl LocalRuntime {
         let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
-            .env("DURABLE_OBJECT_API_KEY", "test-key")
             .arg("--project")
             .arg(project)
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
@@ -114,22 +116,34 @@ impl LocalRuntime {
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        let origin = timeout(Duration::from_secs(5), async {
+        let (origin, api_key) = timeout(Duration::from_secs(5), async {
             let mut line = String::new();
+            let mut api_key = None;
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
-                if let Some((_, origin)) = line.split_once("Local actors ready at ") {
-                    return Ok::<_, anyhow::Error>(origin.trim().to_owned());
+                if let Some(value) = line.trim().strip_prefix("export DURABLE_OBJECT_API_KEY=") {
+                    api_key = Some(value.to_owned());
+                }
+                if let Some((_, origin)) = line.split_once("  Ready  ") {
+                    return Ok::<_, anyhow::Error>((
+                        origin.trim().to_owned(),
+                        api_key.context("missing generated API key instruction")?,
+                    ));
                 }
                 line.clear();
             }
         })
         .await??;
+        ensure!(api_key.len() >= 32, "generated API key is too short");
         assert!(!project.join(".little-actors/runtime.json").exists());
-        Ok(Self { child, origin })
+        Ok(Self {
+            child,
+            origin,
+            api_key,
+        })
     }
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
@@ -138,7 +152,7 @@ impl LocalRuntime {
                 "{}/v1/namespaces/local/contract{query}",
                 self.origin
             ))
-            .bearer_auth("test-key")
+            .bearer_auth(&self.api_key)
             .send()
             .await?)
     }

@@ -92,6 +92,7 @@
         "ajv": "^8.20.0",
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
+        "dotenv": "^18.0.0",
         "esbuild": "^0.28.2",
         "json-schema-to-typescript": "^16.0.0",
         "prettier": "^3.9.6",

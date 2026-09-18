@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander"
+import { config } from "dotenv"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
@@ -15,6 +16,7 @@ import { runtimeEnvironment, startRustRuntime } from "./cli/rust-runtime.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 try {
+    config({ quiet: true })
     const program = new Command()
         .name("little-actors")
         .description("Run durable TypeScript actors locally or in the cloud")
@@ -87,11 +89,9 @@ async function initializeProject(directory: string, options: { template: string 
 
 From that directory, run:
   npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx little-actors generate"}
-  export DURABLE_OBJECT_API_KEY=local-dev-key
   npx little-actors dev
 
-In another terminal, from the same directory:
-  export DURABLE_OBJECT_API_KEY=local-dev-key
+In another terminal, run any export command printed by little-actors dev, then:
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`)

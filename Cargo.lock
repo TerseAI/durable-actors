@@ -1644,6 +1644,8 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "little-actors"
 version = "0.1.39"
 dependencies = [
+ "anstream",
+ "anstyle",
  "anyhow",
  "async-trait",
  "aws-lc-rs",

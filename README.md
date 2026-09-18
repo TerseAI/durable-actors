@@ -19,11 +19,10 @@ See the sample apps:
 ## Run locally
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Set the same `DURABLE_OBJECT_API_KEY` in the terminal running your application backend. Local clients default to `http://127.0.0.1:7100`.
+If it generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
 
 ## Define an Actor
 

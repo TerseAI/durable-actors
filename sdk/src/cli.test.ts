@@ -238,7 +238,7 @@ test("objects rejects invalid limits and conflicting pagination flags before con
     }
 })
 
-test("dev accepts environment configuration and explicit flags override it", async t => {
+test("dev accepts configured keys and prints an export command for a generated key", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor-project")
@@ -271,6 +271,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         DURABLE_OBJECT_DATA_DIR: "/tmp/actor-state"
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
+    assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.deepEqual(JSON.parse(stdout).slice(0, 13), [
         "dev",
         "--project",
@@ -296,7 +297,17 @@ console.log(JSON.stringify(process.argv.slice(2)))
     assert.equal(args[args.indexOf("--storage") + 1], "local")
     assert.equal(args[args.indexOf("--api-key") + 1], "flag-key")
     const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
-    await assert.rejects(run(process.execPath, [cli, "dev"], { env: withoutKey }), /api-key/)
+    const envFile = path.join(project, ".env")
+    await writeFile(envFile, "DURABLE_OBJECT_API_KEY=env-file-key\n")
+    const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
+    assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_OBJECT_API_KEY=/u)
+    assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)
+    await rm(envFile)
+    const generated = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
+    const invocation = generated.stdout.split("\n").find(line => line.startsWith("["))
+    assert.ok(invocation)
+    assert.equal(JSON.parse(invocation).includes("--api-key"), false)
+    assert.match(generated.stdout, /export DURABLE_OBJECT_API_KEY=dev-key/u)
 })
 
 test("token uses environment settings and flags without a discovery file", async t => {

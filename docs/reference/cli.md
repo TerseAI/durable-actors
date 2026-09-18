@@ -19,13 +19,12 @@ npx little-actors init chat-example
 ## Run a development server
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
 Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
-- `--api-key <key>` — Required API key, or set `DURABLE_OBJECT_API_KEY`.
+- `--api-key <key>` — API key override. `dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one and prints an export command.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server

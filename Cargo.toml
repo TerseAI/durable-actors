@@ -13,6 +13,8 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+anstream = "1"
+anstyle = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
 axum = { version = "0.8", features = ["ws"] }
