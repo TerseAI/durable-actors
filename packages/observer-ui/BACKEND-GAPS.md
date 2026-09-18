@@ -2,14 +2,14 @@
 
 Design reference: [little-actors · Overview](https://doop.design/c/x71to_CeX0), frame `xIP9Ls3hDj`.
 
-This UI implementation uses only the existing inventory and request-trace APIs. Backend and SDK API behavior are unchanged. The current surface deliberately does not display the mockup's fabricated deployment, history, identity, or write metrics.
+This UI implementation uses only the existing inventory and request-trace APIs. The observer API executes read-only SQL from the UI for saved history and provides durable live replay cursors. The current surface deliberately does not display the mockup's fabricated deployment, history, identity, or write metrics.
 
 ## Available and wired
 
 - `/api/observe/events` proxies `/v1/observe/events`: actor classes, live/dormant/unknown counts, instance IDs, active connection IDs and metadata. Clients without subscriptions retain five-second inventory polling.
 - `/api/observe/requests/events` proxies `/v1/observe/requests/events`: method/WebSocket event attempts, outcome, total duration, queue wait, timestamp, actor identity, host, and connection identity.
 - Overview request counts include all retained records in the selected window. Success and nearest-rank p95 latency exclude reroutes; success is completed / non-rerouted attempts. Queue p95 excludes null waits and reroutes.
-- The server retains at most 500 records in memory. The UI labels its sample scope, delivery loss, expiration, and reset-on-restart behavior. It does not present sampled counts as full-hour totals.
+- The UI retains at most 500 records. Local runtimes append events to SQLite and retain 10,000, with paginated history queries; hosted servers currently use in-memory SQLite. The UI labels its sample scope, delivery loss, and expiration. It does not present sampled counts as full-hour totals.
 
 ## Backend gaps for a separate task
 

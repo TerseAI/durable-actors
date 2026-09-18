@@ -18,7 +18,8 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
-    watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal): Promise<void>
+    query?(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult>
+    watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal, after?: string): Promise<void>
     watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
     listActors(signal?: AbortSignal): Promise<ActorInventory>
     checkConnection(signal?: AbortSignal): Promise<void>
@@ -40,8 +41,36 @@ class HttpObserverClient implements ObserverClient {
         return this.watch("events", "inventory", isInventory, onInventory, signal)
     }
 
-    async watchRequests(onPage: (page: RequestTracePage) => void, signal: AbortSignal): Promise<void> {
-        return this.watch("requests/events", "requests", isTracePage, onPage, signal)
+    async watchRequests(onPage: (page: RequestTracePage) => void, signal: AbortSignal, after?: string): Promise<void> {
+        const query = after ? `?${new URLSearchParams({ after })}` : ""
+        return this.watch(`requests/events${query}`, "requests", isTracePage, onPage, signal)
+    }
+
+    async query(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult> {
+        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/query`, {
+            method: "POST",
+            credentials: "same-origin",
+            redirect: "error",
+            signal,
+            headers: { "content-type": "application/json", accept: "application/json" },
+            body: JSON.stringify(query)
+        })
+        if (!response.ok) throw new Error(`Observability query failed (HTTP ${response.status}).`)
+        const result: unknown = await response.json()
+        if (
+            !result ||
+            typeof result !== "object" ||
+            !("rows" in result) ||
+            !Array.isArray(result.rows) ||
+            result.rows.length > 500 ||
+            !("truncated" in result) ||
+            typeof result.truncated !== "boolean" ||
+            !result.rows.every(
+                row => row && typeof row === "object" && !Array.isArray(row) && Object.values(row).every(value => value === null || ["string", "boolean", "number"].includes(typeof value))
+            )
+        )
+            throw new Error("Invalid SQL query response")
+        return result as ObserverQueryResult
     }
 
     private async watch<T>(path: string, eventName: string, validate: (value: unknown) => value is T, receive: (value: T) => void, signal: AbortSignal): Promise<void> {
@@ -137,6 +166,7 @@ export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
 
 export interface RequestTrace {
+    eventId?: string
     sequence: number
     requestId: string
     hostId: string
@@ -152,12 +182,26 @@ export interface RequestTrace {
     outcome: "completed" | "failed" | "rejected" | "rerouted" | "interrupted"
 }
 
+export type SqlValue = string | number | boolean | null
+export interface ObserverQuery {
+    sql: string
+    params: SqlValue[]
+}
+export interface ObserverQueryResult {
+    rows: Record<string, SqlValue>[]
+    truncated: boolean
+}
+
 export interface RequestTracePage {
+    nextCursor?: string | null
+    resumeCursor?: string
+    reset?: boolean
     epoch: string
     cursor: number
     capacity: number
     evicted: number
     dropped: number
+    persistenceFailed?: boolean
     records: RequestTrace[]
 }
 
@@ -167,6 +211,10 @@ function isTracePage(value: unknown): value is RequestTracePage {
     return (
         typeof page.epoch === "string" &&
         [page.cursor, page.capacity, page.evicted, page.dropped].every(nonnegativeInteger) &&
+        (page.persistenceFailed === undefined || typeof page.persistenceFailed === "boolean") &&
+        (page.nextCursor == null || typeof page.nextCursor === "string") &&
+        (page.resumeCursor === undefined || typeof page.resumeCursor === "string") &&
+        (page.reset === undefined || typeof page.reset === "boolean") &&
         page.capacity > 0 &&
         page.capacity <= 500 &&
         Array.isArray(page.records) &&
@@ -179,11 +227,12 @@ function nonnegativeInteger(value: unknown): value is number {
     return Number.isSafeInteger(value) && Number(value) >= 0
 }
 
-function isTrace(value: unknown): value is RequestTrace {
+export function isTrace(value: unknown): value is RequestTrace {
     if (!value || typeof value !== "object") return false
     const trace = value as RequestTrace
     return (
         [trace.requestId, trace.hostId, trace.sessionId, trace.actorType, trace.actorId, trace.operation].every(value => typeof value === "string") &&
+        (trace.eventId === undefined || (typeof trace.eventId === "string" && trace.eventId.length > 0)) &&
         nonnegativeInteger(trace.sequence) &&
         nonnegativeInteger(trace.startedAtMs) &&
         trace.startedAtMs <= 8.64e15 &&

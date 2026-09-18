@@ -5,20 +5,29 @@ import { ChevronRight, Pause, Play, RefreshCw } from "lucide-react"
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
+import { Input } from "./components/ui/input.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
+import { useRequestHistory } from "./request-history.js"
+import type { HistoryFilters } from "./request-sql.js"
 
 interface RequestObserverProps {
-    client: Pick<ObserverClient, "watchRequests">
+    client: Pick<ObserverClient, "watchRequests" | "query">
 }
 
 function RequestObserver({ client }: RequestObserverProps) {
+    const [query, setQuery] = useState<HistoryFilters>()
+    const history = useRequestHistory(client, query)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
     const [selected, setSelected] = useState<string>()
-    const shown = frozen ?? page
+    const shown = query ? history.page : (frozen ?? page)
+    const statusPage = page ?? history.page
     const records = shown?.records ?? []
-    useEffect(() => setFrozen(undefined), [client])
+    useEffect(() => {
+        setFrozen(undefined)
+        setQuery(undefined)
+    }, [client])
     return (
         <section className="la-observer la-requests" aria-label="Request observer">
             <div className="la-observer-toolbar">
@@ -27,30 +36,76 @@ function RequestObserver({ client }: RequestObserverProps) {
                     <p>Method calls and WebSocket events, with time spent waiting and processing.</p>
                 </div>
                 <div className="la-request-actions">
-                    <Button variant="outline" disabled={!shown} onClick={() => setFrozen(frozen ? undefined : page)}>
-                        {frozen ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
-                        {frozen ? "Resume" : "Pause"}
-                    </Button>
-                    {failed && (
-                        <Button variant="outline" onClick={retry}>
-                            <RefreshCw aria-hidden="true" />
-                            Retry
-                        </Button>
+                    {client.query && (
+                        <>
+                            <Button
+                                variant={!query ? "secondary" : "outline"}
+                                aria-pressed={!query}
+                                onClick={() => {
+                                    setQuery(undefined)
+                                    setFrozen(undefined)
+                                }}
+                            >
+                                Live
+                            </Button>
+                            <Button
+                                variant={query ? "secondary" : "outline"}
+                                aria-pressed={!!query}
+                                onClick={() => {
+                                    if (!query) setQuery({})
+                                }}
+                            >
+                                History
+                            </Button>
+                        </>
+                    )}
+                    {!query && (
+                        <>
+                            <Button variant="outline" disabled={!shown} onClick={() => setFrozen(frozen ? undefined : page)}>
+                                {frozen ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
+                                {frozen ? "Resume" : "Pause"}
+                            </Button>
+                            {failed && (
+                                <Button variant="outline" onClick={retry}>
+                                    <RefreshCw aria-hidden="true" />
+                                    Retry
+                                </Button>
+                            )}
+                        </>
                     )}
                 </div>
             </div>
-            {failed && (
+            {query && <HistoryFilters query={query} loading={history.loading} onSearch={setQuery} />}
+            {query && history.failed && (
+                <div className="la-observer-error" role="alert">
+                    Request history unavailable.{" "}
+                    <Button variant="outline" onClick={history.retry}>
+                        Retry history
+                    </Button>
+                </div>
+            )}
+            {!query && failed && (
                 <div className="la-observer-error" role="alert">
                     Request stream disconnected. Reconnecting… {page ? "Showing the last received requests." : "Check your connection and runtime version."}
                 </div>
             )}
-            {!!page?.dropped && (
+            {!!statusPage?.dropped && (
                 <div className="la-observer-error" role="alert">
-                    {page.dropped.toLocaleString()} request traces were not delivered. This history is incomplete.
+                    {statusPage.dropped.toLocaleString()} request traces were not delivered. This history is incomplete.
+                </div>
+            )}
+            {statusPage?.persistenceFailed && (
+                <div className="la-observer-error" role="alert">
+                    Some request events could not be saved. This history may be incomplete.
+                </div>
+            )}
+            {shown?.reset && (
+                <div className="la-observer-error" role="alert">
+                    Some older events are no longer retained. Showing available history.
                 </div>
             )}
             <div className="la-observer-table-frame">
-                <Table aria-label="Recent requests" className="la-request-table">
+                <Table aria-label={query ? "Saved requests" : "Recent requests"} className="la-request-table">
                     <TableHeader>
                         <TableRow>
                             <TableHead scope="col">Time</TableHead>
@@ -63,11 +118,11 @@ function RequestObserver({ client }: RequestObserverProps) {
                     </TableHeader>
                     <TableBody>
                         {records.map(record => (
-                            <Fragment key={`${shown!.epoch}-${record.sequence}`}>
-                                <TableRow data-state={selected === `${shown!.epoch}-${record.sequence}` ? "selected" : undefined}>
+                            <Fragment key={record.eventId ?? `${shown!.epoch}-${record.sequence}`}>
+                                <TableRow data-state={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? "selected" : undefined}>
                                     <TableCell>
                                         <time dateTime={new Date(record.startedAtMs).toISOString()} title={new Date(record.startedAtMs).toLocaleString()}>
-                                            {new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
+                                            {query ? new Date(record.startedAtMs).toLocaleString([], { hour12: false }) : new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
                                         </time>
                                     </TableCell>
                                     <TableCell>
@@ -75,10 +130,14 @@ function RequestObserver({ client }: RequestObserverProps) {
                                             variant="ghost"
                                             className="la-request-operation"
                                             aria-label={`Inspect ${record.operation} request`}
-                                            aria-expanded={selected === `${shown!.epoch}-${record.sequence}`}
-                                            onClick={() => setSelected(current => (current === `${shown!.epoch}-${record.sequence}` ? undefined : `${shown!.epoch}-${record.sequence}`))}
+                                            aria-expanded={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`)}
+                                            onClick={() =>
+                                                setSelected(current =>
+                                                    current === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? undefined : (record.eventId ?? `${shown!.epoch}-${record.sequence}`)
+                                                )
+                                            }
                                         >
-                                            <ChevronRight aria-hidden="true" className={selected === `${shown!.epoch}-${record.sequence}` ? "la-request-expanded" : undefined} />
+                                            <ChevronRight aria-hidden="true" className={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? "la-request-expanded" : undefined} />
                                             <span>
                                                 {record.operation}
                                                 <small>
@@ -96,7 +155,7 @@ function RequestObserver({ client }: RequestObserverProps) {
                                     <TableCell>{duration(record.durationMs)}</TableCell>
                                     <TableCell>{record.queueWaitMs === null ? <span title="Request did not begin processing">—</span> : duration(record.queueWaitMs)}</TableCell>
                                 </TableRow>
-                                {selected === `${shown!.epoch}-${record.sequence}` && (
+                                {selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) && (
                                     <TableRow>
                                         <TableCell colSpan={6}>
                                             <RequestDetails record={record} />
@@ -109,23 +168,102 @@ function RequestObserver({ client }: RequestObserverProps) {
                 </Table>
                 {!records.length && (
                     <div className="la-request-empty" role="status">
-                        <strong>{!shown ? (failed ? "Requests unavailable" : "Connecting to requests…") : "No requests yet"}</strong>
-                        <p>Call an actor method or send a WebSocket message to see its timings.</p>
+                        <strong>
+                            {query
+                                ? history.loading
+                                    ? "Loading history…"
+                                    : history.failed
+                                      ? "History unavailable"
+                                      : "No saved requests in this range"
+                                : !shown
+                                  ? failed
+                                      ? "Requests unavailable"
+                                      : "Connecting to requests…"
+                                  : "No requests yet"}
+                        </strong>
+                        <p>
+                            {query
+                                ? "Try a wider time range or fewer filters. Local history retains the latest 10,000 events."
+                                : "Call an actor method or send a WebSocket message to see its timings."}
+                        </p>
                     </div>
                 )}
             </div>
+            {query && shown?.nextCursor && (
+                <Button className="la-request-load-older" variant="outline" disabled={history.loading} onClick={history.loadOlder}>
+                    {history.loading ? "Loading…" : "Load older"}
+                </Button>
+            )}
             <div className="la-observer-footnote">
                 <span className="la-observer-refresh-status">
-                    <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : "la-observer-dot-live"}`} />
-                    {frozen ? "Display paused · collection continues" : failed ? "Reconnecting…" : page ? "Live updates" : "Connecting…"}
+                    {!query && <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : "la-observer-dot-live"}`} />}
+                    {query ? "Saved history" : frozen ? "Display paused · collection continues" : failed ? "Reconnecting…" : page ? "Live updates" : "Connecting…"}
                 </span>
-                <span>Latest {shown?.capacity ?? 500} requests on this control plane · history resets on restart.</span>
+                <span>{query ? `${records.length.toLocaleString()} saved requests shown` : `Latest ${shown?.capacity ?? 500} requests on this control plane.`}</span>
             </div>
-            {!!shown?.evicted && <p className="la-request-note">{shown.evicted.toLocaleString()} older records have left this history window.</p>}
+            {!query && !!shown?.evicted && <p className="la-request-note">{shown.evicted.toLocaleString()} older records have left this history window.</p>}
             <p className="la-request-note">
                 Total includes queue wait, actor processing, and persistence. Queue wait includes the WebSocket message queue. Timings exclude the caller’s network round trip.
             </p>
         </section>
+    )
+}
+
+function HistoryFilters({ query, loading, onSearch }: { query: HistoryFilters; loading: boolean; onSearch: (query: HistoryFilters) => void }) {
+    const [invalid, setInvalid] = useState(false)
+    return (
+        <form
+            className="la-request-history-filters"
+            onSubmit={event => {
+                event.preventDefault()
+                const data = new FormData(event.currentTarget)
+                const fromMs = data.get("from") ? new Date(String(data.get("from"))).getTime() : undefined
+                const toMs = data.get("to") ? new Date(String(data.get("to"))).getTime() : undefined
+                if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
+                    setInvalid(true)
+                    return
+                }
+                setInvalid(false)
+                onSearch({
+                    fromMs,
+                    toMs,
+                    actorId: String(data.get("actorId") || "").trim() || undefined,
+                    outcome: (String(data.get("outcome") || "") as HistoryFilters["outcome"]) || undefined
+                })
+            }}
+        >
+            <label>
+                From
+                <Input type="datetime-local" name="from" />
+            </label>
+            <label>
+                To
+                <Input type="datetime-local" name="to" />
+            </label>
+            <label>
+                Actor ID
+                <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
+            </label>
+            <label>
+                Outcome
+                <select className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
+                    <option value="">All outcomes</option>
+                    {["completed", "failed", "rejected", "rerouted", "interrupted"].map(outcome => (
+                        <option key={outcome} value={outcome}>
+                            {outcome[0]!.toUpperCase() + outcome.slice(1)}
+                        </option>
+                    ))}
+                </select>
+            </label>
+            <Button type="submit" variant="outline" disabled={loading}>
+                Search
+            </Button>
+            {invalid && (
+                <p className="la-observer-error" role="alert">
+                    From must be before To.
+                </p>
+            )}
+        </form>
     )
 }
 

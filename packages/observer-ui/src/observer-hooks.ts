@@ -54,24 +54,31 @@ export function useInventory(client: ObserverClient) {
     }
 }
 
-export function useRequests(client: Pick<ObserverClient, "watchRequests">) {
+export function useRequests(client: Pick<ObserverClient, "watchRequests">, enabled = true) {
     const [page, setPage] = useState<RequestTracePage>()
     const [failed, setFailed] = useState(false)
     const [attempt, setAttempt] = useState(0)
     useEffect(() => setPage(undefined), [client])
     useEffect(() => {
+        if (!enabled) return
+        let after: string | undefined
         const controller = new AbortController()
         let timer: ReturnType<typeof setTimeout> | undefined
         let delay = 1000
         async function watch() {
             try {
                 if (!client.watchRequests) throw new Error("Request traces unavailable")
-                await client.watchRequests(incoming => {
-                    if (controller.signal.aborted) return
-                    setPage(current => mergePages(current, incoming))
-                    setFailed(false)
-                    delay = 1000
-                }, controller.signal)
+                await client.watchRequests(
+                    incoming => {
+                        if (controller.signal.aborted) return
+                        after = incoming.resumeCursor
+                        setPage(current => mergePages(current, incoming))
+                        setFailed(false)
+                        delay = 1000
+                    },
+                    controller.signal,
+                    after
+                )
                 if (!controller.signal.aborted) throw new Error("Request stream disconnected")
             } catch {
                 if (!controller.signal.aborted) setFailed(true)
@@ -88,18 +95,16 @@ export function useRequests(client: Pick<ObserverClient, "watchRequests">) {
             controller.abort()
             clearTimeout(timer)
         }
-    }, [client, attempt])
+    }, [client, attempt, enabled])
     return { page, failed, retry: () => setAttempt(value => value + 1) }
 }
 
 function mergePages(current: RequestTracePage | undefined, incoming: RequestTracePage): RequestTracePage {
-    const records = new Map((current?.epoch === incoming.epoch ? current.records : []).map(record => [record.sequence, record]))
-    for (const record of incoming.records) records.set(record.sequence, record)
+    const records = new Map((current?.epoch === incoming.epoch && !incoming.reset ? current.records : []).map(record => [record.eventId ?? record.sequence, record]))
+    for (const record of incoming.records) records.set(record.eventId ?? record.sequence, record)
     return {
         ...incoming,
-        records: [...records.values()]
-            .filter(record => record.sequence > incoming.evicted)
-            .sort((a, b) => b.sequence - a.sequence)
-            .slice(0, incoming.capacity)
+        reset: incoming.reset || (current?.epoch === incoming.epoch && current.reset),
+        records: [...records.values()].sort((a, b) => b.sequence - a.sequence).slice(0, incoming.capacity)
     }
 }

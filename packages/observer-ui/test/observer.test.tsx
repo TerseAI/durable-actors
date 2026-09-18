@@ -61,15 +61,19 @@ test("the actor inventory renders counts, preserves stale data on failure, and r
     assert.equal(calls, 3)
 })
 
-test("selecting an actor reveals its instances, residency, and active WebSocket connection counts", async () => {
+test("opening an actor replaces the inventory with a dedicated page and returns to the filtered list", async () => {
     const client = { checkConnection: async () => {}, listActors: async () => inventory }
     const view = render(<ActorObserver client={client} />)
     const room = await view.findByRole("button", { name: "Room" })
 
-    assert.equal(room.getAttribute("aria-expanded"), "false")
+    fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "room" } })
+    assert.equal(room.hasAttribute("aria-expanded"), false)
     fireEvent.click(room)
 
-    assert.equal(room.getAttribute("aria-expanded"), "true")
+    assert.ok(view.getByRole("heading", { name: "Room", level: 1 }))
+    assert.equal(view.queryByRole("table", { name: "Actor instance counts" }), null)
+    assert.equal(view.queryByRole("searchbox", { name: "Search actors" }), null)
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room", level: 1 }))
     assert.ok(view.getByRole("heading", { name: "Room instances" }))
     assert.match(view.getByRole("row", { name: /general/i }).textContent!, /generalLive3/u)
     assert.match(view.getByRole("row", { name: /quiet/i }).textContent!, /quietDormant0/u)
@@ -81,8 +85,11 @@ test("selecting an actor reveals its instances, residency, and active WebSocket 
     assert.match(view.getByRole("row", { name: /socket-a/i }).textContent!, /"userId": "ada"/u)
     assert.match(view.getByRole("row", { name: /socket-c/i }).textContent!, /null/u)
 
-    fireEvent.click(room)
+    fireEvent.click(view.getByRole("button", { name: "Back to actors" }))
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
+    assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "room")
+    assert.equal(view.queryByRole("button", { name: "Counter" }), null)
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Actors", level: 1 }))
 })
 
 test("a deployed actor type with no instances has an instructive instance empty state", async () => {
@@ -194,8 +201,9 @@ test("instance search and residency filtering combine without changing inventory
 
 test("switching clients clears actor selection and search", async () => {
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
-    fireEvent.click(await view.findByRole("button", { name: "Room" }))
+    await view.findByRole("button", { name: "Room" })
     fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "Room" } })
+    fireEvent.click(view.getByRole("button", { name: "Room" }))
     view.rerender(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => ({ ...inventory }) }} />)
     await view.findByRole("button", { name: "Room" })
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
@@ -319,4 +327,25 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
         assert.equal(view.queryByRole("status", { name: "Loading actors" }), null)
     }
     assert.equal(requests, 1)
+})
+
+test("an initial actor opens its page with class-specific totals and handles removal from inventory", async () => {
+    let publish: (value: typeof inventory) => void = () => {}
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => inventory,
+        watchActors: async (receive: typeof publish) => {
+            publish = receive
+            receive(inventory)
+            await new Promise<void>(() => {})
+        }
+    }
+    const view = render(<ActorObserver client={client} initialActorType="Counter" />)
+    await view.findByRole("heading", { name: "Counter", level: 1 })
+    assert.equal(view.getByLabelText("Total instances").textContent, "0")
+    assert.equal(view.queryByRole("table", { name: "Actor instance counts" }), null)
+    await act(async () => publish({ actors: [inventory.actors[0]!] }))
+    assert.ok(view.getByText("Actor class unavailable"))
+    fireEvent.click(view.getByRole("button", { name: "Back to actors" }))
+    assert.ok(view.getByRole("button", { name: "Room" }))
 })

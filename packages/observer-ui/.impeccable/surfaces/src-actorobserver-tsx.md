@@ -5,13 +5,13 @@ primary_target: "src/ActorObserver.tsx"
 related_targets: ["src/styles.css","src/standalone.css","src/standalone.tsx","index.html"]
 ---
 
-# Actor inventory and inline inspector
+# Actor inventory and dedicated class page
 
 Mode: Operate. Audience: developers diagnosing namespace residency and active connections.
 
 ## Task and composition
 
-Scan the existing total/live/dormant counts (and Unknown when present), search actor types, open an actor, narrow instances by ID and residency state, then open an instance to inspect active WebSocket IDs and JSON metadata. Keep both disclosure levels inline. Summary values derive from the full inventory, not the search results. Provide no-match recovery and distinct empty actor, instance, and connection states.
+Scan the existing total/live/dormant counts (and Unknown when present), search actor types, open an actor, narrow instances by ID and residency state, then open an instance to inspect active WebSocket IDs and JSON metadata. Opening a class replaces the inventory with a dedicated class page, headed by an Actors breadcrumb and the class name. Class summary values derive from that class; list summary values derive from the full inventory, not the search results. Returning through the breadcrumb or Actors navigation preserves the class search. Keep instance connection disclosure inline on the class page. Provide no-match recovery and distinct empty actor, instance, and connection states.
 
 ## Direction contract
 
@@ -23,7 +23,7 @@ Use the injected ObserverClient and real requests. Poll again five seconds after
 
 ## Embedding, responsive behavior, and access
 
-Keep host token/font inheritance, la: utilities, and observer-scoped base CSS. Global theme defaults are optional. Standalone Vite chrome, theme toggle, skip link, and page layout remain separate. Narrow layouts stack actor search, wrap the summary when needed, retain horizontally scrollable tables, and enlarge controls. Preserve named search/state fields, semantic table headings, keyboard disclosure and focus, loading/status/alert semantics, and reduced motion.
+Keep host token/font inheritance, la: utilities, and observer-scoped base CSS. Global theme defaults are optional. Standalone Vite chrome, theme toggle, skip link, and page layout remain separate. Narrow layouts stack actor search, wrap the summary when needed, retain horizontally scrollable tables, and enlarge controls. Preserve named search/state fields, semantic table headings, keyboard navigation, instance disclosure and focus, loading/status/alert semantics, and reduced motion.
 
 ## Finish
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 
 import { Activity, ArrowRight, Box, Cable, Hash, LayoutGrid, SunMoon } from "lucide-react"
 
@@ -18,10 +18,6 @@ const views = [
 export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; toggleTheme: () => void }) {
     const [view, setView] = useState<(typeof views)[number]["id"]>("overview")
     const [actor, setActor] = useState<string>()
-    const main = useRef<HTMLElement>(null)
-    useEffect(() => {
-        if (view === "actors" && actor) main.current?.focus()
-    }, [view, actor])
     function selectActor(actorType: string) {
         setActor(actorType)
         setView("actors")
@@ -69,9 +65,9 @@ export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; to
                         <ArrowRight aria-hidden="true" />
                     </a>
                 </header>
-                <main ref={main} id="main" tabIndex={-1}>
+                <main id="main" tabIndex={-1}>
                     {view === "overview" && <Overview client={client} onSelectActor={selectActor} />}
-                    {view === "actors" && <ActorObserver key={actor ?? "all"} client={client} initialActorType={actor} />}
+                    {view === "actors" && <ActorObserver client={client} navigation={{ actorType: actor, onSelectActor: setActor }} />}
                     {view === "requests" && <RequestObserver client={client} />}
                     {view === "websockets" && <WebSocketObserver client={client} />}
                 </main>

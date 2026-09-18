@@ -115,10 +115,22 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             "north-america-east",
         )?
         .token;
+    for credential in ["", "wrong", &token] {
+        assert_eq!(
+            fixture
+                .client
+                .post(format!("{}/v1/observe/query", fixture.origin))
+                .bearer_auth(credential)
+                .json(&json!({"sql":"SELECT 1"}))
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
     for path in [
         "/v1/observe/actors",
         "/v1/observe/events",
-        "/v1/observe/requests",
         "/v1/observe/requests/events",
         "/v1/actors",
         "/v1/actors/Room.with.dots/one?include=state",
@@ -248,6 +260,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> Result<Self> {
+        Self::start_with_traces(crate::request_traces::TraceStore::default()).await
+    }
+
+    async fn start_with_traces(traces: crate::request_traces::TraceStore) -> Result<Self> {
         let runtime = RuntimeFixture::new()?;
         let store = runtime.runtime.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -267,7 +283,6 @@ impl Fixture {
             issuer.clone(),
         )?;
         let changes = tokio::sync::watch::channel(()).0;
-        let traces = crate::request_traces::TraceStore::default();
         let inspector =
             ActorInspector::new(store.clone(), store.clone(), store.clone(), changes.clone())
                 .with_traces(traces.clone());
@@ -487,8 +502,13 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
 
 #[tokio::test]
 async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> Result<()> {
-    use crate::request_traces::{RequestKind, RequestOutcome, RequestTrace};
-    let fixture = Fixture::start().await?;
+    use crate::request_traces::{
+        RequestKind, RequestOutcome, RequestTrace, TraceStore, persistence::SqliteTracePersistence,
+    };
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("request-traces.sqlite3");
+    let open = || TraceStore::open(Arc::new(SqliteTracePersistence::new(path.clone())));
+    let fixture = Fixture::start_with_traces(open().await?).await?;
     let mut stream = fixture
         .get("/v1/observe/requests/events")
         .await?
@@ -497,23 +517,26 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
     let empty = stream_inventory(&mut stream).await?;
     assert_eq!(empty["records"], json!([]));
     for id in ["first", "second"] {
-        fixture.traces.record(
-            "host",
-            "session",
-            vec![RequestTrace {
-                request_id: id.into(),
-                actor_type: "Room".into(),
-                actor_id: "one".into(),
-                kind: RequestKind::Method,
-                operation: "post".into(),
-                connection_id: None,
-                started_at_ms: 1000,
-                duration_ms: 25.0,
-                queue_wait_ms: Some(10.0),
-                outcome: RequestOutcome::Completed,
-            }],
-            0,
-        );
+        fixture
+            .traces
+            .record(
+                "host",
+                "session",
+                vec![RequestTrace {
+                    request_id: id.into(),
+                    actor_type: "Room".into(),
+                    actor_id: "one".into(),
+                    kind: RequestKind::Method,
+                    operation: "post".into(),
+                    connection_id: None,
+                    started_at_ms: 1000,
+                    duration_ms: 25.0,
+                    queue_wait_ms: Some(10.0),
+                    outcome: RequestOutcome::Completed,
+                }],
+                0,
+            )
+            .await?;
         let page = stream_inventory(&mut stream).await?;
         assert_eq!(page["records"].as_array().unwrap().len(), 1);
         assert_eq!(page["records"][0]["requestId"], id);
@@ -521,9 +544,78 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
         assert_eq!(page["epoch"], empty["epoch"]);
     }
     drop(stream);
-    let snapshot: Value = fixture.get("/v1/observe/requests").await?.json().await?;
+    let snapshot = serde_json::to_value(fixture.traces.replay(&Default::default()).await?)?;
     let mut replay = fixture.get("/v1/observe/requests/events").await?;
     assert_eq!(stream_inventory(&mut replay).await?, snapshot);
     assert_eq!(snapshot["records"].as_array().unwrap().len(), 2);
+    drop(replay);
+    drop(fixture);
+    let restarted = Fixture::start_with_traces(open().await?).await?;
+    let mut replay = restarted.get("/v1/observe/requests/events").await?;
+    let restored = stream_inventory(&mut replay).await?;
+    assert_eq!(restored["records"], snapshot["records"]);
+    assert_eq!(restored["epoch"], snapshot["epoch"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_history_executes_read_only_sql_and_resumes_saved_cursors() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let url = format!("{}/v1/observe/query", fixture.origin);
+    let query = json!({"sql":"SELECT COUNT(*) AS total FROM request_events", "params":[]});
+    assert_eq!(
+        fixture
+            .client
+            .post(&url)
+            .json(&query)
+            .send()
+            .await?
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = fixture
+        .client
+        .post(&url)
+        .bearer_auth("api-key")
+        .json(&query)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await?,
+        json!({"rows":[{"total":0}],"truncated":false})
+    );
+    for query in [
+        json!({"sql":"DELETE FROM traces"}),
+        json!({"sql":"SELECT * FROM missing_table"}),
+        json!({"sql":"SELECT ?", "params":[{}]}),
+        json!({"sql":"SELECT 1; SELECT 2"}),
+    ] {
+        assert_eq!(
+            fixture
+                .client
+                .post(&url)
+                .bearer_auth("api-key")
+                .json(&query)
+                .send()
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let snapshot = serde_json::to_value(fixture.traces.replay(&Default::default()).await?)?;
+    let cursor = snapshot["resumeCursor"].as_str().unwrap();
+    let mut replay = fixture
+        .get(&format!("/v1/observe/requests/events?after={cursor}"))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(stream_inventory(&mut replay).await?["records"], json!([]));
+    assert_eq!(
+        fixture
+            .get("/v1/observe/requests/events?after=broken")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
     Ok(())
 }

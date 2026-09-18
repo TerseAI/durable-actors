@@ -107,3 +107,15 @@ test("request traces stream through the authenticated control-plane client", asy
     })
     assert.match(await (await client.openRequestStream(controller.signal)).text(), /event: requests/u)
 })
+
+test("SQL queries are posted as JSON with server-side credentials", async () => {
+    const query = { sql: "SELECT COUNT(*) AS total FROM request_events WHERE actor_id = ?", params: ["one"] }
+    const client = new ControlPlaneClient(connection, async (url, options) => {
+        assert.equal(url, "https://control.example/v1/observe/query")
+        assert.equal(options?.method, "POST")
+        assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+        assert.deepEqual(JSON.parse(String(options?.body)), query)
+        return Response.json({ rows: [{ total: 2 }], truncated: false })
+    })
+    assert.deepEqual(await client.query(query), { rows: [{ total: 2 }], truncated: false })
+})

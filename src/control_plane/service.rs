@@ -92,6 +92,11 @@ impl ControlPlaneService {
         self
     }
 
+    pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
+        self.traces = traces;
+        self
+    }
+
     pub fn into_internal_service(self) -> ActorControlPlaneServiceServer<Self> {
         ActorControlPlaneServiceServer::new(self)
             .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
@@ -409,12 +414,14 @@ impl ControlPlaneService {
                 for trace in &traces {
                     trace.validate()?;
                 }
-                self.traces.record(
-                    principal.host_id.as_str(),
-                    &principal.session_id,
-                    traces,
-                    dropped,
-                );
+                self.traces
+                    .record(
+                        principal.host_id.as_str(),
+                        &principal.session_id,
+                        traces,
+                        dropped,
+                    )
+                    .await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::InventoryChanged => {

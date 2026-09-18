@@ -19,12 +19,14 @@ interface DevOptions {
     entrypoint: string
     storage: "local" | "gcs"
     dataDir?: string
+    watch: boolean
 }
 
 function registerDevCommand(program: Command): void {
     program
         .command("dev")
         .description("Start local actors with persistent file storage")
+        .option("--no-watch", "Disable automatic actor reload when source files change")
         .addOption(
             new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
                 "DURABLE_OBJECT_API_KEY"
@@ -97,9 +99,11 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
     void client.catch(() => {})
     let watcher: ActorSourceWatcher | undefined
     try {
-        watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
-            publishLocalContract(options, project, await client)
-        )
+        if (options.watch) {
+            watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
+                publishLocalContract(options, project, await client)
+            )
+        }
         await client
         if (!options.apiKey) printGeneratedApiKey((await settings).credential)
         return await runtime.exited

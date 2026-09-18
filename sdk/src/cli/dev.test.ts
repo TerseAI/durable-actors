@@ -27,18 +27,31 @@ test("dev compiles the project contract before launching and cleans it up when t
     await writeFile(
         executable,
         `#!/usr/bin/env node
-import { createWriteStream, readFileSync } from "node:fs"
+import { createWriteStream, readFileSync, appendFileSync } from "node:fs"
+import { createServer } from "node:http"
 const args = process.argv.slice(2)
 const index = args.indexOf("--contract")
 if (index < 0) throw new Error("No public contract supplied to runtime")
 const file = args[index + 1]
+let updates = 0
+const server = createServer((_request, response) => { updates++; response.end("{}") })
+let controlPlaneUrl = "http://127.0.0.1:7100"
+if (process.env.TEST_WATCH_SOURCE) {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
+    controlPlaneUrl = "http://127.0.0.1:" + server.address().port
+}
 createWriteStream(null, { fd: 3 }).end(JSON.stringify({
     pid: process.pid,
-    controlPlaneUrl: "http://127.0.0.1:7100",
+    controlPlaneUrl,
     apiKey: "test-key",
     storageRegion: "local"
 }))
-console.log(JSON.stringify({ args, file, contract: JSON.parse(readFileSync(file, "utf8")) }))
+if (process.env.TEST_WATCH_SOURCE) {
+    setTimeout(() => appendFileSync(process.env.TEST_WATCH_SOURCE, "\\n// source changed"), 400)
+    setTimeout(() => { server.close(); console.log(JSON.stringify({ updates })) }, 2500)
+} else {
+    console.log(JSON.stringify({ args, file, contract: JSON.parse(readFileSync(file, "utf8")) }))
+}
 process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
         { mode: 0o755 }
@@ -64,6 +77,17 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     )
     assert.equal(failure.code, 7)
     await assert.rejects(readFile(JSON.parse(failure.stdout).file), { code: "ENOENT" })
+    const watching = await run(process.execPath, args, {
+        cwd: directory,
+        env: { ...env, TEST_WATCH_SOURCE: source }
+    })
+    assert.ok(JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates > 0, "dev watches sources by default")
+    const notWatching = await run(process.execPath, [...args, "--no-watch"], {
+        cwd: directory,
+        env: { ...env, TEST_WATCH_SOURCE: source }
+    })
+    assert.equal(JSON.parse(notWatching.stdout).updates, 0, "--no-watch prevents source-triggered redeployments")
+
     await writeFile(
         source,
         'import { Actor } from "little-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'

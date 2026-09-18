@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +28,10 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route("/v1/observe/actors", get(actor_inventory))
         .route("/v1/observe/events", get(actor_events))
-        .route("/v1/observe/requests", get(request_traces))
+        .route(
+            "/v1/observe/query",
+            post(observe_query).layer(axum::extract::DefaultBodyLimit::max(65_536)),
+        )
         .route("/v1/observe/requests/events", get(request_events))
         .route("/v1/actors", get(list_objects))
         .route("/v1/actors/{actor_type}/{actor_id}", get(inspect_object))
@@ -371,44 +374,68 @@ async fn actor_events(
         .into_response())
 }
 
-async fn request_traces(
+async fn observe_query(
     State(state): State<InspectionApi>,
     headers: HeaderMap,
+    body: Result<
+        Json<crate::request_traces::query::SqlQuery>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    Ok((
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(state.inspector.traces.page(0)),
-    )
-        .into_response())
+    let Json(query) = body.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .query(&query)
+        .await
+        .map_err(trace_query_error)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
+}
+
+fn trace_query_error(error: anyhow::Error) -> ApiError {
+    if error.is::<crate::request_traces::replay::InvalidTraceCursor>()
+        || error.is::<crate::request_traces::query::SqlQueryError>()
+    {
+        ApiError::bad_request(error)
+    } else {
+        ApiError::internal(error)
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct RequestReplay {
+    after: Option<String>,
 }
 
 async fn request_events(
     State(state): State<InspectionApi>,
+    query: Result<Query<RequestReplay>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    use axum::response::sse::{Event, KeepAlive, Sse};
-    use std::convert::Infallible;
+    use crate::request_traces::replay::ReplayQuery;
+    use axum::response::sse::{KeepAlive, Sse};
     use tokio_stream::wrappers::ReceiverStream;
     authorized_admin(&state.admin, &headers)?;
-    let store = state.inspector.traces;
-    let mut changes = store.changes.subscribe();
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
-    tokio::spawn(async move {
-        let mut cursor = 0;
-        loop {
-            let page = store.page(cursor);
-            cursor = page.cursor;
-            let event = Event::default()
-                .event("requests")
-                .json_data(page)
-                .expect("serializable trace page");
-            if sender.send(Ok(event)).await.is_err() {
-                return;
-            }
-            tokio::select! { _ = sender.closed() => return, _ = changes.changed() => {} }
-        }
+    let Query(replay) = query.map_err(ApiError::bad_request)?;
+    let cursor = replay.after.or_else(|| {
+        headers
+            .get("last-event-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
     });
+    let query = ReplayQuery {
+        cursor,
+        ..Default::default()
+    };
+    query.validate().map_err(ApiError::bad_request)?;
+    let store = state.inspector.traces;
+    // Subscribe before reading so a commit between the read and wait is not missed.
+    let changes = store.changes.subscribe();
+    let page = store.replay(&query).await.map_err(trace_query_error)?;
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(stream_requests(store, changes, sender, page));
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
@@ -418,4 +445,48 @@ async fn request_events(
             .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
     )
         .into_response())
+}
+
+async fn stream_requests(
+    store: crate::request_traces::TraceStore,
+    mut changes: tokio::sync::watch::Receiver<()>,
+    sender: tokio::sync::mpsc::Sender<Result<axum::response::sse::Event, std::convert::Infallible>>,
+    mut page: crate::request_traces::TracePage,
+) {
+    use crate::request_traces::replay::ReplayQuery;
+    use axum::response::sse::Event;
+    loop {
+        let more = page.next_cursor.is_some();
+        let query = ReplayQuery {
+            cursor: Some(page.resume_cursor.clone()),
+            ..Default::default()
+        };
+        let event = Event::default()
+            .event("requests")
+            .id(&page.resume_cursor)
+            .json_data(&page)
+            .expect("serializable trace page");
+        if sender.send(Ok(event)).await.is_err() {
+            return;
+        }
+        if !more {
+            tokio::select! {
+                _ = sender.closed() => return,
+                _ = changes.changed() => {},
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            }
+        }
+        page = match store.replay(&query).await {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::error!(%error, "request trace query failed");
+                let _ = sender
+                    .send(Ok(Event::default()
+                        .event("error")
+                        .data("Request history unavailable")))
+                    .await;
+                return;
+            }
+        };
+    }
 }

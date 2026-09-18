@@ -191,3 +191,84 @@ for (const [method, path, event] of [
         assert.equal(signal!.aborted, true)
     })
 }
+
+test("observer forwards raw SQL and opaque live replay cursors", async t => {
+    const observer = new Observer(
+        {
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            query: async query => {
+                assert.deepEqual(query, { sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
+                return { records: [] }
+            },
+            openRequestStream: async (_signal, after) => {
+                assert.equal(after, "resume+token")
+                return new Response("event: requests\ndata: {}\n\n", {
+                    headers: { "content-type": "text/event-stream" }
+                })
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    assert.deepEqual(
+        await (
+            await fetch(`${url}/api/observe/query`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
+            })
+        ).json(),
+        {
+            records: []
+        }
+    )
+    assert.match(
+        await (await fetch(`${url}/api/observe/requests/events?after=resume%2Btoken`)).text(),
+        /event: requests/u
+    )
+})
+
+test("SQL proxy rejects cross-origin and malformed requests and hides upstream secrets", async t => {
+    let calls = 0
+    const observer = new Observer(
+        {
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            query: async () => {
+                calls++
+                throw new Error("private-admin-key")
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    const endpoint = `${url}/api/observe/query`
+    const body = JSON.stringify({ sql: "SELECT 1", params: [] })
+    assert.equal((await fetch(endpoint)).status, 405)
+    assert.equal(
+        (
+            await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", origin: "https://untrusted.example" },
+                body
+            })
+        ).status,
+        403
+    )
+    assert.equal((await fetch(endpoint, { method: "POST", body })).status, 400)
+    assert.equal(
+        (await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "broken" }))
+            .status,
+        400
+    )
+    assert.equal(calls, 0)
+    const rejected = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body })
+    assert.equal(rejected.status, 503)
+    assert.deepEqual(await rejected.json(), { error: "Observability query failed" })
+    assert.equal(calls, 1)
+})

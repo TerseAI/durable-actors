@@ -1,14 +1,19 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{mpsc, watch};
+
+pub(crate) mod persistence;
+pub(crate) mod query;
+pub(crate) mod replay;
+use persistence::{SqliteTracePersistence, TracePersistence};
+use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;
 pub(crate) const TRACE_BATCH_SIZE: usize = 64;
@@ -77,14 +82,27 @@ pub(crate) enum RequestOutcome {
     Interrupted,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TraceRecord {
-    pub sequence: u64,
+pub(crate) struct TraceEvent {
+    #[serde(default = "new_event_id")]
+    pub event_id: String,
     pub host_id: String,
     pub session_id: String,
     #[serde(flatten)]
     pub trace: RequestTrace,
+}
+
+fn new_event_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceRecord {
+    pub sequence: u64,
+    #[serde(flatten)]
+    pub event: TraceEvent,
 }
 
 #[derive(Serialize)]
@@ -95,78 +113,115 @@ pub(crate) struct TracePage {
     pub capacity: usize,
     pub evicted: u64,
     pub dropped: u64,
+    pub persistence_failed: bool,
     pub records: Vec<TraceRecord>,
+    pub next_cursor: Option<String>,
+    pub resume_cursor: String,
+    pub reset: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct TraceStore {
-    inner: Arc<Mutex<TraceHistory>>,
+    writer: Arc<tokio::sync::Mutex<()>>,
+    pending: Arc<tokio::sync::Semaphore>,
+    persistence: Arc<dyn TracePersistence>,
+    dropped: Arc<AtomicU64>,
+    persistence_failed: Arc<AtomicBool>,
     pub changes: watch::Sender<()>,
-}
-
-struct TraceHistory {
-    epoch: String,
-    cursor: u64,
-    dropped: u64,
-    records: VecDeque<TraceRecord>,
 }
 
 impl Default for TraceStore {
     fn default() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(TraceHistory {
-                epoch: uuid::Uuid::new_v4().to_string(),
-                cursor: 0,
-                dropped: 0,
-                records: VecDeque::new(),
-            })),
-            changes: watch::channel(()).0,
-        }
+        Self::new(Arc::new(SqliteTracePersistence::in_memory()))
     }
 }
 
 impl TraceStore {
-    pub(crate) fn record(
+    pub(crate) async fn open(persistence: Arc<dyn TracePersistence>) -> Result<Self> {
+        persistence
+            .replay(&ReplayQuery {
+                limit: 1,
+                ..Default::default()
+            })
+            .await?;
+        Ok(Self::new(persistence))
+    }
+
+    pub(crate) async fn record(
         &self,
         host: &str,
         session: &str,
         traces: Vec<RequestTrace>,
         dropped: u64,
-    ) {
-        let mut history = self.inner.lock().unwrap();
-        history.dropped = history.dropped.saturating_add(dropped);
-        for trace in traces {
-            history.cursor += 1;
-            let sequence = history.cursor;
-            history.records.push_back(TraceRecord {
-                sequence,
+    ) -> Result<()> {
+        self.dropped.fetch_add(dropped, Ordering::Relaxed);
+        let events = traces
+            .into_iter()
+            .map(|trace| TraceEvent {
+                event_id: new_event_id(),
                 host_id: host.into(),
                 session_id: session.into(),
                 trace,
-            });
-            if history.records.len() > TRACE_CAPACITY {
-                history.records.pop_front();
-            }
-        }
-        drop(history);
-        self.changes.send_replace(());
+            })
+            .collect();
+        self.persist_detached(events).await
     }
 
-    pub(crate) fn page(&self, after: u64) -> TracePage {
-        let history = self.inner.lock().unwrap();
-        TracePage {
-            epoch: history.epoch.clone(),
-            cursor: history.cursor,
-            capacity: TRACE_CAPACITY,
-            evicted: history.cursor.saturating_sub(TRACE_CAPACITY as u64),
-            dropped: history.dropped,
-            records: history
-                .records
-                .iter()
-                .filter(|record| record.sequence > after)
-                .cloned()
-                .collect(),
+    pub(crate) async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
+        query.validate()?;
+        let mut page = self.persistence.replay(query).await?;
+        page.dropped = self.dropped.load(Ordering::Relaxed);
+        page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
+        Ok(page)
+    }
+
+    pub(crate) async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
+        self.persistence.query(query).await
+    }
+
+    fn new(persistence: Arc<dyn TracePersistence>) -> Self {
+        Self {
+            writer: Arc::new(tokio::sync::Mutex::new(())),
+            pending: Arc::new(tokio::sync::Semaphore::new(64)),
+            persistence,
+            dropped: Arc::new(AtomicU64::new(0)),
+            persistence_failed: Arc::new(AtomicBool::new(false)),
+            changes: watch::channel(()).0,
         }
+    }
+
+    async fn persist_detached(&self, events: Vec<TraceEvent>) -> Result<()> {
+        if events.is_empty() {
+            self.changes.send_replace(());
+            return Ok(());
+        }
+        let permit = match self.pending.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.report_persistence_failure(error, events.len());
+                return Ok(());
+            }
+        };
+        let store = self.clone();
+        // Finish the commit even if the reporting connection is cancelled.
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _writer = store.writer.lock().await;
+            match store.persistence.append(&events).await {
+                Ok(()) => {
+                    store.changes.send_replace(());
+                }
+                Err(error) => store.report_persistence_failure(error, events.len()),
+            }
+        })
+        .await?;
+        Ok(())
+    }
+
+    fn report_persistence_failure(&self, error: impl std::fmt::Display, count: usize) {
+        tracing::error!(%error, count, "request trace persistence failed");
+        self.persistence_failed.store(true, Ordering::Relaxed);
+        self.changes.send_replace(());
     }
 }
 
@@ -300,62 +355,4 @@ impl Drop for RequestSpan {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn trace(id: usize) -> RequestTrace {
-        RequestTrace {
-            request_id: id.to_string(),
-            actor_type: "Counter".into(),
-            actor_id: "one".into(),
-            kind: RequestKind::Method,
-            operation: "increment".into(),
-            connection_id: None,
-            started_at_ms: 1000,
-            duration_ms: 12.0,
-            queue_wait_ms: Some(5.0),
-            outcome: RequestOutcome::Completed,
-        }
-    }
-
-    #[test]
-    fn history_keeps_distinct_requests_and_reports_expired_records() {
-        let store = TraceStore::default();
-        for id in 0..TRACE_CAPACITY + 2 {
-            store.record("host", "session", vec![trace(id)], 0);
-        }
-        let page = store.page(0);
-        assert_eq!(page.records.len(), TRACE_CAPACITY);
-        assert_eq!(page.evicted, 2);
-        assert_eq!(page.records[0].trace.request_id, "2");
-        assert_eq!(page.cursor, (TRACE_CAPACITY + 2) as u64);
-        assert!(store.page(page.cursor).records.is_empty());
-        assert_eq!(store.page(page.cursor - 1).records.len(), 1);
-    }
-
-    #[test]
-    fn trace_validation_rejects_invalid_timings() {
-        let mut value = trace(1);
-        assert!(value.validate().is_ok());
-        value.queue_wait_ms = Some(13.0);
-        assert!(value.validate().is_err());
-        value.queue_wait_ms = None;
-        value.duration_ms = -1.0;
-        assert!(value.validate().is_err());
-    }
-
-    #[test]
-    fn delivery_loss_is_visible_even_without_new_records() {
-        let store = TraceStore::default();
-        store.record("host", "session", vec![], 3);
-        assert_eq!(store.page(0).dropped, 3);
-    }
-
-    #[test]
-    fn backpressure_drops_telemetry_without_blocking_requests() {
-        let (sender, _receiver) = TraceSender::channel(1);
-        sender.send(trace(1));
-        sender.send(trace(2));
-        assert_eq!(sender.dropped.load(Ordering::Relaxed), 1);
-    }
-}
+mod tests;

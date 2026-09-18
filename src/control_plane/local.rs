@@ -230,6 +230,7 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 }
 
 struct LocalState {
+    traces: crate::request_traces::TraceStore,
     runtime: Arc<RuntimeStorage>,
     access: Arc<RuntimeAccess>,
     leases: Arc<dyn HostLeaseStore>,
@@ -266,6 +267,12 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         origin.into(),
     )?);
     Ok(LocalState {
+        traces: crate::request_traces::TraceStore::open(Arc::new(
+            crate::request_traces::persistence::SqliteTracePersistence::new(
+                directory.join("request-traces.sqlite3"),
+            ),
+        ))
+        .await?,
         runtime,
         access: bootstrap,
         leases,
@@ -322,7 +329,8 @@ async fn local_routes(
         issuer.clone(),
         provisioner,
     )
-    .with_runtime_access(storage.access.clone());
+    .with_runtime_access(storage.access.clone())
+    .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
     let inspector = super::inspection::ActorInspector::new(
         storage.runtime.clone(),
@@ -458,6 +466,38 @@ mod tests {
             panic!("expected file bucket")
         };
         assert_eq!(configured, directory.path().canonicalize()?.join("objects"));
+        state
+            .traces
+            .record(
+                "host",
+                "session",
+                vec![crate::request_traces::RequestTrace {
+                    request_id: "request".into(),
+                    actor_type: "Counter".into(),
+                    actor_id: "one".into(),
+                    kind: crate::request_traces::RequestKind::Method,
+                    operation: "increment".into(),
+                    connection_id: None,
+                    started_at_ms: 1,
+                    duration_ms: 1.0,
+                    queue_wait_ms: None,
+                    outcome: crate::request_traces::RequestOutcome::Completed,
+                }],
+                0,
+            )
+            .await?;
+        let event_id = state.traces.replay(&Default::default()).await?.records[0]
+            .event
+            .event_id
+            .clone();
+        drop(state);
+        let restored = local_storage(&options, relative, "http://localhost:7100").await?;
+        assert_eq!(
+            restored.traces.replay(&Default::default()).await?.records[0]
+                .event
+                .event_id,
+            event_id
+        );
         Ok(())
     }
 }

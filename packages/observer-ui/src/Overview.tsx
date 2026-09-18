@@ -277,11 +277,9 @@ function Thresholds() {
 function DataScope({ page }: { page?: RequestTracePage }) {
     return (
         <div className="overview-data-scope">
-            <p>
-                Request metrics cover the latest {page?.capacity ?? 500} retained traces within the selected window. History resets when the control plane restarts. Inventory counts are current
-                snapshots.
-            </p>
+            <p>Request metrics cover the latest {page?.capacity ?? 500} retained traces within the selected window. Inventory counts are current snapshots.</p>
             {!!page?.dropped && <p role="alert">{number(page.dropped)} traces were not delivered. Request metrics are incomplete.</p>}
+            {page?.persistenceFailed && <p role="alert">Some request events could not be saved. This history may be incomplete.</p>}
             {!!page?.evicted && <p>Earlier traces have expired; these metrics do not represent the full time window.</p>}
         </div>
     )
