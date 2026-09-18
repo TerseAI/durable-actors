@@ -3,8 +3,8 @@ use std::{path::Path, process::Stdio, time::Duration};
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, ChildStdout, Command},
     time::timeout,
 };
 
@@ -92,6 +92,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
 
 struct LocalRuntime {
     child: Child,
+    output: BufReader<ChildStdout>,
     origin: String,
 }
 
@@ -128,7 +129,11 @@ impl LocalRuntime {
         })
         .await??;
         assert!(!project.join(".little-actors/runtime.json").exists());
-        Ok(Self { child, origin })
+        Ok(Self {
+            child,
+            output,
+            origin,
+        })
     }
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
@@ -141,8 +146,12 @@ impl LocalRuntime {
 
     async fn stop(mut self) -> Result<()> {
         drop(self.child.stdin.take());
-        let status = timeout(Duration::from_secs(5), self.child.wait()).await??;
-        ensure!(status.success(), "runtime exited with {status}");
+        let mut output = String::new();
+        let (status, _) = timeout(Duration::from_secs(5), async {
+            tokio::try_join!(self.child.wait(), self.output.read_to_string(&mut output))
+        })
+        .await??;
+        ensure!(status.success(), "runtime exited with {status}: {output}");
         Ok(())
     }
 }
