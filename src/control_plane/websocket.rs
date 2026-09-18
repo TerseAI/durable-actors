@@ -634,7 +634,7 @@ impl SocketRegistry {
             .map(|entry| entry.outbound.clone())
     }
 
-    async fn activate(&self, actor: &ActorKey, connection_id: &str) {
+    pub(super) async fn activate(&self, actor: &ActorKey, connection_id: &str) {
         if let Some(entry) = self
             .entries
             .write()

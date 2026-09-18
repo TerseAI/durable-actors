@@ -12,6 +12,7 @@ import { registerDeployCommand } from "./cli/deploy.js"
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObjectCommands } from "./cli/objects.js"
+import { registerObserveCommand } from "./cli/observe.js"
 import { runtimeEnvironment, startRustRuntime } from "./cli/rust-runtime.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
@@ -45,6 +46,7 @@ try {
     registerGenerateCommand(program)
     registerDeployCommand(program)
     registerDevCommand(program)
+    registerObserveCommand(program)
     connectionOptions(program.command("token").description("Print a one-hour session token"))
         .addOption(
             new Option("--region <region>", "actor execution region")

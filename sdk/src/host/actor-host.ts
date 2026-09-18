@@ -5,6 +5,7 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { z } from "zod"
 
+import type { ActorIdentity } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
@@ -64,7 +65,8 @@ class ActorSession {
                 this.settings.socketPath,
                 actorTypes,
                 commandHandler,
-                this.settings.startupTimeoutMs
+                this.settings.startupTimeoutMs,
+                supervisor.residentActors?.bind(supervisor)
             )
             void this.connection.closed().then(() => supervisor.close())
         } catch (error) {
@@ -95,6 +97,7 @@ async function discoverActorTypes(
 }
 
 class ActorSessionConnection {
+    private residencyTimer: NodeJS.Timeout | undefined
     private buffer = ""
     private attachedResolve: (() => void) | undefined
     private attachedReject: ((error: Error) => void) | undefined
@@ -111,12 +114,13 @@ class ActorSessionConnection {
         socketPath: string,
         actorTypes: readonly string[],
         commandHandler: ActorCommandHandler,
-        timeoutMs: number
+        timeoutMs: number,
+        residentActors?: () => readonly ActorIdentity[]
     ): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
-        const connection = new ActorSessionConnection(socket, commandHandler)
+        const connection = new ActorSessionConnection(socket, commandHandler, residentActors)
         connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
@@ -128,7 +132,8 @@ class ActorSessionConnection {
 
     private constructor(
         private readonly socket: Socket,
-        private readonly commandHandler: ActorCommandHandler
+        private readonly commandHandler: ActorCommandHandler,
+        private readonly residentActors?: () => readonly ActorIdentity[]
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -188,6 +193,18 @@ class ActorSessionConnection {
             const message = parseActorSessionServerMessage(document)
             switch (message.type) {
                 case "attached":
+                    if (message.supports_residency && this.residentActors && !this.residencyTimer) {
+                        const report = () => {
+                            try {
+                                this.send({ type: "residency", actors: this.residentActors!() })
+                            } catch (error) {
+                                this.fail(sessionError(error))
+                            }
+                        }
+                        report()
+                        this.residencyTimer = setInterval(report, 1_000)
+                        this.residencyTimer.unref()
+                    }
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
                     this.attachedReject = undefined
@@ -286,6 +303,7 @@ class ActorSessionConnection {
     }
 
     private close(): void {
+        clearInterval(this.residencyTimer)
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

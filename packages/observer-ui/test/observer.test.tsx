@@ -1,0 +1,204 @@
+import React, { act } from "react"
+
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
+import { JSDOM } from "jsdom"
+import assert from "node:assert/strict"
+import { afterEach, test } from "node:test"
+
+import { ActorObserver, HttpObserverClient } from "../src/index.js"
+
+const dom = new JSDOM("<!doctype html><html><body></body></html>")
+Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
+afterEach(cleanup)
+
+const inventory = {
+    namespaceId: "local",
+    actors: [
+        {
+            actorType: "Room",
+            live: 2,
+            dormant: 1,
+            unknown: 1,
+            instances: [
+                {
+                    actorId: "general",
+                    status: "live" as const,
+                    connections: [
+                        { id: "socket-a", metadata: { userId: "ada", role: "moderator" } },
+                        { id: "socket-b", metadata: { userId: "grace" } },
+                        { id: "socket-c", metadata: null }
+                    ]
+                },
+                { actorId: "quiet", status: "dormant" as const, connections: [] },
+                { actorId: "waiting", status: "unknown" as const, connections: [{ id: "socket-d", metadata: { userId: "linus" } }] }
+            ]
+        },
+        { actorType: "Counter", live: 0, dormant: 0, unknown: 0, instances: [] }
+    ]
+}
+
+test("the actor inventory renders counts, preserves stale data on failure, and retries", async () => {
+    let calls = 0
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => {
+            if (++calls === 2) throw new Error("private server detail")
+            return inventory
+        }
+    }
+    const view = render(<ActorObserver client={client} />)
+    assert.equal(view.getByRole("button").hasAttribute("disabled"), true)
+    await waitFor(() => assert.ok(view.getByRole("cell", { name: "Room" })))
+    const rows = view.getAllByRole("row")
+    assert.match(rows[1]!.textContent!, /Room2114/u)
+    assert.match(rows[2]!.textContent!, /Counter000/u)
+    assert.equal(view.getByRole("button", { name: "Refresh" }).getAttribute("data-slot"), "button")
+    fireEvent.click(view.getByRole("button", { name: "Refresh" }))
+    await waitFor(() => assert.match(view.getByRole("alert").textContent!, /out of date/u))
+    assert.ok(view.getByRole("cell", { name: "Room" }))
+    assert.doesNotMatch(view.container.textContent!, /private server detail/u)
+    fireEvent.click(view.getByRole("button", { name: "Try again" }))
+    await waitFor(() => assert.equal(view.queryByRole("alert"), null))
+    assert.equal(calls, 3)
+})
+
+test("selecting an actor reveals its instances, residency, and active WebSocket connection counts", async () => {
+    const client = { checkConnection: async () => {}, listActors: async () => inventory }
+    const view = render(<ActorObserver client={client} />)
+    const room = await view.findByRole("button", { name: "Room" })
+
+    assert.equal(room.getAttribute("aria-expanded"), "false")
+    fireEvent.click(room)
+
+    assert.equal(room.getAttribute("aria-expanded"), "true")
+    assert.ok(view.getByRole("heading", { name: "Room instances" }))
+    assert.match(view.getByRole("row", { name: /general/i }).textContent!, /generalLive3/u)
+    assert.match(view.getByRole("row", { name: /quiet/i }).textContent!, /quietDormant0/u)
+    assert.match(view.getByRole("row", { name: /waiting/i }).textContent!, /waitingUnknown1/u)
+    assert.match(view.getByText(/connections, not unique people/i).textContent!, /WebSocket/u)
+
+    fireEvent.click(view.getByRole("button", { name: "general" }))
+    assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
+    assert.match(view.getByRole("row", { name: /socket-a/i }).textContent!, /"userId": "ada"/u)
+    assert.match(view.getByRole("row", { name: /socket-c/i }).textContent!, /null/u)
+
+    fireEvent.click(room)
+    assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
+})
+
+test("a deployed actor type with no instances has an instructive instance empty state", async () => {
+    const client = { checkConnection: async () => {}, listActors: async () => inventory }
+    const view = render(<ActorObserver client={client} />)
+    fireEvent.click(await view.findByRole("button", { name: "Counter" }))
+    assert.match(view.getByRole("status").textContent!, /No Counter instances have been created yet/u)
+})
+
+test("switching clients cancels the old request and never displays its late inventory", async () => {
+    let signal: AbortSignal | undefined
+    let finish: (value: typeof inventory) => void = () => {}
+    const first = {
+        checkConnection: async () => {},
+        listActors: async (incoming?: AbortSignal) => {
+            signal = incoming
+            return await new Promise<typeof inventory>(resolve => {
+                finish = resolve
+            })
+        }
+    }
+    const second = { checkConnection: async () => {}, listActors: async () => ({ namespaceId: "other", actors: [] }) }
+    const view = render(<ActorObserver client={first} />)
+    view.rerender(<ActorObserver client={second} />)
+    await waitFor(() => assert.match(view.container.textContent!, /No actors yet/u))
+    assert.equal(signal?.aborted, true)
+    await act(async () => finish(inventory))
+    assert.equal(view.queryByRole("cell", { name: "Room" }), null)
+})
+
+test("the HTTP adapter uses a configurable backend prefix and the existing session", async () => {
+    const controller = new AbortController()
+    const client = new HttpObserverClient("/api/projects/project-1/observe/", async (url, options) => {
+        assert.equal(url, "/api/projects/project-1/observe/connection")
+        assert.equal(options?.credentials, "same-origin")
+        assert.equal(options?.signal, controller.signal)
+        assert.equal(options?.redirect, "error")
+        assert.equal(new Headers(options?.headers).has("authorization"), false)
+        return Response.json({ connected: true })
+    })
+    await client.checkConnection(controller.signal)
+})
+
+test("the HTTP adapter rejects denied and invalid connection responses", async () => {
+    for (const response of [Response.json({}, { status: 403 }), Response.json({ connected: false }), Response.json(null), new Response("<html>Login</html>")]) {
+        const client = new HttpObserverClient("/api/observe", async () => response)
+        await assert.rejects(client.checkConnection())
+    }
+})
+
+test("the default HTTP adapter preserves the browser fetch receiver", async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = async function (this: typeof globalThis) {
+        assert.ok(this === globalThis, "fetch must receive the browser global")
+        return Response.json({ connected: true })
+    }
+    try {
+        await new HttpObserverClient().checkConnection()
+    } finally {
+        globalThis.fetch = original
+    }
+})
+
+test("the inventory adapter uses the configured backend and validates counts", async () => {
+    const controller = new AbortController()
+    const client = new HttpObserverClient("/api/projects/one/observe", async (url, options) => {
+        assert.equal(url, "/api/projects/one/observe/actors")
+        assert.equal(options?.signal, controller.signal)
+        assert.equal(options?.credentials, "same-origin")
+        return Response.json(inventory)
+    })
+    assert.deepEqual(await client.listActors(controller.signal), inventory)
+    for (const value of [
+        {},
+        { ...inventory, actors: [{ actorType: "Room", live: -1, dormant: 0, unknown: 0, instances: [] }] },
+        { ...inventory, actors: [{ actorType: "Room", live: 1.5, dormant: 0, unknown: 0, instances: [] }] },
+        { ...inventory, actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "missing", connections: [] }] }] },
+        { ...inventory, actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "live", connections: [{ id: 1, metadata: {} }] }] }] }
+    ]) {
+        await assert.rejects(new HttpObserverClient("/api/observe", async () => Response.json(value)).listActors())
+    }
+})
+
+test("actor search filters the inventory and can recover from no matches", async () => {
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    const search = await view.findByRole("searchbox", { name: "Search actors" })
+    fireEvent.input(search, { target: { value: "room" } })
+    assert.ok(view.getByRole("button", { name: "Room" }))
+    assert.equal(view.queryByRole("button", { name: "Counter" }), null)
+    fireEvent.input(search, { target: { value: "missing" } })
+    assert.ok(view.getByText("No matching actors"))
+    fireEvent.click(view.getByRole("button", { name: "Clear search" }))
+    assert.ok(view.getByRole("button", { name: "Counter" }))
+})
+
+test("instance search and residency filtering combine without changing inventory totals", async () => {
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    fireEvent.click(await view.findByRole("button", { name: "Room" }))
+    fireEvent.change(view.getByRole("combobox", { name: "Instance state" }), { target: { value: "live" } })
+    assert.ok(view.getByRole("button", { name: "general" }))
+    assert.equal(view.queryByRole("button", { name: "quiet" }), null)
+    fireEvent.input(view.getByRole("searchbox", { name: "Search instances" }), { target: { value: "quiet" } })
+    assert.ok(view.getByText("No matching instances"))
+    fireEvent.click(view.getByRole("button", { name: "Clear filters" }))
+    assert.ok(view.getByRole("button", { name: "quiet" }))
+    assert.equal(view.getByLabelText("Total instances").textContent, "4")
+    assert.equal(view.getByLabelText("Live instances").textContent, "2")
+})
+
+test("switching namespaces clears actor selection and search", async () => {
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    fireEvent.click(await view.findByRole("button", { name: "Room" }))
+    fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "Room" } })
+    view.rerender(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => ({ ...inventory, namespaceId: "production" }) }} />)
+    await view.findByText("production")
+    assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
+    assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "")
+})

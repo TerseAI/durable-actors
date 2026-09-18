@@ -31,6 +31,19 @@ Compiles the actor entrypoint's public contract, registers it with a fresh local
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.little-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
 
+## Open the observability UI
+
+```sh
+npx little-actors observe
+```
+
+Verifies admin access to the control plane, starts a local Web UI on an available loopback port, and opens it in your default browser. The React UI checks connectivity through the local server and offers a check/retry button; it does not yet monitor live activity. Control-plane credentials stay on the local server. The terminal prints the UI URL. Press Ctrl+C to stop the server. Failed connection checks print an error and exit with code `1`.
+
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_OBJECT_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
+- `--no-open` — Start the UI and print its URL without launching a browser. If automatic opening fails, the server remains available at the printed URL.
+
+The UI is also available as the embeddable [`@little-actors/observer` package](../../packages/observer-ui/README.md) for hosted and self-hosted applications.
+
 ## Inspect saved objects
 
 ```sh
@@ -128,3 +141,9 @@ Requests a session token using connection flags or environment variables. Standa
 The requested deadline is one hour in the future. Issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 
 The token grants application access throughout the `local` namespace: not an admin credential, and not restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules. `token` is a diagnostic command for trusted backend tools; browsers obtain actor-scoped URLs and keys through your authenticated backend.
+
+### Actor inventory
+
+The observe page lists actor types in the selected namespace with live (resident in memory), dormant, and total instance counts. Use `observe --namespace <id>` to select a namespace; otherwise the server default is used. Deployed types with zero instances remain visible. Unknown counts indicate a live host without a fresh residency report.
+
+Inventory refreshes every five seconds from host heartbeat snapshots (ten-second renewal by default). Updated Rust hosts and the SDK are required for residency reporting. The admin-only control-plane endpoint is `GET /v1/observe/actors?namespace=<id>`; reading it does not activate actors.

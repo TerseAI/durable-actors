@@ -1,0 +1,594 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-18T08:13:20.012795+00:00",
+  "title": "Design System: Actor observer",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Background",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Foreground",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Card",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Primary",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "primary-foreground": {
+        "role": "neutral",
+        "displayName": "Primary Foreground",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "secondary": {
+        "role": "neutral",
+        "displayName": "Secondary",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "Muted Foreground",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "accent": {
+        "role": "neutral",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "destructive": {
+        "role": "semantic",
+        "displayName": "Destructive",
+        "tonalRamp": [
+          "oklch(15% 0.12 25)",
+          "oklch(26% 0.12 25)",
+          "oklch(38% 0.12 25)",
+          "oklch(49% 0.12 25)",
+          "oklch(61% 0.12 25)",
+          "oklch(72% 0.12 25)",
+          "oklch(84% 0.12 25)",
+          "oklch(95% 0.12 25)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Border",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "input": {
+        "role": "neutral",
+        "displayName": "Input",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "ring": {
+        "role": "neutral",
+        "displayName": "Ring",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Success",
+        "tonalRamp": [
+          "oklch(15% 0.1 145)",
+          "oklch(26% 0.1 145)",
+          "oklch(38% 0.1 145)",
+          "oklch(49% 0.1 145)",
+          "oklch(61% 0.1 145)",
+          "oklch(72% 0.1 145)",
+          "oklch(84% 0.1 145)",
+          "oklch(95% 0.1 145)"
+        ]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Danger",
+        "tonalRamp": [
+          "oklch(15% 0.12 25)",
+          "oklch(26% 0.12 25)",
+          "oklch(38% 0.12 25)",
+          "oklch(49% 0.12 25)",
+          "oklch(61% 0.12 25)",
+          "oklch(72% 0.12 25)",
+          "oklch(84% 0.12 25)",
+          "oklch(95% 0.12 25)"
+        ]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Warning",
+        "tonalRamp": [
+          "oklch(15% 0.1 80)",
+          "oklch(26% 0.1 80)",
+          "oklch(38% 0.1 80)",
+          "oklch(49% 0.1 80)",
+          "oklch(61% 0.1 80)",
+          "oklch(72% 0.1 80)",
+          "oklch(84% 0.1 80)",
+          "oklch(95% 0.1 80)"
+        ]
+      },
+      "background-dark": {
+        "role": "neutral",
+        "displayName": "Background Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "foreground-dark": {
+        "role": "neutral",
+        "displayName": "Foreground Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "card-dark": {
+        "role": "neutral",
+        "displayName": "Card Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "primary-dark": {
+        "role": "primary",
+        "displayName": "Primary Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "primary-foreground-dark": {
+        "role": "neutral",
+        "displayName": "Primary Foreground Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "secondary-dark": {
+        "role": "neutral",
+        "displayName": "Secondary Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Muted Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "muted-foreground-dark": {
+        "role": "neutral",
+        "displayName": "Muted Foreground Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "accent-dark": {
+        "role": "neutral",
+        "displayName": "Accent Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "destructive-dark": {
+        "role": "semantic",
+        "displayName": "Destructive Dark",
+        "tonalRamp": [
+          "oklch(15% 0.12 25)",
+          "oklch(26% 0.12 25)",
+          "oklch(38% 0.12 25)",
+          "oklch(49% 0.12 25)",
+          "oklch(61% 0.12 25)",
+          "oklch(72% 0.12 25)",
+          "oklch(84% 0.12 25)",
+          "oklch(95% 0.12 25)"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Border Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "input-dark": {
+        "role": "neutral",
+        "displayName": "Input Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "ring-dark": {
+        "role": "neutral",
+        "displayName": "Ring Dark",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(38% 0 0)",
+          "oklch(49% 0 0)",
+          "oklch(61% 0 0)",
+          "oklch(72% 0 0)",
+          "oklch(84% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "success-dark": {
+        "role": "semantic",
+        "displayName": "Success Dark",
+        "tonalRamp": [
+          "oklch(15% 0.1 145)",
+          "oklch(26% 0.1 145)",
+          "oklch(38% 0.1 145)",
+          "oklch(49% 0.1 145)",
+          "oklch(61% 0.1 145)",
+          "oklch(72% 0.1 145)",
+          "oklch(84% 0.1 145)",
+          "oklch(95% 0.1 145)"
+        ]
+      },
+      "danger-dark": {
+        "role": "semantic",
+        "displayName": "Danger Dark",
+        "tonalRamp": [
+          "oklch(15% 0.12 25)",
+          "oklch(26% 0.12 25)",
+          "oklch(38% 0.12 25)",
+          "oklch(49% 0.12 25)",
+          "oklch(61% 0.12 25)",
+          "oklch(72% 0.12 25)",
+          "oklch(84% 0.12 25)",
+          "oklch(95% 0.12 25)"
+        ]
+      },
+      "warning-dark": {
+        "role": "semantic",
+        "displayName": "Warning Dark",
+        "tonalRamp": [
+          "oklch(15% 0.1 80)",
+          "oklch(26% 0.1 80)",
+          "oklch(38% 0.1 80)",
+          "oklch(49% 0.1 80)",
+          "oklch(61% 0.1 80)",
+          "oklch(72% 0.1 80)",
+          "oklch(84% 0.1 80)",
+          "oklch(95% 0.1 80)"
+        ]
+      }
+    },
+    "shadows": [
+      {
+        "name": "control-light",
+        "value": "0 1px 2px rgb(0 0 0 / 0.04)",
+        "purpose": "Default button only."
+      },
+      {
+        "name": "control-dark",
+        "value": "0 1px 2px rgb(0 0 0 / 0.16)",
+        "purpose": "Default button in dark mode."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control",
+        "value": "150ms ease-out",
+        "purpose": "Button transitions and disclosure chevron."
+      },
+      {
+        "name": "skeleton",
+        "value": "1.5s ease-in-out infinite alternate",
+        "purpose": "Initial loading pulse; disabled with reduced motion."
+      },
+      {
+        "name": "refresh",
+        "value": "1s linear infinite",
+        "purpose": "Refresh icon rotation; disabled with reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-layout",
+        "value": "640px"
+      },
+      {
+        "name": "touch-controls",
+        "value": "48rem"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "description": "Shared shadcn primary variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-primary\" type=\"button\">Primary</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-primary{background:var(--primary,#171717);color:var(--primary-foreground,#fff);box-shadow:var(--shadow-control,0 1px 2px rgb(0 0 0 / .04))}.ds-primary:hover{background:color-mix(in srgb,var(--primary,#171717) 88%,transparent)}",
+      "refersTo": "button-primary"
+    },
+    {
+      "name": "Destructive button",
+      "kind": "button",
+      "description": "Shared shadcn destructive variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-destructive\" type=\"button\">Destructive</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-destructive{background:var(--destructive,#c42525);color:#fff}.ds-destructive:hover{background:color-mix(in srgb,var(--destructive,#c42525) 90%,transparent)}"
+    },
+    {
+      "name": "Outline button",
+      "kind": "button",
+      "description": "Shared shadcn outline variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-outline\" type=\"button\">Refresh</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-outline{border:1px solid var(--input,#dedede);background:var(--card,#fff);color:var(--foreground,#171717)}.ds-outline:hover{border-color:color-mix(in srgb,var(--foreground,#171717) 20%,transparent);background:var(--accent,#f0f0f0);color:var(--accent-foreground,#171717)}",
+      "refersTo": "button-outline"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "description": "Shared shadcn secondary variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-secondary\" type=\"button\">Secondary</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-secondary{background:var(--secondary,#f5f5f5);color:var(--secondary-foreground,#171717)}.ds-secondary:hover{background:color-mix(in srgb,var(--secondary,#f5f5f5) 80%,transparent)}"
+    },
+    {
+      "name": "Ghost button",
+      "kind": "button",
+      "description": "Shared shadcn ghost variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-ghost\" type=\"button\">Ghost</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-ghost{background:transparent;color:var(--foreground,#171717)}.ds-ghost:hover{background:var(--accent,#f0f0f0);color:var(--accent-foreground,#171717)}"
+    },
+    {
+      "name": "Link button",
+      "kind": "button",
+      "description": "Shared shadcn link variant; outline and ghost are used by the observer.",
+      "html": "<button class=\"ds-button ds-link\" type=\"button\">Link</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:calc(var(--radius,8px) - 2px);font:500 14px/20px system-ui;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out,box-shadow 150ms ease-out,transform 150ms ease-out}.ds-button:focus-visible{outline:2px solid var(--ring,#737373);outline-offset:2px}.ds-button:active{transform:translateY(1px)}.ds-button:disabled{opacity:.45;pointer-events:none;transform:none}@media(max-width:767px){.ds-button{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-link{background:transparent;color:var(--primary,#171717);text-underline-offset:4px}.ds-link:hover{text-decoration:underline}"
+    },
+    {
+      "name": "Search input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Shared field used for actor and instance search.",
+      "html": "<input class=\"ds-input\" type=\"search\" aria-label=\"Search actors\" placeholder=\"Search actors\u2026\">",
+      "css": ".ds-input{height:36px;width:260px;max-width:100%;padding:4px 12px;border:1px solid var(--input,#dedede);border-radius:calc(var(--radius,8px) - 2px);background:var(--card,#fff);color:var(--foreground,#171717);font:14px system-ui;outline:none;transition:color 150ms,background-color 150ms,border-color 150ms}.ds-input::placeholder{color:var(--muted-foreground,#666)}.ds-input:focus-visible{border-color:var(--ring,#737373);box-shadow:0 0 0 2px color-mix(in srgb,var(--ring,#737373) 20%,transparent)}.ds-input:disabled{opacity:.5;cursor:not-allowed}@media(max-width:767px){.ds-input{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-input{transition:none}}"
+    },
+    {
+      "name": "Count badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Muted, noninteractive label for an existing count.",
+      "html": "<span class=\"ds-badge\">3</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:2px 8px;border:1px solid transparent;border-radius:calc(var(--radius,8px) - 2px);background:var(--muted,#f5f5f5);color:var(--muted-foreground,#666);font:500 12px/16px system-ui;white-space:nowrap}"
+    },
+    {
+      "name": "Active page marker",
+      "kind": "nav",
+      "description": "Standalone-only Actors marker; informational, not a navigation control.",
+      "html": "<div class=\"ds-subnav\"><span class=\"ds-current\" aria-current=\"page\">Actors</span><span class=\"ds-readonly\">Read-only</span></div>",
+      "css": ".ds-subnav{display:flex;align-items:center;justify-content:space-between;gap:32px;background:var(--card,#fff);color:var(--foreground,#171717);border-bottom:1px solid var(--border,#e5e5e5);font-family:system-ui}.ds-current{display:inline-flex;align-items:center;height:48px;border-bottom:2px solid var(--foreground,#171717);font-size:13px;font-weight:500}.ds-readonly{color:var(--muted-foreground,#666);font-size:12px}"
+    },
+    {
+      "name": "Summary strip",
+      "kind": "card",
+      "refersTo": "summary",
+      "description": "One divided surface for existing inventory counts; preview values are illustrative.",
+      "html": "<dl class=\"ds-summary\"><div><dt>Total instances</dt><dd>8</dd></div><div><dt>Live</dt><dd>3</dd></div><div><dt>Dormant</dt><dd>5</dd></div></dl>",
+      "css": ".ds-summary{display:flex;margin:0;border:1px solid var(--border,#e5e5e5);border-radius:8px;background:var(--card,#fff);color:var(--foreground,#171717);font-family:system-ui}.ds-summary>div{flex:1;min-width:0;padding:20px 24px}.ds-summary>div+div{border-left:1px solid var(--border,#e5e5e5)}.ds-summary dt{font-size:12px;color:var(--muted-foreground,#666)}.ds-summary dd{margin:10px 0 4px;font-size:26px;font-weight:600;line-height:1.2;letter-spacing:-.03em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}@media(max-width:640px){.ds-summary>div{padding:16px}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The precise runtime console",
+    "overview": "A clean, Vercel-like developer console: neutral light and dark surfaces, hairline boundaries, compact shadcn controls, and restrained semantic color. Information density comes from aligned data and progressive disclosure.\n\nThe embedded observer inherits its host\u2019s font and semantic tokens. Optional theme defaults and standalone navigation remain separate from the embeddable surface. Source authority is src/theme.css, src/styles.css, src/standalone.css, and src/components/ui/; PRODUCT.md defines the read-only product boundary.",
+    "keyCharacteristics": [
+      "Neutral surfaces with green, amber, and red reserved for state.",
+      "System sans typography with monospace for identifiers and JSON.",
+      "Bordered data regions, inline inspection, and short state transitions."
+    ],
+    "rules": [],
+    "dos": [
+      "Do inherit host semantic tokens and fonts when embedded.",
+      "Do keep la: utilities and observer-scoped base styles; keep standalone chrome separate.",
+      "Do retain keyboard focus, reduced-motion support, wrapping identifiers, and horizontally scrollable tables.",
+      "Do express residency and freshness with labels as well as color."
+    ],
+    "donts": [
+      "Don\u2019t restore the superseded warm Terse palette.",
+      "Don\u2019t load optional global theme defaults or standalone page styles into an already themed host.",
+      "Don\u2019t invent charts, history, metrics, or mutation controls outside the read-only product scope."
+    ]
+  }
+}

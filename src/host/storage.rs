@@ -172,13 +172,33 @@ impl ActorStorage for HostStorage {
 #[async_trait]
 impl HostLeaseRegistry for HostStorage {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        self.register_with_residents(request, None).await
+    }
+
+    async fn register_with_residents(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[crate::actor::ActorKey]>,
+    ) -> Result<HostLease> {
         ensure!(
             request.id == self.host && request.session_id == self.session,
             "host lease scope mismatch"
         );
+        if let Some(actors) = residents {
+            ensure!(
+                actors.len() <= 32
+                    && actors
+                        .iter()
+                        .all(|actor| actor.namespace_id == self.namespace),
+                "resident actor scope mismatch"
+            );
+        }
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
-        let lease = self.leases.register(request).await?;
+        let lease = self
+            .leases
+            .register_with_residents(request, residents)
+            .await?;
         self.fence.lock().unwrap().confirm(
             started,
             Duration::from_millis(request.duration_ms),

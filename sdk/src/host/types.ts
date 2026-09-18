@@ -28,7 +28,7 @@ type ActorCommandHandler = (
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
-) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close">
+) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close"> & Partial<Pick<ActorWorkerSupervisor, "residentActors">>
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
@@ -47,6 +47,7 @@ interface ResidentActorWorkerOptions {
 }
 
 interface ActorWorkerHandle {
+    isAlive?(): boolean
     ready(): Promise<readonly string[]>
     execute(
         command: InvokeCommand | WebSocketEventCommand,

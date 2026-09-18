@@ -115,7 +115,7 @@ jobs:
               run: pnpm --dir sdk format:check
 
             - name: Run tests
-              run: pnpm --dir sdk test
+              run: pnpm --dir packages/observer-ui test && pnpm --dir sdk test && pnpm --dir packages/observer-ui package:check
 
             - name: Verify npm package
               working-directory: sdk

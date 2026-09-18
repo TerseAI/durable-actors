@@ -15,6 +15,7 @@ use super::HostEndpoint;
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct HostLeaseMaintainer {
+    executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
     endpoint: HostEndpoint,
     session_id: String,
     store: Arc<dyn HostLeaseRegistry>,
@@ -48,6 +49,7 @@ impl HostLeaseMaintainer {
         ensure!(!session_id.is_empty(), "host session ID must not be empty");
 
         Ok(Self {
+            executor: None,
             endpoint,
             session_id,
             store,
@@ -55,6 +57,11 @@ impl HostLeaseMaintainer {
             lease_duration_ms,
             renew_every,
         })
+    }
+
+    pub(crate) fn with_executor(mut self, executor: Arc<dyn crate::actor::ActorExecutor>) -> Self {
+        self.executor = Some(executor);
+        self
     }
 
     pub(crate) async fn start(self: Arc<Self>) -> Result<LeaseRenewalTask> {
@@ -183,7 +190,14 @@ impl HostLeaseMaintainer {
             duration_ms: self.lease_duration_ms,
         };
 
-        let lease = self.store.register(&request).await?;
+        let residents = self
+            .executor
+            .as_ref()
+            .and_then(|executor| executor.resident_actors());
+        let lease = self
+            .store
+            .register_with_residents(&request, residents.as_deref())
+            .await?;
         debug!(
             host_id = %lease.id,
             route = %lease.route,

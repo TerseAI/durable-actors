@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 
 use crate::{
-    actor::ActorKey,
+    actor::{ActorKey, ActorSocketConnection},
     bucket::{Bucket, RuntimeStorage, testing::RuntimeFixture},
     clock::SystemClock,
     host::HostId,
@@ -17,7 +17,9 @@ use crate::{
     state_transport::SnapshotWriter,
 };
 
-use super::{ActorJwtIssuer, admin::AdminService, inspection::ActorInspector};
+use super::{
+    ActorJwtIssuer, admin::AdminService, inspection::ActorInspector, websocket::SocketRegistry,
+};
 
 #[tokio::test]
 async fn inspection_reads_persisted_state_without_a_deployment_or_live_host() -> Result<()> {
@@ -70,6 +72,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
         .token;
     for path in [
         "/v1/durability",
+        "/v1/observe/actors",
         "/v1/objects",
         "/v1/namespaces/team.prod/actors/Room.with.dots/one/state",
     ] {
@@ -198,11 +201,173 @@ async fn inspection_reports_inconsistent_snapshots_instead_of_returning_state() 
     Ok(())
 }
 
+#[tokio::test]
+async fn inventory_counts_unsaved_instances_and_excludes_other_namespaces() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for id in ["one", "unsaved"] {
+        fixture
+            .store
+            .claim_actor(
+                &fixture.actor(id),
+                None,
+                &fixture.host,
+                "north-america-east",
+            )
+            .await?;
+    }
+    let other = ActorKey {
+        namespace_id: "team.prod.nested".into(),
+        ..fixture.actor("other")
+    };
+    fixture
+        .store
+        .claim_actor(&other, None, &fixture.host, "north-america-east")
+        .await?;
+    fixture
+        .runtime
+        .leases
+        .register_with_residents(
+            &HostLeaseRequest {
+                id: fixture.host.clone(),
+                session_id: "session".into(),
+                route: "http://localhost:7101".into(),
+                duration_ms: 60_000,
+            },
+            Some(&[fixture.actor("one")]),
+        )
+        .await?;
+    fixture.connect(&fixture.actor("one")).await;
+    let response = fixture.get("/v1/observe/actors").await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let inventory: Value = response.json().await?;
+    assert_eq!(inventory["namespaceId"], "team.prod");
+    assert_eq!(
+        inventory["actors"],
+        json!([{
+            "actorType": "Room.with.dots",
+            "live": 1,
+            "dormant": 1,
+            "unknown": 0,
+            "instances": [
+                {
+                    "actorId": "one",
+                    "status": "live",
+                    "connections": [{"id": "socket-one", "metadata": {"userId": "ada"}}]
+                },
+                {"actorId": "unsaved", "status": "dormant", "connections": []}
+            ]
+        }])
+    );
+    fixture
+        .runtime
+        .leases
+        .unregister(&fixture.host, "session")
+        .await?;
+    let inventory: Value = fixture
+        .get("/v1/observe/actors")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(inventory["actors"][0]["live"], 0);
+    assert_eq!(inventory["actors"][0]["dormant"], 2);
+    fixture
+        .runtime
+        .leases
+        .register(&HostLeaseRequest {
+            id: fixture.host.clone(),
+            session_id: "replacement".into(),
+            route: "http://localhost:7101".into(),
+            duration_ms: 60_000,
+        })
+        .await?;
+    let inventory: Value = fixture
+        .get("/v1/observe/actors")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        inventory["actors"][0]["live"], 0,
+        "a new host session must not revive old actors"
+    );
+    assert_eq!(
+        fixture
+            .get("/v1/observe/actors?namespace=bad%2Fnamespace")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inventory_includes_unused_deployed_types_and_reports_missing_telemetry() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let contract = super::contracts::PublicActorContract::new(serde_json::from_str(
+        include_str!("../../sdk/fixtures/public-contract.json"),
+    )?)?;
+    fixture
+        .admin
+        .register_deployment(
+            &super::admin::HostLaunchSpec {
+                namespace_id: "team.prod".into(),
+                code_revision: "revision".into(),
+                image_ref: "test-image".into(),
+                working_directory: "/workspace".into(),
+                actor_entrypoint: None,
+                secret_refs: vec![],
+                socket_gateway_url: None,
+            },
+            Some(&contract),
+        )
+        .await?;
+    fixture
+        .store
+        .claim_actor(
+            &fixture.actor("unsaved"),
+            None,
+            &fixture.host,
+            "north-america-east",
+        )
+        .await?;
+    let inventory: Value = fixture
+        .get("/v1/observe/actors")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let rows = inventory["actors"].as_array().unwrap();
+    let unused = rows
+        .iter()
+        .find(|row| row["actorType"] == "ChatRoom")
+        .unwrap();
+    assert_eq!(unused["live"], 0);
+    assert_eq!(unused["dormant"], 0);
+    let unsaved = rows
+        .iter()
+        .find(|row| row["actorType"] == "Room.with.dots")
+        .unwrap();
+    assert_eq!(unsaved["unknown"], 1);
+    assert_eq!(unsaved["dormant"], 0);
+    let other: Value = fixture
+        .get("/v1/observe/actors?namespace=other")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(other["actors"], json!([]));
+    Ok(())
+}
+
 struct Fixture {
+    admin: AdminService,
     runtime: RuntimeFixture,
     store: Arc<RuntimeStorage>,
     host: HostId,
     issuer: ActorJwtIssuer,
+    sockets: SocketRegistry,
     origin: String,
     client: reqwest::Client,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -229,8 +394,10 @@ impl Fixture {
             issuer.clone(),
         )?
         .with_default_namespace("team.prod")?;
-        let inspector = ActorInspector::new(store.clone(), store.clone());
-        let routes = super::inspection::router(inspector, admin);
+        let sockets = SocketRegistry::default();
+        let inspector =
+            ActorInspector::new(store.clone(), store.clone(), store.clone(), sockets.clone());
+        let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v2.team.prod:test");
         runtime
@@ -243,10 +410,12 @@ impl Fixture {
             })
             .await?;
         Ok(Self {
+            admin,
             runtime,
             store,
             host,
             issuer,
+            sockets,
             origin,
             client: reqwest::Client::new(),
             server,
@@ -259,6 +428,21 @@ impl Fixture {
             actor_type: "Room.with.dots".into(),
             actor_id: id.into(),
         }
+    }
+
+    async fn connect(&self, actor: &ActorKey) {
+        let connection = ActorSocketConnection {
+            id: format!("socket-{}", actor.actor_id),
+            metadata: json!({"userId": "ada"}),
+            tags: vec![],
+        };
+        let (outbound, _) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            self.sockets
+                .insert(actor, connection.clone(), outbound, None)
+                .await
+        );
+        self.sockets.activate(actor, &connection.id).await;
     }
 
     async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {

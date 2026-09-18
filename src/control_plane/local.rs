@@ -326,8 +326,12 @@ async fn local_routes(
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?
         .with_default_namespace("local")?
         .with_socket_origin(origin)?;
-    let inspector =
-        super::inspection::ActorInspector::new(storage.runtime.clone(), storage.runtime.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        storage.runtime.clone(),
+        storage.runtime.clone(),
+        storage.runtime.clone(),
+        service.sockets.clone(),
+    );
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.runtime.clone().router());

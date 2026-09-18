@@ -4,7 +4,8 @@ use std::{
     fmt::{Display, Formatter},
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -160,6 +161,10 @@ pub enum ActorSocketOutcome {
 #[async_trait]
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_type: &str) -> bool;
+
+    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+        None
+    }
 
     async fn invoke(
         &self,
@@ -321,13 +326,25 @@ impl Drop for ActorExecutorConnection {
     }
 }
 
+type Residency = Arc<Mutex<Option<(Instant, Vec<ActorKey>)>>>;
+
 struct JsActorExecutor {
+    residency: Residency,
     actor_types: HashSet<String>,
     commands: mpsc::Sender<ExecutorRequest>,
 }
 
 #[async_trait]
 impl ActorExecutor for JsActorExecutor {
+    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+        self.residency
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(5))
+            .map(|(_, actors)| actors.clone())
+    }
+
     fn supports(&self, actor_type: &str) -> bool {
         self.actor_types.contains(actor_type)
     }
@@ -435,11 +452,13 @@ impl JsActorExecutor {
         actor_types: Vec<String>,
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
+        let residency = Arc::new(Mutex::new(None));
         let executor = Arc::new(Self {
+            residency: residency.clone(),
             actor_types: actor_types.into_iter().collect(),
             commands,
         });
-        let task = tokio::spawn(run_executor_connection(reader, writer, incoming));
+        let task = tokio::spawn(run_executor_connection(reader, writer, incoming, residency));
         (executor, task)
     }
 
@@ -483,10 +502,12 @@ async fn run_executor_connection(
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     commands: mpsc::Receiver<ExecutorRequest>,
+    residency: Residency,
 ) -> Result<()> {
     let (outbound, writes) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS + 1);
     let (inbound, replies) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
     let driver = ExecutorDriver {
+        residency,
         pending: HashMap::new(),
         residents: HashSet::new(),
         next_message_id: 1,
@@ -507,6 +528,7 @@ async fn run_executor_connection(
 }
 
 struct ExecutorDriver {
+    residency: Residency,
     pending: HashMap<u64, PendingCommand>,
     residents: HashSet<ActorKey>,
     next_message_id: u64,
@@ -530,6 +552,11 @@ impl ExecutorDriver {
                 biased;
                 reply = replies.recv() => {
                     match reply.context("actor executor reader stopped")?? {
+                        ActorExecutorClientMessage::Residency { actors } => {
+                            ensure!(actors.len() <= 32, "too many resident actors");
+                            for actor in &actors { actor.validate()?; }
+                            *self.residency.lock().unwrap() = Some((Instant::now(), actors));
+                        }
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
                         ActorExecutorClientMessage::GetConnections { message_id } => self.load_connections(message_id)?,
@@ -583,6 +610,7 @@ impl ExecutorDriver {
                 self.outbound
                     .try_send(ExecutorWrite {
                         bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
+                            supports_residency: true,
                             protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
                         })?,
                         written: Some(written),
@@ -904,6 +932,7 @@ enum ActorExecutorServerMessage<'a> {
         error: Option<String>,
     },
     Attached {
+        supports_residency: bool,
         protocol: u32,
     },
     Command {
@@ -924,6 +953,9 @@ struct ExecutorCommandEnvelope<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
+    Residency {
+        actors: Vec<ActorKey>,
+    },
     GetConnections {
         message_id: u64,
     },
@@ -980,6 +1012,38 @@ mod tests {
         net::UnixStream,
         time::{Duration, timeout},
     };
+
+    #[tokio::test]
+    async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<()> {
+        let root = TempDir::new_in("/tmp")?;
+        let socket = root.path().join("residency.sock");
+        let listener = ActorExecutorListener::bind(&socket).await?;
+        let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
+        write_json_line(
+            &mut peer,
+            &json!({"type":"attach", "protocol":16, "actor_types":["Room"]}),
+        )
+        .await?;
+        let connection = listener.accept().await?;
+        connection.mark_ready(None, None).await?;
+        let executor = connection.executor();
+        assert!(executor.resident_actors().is_none());
+        let actor = ActorKey {
+            namespace_id: "local".into(),
+            actor_type: "Room".into(),
+            actor_id: "one".into(),
+        };
+        for actors in [vec![actor], vec![]] {
+            write_json_line(&mut peer, &json!({"type":"residency", "actors":actors})).await?;
+            timeout(Duration::from_secs(1), async {
+                while executor.resident_actors() != Some(actors.clone()) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_actors()
@@ -1371,7 +1435,8 @@ mod tests {
             .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 16 })
+            read_json_line(&mut reader).await?
+                == json!({ "type": "attached", "protocol": 16, "supports_residency": true })
         );
 
         let invocation = read_json_line(&mut reader).await?;
@@ -1434,7 +1499,8 @@ mod tests {
             .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 16 })
+            read_json_line(&mut reader).await?
+                == json!({ "type": "attached", "protocol": 16, "supports_residency": true })
         );
         let mut trailing = String::new();
         ensure!(

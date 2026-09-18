@@ -74,7 +74,7 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto && node scripts/build-template.mjs",
+        "build": "pnpm run build:observer && pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto && node scripts/build-template.mjs",
         "generate:proto": "proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_object.proto",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
@@ -82,7 +82,8 @@
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
         "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
-        "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\""
+        "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
+        "build:observer": "pnpm --filter @little-actors/observer build && node scripts/build-observer.mjs"
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
@@ -95,6 +96,7 @@
         "dotenv": "^18.0.0",
         "esbuild": "^0.28.2",
         "json-schema-to-typescript": "^16.0.0",
+        "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",
         "tsx": "^4.0.0",
@@ -105,6 +107,7 @@
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
-        "@types/ws": "^8.18.1"
+        "@types/ws": "^8.18.1",
+        "@little-actors/observer": "workspace:*"
     }
 }

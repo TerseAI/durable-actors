@@ -1,4 +1,4 @@
-use crate::host::HostId;
+use crate::{actor::ActorKey, host::HostId};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -50,12 +50,26 @@ impl HostLeaseStatus {
 #[async_trait]
 pub trait HostLeaseRegistry: Send + Sync {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease>;
+    async fn register_with_residents(
+        &self,
+        request: &HostLeaseRequest,
+        _residents: Option<&[ActorKey]>,
+    ) -> Result<HostLease> {
+        self.register(request).await
+    }
+
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()>;
 }
 
 #[async_trait]
 pub trait HostLeaseStore: HostLeaseRegistry {
     async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus>;
+    async fn residency_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(HostLeaseStatus, Option<Vec<ActorKey>>)> {
+        Ok((self.lease_status(id).await?, None))
+    }
 }
 
 #[cfg(test)]

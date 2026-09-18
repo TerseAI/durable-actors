@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads"
 
+import type { ActorIdentity } from "../actor/identity.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
@@ -84,6 +85,15 @@ class ActorWorkerSupervisor {
             default:
                 throw command satisfies never
         }
+    }
+
+    residentActors(): readonly ActorIdentity[] {
+        return [...this.actors.entries()]
+            .filter(([, actor]) => actor.isResident())
+            .map(([key]) => {
+                const [namespace_id, actor_type, actor_id] = key.split("\u001f") as [string, string, string]
+                return { namespace_id, actor_type, actor_id }
+            })
     }
 
     close(): void {
@@ -232,6 +242,10 @@ class ResidentActorWorker {
         return reply
     }
 
+    isResident(): boolean {
+        return this.worker !== undefined && (this.worker.isAlive?.() ?? true)
+    }
+
     isIdle(): boolean {
         return this.idleTimer !== undefined
     }
@@ -245,6 +259,9 @@ class ResidentActorWorker {
 }
 
 class ActorWorker implements ActorWorkerHandle {
+    isAlive(): boolean {
+        return this.terminalError === undefined
+    }
     private readonly worker: Worker
     private readonly readyPromise: Promise<readonly string[]>
     private readyResolve: ((actorTypes: readonly string[]) => void) | undefined

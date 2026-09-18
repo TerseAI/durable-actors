@@ -1,5 +1,6 @@
 packages:
     - sdk
+    - packages/*
     - examples/*
 
 linkWorkspacePackages: true

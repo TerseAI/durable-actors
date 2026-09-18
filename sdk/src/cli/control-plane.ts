@@ -18,6 +18,10 @@ class ControlPlaneClient {
         private readonly request: typeof fetch
     ) {}
 
+    async checkConnection(): Promise<void> {
+        await this.requestJson("GET", "/v1/durability", undefined, 10_000)
+    }
+
     registerDeployment(deployment: unknown): Promise<unknown> {
         return this.requestJson("PUT", this.namespacePath("deployment"), deployment)
     }
@@ -25,6 +29,12 @@ class ControlPlaneClient {
     getContract(revision?: string): Promise<unknown> {
         const query = revision ? `?${new URLSearchParams({ revision })}` : ""
         return this.requestJson("GET", this.namespacePath(`contract${query}`))
+    }
+
+    listActors(): Promise<unknown> {
+        const query = new URLSearchParams()
+        if (this.connection.namespaceId) query.set("namespace", this.connection.namespaceId)
+        return this.requestJson("GET", `/v1/observe/actors${query.size ? `?${query}` : ""}`)
     }
 
     listObjects(query: URLSearchParams): Promise<unknown> {

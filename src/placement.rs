@@ -61,3 +61,41 @@ pub fn validate_region(region: &str) -> Result<()> {
     );
     Ok(())
 }
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorResidency {
+    Live,
+    Dormant,
+    Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorInstanceInventory {
+    pub actor_id: String,
+    pub status: ActorResidency,
+    pub connections: Vec<ActorConnectionInventory>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorConnectionInventory {
+    pub id: String,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorInventory {
+    pub actor_type: String,
+    pub live: u64,
+    pub dormant: u64,
+    pub unknown: u64,
+    pub instances: Vec<ActorInstanceInventory>,
+}
+
+#[async_trait]
+pub trait ActorInventoryReader: Send + Sync {
+    async fn actor_inventory(&self, namespace: &str) -> Result<Vec<ActorInventory>>;
+}

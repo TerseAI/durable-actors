@@ -747,3 +747,73 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
         Ok(crate::state_transport::StateWrite::Written)
     }
 }
+
+#[async_trait]
+impl crate::placement::ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<crate::placement::ActorInventory>> {
+        let mut actors = std::collections::BTreeMap::new();
+        let mut hosts = HashMap::new();
+        let prefix = format!("{}owners/", crate::storage_paths::namespace(namespace));
+        for key in self.authority.list(&prefix).await? {
+            let Some(object) = self.authority.get(&key).await? else {
+                continue;
+            };
+            let record: Ownership = serde_json::from_slice(&object.bytes)?;
+            if record.actor.namespace_id != namespace {
+                continue;
+            }
+            if !hosts.contains_key(&record.owner) {
+                hosts.insert(
+                    record.owner.clone(),
+                    self.leases.residency_status(&record.owner).await?,
+                );
+            }
+            let (status, residents) = &hosts[&record.owner];
+            let row = actors
+                .entry(record.actor.actor_type.clone())
+                .or_insert_with(|| crate::placement::ActorInventory {
+                    actor_type: record.actor.actor_type.clone(),
+                    ..Default::default()
+                });
+            let residency = if !status.is_active()
+                || status
+                    .lease
+                    .as_ref()
+                    .is_none_or(|lease| lease.session_id != record.session)
+            {
+                crate::placement::ActorResidency::Dormant
+            } else if let Some(residents) = residents {
+                if residents.contains(&record.actor) {
+                    crate::placement::ActorResidency::Live
+                } else {
+                    crate::placement::ActorResidency::Dormant
+                }
+            } else {
+                crate::placement::ActorResidency::Unknown
+            };
+            match residency {
+                crate::placement::ActorResidency::Live => row.live += 1,
+                crate::placement::ActorResidency::Dormant => row.dormant += 1,
+                crate::placement::ActorResidency::Unknown => row.unknown += 1,
+            }
+            row.instances
+                .push(crate::placement::ActorInstanceInventory {
+                    actor_id: record.actor.actor_id,
+                    status: residency,
+                    connections: vec![],
+                });
+        }
+        Ok(actors
+            .into_values()
+            .map(|mut actor| {
+                actor
+                    .instances
+                    .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
+                actor
+            })
+            .collect())
+    }
+}

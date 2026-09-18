@@ -322,3 +322,43 @@ async function removeSocket(socketPath: string): Promise<void> {
         if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error
     }
 }
+
+test("reports resident instances when the Rust host advertises support", { timeout: 5_000 }, async () => {
+    const root = await mkdtemp("/tmp/actor-residency-")
+    const actor = { namespace_id: "local", actor_type: "SessionCounter", actor_id: "one" }
+    let received: unknown
+    const server = createServer(socket => {
+        const lines = createInterface({ input: socket })
+        lines.on("line", line => {
+            const message = JSON.parse(line)
+            if (message.type === "attach")
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 16, supports_residency: true })}\n`)
+            else if (message.type === "residency") {
+                received = message.actors
+                socket.end()
+            }
+        })
+    })
+    server.listen(`${root}/executor.sock`)
+    await once(server, "listening")
+    const session = new ActorSession(
+        parseHostSettings({
+            DURABLE_OBJECT_EXECUTOR_SOCKET: `${root}/executor.sock`,
+            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../../fixtures/actorSession.ts", import.meta.url))
+        }),
+        () => ({
+            ready: async () => ["SessionCounter"],
+            handle: async () => ({ type: "evicted" }),
+            close() {},
+            residentActors: () => [actor]
+        })
+    )
+    try {
+        await session.start()
+        await session.waitUntilDisconnected()
+        assert.deepEqual(received, [actor])
+    } finally {
+        server.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})

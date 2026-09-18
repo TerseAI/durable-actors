@@ -278,7 +278,9 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
             ]
         }
     )
+    assert.deepEqual(runtime.residentActors(), [actorIdentity])
     await new Promise(resolve => setTimeout(resolve, 30))
+    assert.deepEqual(runtime.residentActors(), [])
     const published: SocketEffect[] = []
     assert.deepEqual(
         await runtime.handle(
@@ -393,3 +395,31 @@ function invokeCommand(actorId: string, actorType: string) {
         state: null
     }
 }
+
+test("residency reports actual workers and drops evicted and failed instances", async () => {
+    let fail = false
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: "file:///unused.mjs",
+        actorSchemas: undefined,
+        createWorker: () => ({
+            ready: async () => ["SessionCounter"],
+            execute: async () =>
+                fail
+                    ? { type: "failed", code: "test", message: "failed" }
+                    : { type: "invoked", result: null, state: {} },
+            terminate() {}
+        })
+    })
+    try {
+        assert.deepEqual(supervisor.residentActors(), [])
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        await supervisor.handle({ type: "evict", actor: actorIdentity })
+        assert.deepEqual(supervisor.residentActors(), [])
+        fail = true
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        assert.deepEqual(supervisor.residentActors(), [])
+    } finally {
+        supervisor.close()
+    }
+})

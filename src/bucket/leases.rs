@@ -21,6 +21,8 @@ pub struct BucketHostLeases {
 
 #[derive(Serialize, Deserialize)]
 struct Record {
+    #[serde(default)]
+    residents: Option<Vec<crate::actor::ActorKey>>,
     lease: HostLease,
     retired: Vec<String>,
     mutation: String,
@@ -35,6 +37,14 @@ impl BucketHostLeases {
 #[async_trait]
 impl HostLeaseRegistry for BucketHostLeases {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        self.register_with_residents(request, None).await
+    }
+
+    async fn register_with_residents(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[crate::actor::ActorKey]>,
+    ) -> Result<HostLease> {
         request.validate_duration()?;
         ensure!(
             !request.id.as_str().is_empty() && !request.session_id.is_empty(),
@@ -75,6 +85,7 @@ impl HostLeaseRegistry for BucketHostLeases {
                 .ok_or_else(|| anyhow::anyhow!("lease expiration overflow"))?,
         };
         let record = Record {
+            residents: residents.map(<[_]>::to_vec),
             lease: lease.clone(),
             retired,
             mutation: uuid::Uuid::new_v4().to_string(),
@@ -119,6 +130,29 @@ impl HostLeaseRegistry for BucketHostLeases {
 
 #[async_trait]
 impl HostLeaseStore for BucketHostLeases {
+    async fn residency_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(HostLeaseStatus, Option<Vec<crate::actor::ActorKey>>)> {
+        let record = self
+            .bucket
+            .get(&key(id))
+            .await?
+            .map(|object| serde_json::from_slice::<Record>(&object.bytes))
+            .transpose()?;
+        let (lease, residents) = match record {
+            Some(record) => (Some(record.lease), record.residents),
+            None => (None, None),
+        };
+        Ok((
+            HostLeaseStatus {
+                lease,
+                store_now_ms: self.clock.now_ms()?,
+            },
+            residents,
+        ))
+    }
+
     async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus> {
         let lease = self
             .bucket

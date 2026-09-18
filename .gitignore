@@ -2,6 +2,7 @@ node_modules/
 sdk/node_modules/
 sdk/dist/
 sdk/.test-dist/
+packages/*/dist/
 sdk/src/generated/
 target/
 dist-runtime/

@@ -93,7 +93,10 @@ jobs:
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
             - run: pnpm --dir sdk format:check
+            - run: pnpm --dir packages/observer-ui format:check
+            - run: pnpm --dir packages/observer-ui test
             - run: pnpm --dir sdk test
+            - run: pnpm --dir packages/observer-ui package:check
             - name: Verify npm package
               working-directory: sdk
               run: npm pack --dry-run

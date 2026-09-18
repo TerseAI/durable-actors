@@ -15,6 +15,7 @@ async function checkPackage() {
     )
         throw new Error("package must expose little-actors as its executable CLI")
     await access("dist/generated/durable_object.proto")
+    for (const asset of ["index.html", "app.js", "app.css"]) await access(`dist/observer/${asset}`)
     for (const name of ["chat", "ai-chat", "documents"]) {
         const template = JSON.parse(await readFile(`dist/templates/${name}/package.json`, "utf8"))
         if (template.dependencies["little-actors"] !== metadata.version)

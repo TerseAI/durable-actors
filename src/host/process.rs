@@ -340,14 +340,17 @@ async fn prepare_actor_host(
         )),
         control_plane.clone(),
     ));
-    let lease = Arc::new(HostLeaseMaintainer::new(
-        endpoint,
-        config.session_id.clone(),
-        storage,
-        Arc::new(SystemClock),
-        config.lease_duration,
-        config.renew_every,
-    )?);
+    let lease = Arc::new(
+        HostLeaseMaintainer::new(
+            endpoint,
+            config.session_id.clone(),
+            storage,
+            Arc::new(SystemClock),
+            config.lease_duration,
+            config.renew_every,
+        )?
+        .with_executor(executor_connection.executor()),
+    );
     let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {

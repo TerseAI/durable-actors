@@ -27,6 +27,7 @@ use super::{
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route("/v1/durability", get(durability))
+        .route("/v1/observe/actors", get(actor_inventory))
         .route("/v1/objects", get(list_objects))
         .route(
             "/v1/actors/{actor_type}/{actor_id}/state",
@@ -86,7 +87,9 @@ async fn inspect_object(
 
 #[derive(Clone)]
 pub(super) struct ActorInspector {
+    inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     placements: Arc<dyn ObjectPlacementStore>,
+    sockets: super::websocket::SocketRegistry,
     storage: Arc<dyn SnapshotReader>,
 }
 
@@ -94,9 +97,13 @@ impl ActorInspector {
     pub(super) fn new(
         placements: Arc<dyn ObjectPlacementStore>,
         storage: Arc<dyn SnapshotReader>,
+        inventory: Arc<dyn crate::placement::ActorInventoryReader>,
+        sockets: super::websocket::SocketRegistry,
     ) -> Self {
         Self {
+            inventory,
             placements,
+            sockets,
             storage,
         }
     }
@@ -256,4 +263,87 @@ struct ObjectInspection {
     #[serde(flatten)]
     object: SavedObject,
     state: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InventoryQuery {
+    namespace: Option<String>,
+}
+
+async fn actor_inventory(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    Query(query): Query<InventoryQuery>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let namespace = query
+        .namespace
+        .unwrap_or_else(|| state.admin.default_namespace.clone());
+    ActorScope {
+        namespace_id: namespace.clone(),
+    }
+    .validate()
+    .map_err(ApiError::bad_request)?;
+    let inventory =
+        tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &namespace))
+            .await
+            .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
+            .map_err(ApiError::internal)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "namespaceId": namespace, "actors": inventory })),
+    )
+        .into_response())
+}
+
+async fn read_inventory(
+    state: &InspectionApi,
+    namespace: &str,
+) -> Result<Vec<crate::placement::ActorInventory>> {
+    let mut rows: std::collections::BTreeMap<_, _> = state
+        .inspector
+        .inventory
+        .actor_inventory(namespace)
+        .await?
+        .into_iter()
+        .map(|row| (row.actor_type.clone(), row))
+        .collect();
+    for row in rows.values_mut() {
+        for instance in &mut row.instances {
+            instance.connections = state
+                .inspector
+                .sockets
+                .connections(&ActorKey {
+                    namespace_id: namespace.to_owned(),
+                    actor_type: row.actor_type.clone(),
+                    actor_id: instance.actor_id.clone(),
+                })
+                .await
+                .into_iter()
+                .map(|connection| crate::placement::ActorConnectionInventory {
+                    id: connection.id,
+                    metadata: connection.metadata,
+                })
+                .collect();
+            instance
+                .connections
+                .sort_by(|left, right| left.id.cmp(&right.id));
+        }
+    }
+    if let Some(contract) = state.admin.deployment_contract(namespace, None).await? {
+        if let Some(actors) = contract.contract["actors"].as_array() {
+            for actor in actors {
+                if let Some(name) = actor["actorType"].as_str() {
+                    rows.entry(name.to_owned()).or_insert_with(|| {
+                        crate::placement::ActorInventory {
+                            actor_type: name.to_owned(),
+                            ..Default::default()
+                        }
+                    });
+                }
+            }
+        }
+    }
+    Ok(rows.into_values().collect())
 }
