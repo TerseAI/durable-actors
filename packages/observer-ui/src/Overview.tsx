@@ -1,0 +1,295 @@
+import { useEffect, useState } from "react"
+
+import { ChevronRight, RefreshCw, Search } from "lucide-react"
+
+import type { ActorInventory, ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
+import { Button } from "./components/ui/button.js"
+import { Input } from "./components/ui/input.js"
+import { useInventory, useRequests } from "./observer-hooks.js"
+import { inventorySummary, queueP95, requestSummary, tracesInWindow } from "./overview-data.js"
+
+interface OverviewProps {
+    client: ObserverClient
+    onSelectActor: (actorType: string) => void
+}
+
+export function Overview({ client, onSelectActor }: OverviewProps) {
+    const actors = useInventory(client)
+    const requests = useRequests(client)
+    const [minutes, setMinutes] = useState(60)
+    const [now, setNow] = useState(Date.now)
+    useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 10_000)
+        return () => clearInterval(timer)
+    }, [])
+    const records = tracesInWindow(requests.page?.records ?? [], minutes, Math.max(now, Date.now()))
+    return (
+        <section className="la-observer overview" aria-label="Runtime overview">
+            <div className="overview-heading">
+                <h1>little-actors</h1>
+                <div className="overview-controls">
+                    <span className="overview-updated">
+                        {actors.failed ? (
+                            "Inventory reconnecting…"
+                        ) : actors.updatedAt ? (
+                            <>
+                                Last inventory update <time dateTime={new Date(actors.updatedAt).toISOString()}>{new Date(actors.updatedAt).toLocaleTimeString([], { hour12: false })}</time>
+                            </>
+                        ) : (
+                            "Connecting…"
+                        )}
+                    </span>
+                    <select aria-label="Time window" value={minutes} onChange={event => setMinutes(Number(event.target.value))}>
+                        <option value={60}>Last hour</option>
+                        <option value={15}>Last 15 minutes</option>
+                        <option value={1440}>Last 24 hours</option>
+                    </select>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        aria-label="Refresh overview"
+                        onClick={() => {
+                            actors.retry()
+                            requests.retry()
+                        }}
+                    >
+                        <RefreshCw aria-hidden="true" />
+                    </Button>
+                </div>
+            </div>
+            {actors.failed && (
+                <p className="overview-alert" role="alert">
+                    Inventory unavailable. {actors.inventory ? "Showing the last received counts; they may be out of date." : "Check your connection and access."} Retrying automatically.
+                </p>
+            )}
+            {requests.failed && (
+                <p className="overview-alert" role="alert">
+                    Request stream unavailable. {requests.page ? "Showing the last received traces." : "Request metrics are not available yet."} Retrying automatically.
+                </p>
+            )}
+            <SummaryCards inventory={actors.inventory} records={requests.page ? records : undefined} />
+            <ClassTable inventory={actors.inventory} records={requests.page ? records : undefined} failed={actors.failed} onSelectActor={onSelectActor} />
+            <DataScope page={requests.page} />
+        </section>
+    )
+}
+
+function SummaryCards({ inventory, records }: { inventory?: ActorInventory; records?: RequestTrace[] }) {
+    const totals = inventory ? inventorySummary(inventory) : undefined
+    const total = totals ? totals.live + totals.dormant + totals.unknown : undefined
+    const metrics = records ? requestSummary(records) : undefined
+    return (
+        <div className="overview-metrics">
+            <section className="overview-metric">
+                <h2>Actor instances</h2>
+                <div className="overview-value">
+                    <strong aria-label="Actor instances">{number(total)}</strong>
+                    <span>{inventory ? `${inventory.actors.length} actor ${inventory.actors.length === 1 ? "class" : "classes"}` : "Waiting for inventory"}</span>
+                </div>
+                <div className="overview-residency" aria-hidden="true">
+                    {totals &&
+                        Object.entries(totals)
+                            .filter(([key]) => key !== "connections")
+                            .map(([key, value]) => <span key={key} className={`residency-${key}`} style={{ flexGrow: value }} />)}
+                </div>
+                <div className="overview-metric-foot">
+                    <span>
+                        <b>{number(totals?.live)}</b> live
+                    </span>
+                    <span>
+                        <b>{number(totals?.dormant)}</b> dormant
+                    </span>
+                    {!!totals?.unknown && (
+                        <span>
+                            <b>{number(totals.unknown)}</b> unknown
+                        </span>
+                    )}
+                </div>
+            </section>
+            <section className="overview-metric">
+                <h2>Requests</h2>
+                <div className="overview-value">
+                    <strong aria-label="Retained requests">{number(metrics?.count)}</strong>
+                    <span>retained in time window</span>
+                </div>
+                <div className="overview-health">
+                    <span>
+                        <Health value={metrics?.success} kind="success" /> success
+                    </span>
+                    <span>
+                        <Health value={metrics?.p95} kind="latency" /> p95 latency
+                    </span>
+                    <span>
+                        <b>{milliseconds(records ? queueP95(records) : null)}</b> p95 queue wait
+                    </span>
+                </div>
+            </section>
+            <section className="overview-metric">
+                <h2>WebSocket connections</h2>
+                <div className="overview-value">
+                    <strong aria-label="Open WebSocket connections">{number(totals?.connections)}</strong>
+                    <span>open</span>
+                </div>
+                <div className="overview-health">
+                    <span>Current inventory snapshot</span>
+                    <span>Active sockets</span>
+                </div>
+            </section>
+        </div>
+    )
+}
+
+function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?: ActorInventory; records?: RequestTrace[]; failed: boolean; onSelectActor: OverviewProps["onSelectActor"] }) {
+    const [query, setQuery] = useState("")
+    const [residency, setResidency] = useState("all")
+    const actors =
+        inventory?.actors.filter(
+            actor => actor.actorType.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (residency === "all" || actor[residency as "live" | "dormant" | "unknown"] > 0)
+        ) ?? []
+    return (
+        <section aria-label="Actor classes">
+            <div className="overview-section-heading">
+                <h2>
+                    Actor classes <span>{number(inventory?.actors.length)}</span>
+                </h2>
+                <Thresholds />
+            </div>
+            <div className="overview-panel">
+                <div className="overview-filterbar">
+                    <div className="overview-search">
+                        <Search aria-hidden="true" />
+                        <Input aria-label="Filter actor classes" placeholder="Filter actor classes…" value={query} onInput={event => setQuery(event.currentTarget.value)} />
+                    </div>
+                    <select aria-label="Filter by residency" value={residency} onChange={event => setResidency(event.target.value)}>
+                        <option value="all">All states</option>
+                        <option value="live">Live instances</option>
+                        <option value="dormant">Dormant instances</option>
+                        <option value="unknown">Unknown residency</option>
+                    </select>
+                </div>
+                <div className="overview-table-scroll" role="region" aria-label="Actor class metrics" tabIndex={0}>
+                    <table className="overview-table">
+                        <thead>
+                            <tr className="overview-groups">
+                                <th scope="colgroup" colSpan={2}>
+                                    Actors
+                                </th>
+                                <th scope="colgroup" colSpan={4}>
+                                    Requests
+                                </th>
+                                <th scope="colgroup">WebSockets</th>
+                            </tr>
+                            <tr>
+                                <th scope="col">Class</th>
+                                <th scope="col">Instances</th>
+                                <th scope="col">Total</th>
+                                <th scope="col">Success</th>
+                                <th scope="col">p95 latency</th>
+                                <th scope="col">p95 queue wait</th>
+                                <th scope="col">Connected</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {actors.map(actor => (
+                                <ClassRow key={actor.actorType} actor={actor} records={records?.filter(record => record.actorType === actor.actorType)} onSelectActor={onSelectActor} />
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                {!actors.length && (
+                    <div className="overview-empty" role="status">
+                        <strong>{!inventory ? (failed ? "Inventory unavailable" : "Loading actor classes…") : inventory.actors.length ? "No matching actor classes" : "No actors yet"}</strong>
+                        <p>{inventory?.actors.length ? "Try another class name or residency state." : "Actor classes appear after deployment."}</p>
+                        {!!inventory?.actors.length && (
+                            <Button
+                                variant="outline"
+                                onClick={() => {
+                                    setQuery("")
+                                    setResidency("all")
+                                }}
+                            >
+                                Clear filters
+                            </Button>
+                        )}
+                    </div>
+                )}
+            </div>
+        </section>
+    )
+}
+
+function ClassRow({ actor, records, onSelectActor }: { actor: ActorInventory["actors"][number]; records?: RequestTrace[]; onSelectActor: OverviewProps["onSelectActor"] }) {
+    const metrics = records ? requestSummary(records) : undefined
+    return (
+        <tr>
+            <td>
+                <button type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorType}`} onClick={() => onSelectActor(actor.actorType)}>
+                    {actor.actorType}
+                    <ChevronRight aria-hidden="true" />
+                </button>
+            </td>
+            <td>{number(actor.live + actor.dormant + actor.unknown)}</td>
+            <td>{number(metrics?.count)}</td>
+            <td>
+                <Health value={metrics?.success} kind="success" />
+            </td>
+            <td>
+                <Health value={metrics?.p95} kind="latency" />
+            </td>
+            <td>{milliseconds(records ? queueP95(records) : null)}</td>
+            <td>{number(actor.instances.reduce((sum, instance) => sum + instance.connections.length, 0))}</td>
+        </tr>
+    )
+}
+
+function Health({ value, kind }: { value?: number | null; kind: "success" | "latency" }) {
+    if (value == null) return <span title="No retained execution attempts">—</span>
+    const level = kind === "success" ? (value < 95 ? "bad" : value < 99 ? "warn" : "good") : value > 100 ? "bad" : "good"
+    return (
+        <span className={`overview-signal signal-${level}`} title={level === "bad" ? "Critical threshold breached" : level === "warn" ? "Warning threshold breached" : "Within threshold"}>
+            {level !== "good" && <span aria-hidden="true">{level === "warn" ? "!" : "×"}</span>}
+            {kind === "success" ? `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}%` : milliseconds(value)}
+        </span>
+    )
+}
+
+function Thresholds() {
+    return (
+        <details className="overview-thresholds">
+            <summary>
+                <span className="threshold-dots" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                </span>
+                Thresholds
+            </summary>
+            <div>
+                <strong>Display thresholds</strong>
+                <p>Success: warning below 99%; critical below 95%.</p>
+                <p>Latency: critical when p95 exceeds 100 ms.</p>
+                <p>Reroutes are excluded from success and latency. Queue wait has no health threshold.</p>
+            </div>
+        </details>
+    )
+}
+
+function DataScope({ page }: { page?: RequestTracePage }) {
+    return (
+        <div className="overview-data-scope">
+            <p>
+                Request metrics cover the latest {page?.capacity ?? 500} retained traces within the selected window. History resets when the control plane restarts. Inventory counts are current
+                snapshots.
+            </p>
+            {!!page?.dropped && <p role="alert">{number(page.dropped)} traces were not delivered. Request metrics are incomplete.</p>}
+            {!!page?.evicted && <p>Earlier traces have expired; these metrics do not represent the full time window.</p>}
+        </div>
+    )
+}
+
+function number(value?: number) {
+    return value === undefined ? "—" : value.toLocaleString()
+}
+function milliseconds(value?: number | null) {
+    return value == null ? "—" : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms`
+}

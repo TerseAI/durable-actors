@@ -2,6 +2,8 @@
 
 A shared React observer for the local `little-actors observe` command and embedded hosted or self-hosted applications. Lists actor types with live, dormant, and total instance counts, including deployed types with no instances. Search actor types, then select an actor to inspect its instances, residency, active WebSocket connection count, and connection metadata. Changes arrive over a live event stream, with automatic reconnection, manual retry, and visible stale-data errors.
 
+The standalone console opens on an overview with current inventory counts and request metrics from retained traces. Choose a time window, filter actor classes, or open a class in the actor inspector. The sidebar also opens individual request timings and active WebSocket connections. Missing measurements remain unavailable rather than appearing as zero. [Backend gaps](BACKEND-GAPS.md) records the additional contracts needed for the remaining Doop design features.
+
 ## Embed in a React application
 
 ```tsx
@@ -111,7 +113,9 @@ The standalone app uses Vite, React, TypeScript, and Tailwind. To develop agains
 OBSERVER_API_URL=http://127.0.0.1:<observer-port> pnpm --dir packages/observer-ui dev
 ```
 
-Vite proxies `/api/observe` to that URL (default: `http://127.0.0.1:4174`). No demo data is included in the app. The console supports actor search and combined instance ID/state filters; deployment totals remain unfiltered.
+Vite proxies `/api/observe` to that URL (default: `http://127.0.0.1:4174`). No demo data is included in the app. The console supports actor search and combined instance ID/state filters; inventory summary totals remain unfiltered.
+
+To rebuild the assets consumed by this checkout's SDK, run `pnpm --dir sdk build:observer`. Building this repository does not update an SDK already installed in another repository's `node_modules`; use the development proxy above to see UI edits against that observer immediately, or rebuild and reinstall the SDK package there.
 
 Vite builds both outputs from `vite.config.ts`: library mode produces the ESM package and separate scoped styles and optional theme; the default build produces the standalone browser app in `dist/standalone`. TypeScript emits the library declarations. Only the standalone app bundles React. The SDK copies those prebuilt assets into its own npm package. The `observe` command starts Vite's preview server on a loopback port and opens it in the browser; Vite is included as a runtime dependency. A Vite middleware handles the authenticated API bridge, keeping admin credentials server-side. The command requires no source checkout or build step.
 

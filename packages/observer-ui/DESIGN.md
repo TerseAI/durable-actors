@@ -34,7 +34,24 @@ colors:
   success-dark: "#62c991"
   danger-dark: "#ff7777"
   warning-dark: "#e8bc66"
+  console-sidebar: "#f5f5f3"
+  console-selected: "#e8eae5"
+  console-sidebar-dark: "#131512"
+  console-selected-dark: "#272d25"
+  residency-dormant: "#b5c59f"
 typography:
+  overview-title:
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontSize: "29px"
+    fontWeight: 550
+    lineHeight: 1.2
+    letterSpacing: "-0.03em"
+  overview-metric:
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontSize: "33px"
+    fontWeight: 450
+    lineHeight: 1.2
+    letterSpacing: "-0.035em"
   title:
     fontFamily: "inherit"
     fontSize: "1.75rem"
@@ -66,6 +83,8 @@ rounded:
   sm: "4px"
   md: "6px"
   lg: "8px"
+  console-control: "5px"
+  console-panel: "7px"
 spacing:
   sm: "8px"
   md: "12px"
@@ -75,6 +94,15 @@ spacing:
   section: "28px"
   region: "32px"
 components:
+  console-navigation-active:
+    backgroundColor: "{colors.console-selected}"
+    textColor: "{colors.foreground}"
+    rounded: "{rounded.console-control}"
+    padding: "8px 12px"
+  overview-card:
+    backgroundColor: "{colors.card}"
+    rounded: "{rounded.console-panel}"
+    padding: "17px 19px"
   button-primary:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.primary-foreground}"
@@ -108,32 +136,38 @@ components:
 
 **Creative North Star: "The precise runtime console"**
 
-A clean, Vercel-like developer console: neutral light and dark surfaces, hairline boundaries, compact shadcn controls, and restrained semantic color. Information density comes from aligned data and progressive disclosure.
+A precise runtime console: neutral light and dark surfaces, hairline boundaries, compact controls, and restrained semantic color. The standalone Operate direction follows the user-approved [little-actors Overview](https://doop.design/c/x71to_CeX0), frame `xIP9Ls3hDj`: a quiet sidebar, unequal metric cards, and a grouped actor table. Information density comes from aligned data and progressive disclosure.
 
-The embedded observer inherits its host’s font and semantic tokens. Optional theme defaults and standalone navigation remain separate from the embeddable surface. Source authority is src/theme.css, src/styles.css, src/standalone.css, and src/components/ui/; PRODUCT.md defines the read-only product boundary.
+The embedded observer inherits its host’s font and semantic tokens. Optional theme defaults and standalone navigation remain separate from the embeddable surface. Source authority is src/theme.css, src/styles.css, src/standalone.css, and src/components/ui/; PRODUCT.md defines the read-only product boundary. The approved screenshot and desktop/mobile implementation captures live in .impeccable/review/. The standalone composition does not replace the embedded observer’s existing geometry.
 
 **Key Characteristics:**
 - Neutral surfaces with green, amber, and red reserved for state.
-- System sans typography with monospace for identifiers and JSON.
+- System sans typography with monospace for identifiers, overview data, and JSON.
 - Bordered data regions, inline inspection, and short state transitions.
 
 ## Colors
 
 The palette is neutral, with semantic status accents. Frontmatter records the optional standalone defaults; `-dark` entries describe the `.dark` overrides, not additional accents. Host tokens remain authoritative when embedded.
 
-Primary is near-black in light mode and near-white in dark mode. Background, card, muted, and accent create quiet surface layers; foreground and muted foreground distinguish data from context. Border and input define hairlines; ring makes keyboard focus visible. Success green identifies live residency, warning amber identifies unknown residency and unavailable refresh, and danger/destructive red identifies failure. Zero live counts retain normal text color.
+Primary is near-black in light mode and near-white in dark mode. Background, card, muted, and accent create quiet surface layers; foreground and muted foreground distinguish data from context. Border and input define hairlines; ring makes keyboard focus visible. Success green identifies live residency, warning amber identifies unknown residency and unavailable refresh, and danger/destructive red identifies failure. Zero live counts retain normal text color. Standalone navigation adds subtly tinted neutral sidebar and selected fills; the residency bar uses a soft green for dormant instances alongside the live and unknown colors.
+
+**The Evidence Rule.** Status color always accompanies written state or a value with accessible threshold guidance; unavailable values remain visibly distinct from zero.
 
 ## Typography
 
-Embedded typography inherits the host. Standalone uses `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`; the unused Satoshi utility mapping does not load a font. The title, section, body, label, and metric roles are recorded above. Tables and controls use 14px text, column headings use 12px, and table numbers use tabular numerals. Supporting paragraphs are capped at 70ch. IDs and JSON use the code stack; JSON line-height is 1.7. The title reduces to 1.5rem on narrow screens.
+Embedded typography inherits the host. Standalone uses `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`; the unused Satoshi utility mapping does not load a font. System stacks preserve the standalone Content Security Policy without external font loading. The title, section, body, label, and metric roles are recorded above. Tables and controls use 14px text, column headings use 12px, and table numbers use tabular numerals. Supporting paragraphs are capped at 70ch. IDs and JSON use the code stack; JSON line-height is 1.7. The embedded title reduces to 1.5rem on narrow screens. Overview uses its separate title and metric roles, a 15px section heading, 12px actor-class links, 11px monospace table values, and 9px uppercase monospace group headings. Its title reduces to 25px at the standalone mobile breakpoint.
 
 ## Layout
 
-The observer fills its host container. A heading and refresh action lead into a single divided summary strip, searchable inventory, and inline instance and connection details. Summary cells use 20px × 24px padding; tables use 20px horizontal cell padding, 40px headers, 60px actor rows, and 56px instance rows. Numeric actor columns are right aligned and 100px wide. Detail regions start after a 28px gap and separator. Search fields are 260px wide at desktop sizes.
+The embedded observer fills its host container. A heading and refresh action lead into a single divided summary strip, searchable inventory, and inline instance and connection details. Summary cells use 20px × 24px padding; tables use 20px horizontal cell padding, 40px headers, 60px actor rows, and 56px instance rows. Numeric actor columns are right aligned and 100px wide. Detail regions start after a 28px gap and separator. Search fields are 260px wide at desktop sizes.
 
 At 640px and below, the actor search stacks beneath its section heading and expands to full width. Summary cells use 16px padding; a fourth Unknown cell causes a two-column arrangement. Tables retain horizontal scrolling, with 12px horizontal cell padding and wrapping identifiers. Buttons and inputs have 44px minimum touch height below Tailwind’s medium breakpoint; the state select and disclosure overrides use 44px at the 640px breakpoint.
 
-The standalone shell alone adds a 64px brand header, 48px Actors/Requests navigation strip, and a centered main area capped at 1152px with 40px × 32px top/side padding. Mobile main padding becomes 28px × 20px, with 48px below. Header content has its own 1440px maximum. The footer and read-only label are shell context, not embedded navigation.
+The standalone shell uses a 204px sidebar and a flexible workspace, with a 64px topbar and main padding of 29px 32px 48px. Navigation lists little-actors, Actors, Requests, and WebSockets; theme and documentation controls sit in the topbar. A read-only runtime label anchors the sidebar. Overview leads with three metric cards in a 0.92:1.34:1 grid, separated by 14px, followed by a grouped actor-class table. Cards have a 154px minimum height. The table retains an 850px minimum width and scrolls within a focusable named region.
+
+At 1150px and below, the first two cards share a row and the third spans both columns. At 760px and below, navigation becomes a horizontally scrollable row, the sidebar footer hides, the topbar becomes 52px high, and cards stack. Main padding becomes 26px 20px 40px. Filters wrap, the search expands to full width, and standalone interactive controls have at least 44px height. Preserve the table’s data columns through horizontal scrolling.
+
+**The Separate Surfaces Rule.** Keep the standalone shell and Overview layout in standalone styles; embedded Actors and Requests retain their host-aware tokens and existing density.
 
 Requests use the same toolbar and bordered table frame, with a 720px minimum table width and horizontal scrolling. Time is subdued; Total and Queue wait are right aligned with tabular numerals. Operation labels wrap above actor context, and expanded IDs stay inline. Below 640px, toolbar actions wrap while retaining their touch targets.
 
@@ -143,7 +177,7 @@ Borders and tonal fills provide depth. Summary and table frames are flat card su
 
 ## Shapes
 
-The default radius is 8px. Controls and badges derive their 6px radius from the host radius minus 2px; summary/table frames use an explicit 8px radius and JSON blocks 4px. State dots are circular. Empty instance and connection regions use dashed borders. Preserve host-derived control geometry when embedding.
+The embedded default radius is 8px. Controls and badges derive their 6px radius from the host radius minus 2px; summary/table frames use an explicit 8px radius and JSON blocks 4px. State dots are circular. Empty instance and connection regions use dashed borders. Preserve host-derived control geometry when embedding. Standalone navigation, theme controls, and selects use the console-control radius; Overview cards, tables, and the threshold panel use the console-panel radius. Overview status highlights retain the smaller 4px radius.
 
 ## Components
 
@@ -156,7 +190,9 @@ The default radius is 8px. Controls and badges derive their 6px radius from the 
 - **Empty and error states:** distinguish no deployed actors, actor types without instances, no matching filters, and no active connections. Initial failure explains connection/access recovery; refresh failure never replaces known counts with zero.
 - **Request traces:** a newest-first table shows Time, Request, Transport, Outcome, Total, and Queue wait. Method and WebSocket transports use text; outlined outcome badges use success for Completed, danger for Failed/Rejected, and warning for Interrupted/Rerouted. The operation disclosure reveals wrapping monospace Request ID, Host, and optional Connection fields inline. A missing queue duration uses an em dash with an explanation that processing did not begin.
 - **Request collection states:** outline Pause/Resume controls freeze the display while collection continues. Reconnection preserves received rows and exposes Retry; delivery loss has a separate alert. The footer names the current live, connecting, reconnecting, or paused state, the retention capacity, and reset-on-restart behavior. Expired records and host-side timing scope are explained beneath the table. Connecting, unavailable, and empty history states remain distinct.
-- **Standalone chrome:** Actors and Requests are keyboard-focusable navigation buttons with icons; the active view has a foreground label and underline, while inactive labels use muted foreground and brighten on hover. The active control exposes aria-current="page". The theme button starts from OS preference and permits a manual override for the current page session; the skip link moves to main content.
+- **Standalone chrome:** navigation buttons pair icons with labels. The current view uses a filled selected surface and aria-current="page"; inactive labels use muted foreground and brighten on hover. The theme button starts from OS preference and permits a manual override for the current page session; the skip link moves to main content. Overview actor-class actions open the existing Actors inspector with that class selected and move focus to the main region.
+- **Overview:** actor-instance residency, retained request measurements, and current WebSocket connections occupy separate cards. Group table columns into Actors, Requests, and WebSockets, with subtle group separators and right-aligned numeric data. Class search and residency filters narrow table rows; the selected time window applies to request measurements. Label retained sample scope beside the values and below the table. Threshold guidance is an accessible disclosure; unavailable measurements display an em dash. Preserve distinct initial, empty, filtered, stale, and stream-failure states.
+- **WebSocket inventory:** a searchable table presents current actor class, instance, connection ID, and wrapping JSON metadata from inventory. Preserve the same connection terminology and unavailable/empty/stale states as embedded inspection.
 
 Skeleton pulse is 1.5s ease-in-out and refresh spin is 1s linear. Reduced-motion preferences disable observer animations and transitions.
 
@@ -168,4 +204,4 @@ Skeleton pulse is 1.5s ease-in-out and refresh spin is 1s linear. Reduced-motion
 - Do express residency and freshness with labels as well as color.
 - Don’t restore the superseded warm Terse palette.
 - Don’t load optional global theme defaults or standalone page styles into an already themed host.
-- Don’t invent charts, history, metrics, or mutation controls outside the read-only product scope.
+- Don’t fabricate deployment data, charts, full-window totals, identity, queue depth, or outgoing-write metrics; use the existing inventory and explicitly scoped retained traces.

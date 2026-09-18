@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react"
+import { useId, useState } from "react"
 
 import { Box, ChevronRight, CircleHelp, RefreshCw, Search, Unplug } from "lucide-react"
 
@@ -7,13 +7,15 @@ import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
+import { useInventory } from "./observer-hooks.js"
 
 interface ActorObserverProps {
     client: ObserverClient
     className?: string
+    initialActorType?: string
 }
 
-function ActorObserver({ client, className = "" }: ActorObserverProps) {
+function ActorObserver({ client, className = "", initialActorType }: ActorObserverProps) {
     const { inventory, loading, failed, retry } = useInventory(client)
     return (
         <section className={`la-observer ${className}`} aria-label="Actor observer">
@@ -40,7 +42,7 @@ function ActorObserver({ client, className = "" }: ActorObserverProps) {
                 <>
                     <InventorySummary inventory={inventory} />
                     {inventory.actors.length ? (
-                        <ActorTable inventory={inventory} />
+                        <ActorTable inventory={inventory} initialActorType={initialActorType} />
                     ) : (
                         <EmptyState title="No actors yet" description="Deploy your actor classes to see them here. Instance counts appear as actors are used." />
                     )}
@@ -55,52 +57,6 @@ function ActorObserver({ client, className = "" }: ActorObserverProps) {
             )}
         </section>
     )
-}
-
-function useInventory(client: ObserverClient) {
-    const [attempt, setAttempt] = useState(0)
-    const [snapshot, setSnapshot] = useState<{ client: ObserverClient; inventory: ActorInventory }>()
-    const [loading, setLoading] = useState(true)
-    const [failed, setFailed] = useState(false)
-    useEffect(() => {
-        const controller = new AbortController()
-        let timer: ReturnType<typeof setTimeout> | undefined
-        let retryDelay = 1_000
-        setFailed(false)
-        setLoading(true)
-        void refresh()
-        return () => {
-            controller.abort()
-            clearTimeout(timer)
-        }
-        function receive(inventory: ActorInventory) {
-            if (controller.signal.aborted) return
-            setSnapshot({ client, inventory })
-            setFailed(false)
-            setLoading(false)
-            retryDelay = 1_000
-        }
-        async function refresh() {
-            try {
-                if (client.watchActors) {
-                    await client.watchActors(receive, controller.signal)
-                    if (!controller.signal.aborted) throw new Error("Stream ended")
-                } else {
-                    setLoading(true)
-                    receive(await client.listActors(controller.signal))
-                }
-            } catch {
-                if (!controller.signal.aborted) setFailed(true)
-            } finally {
-                if (!controller.signal.aborted) {
-                    setLoading(false)
-                    timer = setTimeout(refresh, client.watchActors ? retryDelay : 5_000)
-                    retryDelay = Math.min(retryDelay * 2, 10_000)
-                }
-            }
-        }
-    }, [client, attempt])
-    return { inventory: snapshot?.client === client ? snapshot.inventory : undefined, loading, failed, retry: () => setAttempt(value => value + 1) }
 }
 
 function InventorySkeleton() {
@@ -159,9 +115,9 @@ function InventorySummary({ inventory }: { inventory: ActorInventory }) {
     )
 }
 
-function ActorTable({ inventory }: { inventory: ActorInventory }) {
+function ActorTable({ inventory, initialActorType }: { inventory: ActorInventory; initialActorType?: string }) {
     const [query, setQuery] = useState("")
-    const [selectedActorType, setSelectedActorType] = useState<string>()
+    const [selectedActorType, setSelectedActorType] = useState<string | undefined>(initialActorType)
     const detailsId = useId()
     const hasUnknown = inventory.actors.some(actor => actor.unknown > 0)
     const actors = inventory.actors.filter(actor => matches(actor.actorType, query))

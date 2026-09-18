@@ -6,6 +6,7 @@ import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
+import { useRequests } from "./observer-hooks.js"
 
 interface RequestObserverProps {
     client: Pick<ObserverClient, "watchRequests">
@@ -151,56 +152,6 @@ function RequestDetails({ record }: { record: RequestTrace }) {
 
 function duration(ms: number): string {
     return ms >= 1000 ? `${(ms / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s` : `${ms.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms`
-}
-
-function useRequests(client: RequestObserverProps["client"]) {
-    const [page, setPage] = useState<RequestTracePage>()
-    const [failed, setFailed] = useState(false)
-    const [attempt, setAttempt] = useState(0)
-    useEffect(() => setPage(undefined), [client])
-    useEffect(() => {
-        const controller = new AbortController()
-        let timer: ReturnType<typeof setTimeout> | undefined
-        let delay = 1000
-        async function watch() {
-            try {
-                if (!client.watchRequests) throw new Error("Request traces unavailable")
-                await client.watchRequests(incoming => {
-                    if (controller.signal.aborted) return
-                    setPage(current => mergePages(current, incoming))
-                    setFailed(false)
-                    delay = 1000
-                }, controller.signal)
-                if (!controller.signal.aborted) throw new Error("Request stream disconnected")
-            } catch {
-                if (!controller.signal.aborted) setFailed(true)
-            } finally {
-                if (!controller.signal.aborted) {
-                    timer = setTimeout(watch, delay)
-                    delay = Math.min(delay * 2, 10000)
-                }
-            }
-        }
-        setFailed(false)
-        void watch()
-        return () => {
-            controller.abort()
-            clearTimeout(timer)
-        }
-    }, [client, attempt])
-    return { page, failed, retry: () => setAttempt(value => value + 1) }
-}
-
-function mergePages(current: RequestTracePage | undefined, incoming: RequestTracePage): RequestTracePage {
-    const records = new Map((current?.epoch === incoming.epoch ? current.records : []).map(record => [record.sequence, record]))
-    for (const record of incoming.records) records.set(record.sequence, record)
-    return {
-        ...incoming,
-        records: [...records.values()]
-            .filter(record => record.sequence > incoming.evicted)
-            .sort((a, b) => b.sequence - a.sequence)
-            .slice(0, incoming.capacity)
-    }
 }
 
 export { RequestObserver }
