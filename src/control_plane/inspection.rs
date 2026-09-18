@@ -28,6 +28,8 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route("/v1/observe/actors", get(actor_inventory))
         .route("/v1/observe/events", get(actor_events))
+        .route("/v1/observe/requests", get(request_traces))
+        .route("/v1/observe/requests/events", get(request_events))
         .route("/v1/actors", get(list_objects))
         .route("/v1/actors/{actor_type}/{actor_id}", get(inspect_object))
         .with_state(InspectionApi { inspector, admin })
@@ -79,6 +81,7 @@ async fn inspect_object(
 
 #[derive(Clone)]
 pub(super) struct ActorInspector {
+    traces: crate::request_traces::TraceStore,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: tokio::sync::watch::Sender<()>,
     placements: Arc<dyn ObjectPlacementStore>,
@@ -93,11 +96,17 @@ impl ActorInspector {
         changes: tokio::sync::watch::Sender<()>,
     ) -> Self {
         Self {
+            traces: crate::request_traces::TraceStore::default(),
             inventory,
             changes,
             placements,
             storage,
         }
+    }
+
+    pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
+        self.traces = traces;
+        self
     }
 
     async fn list(&self, query: &ListQuery) -> Result<ObjectPage> {
@@ -349,6 +358,55 @@ async fn actor_events(
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {},
                 _ = changes.changed() => {},
             }
+        }
+    });
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Sse::new(ReceiverStream::new(receiver))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
+    )
+        .into_response())
+}
+
+async fn request_traces(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(state.inspector.traces.page(0)),
+    )
+        .into_response())
+}
+
+async fn request_events(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+    use tokio_stream::wrappers::ReceiverStream;
+    authorized_admin(&state.admin, &headers)?;
+    let store = state.inspector.traces;
+    let mut changes = store.changes.subscribe();
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
+    tokio::spawn(async move {
+        let mut cursor = 0;
+        loop {
+            let page = store.page(cursor);
+            cursor = page.cursor;
+            let event = Event::default()
+                .event("requests")
+                .json_data(page)
+                .expect("serializable trace page");
+            if sender.send(Ok(event)).await.is_err() {
+                return;
+            }
+            tokio::select! { _ = sender.closed() => return, _ = changes.changed() => {} }
         }
     });
     Ok((

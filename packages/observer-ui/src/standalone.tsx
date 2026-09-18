@@ -1,8 +1,10 @@
+import { useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import { Box, ChevronRight, SunMoon } from "lucide-react"
+import { Activity, Box, ChevronRight, SunMoon } from "lucide-react"
 
 import { ActorObserver } from "./ActorObserver.js"
+import { RequestObserver } from "./RequestObserver.js"
 import { HttpObserverClient } from "./client.js"
 import "./standalone.css"
 import "./styles.css"
@@ -18,6 +20,7 @@ updateTheme()
 darkMode.addEventListener("change", updateTheme)
 
 function Standalone() {
+    const [view, setView] = useState<"actors" | "requests">("actors")
     function toggleTheme() {
         manualTheme = true
         const next = !document.documentElement.classList.contains("dark")
@@ -43,15 +46,21 @@ function Standalone() {
             </header>
             <div className="console-subnav">
                 <div>
-                    <span aria-current="page">
-                        <Box aria-hidden="true" />
-                        Actors
-                    </span>
+                    <nav aria-label="Observability">
+                        <button type="button" aria-current={view === "actors" ? "page" : undefined} onClick={() => setView("actors")}>
+                            <Box aria-hidden="true" />
+                            Actors
+                        </button>
+                        <button type="button" aria-current={view === "requests" ? "page" : undefined} onClick={() => setView("requests")}>
+                            <Activity aria-hidden="true" />
+                            Requests
+                        </button>
+                    </nav>
                     <span className="console-readonly">Read-only</span>
                 </div>
             </div>
             <main id="main" tabIndex={-1}>
-                <ActorObserver client={client} />
+                {view === "actors" ? <ActorObserver client={client} /> : <RequestObserver client={client} />}
             </main>
             <footer className="console-footer">
                 <span>

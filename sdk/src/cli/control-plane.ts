@@ -34,7 +34,15 @@ class ControlPlaneClient {
     }
 
     async openActorStream(signal: AbortSignal): Promise<Response> {
-        const response = await this.request(`${this.connection.controlPlaneUrl}/v1/observe/events`, {
+        return this.openStream("/v1/observe/events", signal)
+    }
+
+    async openRequestStream(signal: AbortSignal): Promise<Response> {
+        return this.openStream("/v1/observe/requests/events", signal)
+    }
+
+    private async openStream(path: string, signal: AbortSignal): Promise<Response> {
+        const response = await this.request(`${this.connection.controlPlaneUrl}${path}`, {
             signal,
             redirect: "error",
             headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }

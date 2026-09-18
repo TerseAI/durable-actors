@@ -29,6 +29,16 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn report_traces(
+        &self,
+        traces: Vec<crate::request_traces::RequestTrace>,
+        dropped: u64,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::RequestTraces { traces, dropped })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn notify_inventory_changed(&self) -> Result<()> {
         match self.execute(ControlPlaneCommand::InventoryChanged).await? {
             ControlPlaneCommandReply::Unit => Ok(()),

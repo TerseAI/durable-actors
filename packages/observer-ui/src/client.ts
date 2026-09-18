@@ -18,6 +18,7 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal): Promise<void>
     watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
     listActors(signal?: AbortSignal): Promise<ActorInventory>
     checkConnection(signal?: AbortSignal): Promise<void>
@@ -36,7 +37,15 @@ class HttpObserverClient implements ObserverClient {
     }
 
     async watchActors(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void> {
-        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/events`, {
+        return this.watch("events", "inventory", isInventory, onInventory, signal)
+    }
+
+    async watchRequests(onPage: (page: RequestTracePage) => void, signal: AbortSignal): Promise<void> {
+        return this.watch("requests/events", "requests", isTracePage, onPage, signal)
+    }
+
+    private async watch<T>(path: string, eventName: string, validate: (value: unknown) => value is T, receive: (value: T) => void, signal: AbortSignal): Promise<void> {
+        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/${path}`, {
             signal,
             credentials: "same-origin",
             redirect: "error",
@@ -52,10 +61,10 @@ class HttpObserverClient implements ObserverClient {
             onEvent(event) {
                 if (signal.aborted) return
                 if (event.event === "error") throw new Error("Live inventory is unavailable")
-                if (event.event !== "inventory") return
+                if (event.event !== eventName) return
                 const inventory: unknown = JSON.parse(event.data)
-                if (!isInventory(inventory)) throw new Error("Invalid actor inventory response")
-                onInventory(inventory)
+                if (!validate(inventory)) throw new Error("Invalid observer response")
+                receive(inventory)
             }
         })
         const cancel = () => {
@@ -126,3 +135,63 @@ function isActorConnection(value: unknown): value is ActorConnection {
 
 export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
+
+export interface RequestTrace {
+    sequence: number
+    requestId: string
+    hostId: string
+    sessionId: string
+    actorType: string
+    actorId: string
+    kind: "method" | "websocket"
+    operation: string
+    connectionId: string | null
+    startedAtMs: number
+    durationMs: number
+    queueWaitMs: number | null
+    outcome: "completed" | "failed" | "rejected" | "rerouted" | "interrupted"
+}
+
+export interface RequestTracePage {
+    epoch: string
+    cursor: number
+    capacity: number
+    evicted: number
+    dropped: number
+    records: RequestTrace[]
+}
+
+function isTracePage(value: unknown): value is RequestTracePage {
+    if (!value || typeof value !== "object") return false
+    const page = value as RequestTracePage
+    return (
+        typeof page.epoch === "string" &&
+        [page.cursor, page.capacity, page.evicted, page.dropped].every(nonnegativeInteger) &&
+        page.capacity > 0 &&
+        page.capacity <= 500 &&
+        Array.isArray(page.records) &&
+        page.records.length <= page.capacity &&
+        page.records.every(record => isTrace(record) && record.sequence <= page.cursor)
+    )
+}
+
+function nonnegativeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0
+}
+
+function isTrace(value: unknown): value is RequestTrace {
+    if (!value || typeof value !== "object") return false
+    const trace = value as RequestTrace
+    return (
+        [trace.requestId, trace.hostId, trace.sessionId, trace.actorType, trace.actorId, trace.operation].every(value => typeof value === "string") &&
+        nonnegativeInteger(trace.sequence) &&
+        nonnegativeInteger(trace.startedAtMs) &&
+        trace.startedAtMs <= 8.64e15 &&
+        ["method", "websocket"].includes(trace.kind) &&
+        ["completed", "failed", "rejected", "rerouted", "interrupted"].includes(trace.outcome) &&
+        (trace.connectionId === null || typeof trace.connectionId === "string") &&
+        Number.isFinite(trace.durationMs) &&
+        trace.durationMs >= 0 &&
+        (trace.queueWaitMs === null || (Number.isFinite(trace.queueWaitMs) && trace.queueWaitMs >= 0 && trace.queueWaitMs <= trace.durationMs))
+    )
+}

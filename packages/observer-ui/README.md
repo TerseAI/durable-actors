@@ -124,3 +124,11 @@ pnpm --dir /path/to/hosted/frontend add /tmp/little-actors-observer-0.1.0.tgz
 For production, publish this package independently and pin its released version in the hosted frontend. Its version is independent of the SDK/runtime release. Publishing requires access to the `@little-actors` npm scope; no publication is performed by the existing SDK release workflow. The backend and UI contract must remain compatible when either is upgraded.
 
 The local CLI uses a workspace **development** dependency at build time. Its published runtime does not depend on an unpublished UI package or on a path to another checkout.
+
+## Request timings
+
+The standalone console includes a Requests view. To embed it, render `<RequestObserver client={client} />` using the same styles and `HttpObserverClient`. Its optional `watchRequests(onPage, signal)` client method consumes `<prefix>/requests/events`; proxy that stream to the admin-only `/v1/observe/requests/events` control-plane endpoint using server-side credentials. The local CLI provides this proxy automatically.
+
+SSE `requests` events contain `{ epoch, cursor, capacity, evicted, dropped, records }`. The first event replays the available history; later events carry new records. Sequence numbers identify records within an epoch; a new epoch resets history. Each record includes `requestId`, `hostId`, `sessionId`, `actorType`, `actorId`, `kind` (`method` or `websocket`), `operation`, nullable `connectionId`, `startedAtMs`, `durationMs`, nullable `queueWaitMs`, and `outcome`. Outcomes are `completed`, `failed`, `rejected`, `rerouted`, or `interrupted`.
+
+Total includes queue wait, actor processing, and persistence; queue wait includes the WebSocket message queue. Timings exclude the caller’s network round trip. Rows arrive after an attempt finishes. The latest 500 records are retained per control-plane process, without persistence or cross-replica sharing. Collection is best effort and known delivery losses are shown; process crashes can also lose unreported records. See [request timing semantics](../../docs/reference/cli.md#request-timings).

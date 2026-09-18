@@ -39,6 +39,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
+    pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: tokio::sync::watch::Sender<()>,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -69,6 +70,7 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            traces: crate::request_traces::TraceStore::default(),
             changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
             region: None,
@@ -398,6 +400,23 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::RequestTraces { traces, dropped } => {
+                self.require_active_host(principal).await?;
+                ensure!(
+                    traces.len() <= crate::request_traces::TRACE_BATCH_SIZE,
+                    "trace batch too large"
+                );
+                for trace in &traces {
+                    trace.validate()?;
+                }
+                self.traces.record(
+                    principal.host_id.as_str(),
+                    &principal.session_id,
+                    traces,
+                    dropped,
+                );
+                Ok(ControlPlaneCommandReply::Unit)
+            }
             ControlPlaneCommand::InventoryChanged => {
                 let status = self.leases.lease_status(&principal.host_id).await?;
                 ensure!(

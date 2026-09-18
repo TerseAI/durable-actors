@@ -1,4 +1,10 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
+use crate::request_traces::{RequestKind, RequestOutcome, RequestSpan, TraceSender};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use tokio::{
@@ -26,6 +32,7 @@ const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
 const HOST_COMMAND_CAPACITY: usize = 256;
 
 pub(crate) struct ActorHost {
+    traces: Option<TraceSender>,
     endpoint: HostEndpoint,
     commands: mpsc::Sender<HostCommand>,
     activity: watch::Receiver<usize>,
@@ -52,6 +59,7 @@ impl ActorHost {
         );
         tokio::spawn(dispatcher.run(incoming));
         Self {
+            traces: None,
             endpoint,
             commands,
             activity,
@@ -60,6 +68,32 @@ impl ActorHost {
 
     pub(crate) fn activity(&self) -> watch::Receiver<usize> {
         self.activity.clone()
+    }
+
+    pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
+        self.traces = Some(traces);
+        self
+    }
+
+    pub(crate) async fn handle_socket_event_since(
+        &self,
+        invocation: ActorSocketInvocation,
+        owner_epoch: u64,
+        started: Instant,
+    ) -> Result<ActorExecutionResult> {
+        self.submit_since(ActorOperation::Socket(invocation), owner_epoch, started)
+            .await
+    }
+
+    pub(crate) fn discard_socket_event(
+        &self,
+        invocation: ActorSocketInvocation,
+        started: Instant,
+        outcome: RequestOutcome,
+    ) {
+        if let Some(mut span) = self.trace(&ActorOperation::Socket(invocation), started) {
+            span.finish(outcome);
+        }
     }
 
     pub(crate) fn id(&self) -> &super::HostId {
@@ -110,8 +144,19 @@ impl ActorHost {
         operation: ActorOperation,
         owner_epoch: u64,
     ) -> Result<ActorExecutionResult> {
+        self.submit_since(operation, owner_epoch, Instant::now())
+            .await
+    }
+
+    async fn submit_since(
+        &self,
+        operation: ActorOperation,
+        owner_epoch: u64,
+        started: Instant,
+    ) -> Result<ActorExecutionResult> {
         let (reply, result) = oneshot::channel();
         let request = ActorRequest {
+            trace: self.trace(&operation, started),
             operation,
             owner_epoch,
 
@@ -127,6 +172,29 @@ impl ActorHost {
                 failure: ActorInvocationFailure::outcome_unknown_after_execution(),
             })
         })
+    }
+
+    fn trace(&self, operation: &ActorOperation, started: Instant) -> Option<RequestSpan> {
+        let sender = self.traces.as_ref()?.clone();
+        let (kind, connection) = match operation {
+            ActorOperation::Activate { .. } => return None,
+            ActorOperation::Method(_) => (RequestKind::Method, None),
+            ActorOperation::Socket(invocation) => (
+                RequestKind::Websocket,
+                Some(match &invocation.event {
+                    ActorSocketEvent::Connect { connection }
+                    | ActorSocketEvent::Disconnect { connection, .. } => connection.id.clone(),
+                    ActorSocketEvent::Message { connection_id, .. } => connection_id.clone(),
+                }),
+            ),
+        };
+        Some(RequestSpan::new(
+            sender,
+            &operation.invocation(),
+            kind,
+            connection,
+            started,
+        ))
     }
 }
 
@@ -316,7 +384,7 @@ async fn run_actor(
     completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
 ) {
-    while let Some(request) = requests.recv().await {
+    while let Some(mut request) = requests.recv().await {
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
             let result = Ok(ActorExecutionResult::HostUnavailable);
             ActorRuntime::log_invocation(
@@ -327,6 +395,9 @@ async fn run_actor(
             );
             result
         } else {
+            if let Some(trace) = &mut request.trace {
+                trace.admitted();
+            }
             match request.operation {
                 ActorOperation::Activate { actor, reply } => {
                     let _ = reply.send(runtime.activate_actor(&actor).await);
@@ -348,6 +419,9 @@ async fn run_actor(
                 }
             }
         };
+        if let Some(trace) = &mut request.trace {
+            trace.complete(&result);
+        }
         if completed
             .send(ActorCompletion {
                 object: object.clone(),
@@ -374,6 +448,7 @@ struct ActorMailbox {
 }
 
 struct ActorRequest {
+    trace: Option<RequestSpan>,
     operation: ActorOperation,
     owner_epoch: u64,
 
@@ -388,7 +463,10 @@ struct ActorCompletion {
 }
 
 impl ActorRequest {
-    fn finish(self, endpoint: &HostEndpoint, result: Result<ActorExecutionResult>) {
+    fn finish(mut self, endpoint: &HostEndpoint, result: Result<ActorExecutionResult>) {
+        if let Some(trace) = &mut self.trace {
+            trace.complete(&result);
+        }
         ActorRuntime::log_invocation(
             endpoint,
             &self.operation.invocation(),
@@ -742,6 +820,42 @@ mod tests {
             completed(2)
         );
         assert_eq!(state.writes.lock().unwrap().len(), 2);
+        host.drain(Duration::from_secs(1)).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
+        let (host, mut started, release) = controlled_host();
+        let (sender, mut traces) = crate::request_traces::TraceSender::channel(8);
+        let host = Arc::new(Arc::try_unwrap(host).ok().unwrap().with_traces(sender));
+        let caller = host.clone();
+        let first = tokio::spawn(async move { invoke(&caller, "first").await });
+        assert_eq!(started.recv().await.as_deref(), Some("first"));
+        let caller = host.clone();
+        let second = tokio::spawn(async move { invoke(&caller, "second").await });
+        let mut activity = host.activity();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            activity.wait_for(|count| *count == 2),
+        )
+        .await??;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        release.add_permits(1);
+        first.await??;
+        second.await??;
+        let first_trace = traces.recv().await.unwrap();
+        let second_trace = traces.recv().await.unwrap();
+        assert_eq!(first_trace.request_id, "first");
+        assert_eq!(second_trace.request_id, "second");
+        assert!(second_trace.queue_wait_ms.unwrap() >= 25.0);
+        assert!(second_trace.duration_ms >= second_trace.queue_wait_ms.unwrap());
+        let _ = invoke(&host, "panic").await?;
+        let interrupted = traces.recv().await.unwrap();
+        assert!(matches!(
+            interrupted.outcome,
+            crate::request_traces::RequestOutcome::Interrupted
+        ));
         host.drain(Duration::from_secs(1)).await?;
         Ok(())
     }

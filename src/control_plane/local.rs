@@ -329,7 +329,8 @@ async fn local_routes(
         storage.runtime.clone(),
         storage.runtime.clone(),
         service.changes.clone(),
-    );
+    )
+    .with_traces(service.traces.clone());
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.runtime.clone().router());

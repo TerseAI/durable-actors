@@ -96,3 +96,14 @@ test("live inventory rejects denied responses and non-streaming upstreams", asyn
         })
     }
 })
+
+test("request traces stream through the authenticated control-plane client", async () => {
+    const controller = new AbortController()
+    const client = new ControlPlaneClient(connection, async (url, options) => {
+        assert.equal(url, "https://control.example/v1/observe/requests/events")
+        assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+        assert.equal(options?.signal, controller.signal)
+        return new Response("event: requests\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+    })
+    assert.match(await (await client.openRequestStream(controller.signal)).text(), /event: requests/u)
+})

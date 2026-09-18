@@ -37,7 +37,7 @@ class Observer {
 
     constructor(
         private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
-            Partial<Pick<ControlPlaneClient, "openActorStream">>,
+            Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL("../observer/", import.meta.url)
     ) {}
@@ -113,7 +113,11 @@ class Observer {
         }
         const pathname = new URL(request.url!, `http://${host}`).pathname
         if (pathname === "/api/observe/events") {
-            await this.actorEvents(request, response)
+            await this.proxyEvents(request, response, this.client.openActorStream?.bind(this.client))
+            return
+        }
+        if (pathname === "/api/observe/requests/events") {
+            await this.proxyEvents(request, response, this.client.openRequestStream?.bind(this.client))
             return
         }
         if (pathname === "/api/observe/actors") {
@@ -127,7 +131,11 @@ class Observer {
         next()
     }
 
-    private async actorEvents(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    private async proxyEvents(
+        request: IncomingMessage,
+        response: ServerResponse,
+        openStream?: (signal: AbortSignal) => Promise<Response>
+    ): Promise<void> {
         if (request.method === "HEAD") {
             response.writeHead(200, { "content-type": "text/event-stream" }).end()
             return
@@ -137,8 +145,8 @@ class Observer {
         response.once("close", disconnect)
         let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
         try {
-            if (!this.client.openActorStream) throw new Error("Streaming is not supported")
-            const upstream = await this.client.openActorStream(controller.signal)
+            if (!openStream) throw new Error("Streaming is not supported")
+            const upstream = await openStream(controller.signal)
             if (controller.signal.aborted) {
                 await upstream.body?.cancel()
                 return

@@ -132,3 +132,13 @@ The observe page lists actor types in the connected deployment with live (reside
 Inventory changes stream from the Rust control plane over SSE, with automatic reconnection and stale-data warnings. Worker residency changes trigger an early host report; socket connections and disconnections publish immediately. Updated Rust hosts, control planes, and SDKs are required. The admin-only stream is `GET /v1/observe/events`; `GET /v1/observe/actors` remains available for single reads. Neither activates actors.
 
 A fifteen-second reconciliation catches missed notifications and lease expiry. Notifications are local to a control-plane process. Socket snapshots are persisted with host leases, so other control-plane processes reconcile the same data. Expired or replaced host sessions cannot contribute connection counts.
+
+### Request timings
+
+The Requests view streams completed method calls and WebSocket lifecycle/message events. Each row shows the actor, operation, request ID, outcome, total duration, and queue wait. Pause freezes the display while collection continues; expand a row to inspect its request, host, and connection IDs.
+
+Total is measured from host submission (or WebSocket message receipt) until actor processing and persistence finish. Queue wait ends when the actor begins processing and includes the per-connection WebSocket message queue. These are host-side timings: they exclude client-side routing, authentication before host submission, and the network round trip. A request rejected or interrupted before processing has no queue-wait value. Retries appear as separate attempts, even when they share a request ID.
+
+Hosts deliver timing records asynchronously; tracing never waits on control-plane delivery in the actor request path. Each control-plane process keeps the latest 500 records in memory. History resets on restart and is not shared across control-plane replicas. The UI reports history-window eviction and known delivery loss. Delivery is best effort: overload, disconnection, and process termination can lose records, and an abrupt host exit can lose buffered records without a loss report.
+
+The admin-only endpoints are `GET /v1/observe/requests` (snapshot) and `GET /v1/observe/requests/events` (SSE). Both require updated Rust hosts and control planes; the CLI and observer must also be updated. Neither endpoint executes actor code or changes actor state.

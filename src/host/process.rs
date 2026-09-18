@@ -342,17 +342,23 @@ async fn prepare_actor_host(
         .await?,
     );
     let sockets = Arc::new(super::sockets::HostSockets::new(storage.clone()));
-    let host = Arc::new(ActorHost::new(
-        endpoint.clone(),
-        executor_connection.executor(),
-        storage.clone(),
-        Arc::new(crate::replication::ReplicatedStateTransport::new(
-            storage.runtime.clone(),
-            Arc::new(GrpcStateTransport::new()),
-            local,
+    let host = Arc::new(
+        ActorHost::new(
+            endpoint.clone(),
+            executor_connection.executor(),
+            storage.clone(),
+            Arc::new(crate::replication::ReplicatedStateTransport::new(
+                storage.runtime.clone(),
+                Arc::new(GrpcStateTransport::new()),
+                local,
+            )),
+            sockets.clone(),
+        )
+        .with_traces(crate::request_traces::TraceSender::start(
+            control_plane.clone(),
+            archive.child_token(),
         )),
-        sockets.clone(),
-    ));
+    );
     let lease = Arc::new(
         HostLeaseMaintainer::new(
             endpoint,

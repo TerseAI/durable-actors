@@ -1,6 +1,6 @@
 ---
 name: Actor observer
-description: Neutral light and dark developer console for actor residency and connection inspection.
+description: Neutral light and dark developer console for actor residency, connections, and request timings.
 colors:
   background: "#fafafa"
   foreground: "#171717"
@@ -133,7 +133,9 @@ The observer fills its host container. A heading and refresh action lead into a 
 
 At 640px and below, the actor search stacks beneath its section heading and expands to full width. Summary cells use 16px padding; a fourth Unknown cell causes a two-column arrangement. Tables retain horizontal scrolling, with 12px horizontal cell padding and wrapping identifiers. Buttons and inputs have 44px minimum touch height below Tailwind’s medium breakpoint; the state select and disclosure overrides use 44px at the 640px breakpoint.
 
-The standalone shell alone adds a 64px brand header, 48px active Actors strip, and a centered main area capped at 1152px with 40px × 32px top/side padding. Mobile main padding becomes 28px × 20px, with 48px below. Header content has its own 1440px maximum. The footer and read-only label are shell context, not embedded navigation.
+The standalone shell alone adds a 64px brand header, 48px Actors/Requests navigation strip, and a centered main area capped at 1152px with 40px × 32px top/side padding. Mobile main padding becomes 28px × 20px, with 48px below. Header content has its own 1440px maximum. The footer and read-only label are shell context, not embedded navigation.
+
+Requests use the same toolbar and bordered table frame, with a 720px minimum table width and horizontal scrolling. Time is subdued; Total and Queue wait are right aligned with tabular numerals. Operation labels wrap above actor context, and expanded IDs stay inline. Below 640px, toolbar actions wrap while retaining their touch targets.
 
 ## Elevation & Depth
 
@@ -152,7 +154,9 @@ The default radius is 8px. Controls and badges derive their 6px radius from the 
 - **Connection details:** show active socket IDs and formatted, wrapping JSON metadata in a scrollable code area capped at 240px height. Connections are WebSockets, not unique people.
 - **Loading and freshness:** initial loading uses an accessible skeleton. The HTTP client subscribes to live inventory events and reconnects automatically on failure. Refresh restarts the subscription; prior data remains visible on failure with an explicit stale-count warning and retry action. The footer distinguishes live updates from reconnecting. Custom clients without subscriptions retain five-second polling. Counts reflect the latest persisted host report.
 - **Empty and error states:** distinguish no deployed actors, actor types without instances, no matching filters, and no active connections. Initial failure explains connection/access recovery; refresh failure never replaces known counts with zero.
-- **Standalone chrome:** the Actors marker is an active page label, not an extra navigation workflow. The theme button starts from OS preference and permits a manual override for the current page session; the skip link moves to main content.
+- **Request traces:** a newest-first table shows Time, Request, Transport, Outcome, Total, and Queue wait. Method and WebSocket transports use text; outlined outcome badges use success for Completed, danger for Failed/Rejected, and warning for Interrupted/Rerouted. The operation disclosure reveals wrapping monospace Request ID, Host, and optional Connection fields inline. A missing queue duration uses an em dash with an explanation that processing did not begin.
+- **Request collection states:** outline Pause/Resume controls freeze the display while collection continues. Reconnection preserves received rows and exposes Retry; delivery loss has a separate alert. The footer names the current live, connecting, reconnecting, or paused state, the retention capacity, and reset-on-restart behavior. Expired records and host-side timing scope are explained beneath the table. Connecting, unavailable, and empty history states remain distinct.
+- **Standalone chrome:** Actors and Requests are keyboard-focusable navigation buttons with icons; the active view has a foreground label and underline, while inactive labels use muted foreground and brighten on hover. The active control exposes aria-current="page". The theme button starts from OS preference and permits a manual override for the current page session; the skip link moves to main content.
 
 Skeleton pulse is 1.5s ease-in-out and refresh spin is 1s linear. Reduced-motion preferences disable observer animations and transitions.
 

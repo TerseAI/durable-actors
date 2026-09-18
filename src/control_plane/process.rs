@@ -158,7 +158,8 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         storage.clone(),
         storage.clone(),
         service.changes.clone(),
-    );
+    )
+    .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.router());

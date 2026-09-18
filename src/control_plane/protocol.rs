@@ -8,6 +8,10 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
     InventoryChanged,
+    RequestTraces {
+        traces: Vec<crate::request_traces::RequestTrace>,
+        dropped: u64,
+    },
     SocketMessage {
         actor: crate::actor::ActorKey,
         event: crate::actor::ActorSocketEvent,

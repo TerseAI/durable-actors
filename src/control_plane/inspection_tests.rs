@@ -118,6 +118,8 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
     for path in [
         "/v1/observe/actors",
         "/v1/observe/events",
+        "/v1/observe/requests",
+        "/v1/observe/requests/events",
         "/v1/actors",
         "/v1/actors/Room.with.dots/one?include=state",
     ] {
@@ -232,6 +234,7 @@ async fn inspection_reports_inconsistent_snapshots_instead_of_returning_state() 
 }
 
 struct Fixture {
+    traces: crate::request_traces::TraceStore,
     changes: tokio::sync::watch::Sender<()>,
     admin: AdminService,
     runtime: RuntimeFixture,
@@ -264,8 +267,10 @@ impl Fixture {
             issuer.clone(),
         )?;
         let changes = tokio::sync::watch::channel(()).0;
+        let traces = crate::request_traces::TraceStore::default();
         let inspector =
-            ActorInspector::new(store.clone(), store.clone(), store.clone(), changes.clone());
+            ActorInspector::new(store.clone(), store.clone(), store.clone(), changes.clone())
+                .with_traces(traces.clone());
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
@@ -279,6 +284,7 @@ impl Fixture {
             })
             .await?;
         Ok(Self {
+            traces,
             changes,
             admin,
             runtime,
@@ -476,5 +482,48 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
     assert_eq!(row["live"], 0);
     assert_eq!(row["dormant"], 0);
     assert_eq!(row["instances"], json!([]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> Result<()> {
+    use crate::request_traces::{RequestKind, RequestOutcome, RequestTrace};
+    let fixture = Fixture::start().await?;
+    let mut stream = fixture
+        .get("/v1/observe/requests/events")
+        .await?
+        .error_for_status()?;
+    assert_eq!(stream.headers()["cache-control"], "no-store");
+    let empty = stream_inventory(&mut stream).await?;
+    assert_eq!(empty["records"], json!([]));
+    for id in ["first", "second"] {
+        fixture.traces.record(
+            "host",
+            "session",
+            vec![RequestTrace {
+                request_id: id.into(),
+                actor_type: "Room".into(),
+                actor_id: "one".into(),
+                kind: RequestKind::Method,
+                operation: "post".into(),
+                connection_id: None,
+                started_at_ms: 1000,
+                duration_ms: 25.0,
+                queue_wait_ms: Some(10.0),
+                outcome: RequestOutcome::Completed,
+            }],
+            0,
+        );
+        let page = stream_inventory(&mut stream).await?;
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        assert_eq!(page["records"][0]["requestId"], id);
+        assert_eq!(page["records"][0]["queueWaitMs"], 10.0);
+        assert_eq!(page["epoch"], empty["epoch"]);
+    }
+    drop(stream);
+    let snapshot: Value = fixture.get("/v1/observe/requests").await?.json().await?;
+    let mut replay = fixture.get("/v1/observe/requests/events").await?;
+    assert_eq!(stream_inventory(&mut replay).await?, snapshot);
+    assert_eq!(snapshot["records"].as_array().unwrap().len(), 2);
     Ok(())
 }
