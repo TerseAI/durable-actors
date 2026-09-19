@@ -49,8 +49,10 @@ interface ResidentActorWorkerOptions {
     readonly onIdle: (actor: ResidentActorWorker) => void
 }
 
+type ActorWorkerState = "starting" | "ready" | "stopping" | "stopped"
+
 interface ActorWorkerHandle {
-    isAlive(): boolean
+    readonly state: ActorWorkerState
     ready(): Promise<readonly string[]>
     execute(
         command: InvokeCommand | WebSocketEventCommand,
@@ -60,13 +62,14 @@ interface ActorWorkerHandle {
     terminate(reason: string): void
 }
 
-type ActorWorkerFactory = (data: ActorWorkerData) => ActorWorkerHandle
+type ActorWorkerFactory = (data: ActorWorkerData, onStateChange: () => void) => ActorWorkerHandle
 
 export type {
     ActorCommandHandler,
     ActorHostSettings,
     ActorWorkerFactory,
     ActorWorkerHandle,
+    ActorWorkerState,
     ActorWorkerSupervisorFactory,
     ActorWorkerSupervisorOptions,
     ResidentActorWorkerOptions,

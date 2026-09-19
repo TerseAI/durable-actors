@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { EventEmitter, once } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -26,6 +27,58 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
     }
 })
 
+test("reports a new actor only after its Worker is ready", { timeout: 5_000 }, async () => {
+    const root = await createTypeScriptConsumer()
+    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint)
+    })
+    try {
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        const starting = supervisor.handle(invokeCommand("counter-2", "SessionCounter"))
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
+        assert.equal((await starting).type, "invoked")
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity, { ...actorIdentity, actor_id: "counter-2" }])
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
+for (const [reason, action] of [
+    ["exit", "process.exit(0)"],
+    ["uncaught error", 'throw new Error("worker crashed")']
+]) {
+    test(`publishes an idle Worker's ${reason} immediately`, { timeout: 5_000 }, async context => {
+        const root = await createTypeScriptConsumer(
+            "SessionCounter",
+            `
+import { watch } from "node:fs"
+watch(new URL(".", import.meta.url), (_, name) => {
+    if (name === "stop") { ${action} }
+})`
+        )
+        const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+        const supervisor = new ActorWorkerSupervisor({
+            actorEntrypointUrl: entrypoint,
+            actorSchemas: await prepareActorEntrypoint(entrypoint)
+        })
+        try {
+            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+            const changes = new EventEmitter()
+            supervisor.onActiveActorsChange(() => changes.emit("change"))
+            const stopped = once(changes, "change", { signal: context.signal })
+            await writeFile(path.join(root, "src/stop"), "")
+            await stopped
+            assert.deepEqual(supervisor.activeActors(), [])
+        } finally {
+            supervisor.close()
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+}
+
 test("starts one speculative Worker and gives it to the first actor", async () => {
     const consumerRoot = await createTypeScriptConsumer("PreloadedCounter")
     const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
@@ -37,7 +90,7 @@ test("starts one speculative Worker and gives it to the first actor", async () =
             createWorker: () => {
                 created.push(created.length + 1)
                 return {
-                    isAlive: () => true,
+                    state: "ready",
                     async ready() {
                         return ["PreloadedCounter"]
                     },
@@ -124,7 +177,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
         createWorker: () => {
             created += 1
             return {
-                isAlive: () => true,
+                state: "starting",
                 ready: () => new Promise(() => undefined),
                 async execute() {
                     return { type: "invoked", result: null, state: {} }
@@ -181,7 +234,7 @@ test("discards a failed preload before accepting the first actor", async () => {
             createWorker: () => {
                 const failed = created++ === 0
                 return {
-                    isAlive: () => true,
+                    state: failed ? "stopped" : "ready",
                     ready: () =>
                         failed ? Promise.reject(new Error("preload failed")) : Promise.resolve(["RetryPreloadCounter"]),
                     async execute() {
@@ -214,7 +267,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
         actorEntrypointUrl: "file:///unused.ts",
         actorSchemas: [],
         createWorker: () => ({
-            isAlive: () => true,
+            state: "ready",
             async ready() {
                 return ["UnusedCounter"]
             },
@@ -463,7 +516,7 @@ test("residency reports actual workers and drops evicted and failed instances", 
         actorEntrypointUrl: "file:///unused.mjs",
         actorSchemas: undefined,
         createWorker: () => ({
-            isAlive: () => true,
+            state: "ready",
             ready: async () => ["SessionCounter"],
             execute: async () =>
                 fail
@@ -491,7 +544,7 @@ test("residency subscribers see worker creation and eviction immediately", async
         actorEntrypointUrl: "file:///unused.mjs",
         actorSchemas: undefined,
         createWorker: () => ({
-            isAlive: () => true,
+            state: "ready",
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -518,7 +571,7 @@ test("activity resets the idle timeout without publishing dormant residency", as
         actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
-            isAlive: () => true,
+            state: "ready",
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -554,7 +607,7 @@ test("a running request stays resident beyond the idle timeout", async context =
         actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
-            isAlive: () => true,
+            state: "ready",
             ready: async () => ["SessionCounter"],
             async execute() {
                 if (block) await pending
