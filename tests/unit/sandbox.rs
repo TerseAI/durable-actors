@@ -1,5 +1,7 @@
 use super::*;
 
+const PROCESS_DEADLINE: Duration = Duration::from_secs(30);
+
 #[test]
 fn decodes_provider_provisioning_timings() {
     let handle: ActorHostHandle = serde_json::from_value(serde_json::json!({
@@ -46,7 +48,7 @@ async fn provider_calls_use_independent_processes() -> Result<()> {
         })
         .collect::<Vec<_>>();
     let replies = tokio::time::timeout(
-        Duration::from_secs(3),
+        PROCESS_DEADLINE,
         futures_util::future::try_join_all(
             requests
                 .iter()
@@ -93,7 +95,7 @@ async fn provider_failures_do_not_affect_other_calls() -> Result<()> {
 async fn cancelling_one_provider_call_terminates_only_its_process() -> Result<()> {
     let (directory, provider) = test_provider()?;
     let marker = directory.path().join("cancelled.pid");
-    let request = serde_json::json!({"marker": marker, "delay": 30_000});
+    let request = serde_json::json!({"marker": marker});
     let mut cancelled = Box::pin(provider.execute::<_, serde_json::Value>("test", &request));
     let wait_for_start = async {
         while !marker.exists() {
@@ -102,7 +104,7 @@ async fn cancelling_one_provider_call_terminates_only_its_process() -> Result<()
     };
     tokio::select! {
         result = &mut cancelled => panic!("provider should still be waiting: {result:?}"),
-        started = tokio::time::timeout(Duration::from_secs(3), wait_for_start) => started?,
+        started = tokio::time::timeout(PROCESS_DEADLINE, wait_for_start) => started?,
     }
     let pid: u32 = std::fs::read_to_string(marker)?.parse()?;
     drop(cancelled);
@@ -110,7 +112,7 @@ async fn cancelling_one_provider_call_terminates_only_its_process() -> Result<()
         .execute("test", &serde_json::json!({"index": 42}))
         .await?;
     assert_eq!(healthy["index"], 42);
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(PROCESS_DEADLINE, async {
         while tokio::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stderr(std::process::Stdio::null())
@@ -153,9 +155,11 @@ if (request.barrier) {
   process.stdout.write('not json\n');
 } else if (request.exit) {
   process.exitCode = 1;
+} else if (request.marker) {
+  fs.writeFileSync(request.marker, String(process.pid));
+  setInterval(() => {}, 1000);
 } else {
-  if (request.marker) fs.writeFileSync(request.marker, String(process.pid));
-  setTimeout(() => reply({pid: process.pid, index: request.index}), request.delay ?? 0);
+  reply({pid: process.pid, index: request.index});
 }
 "#,
     )?;

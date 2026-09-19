@@ -50,7 +50,7 @@ for (const [reason, action] of [
     ["exit", "process.exit(0)"],
     ["uncaught error", 'throw new Error("worker crashed")']
 ]) {
-    test(`publishes an idle Worker's ${reason} immediately`, { timeout: 5_000 }, async context => {
+    test(`publishes an idle Worker's ${reason} without another invocation`, { timeout: 10_000 }, async context => {
         const root = await createTypeScriptConsumer(
             "SessionCounter",
             `
@@ -69,6 +69,9 @@ watch(new URL(".", import.meta.url), (_, name) => {
             const changes = new EventEmitter()
             supervisor.onActiveActorsChange(() => changes.emit("change"))
             const stopped = once(changes, "change", { signal: context.signal })
+            // Idle Workers are unreferenced, so the deadline also keeps the test alive.
+            const deadline = setTimeout(() => changes.emit("error", new Error("Worker exit was not reported")), 5_000)
+            context.after(() => clearTimeout(deadline))
             await writeFile(path.join(root, "src/stop"), "")
             await stopped
             assert.deepEqual(supervisor.activeActors(), [])
