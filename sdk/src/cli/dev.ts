@@ -105,7 +105,6 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
             )
         }
         await client
-        if (!options.apiKey) printGeneratedApiKey((await settings).credential)
         return await runtime.exited
     } catch (error) {
         runtime.child.kill("SIGTERM")
@@ -155,10 +154,6 @@ function devArguments(options: DevOptions): string[] {
     if (options.apiKey) args.push("--api-key", options.apiKey)
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args
-}
-
-function printGeneratedApiKey(apiKey: string): void {
-    console.log(`Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY=${apiKey}`)
 }
 
 export { registerDevCommand }

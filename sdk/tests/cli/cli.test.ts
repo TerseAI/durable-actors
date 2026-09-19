@@ -261,7 +261,7 @@ test("objects rejects invalid limits and conflicting pagination flags before con
     }
 })
 
-test("dev accepts configured keys and prints an export command for a generated key", async t => {
+test("dev accepts configured keys without logging the generated key from readiness", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor-project")
@@ -330,5 +330,5 @@ console.log(JSON.stringify(process.argv.slice(2)))
     const invocation = generated.stdout.split("\n").find(line => line.startsWith("["))
     assert.ok(invocation)
     assert.equal(JSON.parse(invocation).includes("--api-key"), false)
-    assert.match(generated.stdout, /export DURABLE_OBJECT_API_KEY=dev-key/u)
+    assert.doesNotMatch(generated.stdout + generated.stderr, /dev-key/u)
 })

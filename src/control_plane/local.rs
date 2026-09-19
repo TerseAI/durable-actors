@@ -117,12 +117,16 @@ pub async fn serve_local(
         &api_key,
     )
     .await?;
+    let key_file = generated_api_key
+        .then(|| save_generated_api_key(&directory, &api_key))
+        .transpose()?;
     let server = LocalServer::start(listener, routes, provider);
     let ready = notify_launcher(&origin, &api_key, &storage.region, options.ready_fd);
     if ready.is_ok() {
-        if generated_api_key && options.ready_fd.is_none() {
+        if let Some(key_file) = key_file {
+            let path = key_file.to_string_lossy().replace('\'', "'\\''");
             println!(
-                "Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY={api_key}"
+                "Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY=\"$(cat -- '{path}')\""
             );
         }
         anstream::println!(
@@ -135,6 +139,14 @@ pub async fn serve_local(
         );
     }
     server.run_until(shutdown, ready).await
+}
+
+fn save_generated_api_key(directory: &Path, api_key: &str) -> Result<PathBuf> {
+    let path = directory.join("api-key");
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(api_key.as_bytes())?;
+    file.persist(&path)?;
+    Ok(path.canonicalize()?)
 }
 
 struct LocalServer {

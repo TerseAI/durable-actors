@@ -1,4 +1,4 @@
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{os::unix::fs::PermissionsExt, path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -10,7 +10,9 @@ use tokio::{
 
 #[tokio::test]
 async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart() -> Result<()> {
-    let project = tempfile::tempdir()?;
+    let project = tempfile::Builder::new()
+        .prefix("actor's project ")
+        .tempdir()?;
     std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
     let file = project.path().join("contract.json");
     let contract: Value =
@@ -106,6 +108,7 @@ impl LocalRuntime {
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .arg("--project")
             .arg(project)
+            .env_remove("DURABLE_OBJECT_API_KEY")
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
@@ -116,27 +119,40 @@ impl LocalRuntime {
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        let (origin, api_key) = timeout(Duration::from_secs(5), async {
+        let (origin, startup_output) = timeout(Duration::from_secs(5), async {
             let mut line = String::new();
-            let mut api_key = None;
+            let mut startup_output = String::new();
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
-                if let Some(value) = line.trim().strip_prefix("export DURABLE_OBJECT_API_KEY=") {
-                    api_key = Some(value.to_owned());
-                }
+                startup_output.push_str(&line);
                 if let Some((_, origin)) = line.split_once("  Ready  ") {
-                    return Ok::<_, anyhow::Error>((
-                        origin.trim().to_owned(),
-                        api_key.context("missing generated API key instruction")?,
-                    ));
+                    return Ok::<_, anyhow::Error>((origin.trim().to_owned(), startup_output));
                 }
                 line.clear();
             }
         })
         .await??;
+        let key_file = project.join(".little-actors/api-key");
+        let api_key = std::fs::read_to_string(&key_file)?;
+        assert_eq!(
+            std::fs::metadata(&key_file)?.permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!startup_output.contains(&api_key));
+        let export = startup_output
+            .lines()
+            .find(|line| line.starts_with("export DURABLE_OBJECT_API_KEY="))
+            .context("missing generated API key instruction")?;
+        let loaded = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{export}\nprintf '%s' \"$DURABLE_OBJECT_API_KEY\""))
+            .output()
+            .await?;
+        assert!(loaded.status.success());
+        assert_eq!(String::from_utf8(loaded.stdout)?, api_key);
         ensure!(api_key.len() >= 32, "generated API key is too short");
         assert!(!project.join(".little-actors/runtime.json").exists());
         Ok(Self {
@@ -163,6 +179,7 @@ impl LocalRuntime {
         })
         .await??;
         ensure!(status.success(), "runtime exited with {status}: {output}");
+        assert!(!output.contains(&self.api_key));
         Ok(())
     }
 }
