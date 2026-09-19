@@ -153,11 +153,11 @@ jobs:
                   go-version: "1.27.1"
                   cache-dependency-path: providers/modal-go/go.sum
             - run: test -z "$(gofmt -l .)"
-            - run: go test -race -mod=readonly ./...
-            - run: go vet -mod=readonly ./...
+            - run: go test -race -mod=readonly -overlay tests/overlay.json ./...
+            - run: go vet -mod=readonly -overlay tests/overlay.json ./...
             - name: Verify provider image packaging
               working-directory: .
-              run: node --test scripts/release-workflow.test.mjs
+              run: node --test tests/scripts/release-workflow.test.mjs
 
     native:
         name: Package native runtime (${{ matrix.runner }})
@@ -196,7 +196,7 @@ jobs:
               env:
                   DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/little-actors-${{ needs.preflight.outputs.version }}.tgz
               run: |
-                  node --test scripts/build-runtime.test.mjs
+                  node --test tests/scripts/build-runtime.test.mjs
                   pnpm --dir examples/chat add --ignore-scripts "$DURABLE_OBJECT_TEST_PACKAGE"
                   pnpm --dir examples/chat exec little-actors generate
                   pnpm --dir examples/chat build

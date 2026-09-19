@@ -39,7 +39,10 @@ class Observer {
         private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
             Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "query">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
-        private readonly assetDirectory = new URL("../observer/", import.meta.url)
+        private readonly assetDirectory = new URL(
+            "./",
+            import.meta.resolve("little-actors-observer/standalone/index.html")
+        )
     ) {}
 
     async start(launchBrowser = true): Promise<{ url: string; browserOpened: boolean }> {
@@ -61,6 +64,7 @@ class Observer {
     }
 
     private async startServer(): Promise<PreviewServer> {
+        // Load Vite only when starting the observer to keep other CLI commands fast.
         const { preview } = await import("vite")
         return preview({
             configFile: false,

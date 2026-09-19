@@ -14,7 +14,7 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
     std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
     let file = project.path().join("contract.json");
     let contract: Value =
-        serde_json::from_str(include_str!("../sdk/fixtures/public-contract.json"))?;
+        serde_json::from_str(include_str!("../sdk/tests/fixtures/public-contract.json"))?;
     std::fs::write(&file, serde_json::to_vec(&contract)?)?;
     let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
     let first_api_key = runtime.api_key.clone();

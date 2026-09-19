@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[path = "../tests/support/placement.rs"]
 pub(crate) mod testing;
 
 use anyhow::{Result, ensure};

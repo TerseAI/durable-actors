@@ -200,7 +200,9 @@ struct LegacyHistory {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/request_traces/persistence/tests.rs"]
 mod tests;
 
 #[cfg(test)]
+#[path = "../../tests/unit/request_traces/persistence/sql_tests.rs"]
 mod sql_tests;

@@ -355,4 +355,5 @@ impl Drop for RequestSpan {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/request_traces/tests.rs"]
 mod tests;
