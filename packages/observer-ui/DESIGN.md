@@ -39,6 +39,7 @@ colors:
   console-sidebar-dark: "#131512"
   console-selected-dark: "#272d25"
   residency-dormant: "#b5c59f"
+  sheet-scrim: "rgb(0 0 0 / 35%)"
 typography:
   overview-title:
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
@@ -76,6 +77,14 @@ typography:
     fontWeight: 600
     lineHeight: 1.2
     letterSpacing: "-0.03em"
+  instance-title:
+    fontFamily: "inherit"
+    fontSize: "1.25rem"
+    fontWeight: 600
+  sheet-title:
+    fontFamily: "inherit"
+    fontSize: "18px"
+    fontWeight: 600
   code:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
     fontSize: "0.75rem"
@@ -85,6 +94,7 @@ rounded:
   lg: "8px"
   console-control: "5px"
   console-panel: "7px"
+  queue-bubble: "999px"
 spacing:
   sm: "8px"
   md: "12px"
@@ -159,7 +169,7 @@ Embedded typography inherits the host. Standalone uses `-apple-system, BlinkMacS
 
 ## Layout
 
-The embedded observer fills its host container. A heading and refresh action lead into a single divided summary strip, searchable inventory, and inline instance and connection details. Summary cells use 20px × 24px padding; tables use 20px horizontal cell padding, 40px headers, 60px actor rows, and 56px instance rows. Numeric actor columns are right aligned and 100px wide. Detail regions start after a 28px gap and separator. Search fields are 260px wide at desktop sizes.
+The embedded observer fills its host container. A heading and refresh action lead into a single divided summary strip, searchable inventory, and inline instance and connection details. Summary cells use 20px × 24px padding; tables use 20px horizontal cell padding, 40px headers, 60px actor rows, and 56px instance rows. Requests use 12px horizontal cell padding for both headers and rows. Numeric actor columns are right aligned and 100px wide. Detail regions start after a 28px gap and separator. Search fields are 260px wide at desktop sizes.
 
 At 640px and below, the actor search stacks beneath its section heading and expands to full width. Summary cells use 16px padding; a fourth Unknown cell causes a two-column arrangement. Tables retain horizontal scrolling, with 12px horizontal cell padding and wrapping identifiers. Buttons and inputs have 44px minimum touch height below Tailwind’s medium breakpoint; the state select and disclosure overrides use 44px at the 640px breakpoint.
 
@@ -169,7 +179,7 @@ At 1150px and below, the first two cards share a row and the third spans both co
 
 **The Separate Surfaces Rule.** Keep the standalone shell and Overview layout in standalone styles; embedded Actors and Requests retain their host-aware tokens and existing density.
 
-Requests use the same toolbar and bordered table frame, with a 720px minimum table width and horizontal scrolling. Time is subdued; Total and Queue wait are right aligned with tabular numerals. Operation labels wrap above actor context, and expanded IDs stay inline. Below 640px, toolbar actions wrap while retaining their touch targets.
+Requests use the same toolbar and bordered table frame, with a 980px minimum table width and horizontal scrolling. Time is subdued; Total and Queue wait are right aligned with tabular numerals. Request rows stay 56px high in Live and History. Operation and instance occupy separate single-line columns with ellipsis. A Details button and whole-row click open a Radix-backed shadcn Sheet with full identifiers and timings; Escape restores focus to the Details button. Below 640px, toolbar actions wrap while retaining their touch targets.
 
 ## Elevation & Depth
 
@@ -181,14 +191,15 @@ The embedded default radius is 8px. Controls and badges derive their 6px radius 
 
 ## Components
 
-- **Buttons:** the shadcn primitive supports default, destructive, outline, secondary, ghost, and link variants. Refresh and recovery use outline; inline disclosure uses ghost. Keep the 2px focus ring and offset, disabled opacity, 150ms ease-out transitions, and 1px active press. Disclosure rotates its chevron when expanded and exposes its state to assistive technology.
+- **Buttons:** the shadcn primitive supports default, destructive, outline, secondary, ghost, and link variants. Refresh and recovery use outline; row actions use ghost. Ghost and link variants explicitly reset the browser button background. Keep the 2px focus ring and offset, disabled opacity, 150ms ease-out transitions, and 1px active press. Clickable rows use hover and focus-within feedback, with native buttons for keyboard activation and no row chevrons.
 - **Inputs and select:** actor and instance search use the shared Input with an inset search icon. The native state select offers All states, Live, Dormant, and Unknown. Preserve explicit accessible names, focus feedback, and clear-filter recovery for no matches.
 - **Badges:** muted count labels and outlined state labels are compact, medium-weight chips. State badges pair a dot with a written label.
-- **Summary and tables:** one divided summary region presents existing inventory totals. Semantic tables retain named regions, column scopes, tabular values, hover/selected states, and horizontal overflow. Unknown summary/column content appears only when the inventory contains unknown counts. Actor selection opens a dedicated class page with an Actors breadcrumb, class-specific summary, and searchable instances. Returning to the list preserves the actor search. Instance selection reveals connection details inline on the class page.
+- **Summary and tables:** one divided summary region presents existing inventory totals. Semantic tables retain named regions, column scopes, tabular values, hover/selected states, and horizontal overflow. Unknown summary/column content appears only when the inventory contains unknown counts. Actor selection opens a dedicated class page with an Actors breadcrumb, class-specific summary, and searchable instances. Returning to the list preserves the actor search. Live classes and instances sort ahead of non-live entries, preserving source order within each group. Instance selection opens a dedicated instance view with scoped live/saved requests and WebSocket connections. Back to instances preserves the list filters.
 - **Connection details:** show active socket IDs and formatted, wrapping JSON metadata in a scrollable code area capped at 240px height. Connections are WebSockets, not unique people.
 - **Loading and freshness:** initial loading uses an accessible skeleton. The HTTP client subscribes to live inventory events and reconnects automatically on failure. Refresh restarts the subscription; prior data remains visible on failure with an explicit stale-count warning and retry action. The footer distinguishes live updates from reconnecting. Custom clients without subscriptions retain five-second polling. Counts reflect the latest persisted host report.
 - **Empty and error states:** distinguish no deployed actors, actor types without instances, no matching filters, and no active connections. Initial failure explains connection/access recovery; refresh failure never replaces known counts with zero.
-- **Request traces:** a newest-first table shows Time, Request, Transport, Outcome, Total, and Queue wait. Method and WebSocket transports use text; outlined outcome badges use success for Completed, danger for Failed/Rejected, and warning for Interrupted/Rerouted. The operation disclosure reveals wrapping monospace Request ID, Host, and optional Connection fields inline. A missing queue duration uses an em dash with an explanation that processing did not begin.
+- **Waiting requests:** instance tables retain fixed row heights with at most three operation-name pills and a +N overflow badge. Instance details show the full ordered line using shadcn Badges, with position numbers and wrapping on narrow screens. Distinguish an empty line from unavailable host reporting.
+- **Request traces:** a newest-first table shows Time, Request, Instance, Transport, Outcome, Total, Queue wait, and Details. Method and WebSocket transports use text; outlined outcome badges use success for Completed, danger for Failed/Rejected, and warning for Interrupted/Rerouted. The Details sheet reveals full operation, actor class, instance, request ID, time, transport, outcome, timings, host, and optional connection. The table does not expand when inspecting a request. A missing queue duration uses an em dash with an explanation that processing did not begin.
 - **Request collection states:** Live/History buttons use secondary styling for the selected mode and outline for the other, with aria-pressed. They appear only when the injected client supports optional query. Live receives saved events after append commits; outline Pause/Resume controls freeze the display while collection continues. Reconnection resumes with an opaque durable cursor, preserves received rows, and exposes Retry. Delivery loss and persistence failures have separate alerts; a retention reset explains that older events are unavailable. The live footer names the connecting, reconnecting, paused, or live state and the 500-record window. History uses labeled From/To datetime fields, Actor ID, Outcome, and Search, with invalid time-range feedback. Its footer reports saved rows shown; Load older appends another page and disables while loading. History loading, unavailable with Retry history, and no matching saved requests remain distinct. Local SQLite retains 10,000 events across restarts; hosted SQLite is currently in memory. Host-side timing scope remains beneath the shared table.
 - **Standalone chrome:** navigation buttons pair icons with labels. The current view uses a filled selected surface and aria-current="page"; inactive labels use muted foreground and brighten on hover. The theme button starts from OS preference and permits a manual override for the current page session; the skip link moves to main content. Overview actor-class actions open the existing Actors inspector on that class’s dedicated page and move focus to its heading.
 - **Overview:** actor-instance residency, retained request measurements, and current WebSocket connections occupy separate cards. Group table columns into Actors, Requests, and WebSockets, with subtle group separators and right-aligned numeric data. Class search and residency filters narrow table rows; the selected time window applies to request measurements. Label retained sample scope beside the values and below the table. Threshold guidance is an accessible disclosure; unavailable measurements display an em dash. Preserve distinct initial, empty, filtered, stale, and stream-failure states.
@@ -205,3 +216,5 @@ Skeleton pulse is 1.5s ease-in-out and refresh spin is 1s linear. Reduced-motion
 - Don’t restore the superseded warm Terse palette.
 - Don’t load optional global theme defaults or standalone page styles into an already themed host.
 - Don’t fabricate deployment data, charts, full-window totals, identity, queue depth, or outgoing-write metrics; use the existing inventory and explicitly scoped retained traces.
+
+The Overview actor-class table uses fixed column layout: 24% for the class name and equal widths for the six metrics, with a 980px scrollable minimum and 56px data rows. Live numbers and threshold badges must not resize columns. Long class names truncate within their column and retain the full name in the button label and title.

@@ -14,8 +14,8 @@ const buttonVariants = cva(
                 destructive: "la:bg-destructive la:text-white la:hover:bg-destructive/90 la:focus-visible:ring-destructive/20 la:dark:focus-visible:ring-destructive/40 la:dark:bg-destructive/60",
                 outline: "la:border la:border-input la:bg-card la:hover:border-foreground/20 la:hover:bg-accent la:hover:text-accent-foreground la:dark:bg-card",
                 secondary: "la:bg-secondary la:text-secondary-foreground la:hover:bg-secondary/80",
-                ghost: "la:hover:bg-accent la:hover:text-accent-foreground la:dark:hover:bg-accent/50",
-                link: "la:text-primary la:underline-offset-4 la:hover:underline"
+                ghost: "la:bg-transparent la:hover:bg-accent la:hover:text-accent-foreground la:dark:hover:bg-accent/50",
+                link: "la:bg-transparent la:text-primary la:underline-offset-4 la:hover:underline"
             },
             size: {
                 default: "la:h-9 la:px-4 la:py-2 la:max-md:min-h-11 la:has-[>svg]:px-3",

@@ -72,6 +72,7 @@ pub struct ActorInstanceInventory {
     pub actor_id: String,
     pub status: ActorResidency,
     pub connections: Vec<ActorConnectionInventory>,
+    pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
 }
 
 #[derive(Serialize)]

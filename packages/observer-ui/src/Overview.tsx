@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 
-import { ChevronRight, RefreshCw, Search } from "lucide-react"
+import { RefreshCw, Search } from "lucide-react"
 
 import type { ActorInventory, ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
 import { Button } from "./components/ui/button.js"
@@ -143,9 +143,9 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
     const [query, setQuery] = useState("")
     const [residency, setResidency] = useState("all")
     const actors =
-        inventory?.actors.filter(
-            actor => actor.actorType.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (residency === "all" || actor[residency as "live" | "dormant" | "unknown"] > 0)
-        ) ?? []
+        inventory?.actors
+            .filter(actor => actor.actorType.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (residency === "all" || actor[residency as "live" | "dormant" | "unknown"] > 0))
+            .sort((a, b) => Number(b.live > 0) - Number(a.live > 0)) ?? []
     return (
         <section aria-label="Actor classes">
             <div className="overview-section-heading">
@@ -169,6 +169,10 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
                 </div>
                 <div className="overview-table-scroll" role="region" aria-label="Actor class metrics" tabIndex={0}>
                     <table className="overview-table">
+                        <colgroup>
+                            <col className="overview-class-column" />
+                            <col span={6} />
+                        </colgroup>
                         <thead>
                             <tr className="overview-groups">
                                 <th scope="colgroup" colSpan={2}>
@@ -221,12 +225,11 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
 function ClassRow({ actor, records, onSelectActor }: { actor: ActorInventory["actors"][number]; records?: RequestTrace[]; onSelectActor: OverviewProps["onSelectActor"] }) {
     const metrics = records ? requestSummary(records) : undefined
     return (
-        <tr>
+        <tr className="la-clickable-row" onClick={() => onSelectActor(actor.actorType)}>
             <td>
-                <button type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorType}`} onClick={() => onSelectActor(actor.actorType)}>
-                    {actor.actorType}
-                    <ChevronRight aria-hidden="true" />
-                </button>
+                <Button variant="ghost" type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorType}`}>
+                    <span title={actor.actorType}>{actor.actorType}</span>
+                </Button>
             </td>
             <td>{number(actor.live + actor.dormant + actor.unknown)}</td>
             <td>{number(metrics?.count)}</td>

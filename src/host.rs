@@ -2,6 +2,7 @@ mod actor_host;
 mod actor_runtime;
 mod lease_maintenance;
 mod process;
+mod queues;
 pub(crate) mod sockets;
 pub(crate) mod storage;
 

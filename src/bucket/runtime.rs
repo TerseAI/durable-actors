@@ -769,7 +769,7 @@ impl crate::placement::ActorInventoryReader for RuntimeStorage {
                     self.leases.inventory_status(&record.owner).await?,
                 );
             }
-            let (status, residents, sockets) = &hosts[&record.owner];
+            let (status, residents, sockets, queues) = &hosts[&record.owner];
             let row = actors
                 .entry(record.actor.actor_type.clone())
                 .or_insert_with(|| crate::placement::ActorInventory {
@@ -820,11 +820,28 @@ impl crate::placement::ActorInventoryReader for RuntimeStorage {
             } else {
                 vec![]
             };
+            let waiting = if status.is_active()
+                && status
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.session_id == record.session)
+            {
+                queues.as_ref().map(|queues| {
+                    queues
+                        .iter()
+                        .find(|queue| queue.actor == record.actor)
+                        .map(|queue| queue.waiting.clone())
+                        .unwrap_or_default()
+                })
+            } else {
+                Some(vec![])
+            };
             row.instances
                 .push(crate::placement::ActorInstanceInventory {
                     actor_id: record.actor.actor_id,
                     status: residency,
                     connections,
+                    waiting,
                 });
         }
         Ok(actors

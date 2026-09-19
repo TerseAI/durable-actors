@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-import { ChevronRight, Pause, Play, RefreshCw } from "lucide-react"
+import { Pause, Play, RefreshCw } from "lucide-react"
 
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
@@ -13,27 +14,33 @@ import type { HistoryFilters } from "./request-sql.js"
 
 interface RequestObserverProps {
     client: Pick<ObserverClient, "watchRequests" | "query">
+    actor?: Pick<RequestTrace, "actorType" | "actorId">
 }
 
-function RequestObserver({ client }: RequestObserverProps) {
+function RequestObserver({ client, actor }: RequestObserverProps) {
     const [query, setQuery] = useState<HistoryFilters>()
-    const history = useRequestHistory(client, query)
+    const scopedQuery = useMemo(() => (query ? { ...query, ...actor } : undefined), [query, actor?.actorType, actor?.actorId])
+    const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
-    const [selected, setSelected] = useState<string>()
+    const [selected, setSelected] = useState<RequestTrace>()
+    const container = useRef<HTMLElement>(null)
+    const trigger = useRef<HTMLButtonElement | null>(null)
+    const Heading = actor ? "h3" : "h1"
     const shown = query ? history.page : (frozen ?? page)
     const statusPage = page ?? history.page
-    const records = shown?.records ?? []
+    const records = (shown?.records ?? []).filter(record => !actor || (record.actorType === actor.actorType && record.actorId === actor.actorId))
     useEffect(() => {
         setFrozen(undefined)
         setQuery(undefined)
-    }, [client])
+    }, [client, actor?.actorType, actor?.actorId])
+    useEffect(() => setSelected(undefined), [client, page?.epoch, query, actor?.actorType, actor?.actorId])
     return (
-        <section className="la-observer la-requests" aria-label="Request observer">
+        <section ref={container} className="la-observer la-requests" aria-label="Request observer">
             <div className="la-observer-toolbar">
                 <div>
-                    <h1>Requests</h1>
-                    <p>Method calls and WebSocket events, with time spent waiting and processing.</p>
+                    <Heading>Requests</Heading>
+                    <p>{actor ? "Method calls and WebSocket events for this instance." : "Method calls and WebSocket events, with time spent waiting and processing."}</p>
                 </div>
                 <div className="la-request-actions">
                     {client.query && (
@@ -75,7 +82,7 @@ function RequestObserver({ client }: RequestObserverProps) {
                     )}
                 </div>
             </div>
-            {query && <HistoryFilters query={query} loading={history.loading} onSearch={setQuery} />}
+            {query && <HistoryFilters query={query} loading={history.loading} onSearch={setQuery} scoped={!!actor} />}
             {query && history.failed && (
                 <div className="la-observer-error" role="alert">
                     Request history unavailable.{" "}
@@ -110,59 +117,56 @@ function RequestObserver({ client }: RequestObserverProps) {
                         <TableRow>
                             <TableHead scope="col">Time</TableHead>
                             <TableHead scope="col">Request</TableHead>
+                            <TableHead scope="col">Instance</TableHead>
                             <TableHead scope="col">Transport</TableHead>
                             <TableHead scope="col">Outcome</TableHead>
                             <TableHead scope="col">Total</TableHead>
                             <TableHead scope="col">Queue wait</TableHead>
+                            <TableHead scope="col">
+                                <span className="la:sr-only">Details</span>
+                            </TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {records.map(record => (
-                            <Fragment key={record.eventId ?? `${shown!.epoch}-${record.sequence}`}>
-                                <TableRow data-state={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? "selected" : undefined}>
-                                    <TableCell>
-                                        <time dateTime={new Date(record.startedAtMs).toISOString()} title={new Date(record.startedAtMs).toLocaleString()}>
-                                            {query ? new Date(record.startedAtMs).toLocaleString([], { hour12: false }) : new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
-                                        </time>
-                                    </TableCell>
-                                    <TableCell>
-                                        <Button
-                                            variant="ghost"
-                                            className="la-request-operation"
-                                            aria-label={`Inspect ${record.operation} request`}
-                                            aria-expanded={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`)}
-                                            onClick={() =>
-                                                setSelected(current =>
-                                                    current === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? undefined : (record.eventId ?? `${shown!.epoch}-${record.sequence}`)
-                                                )
-                                            }
-                                        >
-                                            <ChevronRight aria-hidden="true" className={selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) ? "la-request-expanded" : undefined} />
-                                            <span>
-                                                {record.operation}
-                                                <small>
-                                                    {record.actorType} / {record.actorId}
-                                                </small>
-                                            </span>
-                                        </Button>
-                                    </TableCell>
-                                    <TableCell>{record.kind === "method" ? "Method" : "WebSocket"}</TableCell>
-                                    <TableCell>
-                                        <Badge variant="outline" className={`la-request-outcome-${record.outcome}`}>
-                                            {record.outcome[0]!.toUpperCase() + record.outcome.slice(1)}
-                                        </Badge>
-                                    </TableCell>
-                                    <TableCell>{duration(record.durationMs)}</TableCell>
-                                    <TableCell>{record.queueWaitMs === null ? <span title="Request did not begin processing">—</span> : duration(record.queueWaitMs)}</TableCell>
-                                </TableRow>
-                                {selected === (record.eventId ?? `${shown!.epoch}-${record.sequence}`) && (
-                                    <TableRow>
-                                        <TableCell colSpan={6}>
-                                            <RequestDetails record={record} />
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                            </Fragment>
+                            <TableRow
+                                key={record.eventId ?? `${shown!.epoch}-${record.sequence}`}
+                                className="la-clickable-row"
+                                data-state={selected === record ? "selected" : undefined}
+                                onClick={event => {
+                                    trigger.current = event.currentTarget.querySelector("button")
+                                    setSelected(record)
+                                }}
+                            >
+                                <TableCell>
+                                    <time dateTime={new Date(record.startedAtMs).toISOString()} title={new Date(record.startedAtMs).toLocaleString()}>
+                                        {query ? new Date(record.startedAtMs).toLocaleString([], { hour12: false }) : new Date(record.startedAtMs).toLocaleTimeString([], { hour12: false })}
+                                    </time>
+                                </TableCell>
+                                <TableCell>
+                                    <span className="la-request-operation" title={record.operation}>
+                                        {record.operation}
+                                    </span>
+                                </TableCell>
+                                <TableCell>
+                                    <span className="la-request-actor" title={`${record.actorType} / ${record.actorId}`}>
+                                        {record.actorType} / {record.actorId}
+                                    </span>
+                                </TableCell>
+                                <TableCell>{record.kind === "method" ? "Method" : "WebSocket"}</TableCell>
+                                <TableCell>
+                                    <Badge variant="outline" className={`la-request-outcome-${record.outcome}`}>
+                                        {record.outcome[0]!.toUpperCase() + record.outcome.slice(1)}
+                                    </Badge>
+                                </TableCell>
+                                <TableCell>{duration(record.durationMs)}</TableCell>
+                                <TableCell>{record.queueWaitMs === null ? <span title="Request did not begin processing">—</span> : duration(record.queueWaitMs)}</TableCell>
+                                <TableCell>
+                                    <Button variant="ghost" size="sm" aria-label={`Inspect ${record.operation} request`} aria-haspopup="dialog">
+                                        Details
+                                    </Button>
+                                </TableCell>
+                            </TableRow>
                         ))}
                     </TableBody>
                 </Table>
@@ -199,17 +203,41 @@ function RequestObserver({ client }: RequestObserverProps) {
                     {!query && <span className={`la-observer-dot ${failed ? "la-observer-dot-unknown" : "la-observer-dot-live"}`} />}
                     {query ? "Saved history" : frozen ? "Display paused · collection continues" : failed ? "Reconnecting…" : page ? "Live updates" : "Connecting…"}
                 </span>
-                <span>{query ? `${records.length.toLocaleString()} saved requests shown` : `Latest ${shown?.capacity ?? 500} requests on this control plane.`}</span>
+                <span>
+                    {query
+                        ? `${records.length.toLocaleString()} saved requests shown`
+                        : actor
+                          ? `${records.length} matching requests from the latest ${shown?.capacity ?? 500} on this control plane.`
+                          : `Latest ${shown?.capacity ?? 500} requests on this control plane.`}
+                </span>
             </div>
             {!query && !!shown?.evicted && <p className="la-request-note">{shown.evicted.toLocaleString()} older records have left this history window.</p>}
             <p className="la-request-note">
                 Total includes queue wait, actor processing, and persistence. Queue wait includes the WebSocket message queue. Timings exclude the caller’s network round trip.
             </p>
+            <Sheet
+                open={!!selected}
+                onOpenChange={open => {
+                    if (!open) setSelected(undefined)
+                }}
+            >
+                <SheetContent
+                    container={container.current}
+                    onCloseAutoFocus={event => {
+                        event.preventDefault()
+                        trigger.current?.focus()
+                    }}
+                >
+                    <SheetTitle>Request details</SheetTitle>
+                    <SheetDescription>Full identifiers and timings for this request.</SheetDescription>
+                    {selected && <RequestDetails record={selected} />}
+                </SheetContent>
+            </Sheet>
         </section>
     )
 }
 
-function HistoryFilters({ query, loading, onSearch }: { query: HistoryFilters; loading: boolean; onSearch: (query: HistoryFilters) => void }) {
+function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFilters; loading: boolean; onSearch: (query: HistoryFilters) => void; scoped: boolean }) {
     const [invalid, setInvalid] = useState(false)
     return (
         <form
@@ -240,10 +268,12 @@ function HistoryFilters({ query, loading, onSearch }: { query: HistoryFilters; l
                 To
                 <Input type="datetime-local" name="to" />
             </label>
-            <label>
-                Actor ID
-                <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
-            </label>
+            {!scoped && (
+                <label>
+                    Actor ID
+                    <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
+                </label>
+            )}
             <label>
                 Outcome
                 <select className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
@@ -268,22 +298,27 @@ function HistoryFilters({ query, loading, onSearch }: { query: HistoryFilters; l
 }
 
 function RequestDetails({ record }: { record: RequestTrace }) {
+    const fields = {
+        Operation: record.operation,
+        "Actor class": record.actorType,
+        "Instance ID": record.actorId,
+        "Request ID": record.requestId,
+        Time: new Date(record.startedAtMs).toLocaleString(),
+        Transport: record.kind === "method" ? "Method" : "WebSocket",
+        Outcome: record.outcome,
+        Total: duration(record.durationMs),
+        "Queue wait": record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs),
+        Host: record.hostId,
+        ...(record.connectionId ? { Connection: record.connectionId } : {})
+    }
     return (
         <dl className="la-request-details">
-            <div>
-                <dt>Request ID</dt>
-                <dd>{record.requestId}</dd>
-            </div>
-            <div>
-                <dt>Host</dt>
-                <dd>{record.hostId}</dd>
-            </div>
-            {record.connectionId && (
-                <div>
-                    <dt>Connection</dt>
-                    <dd>{record.connectionId}</dd>
+            {Object.entries(fields).map(([label, value]) => (
+                <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>{value}</dd>
                 </div>
-            )}
+            ))}
         </dl>
     )
 }

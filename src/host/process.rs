@@ -369,7 +369,8 @@ async fn prepare_actor_host(
             config.renew_every,
         )?
         .with_executor(executor_connection.executor())
-        .with_sockets(sockets.registry.clone()),
+        .with_sockets(sockets.registry.clone())
+        .with_queues(host.queues()),
     );
     let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());

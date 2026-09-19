@@ -185,7 +185,8 @@ impl HostLeaseRegistry for HostStorage {
         request: &HostLeaseRequest,
         residents: Option<&[crate::actor::ActorKey]>,
     ) -> Result<HostLease> {
-        self.register_with_inventory(request, residents, &[]).await
+        self.register_with_inventory(request, residents, &[], None)
+            .await
     }
 
     async fn register_with_inventory(
@@ -193,6 +194,7 @@ impl HostLeaseRegistry for HostStorage {
         request: &HostLeaseRequest,
         residents: Option<&[crate::actor::ActorKey]>,
         sockets: &[crate::host_leases::ActorSocketInventory],
+        queues: Option<&[crate::host_leases::ActorQueueInventory]>,
     ) -> Result<HostLease> {
         ensure!(
             request.id == self.host && request.session_id == self.session,
@@ -205,7 +207,7 @@ impl HostLeaseRegistry for HostStorage {
         self.fence.lock().unwrap().begin(started)?;
         let lease = self
             .leases
-            .register_with_inventory(request, residents, sockets)
+            .register_with_inventory(request, residents, sockets, queues)
             .await?;
         self.fence.lock().unwrap().confirm(
             started,

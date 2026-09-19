@@ -375,6 +375,13 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         route: "http://localhost:7101".into(),
         duration_ms: 60_000,
     };
+    let queues = vec![crate::host_leases::ActorQueueInventory {
+        actor: actor.clone(),
+        waiting: vec![crate::host_leases::WaitingOperation {
+            id: "queued-1".into(),
+            operation: "sendMessage".into(),
+        }],
+    }];
     let mut sockets = vec![crate::host_leases::ActorSocketInventory {
         actor: actor.clone(),
         connections: vec![crate::actor::ActorSocketConnection {
@@ -386,11 +393,15 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     fixture
         .runtime
         .leases
-        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets)
+        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets, Some(&queues))
         .await?;
     fixture.changes.send_replace(());
     let connected = stream_inventory(&mut stream).await?;
     assert_eq!(connected["actors"][0]["live"], 1);
+    assert_eq!(
+        connected["actors"][0]["instances"][0]["waiting"][0]["operation"],
+        "sendMessage"
+    );
     assert_eq!(
         connected["actors"][0]["instances"][0]["connections"],
         json!([{"id":"socket-one", "metadata":{"userId":"ada"}}])
@@ -399,7 +410,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     fixture
         .runtime
         .leases
-        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets)
+        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets, Some(&queues))
         .await?;
     fixture.changes.send_replace(());
     let updated = stream_inventory(&mut stream).await?;
@@ -415,6 +426,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     fixture.changes.send_replace(());
     let expired = stream_inventory(&mut stream).await?;
     assert_eq!(expired["actors"][0]["dormant"], 1);
+    assert_eq!(expired["actors"][0]["instances"][0]["waiting"], json!([]));
     assert_eq!(
         expired["actors"][0]["instances"][0]["connections"],
         json!([])
@@ -426,7 +438,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     fixture
         .runtime
         .leases
-        .register_with_inventory(&replacement, Some(&[actor]), &sockets)
+        .register_with_inventory(&replacement, Some(&[actor]), &sockets, Some(&queues))
         .await?;
     let inventory: Value = fixture
         .get("/v1/observe/actors")
@@ -435,6 +447,7 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         .json()
         .await?;
     assert_eq!(inventory["actors"][0]["dormant"], 1);
+    assert_eq!(inventory["actors"][0]["instances"][0]["waiting"], json!([]));
     assert_eq!(
         inventory["actors"][0]["instances"][0]["connections"],
         json!([])

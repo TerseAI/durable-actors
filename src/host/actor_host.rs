@@ -26,6 +26,7 @@ use super::{
     actor_runtime::{
         ActorActivation, ActorRuntime, ActorStorage, InvocationTimings, socket_event_name,
     },
+    queues::{ActorQueues, WaitingRequest},
 };
 
 const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
@@ -33,6 +34,7 @@ const HOST_COMMAND_CAPACITY: usize = 256;
 
 pub(crate) struct ActorHost {
     traces: Option<TraceSender>,
+    queues: ActorQueues,
     endpoint: HostEndpoint,
     commands: mpsc::Sender<HostCommand>,
     activity: watch::Receiver<usize>,
@@ -49,6 +51,7 @@ impl ActorHost {
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
         let (activity_tx, activity) = watch::channel(0);
+        let queues = ActorQueues::new();
         let dispatcher = HostDispatcher::new(
             endpoint.clone(),
             executor,
@@ -56,14 +59,20 @@ impl ActorHost {
             state,
             publisher,
             activity_tx,
+            queues.clone(),
         );
         tokio::spawn(dispatcher.run(incoming));
         Self {
             traces: None,
+            queues,
             endpoint,
             commands,
             activity,
         }
+    }
+
+    pub(crate) fn queues(&self) -> ActorQueues {
+        self.queues.clone()
     }
 
     pub(crate) fn activity(&self) -> watch::Receiver<usize> {
@@ -157,6 +166,7 @@ impl ActorHost {
         let (reply, result) = oneshot::channel();
         let request = ActorRequest {
             trace: self.trace(&operation, started),
+            waiting: None,
             operation,
             owner_epoch,
 
@@ -210,6 +220,7 @@ struct HostDispatcher {
     accepting: watch::Sender<bool>,
     activity: watch::Sender<usize>,
     active: usize,
+    queues: ActorQueues,
     drained: Vec<oneshot::Sender<()>>,
 }
 
@@ -222,6 +233,7 @@ impl HostDispatcher {
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
         activity: watch::Sender<usize>,
+        queues: ActorQueues,
     ) -> Self {
         Self {
             endpoint,
@@ -234,6 +246,7 @@ impl HostDispatcher {
             accepting: watch::channel(true).0,
             activity,
             active: 0,
+            queues,
             drained: Vec::new(),
         }
     }
@@ -259,7 +272,7 @@ impl HostDispatcher {
         }
     }
 
-    fn admit(&mut self, request: ActorRequest, completed: &mpsc::Sender<ActorCompletion>) {
+    fn admit(&mut self, mut request: ActorRequest, completed: &mpsc::Sender<ActorCompletion>) {
         if let Some(result) = self.validate(&request) {
             request.finish(&self.endpoint, result);
             return;
@@ -272,6 +285,12 @@ impl HostDispatcher {
         if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
             request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
             return;
+        }
+        if !matches!(&request.operation, ActorOperation::Activate { .. }) {
+            request.waiting = Some(self.queues.enqueue(
+                request.operation.actor(),
+                request.operation.invocation().method.clone(),
+            ));
         }
         match mailbox.sender.try_send(request) {
             Ok(()) => {
@@ -385,6 +404,7 @@ async fn run_actor(
     accepting: watch::Receiver<bool>,
 ) {
     while let Some(mut request) = requests.recv().await {
+        drop(request.waiting.take());
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
             let result = Ok(ActorExecutionResult::HostUnavailable);
             ActorRuntime::log_invocation(
@@ -448,6 +468,7 @@ struct ActorMailbox {
 }
 
 struct ActorRequest {
+    waiting: Option<WaitingRequest>,
     trace: Option<RequestSpan>,
     operation: ActorOperation,
     owner_epoch: u64,
@@ -772,6 +793,7 @@ mod tests {
             );
             host.drain(Duration::from_secs(1)).await?;
             assert_eq!(*activity.borrow(), 0);
+            assert!(host.queues().inventory().is_empty());
         }
         Ok(())
     }
@@ -912,6 +934,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn waiting_inventory_excludes_running_work_and_clears_after_completion_or_drain()
+    -> Result<()> {
+        for draining in [false, true] {
+            let (host, mut started, release) = controlled_host();
+            let mut activity = host.activity();
+            let caller = host.clone();
+            let first = tokio::spawn(async move { invoke(&caller, "first").await });
+            started.recv().await.unwrap();
+            assert!(host.queues().inventory().is_empty());
+            let caller = host.clone();
+            let second = tokio::spawn(async move { invoke(&caller, "second").await });
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                activity.wait_for(|count| *count == 2),
+            )
+            .await??;
+            let queues = host.queues().inventory();
+            assert_eq!(queues.len(), 1);
+            assert_eq!(queues[0].actor.actor_id, "counter-1");
+            assert_eq!(queues[0].waiting[0].operation, "increment");
+            if draining {
+                assert!(host.drain(Duration::from_millis(10)).await.is_err());
+            }
+            release.add_permits(1);
+            first.await??;
+            assert_eq!(
+                second.await??,
+                if draining {
+                    ActorExecutionResult::HostUnavailable
+                } else {
+                    completed(2)
+                }
+            );
+            host.drain(Duration::from_secs(1)).await?;
+            assert!(host.queues().inventory().is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_rejects_queued_work()
     -> Result<()> {
         let (host, mut started, release) = controlled_host();
@@ -963,6 +1025,7 @@ mod tests {
         }
         host.drain(Duration::from_secs(1)).await?;
         assert_eq!(*activity.borrow(), 0);
+        assert!(host.queues().inventory().is_empty());
         Ok(())
     }
 

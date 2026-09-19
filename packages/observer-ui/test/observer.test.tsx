@@ -77,7 +77,7 @@ test("opening an actor replaces the inventory with a dedicated page and returns 
     assert.ok(view.getByRole("heading", { name: "Room instances" }))
     assert.match(view.getByRole("row", { name: /general/i }).textContent!, /generalLive3/u)
     assert.match(view.getByRole("row", { name: /quiet/i }).textContent!, /quietDormant0/u)
-    assert.match(view.getByRole("row", { name: /waiting/i }).textContent!, /waitingUnknown1/u)
+    assert.match(view.getByRole("row", { name: /^waiting/i }).textContent!, /waitingUnknown1/u)
     assert.match(view.getByText(/connections, not unique people/i).textContent!, /WebSocket/u)
 
     fireEvent.click(view.getByRole("button", { name: "general" }))
@@ -295,7 +295,8 @@ test("a dropped stream keeps its last snapshot and automatically reconnects", as
 test("SSE snapshots and heartbeats preserve the selected instance and its live state", async () => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined
     let requests = 0
-    const client = new HttpObserverClient("/api/observe", async () => {
+    const client = new HttpObserverClient("/api/observe", async url => {
+        if (String(url).includes("/requests/")) return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } })
         requests++
         return new Response(
             new ReadableStream<Uint8Array>({
@@ -317,12 +318,12 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     await publish(`event: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
     fireEvent.click(view.getByRole("button", { name: "Room" }))
     fireEvent.click(view.getByRole("button", { name: "general" }))
-    const row = view.getByRole("row", { name: /general Live 3/u })
+    const detail = view.getByRole("region", { name: "Room / general" })
     for (let update = 0; update < 10; update++) {
         await publish(": heartbeat\n\n")
-        assert.equal(view.getByRole("row", { name: /general Live 3/u }), row)
+        assert.equal(view.getByRole("region", { name: "Room / general" }), detail)
         await publish(`event: inventory\ndata: ${JSON.stringify(inventory)}\n\n`)
-        assert.equal(view.getByRole("row", { name: /general Live 3/u }), row)
+        assert.equal(view.getByRole("region", { name: "Room / general" }), detail)
         assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
         assert.equal(view.queryByRole("status", { name: "Loading actors" }), null)
     }
@@ -348,4 +349,46 @@ test("an initial actor opens its page with class-specific totals and handles rem
     assert.ok(view.getByText("Actor class unavailable"))
     fireEvent.click(view.getByRole("button", { name: "Back to actors" }))
     assert.ok(view.getByRole("button", { name: "Room" }))
+})
+
+test("live actors and instances come first and the entire row opens inspection", async () => {
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => ({ actors: [inventory.actors[1]!, { ...inventory.actors[0]!, instances: [...inventory.actors[0]!.instances].reverse() }] })
+    }
+    const view = render(<ActorObserver client={client} />)
+    await view.findByRole("button", { name: "Room" })
+    assert.match(view.getAllByRole("row")[1]!.textContent!, /^Room/u)
+    fireEvent.click(view.getByRole("button", { name: "Room" }).closest("tr")!.lastElementChild!)
+    await view.findByRole("table", { name: "Room instances" })
+    assert.match(view.getAllByRole("row")[1]!.textContent!, /^general/u)
+    fireEvent.click(view.getByRole("button", { name: "general" }).closest("tr")!.lastElementChild!)
+    assert.ok(view.getByRole("heading", { name: "Requests" }))
+    assert.ok(view.getByRole("button", { name: "Back to instances" }))
+})
+
+test("instance queues show operation bubbles and update while inspecting an instance", async () => {
+    const waiting = ["sendMessage", "save", "sendMessage", "close"].map((operation, i) => ({ id: String(i), operation }))
+    const current = { actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live" as const, connections: [], waiting }] }] }
+    let update: (inventory: typeof current) => void = () => {}
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => current,
+        watchActors: async (onInventory: typeof update, signal: AbortSignal) => {
+            update = onInventory
+            onInventory(current)
+            await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+        }
+    }
+    const view = render(<ActorObserver client={client} initialActorType="Room" />)
+    await view.findByRole("button", { name: "general" })
+    assert.ok(view.getByRole("columnheader", { name: "Waiting" }))
+    assert.equal(view.getAllByText("sendMessage").length, 2)
+    assert.ok(view.getByText("+1"))
+    fireEvent.click(view.getByRole("button", { name: "general" }))
+    assert.ok(view.getByRole("heading", { name: "Waiting requests (4)" }))
+    assert.ok(view.getByText("close"))
+    await act(async () => update({ actors: [{ ...current.actors[0]!, instances: [{ ...current.actors[0]!.instances[0]!, waiting: [] }] }] }))
+    assert.ok(view.getByText("No requests waiting."))
+    assert.equal(view.queryByText("sendMessage"), null)
 })

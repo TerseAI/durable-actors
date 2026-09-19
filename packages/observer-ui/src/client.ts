@@ -6,6 +6,7 @@ interface ActorInstance {
     actorId: string
     status: ActorResidency
     connections: ActorConnection[]
+    waiting?: { id: string; operation: string }[] | null
 }
 
 interface ActorConnection {
@@ -154,7 +155,11 @@ function isActorInstance(value: unknown): value is ActorInstance {
         ["live", "dormant", "unknown"].includes(String(value.status)) &&
         "connections" in value &&
         Array.isArray(value.connections) &&
-        value.connections.every(isActorConnection)
+        value.connections.every(isActorConnection) &&
+        (!("waiting" in value) ||
+            value.waiting == null ||
+            (Array.isArray(value.waiting) &&
+                value.waiting.every(operation => !!operation && typeof operation === "object" && typeof operation.id === "string" && typeof operation.operation === "string")))
     )
 }
 

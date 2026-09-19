@@ -5,12 +5,23 @@ import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import { RequestObserver } from "../src/RequestObserver.js"
 import { HttpObserverClient } from "../src/client.js"
 import type { RequestTracePage } from "../src/client.js"
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
+Object.assign(globalThis, {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node,
+    NodeFilter: dom.window.NodeFilter,
+    HTMLInputElement: dom.window.HTMLInputElement,
+    MutationObserver: dom.window.MutationObserver,
+    CustomEvent: dom.window.CustomEvent,
+    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
+    IS_REACT_ACT_ENVIRONMENT: true
+})
+const { RequestObserver } = await import("../src/RequestObserver.js")
 afterEach(cleanup)
 const page: RequestTracePage = {
     epoch: "one",
@@ -187,4 +198,57 @@ test("changing history filters cancels the old query and ignores a late response
     assert.deepEqual((queries[1] as { params: string[] }).params, ["lobby"])
     await act(async () => resolveFirst(sqlRows()))
     assert.equal(view.queryByText("post"), null)
+})
+
+test("instance requests filter both class and ID in live and saved history", async () => {
+    const queries: { sql: string; params: unknown[] }[] = []
+    const client = {
+        watchRequests: async (receive: (value: RequestTracePage) => void, signal: AbortSignal) => {
+            receive({
+                ...page,
+                records: [
+                    page.records[0]!,
+                    { ...page.records[0]!, sequence: 2, actorType: "Counter", operation: "wrong class" },
+                    { ...page.records[0]!, sequence: 3, actorId: "other", operation: "wrong instance" }
+                ]
+            })
+            await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+        },
+        query: async (query: { sql: string; params: unknown[] }) => {
+            queries.push(query)
+            return sqlRows()
+        }
+    }
+    const view = render(<RequestObserver client={client} actor={{ actorType: "Room", actorId: "lobby" }} />)
+    await view.findByText("post")
+    assert.equal(view.queryByText("wrong class"), null)
+    assert.equal(view.queryByText("wrong instance"), null)
+    fireEvent.click(view.getByRole("button", { name: "History" }))
+    await view.findByRole("table", { name: "Saved requests" })
+    assert.match(queries[0]!.sql, /actor_type = \?/u)
+    assert.match(queries[0]!.sql, /actor_id = \?/u)
+    assert.deepEqual(queries[0]!.params, ["Room", "lobby"])
+    assert.equal(view.queryByLabelText("Actor ID"), null)
+})
+
+test("request inspection keeps table rows intact and opens a separate details sheet", async () => {
+    const view = render(
+        <RequestObserver
+            client={{
+                watchRequests: async (receive, signal) => {
+                    receive(page)
+                    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+                }
+            }}
+        />
+    )
+    await view.findByText("post")
+    const table = view.getByRole("table", { name: "Recent requests" })
+    fireEvent.click(view.getByRole("button", { name: "Inspect post request" }))
+    assert.ok(await view.findByRole("dialog", { name: "Request details" }))
+    assert.equal(table.querySelectorAll("tbody tr").length, 1)
+    assert.equal(table.textContent!.includes("request-one"), false)
+    assert.ok(view.getByText("request-one"))
+    fireEvent.click(view.getByRole("button", { name: "Close" }))
+    assert.equal(view.queryByRole("dialog"), null)
 })

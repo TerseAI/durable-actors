@@ -16,6 +16,7 @@ const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct HostLeaseMaintainer {
     sockets: Option<crate::sockets::SocketRegistry>,
+    queues: Option<super::queues::ActorQueues>,
     executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
     endpoint: HostEndpoint,
     session_id: String,
@@ -51,6 +52,7 @@ impl HostLeaseMaintainer {
 
         Ok(Self {
             sockets: None,
+            queues: None,
             executor: None,
             endpoint,
             session_id,
@@ -71,6 +73,11 @@ impl HostLeaseMaintainer {
         self
     }
 
+    pub(crate) fn with_queues(mut self, queues: super::queues::ActorQueues) -> Self {
+        self.queues = Some(queues);
+        self
+    }
+
     pub(crate) async fn start(self: Arc<Self>) -> Result<LeaseRenewalTask> {
         let changes = self
             .executor
@@ -80,6 +87,7 @@ impl HostLeaseMaintainer {
             .sockets
             .as_ref()
             .map(|sockets| sockets.inventory_changes());
+        let queue_changes = self.queues.as_ref().map(|queues| queues.changes());
         let initial = self.renew_once_with_deadline().await?;
         info!(
             host_id = %initial.lease.id,
@@ -97,6 +105,7 @@ impl HostLeaseMaintainer {
             lease_lost_tx,
             changes,
             socket_changes,
+            queue_changes,
         ));
 
         Ok(LeaseRenewalTask {
@@ -121,6 +130,7 @@ impl HostLeaseMaintainer {
         lease_lost: watch::Sender<bool>,
         mut changes: Option<watch::Receiver<()>>,
         mut socket_changes: Option<watch::Receiver<()>>,
+        mut queue_changes: Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
     ) {
         loop {
             if !self
@@ -130,6 +140,7 @@ impl HostLeaseMaintainer {
                     &lease_lost,
                     &mut changes,
                     &mut socket_changes,
+                    &mut queue_changes,
                 )
                 .await
             {
@@ -152,6 +163,7 @@ impl HostLeaseMaintainer {
         lease_lost: &watch::Sender<bool>,
         changes: &mut Option<watch::Receiver<()>>,
         socket_changes: &mut Option<watch::Receiver<()>>,
+        queue_changes: &mut Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
     ) -> bool {
         tokio::select! {
             biased;
@@ -167,6 +179,11 @@ impl HostLeaseMaintainer {
             _ = tokio::time::sleep(self.renew_every) => true,
             _ = residency_changed(changes) => true,
             _ = residency_changed(socket_changes) => true,
+            _ = async {
+                residency_changed(queue_changes).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Some(changes) = queue_changes { changes.borrow_and_update(); }
+            } => true,
         }
     }
 
@@ -227,9 +244,10 @@ impl HostLeaseMaintainer {
             Some(sockets) => sockets.inventory().await,
             None => vec![],
         };
+        let queues = self.queues.as_ref().map(|queues| queues.inventory());
         let lease = self
             .store
-            .register_with_inventory(&request, residents.as_deref(), &sockets)
+            .register_with_inventory(&request, residents.as_deref(), &sockets, queues.as_deref())
             .await?;
         debug!(
             host_id = %lease.id,
@@ -258,7 +276,7 @@ impl HostLeaseMaintainer {
     }
 }
 
-async fn residency_changed(changes: &mut Option<watch::Receiver<()>>) {
+async fn residency_changed<T>(changes: &mut Option<watch::Receiver<T>>) {
     if let Some(receiver) = changes {
         if receiver.changed().await.is_ok() {
             return;
@@ -454,6 +472,78 @@ mod tests {
         let renewal = manager.start().await?;
         changed.send_replace(());
         tokio::time::timeout(Duration::from_millis(500), wait_for_calls(&store, 2)).await??;
+        renewal.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
+        use crate::host_leases::ActorQueueInventory;
+        struct Store(watch::Sender<Option<Vec<ActorQueueInventory>>>);
+        #[async_trait]
+        impl HostLeaseRegistry for Store {
+            async fn register(&self, _: &HostLeaseRequest) -> Result<HostLease> {
+                unreachable!()
+            }
+            async fn register_with_inventory(
+                &self,
+                request: &HostLeaseRequest,
+                _: Option<&[crate::actor::ActorKey]>,
+                _: &[crate::host_leases::ActorSocketInventory],
+                queues: Option<&[ActorQueueInventory]>,
+            ) -> Result<HostLease> {
+                self.0.send_replace(queues.map(<[_]>::to_vec));
+                Ok(HostLease {
+                    id: request.id.clone(),
+                    session_id: request.session_id.clone(),
+                    route: request.route.clone(),
+                    expires_at_ms: SystemClock.now_ms()? + request.duration_ms,
+                })
+            }
+            async fn unregister(&self, _: &HostId, _: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+        let (sender, mut reports) = watch::channel(None);
+        let queues = super::super::queues::ActorQueues::new();
+        let renewal = Arc::new(
+            HostLeaseMaintainer::new(
+                HostEndpoint {
+                    id: HostId::new("queued"),
+                    route: "http://host".into(),
+                },
+                "session".into(),
+                Arc::new(Store(sender)),
+                Arc::new(SystemClock),
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+            )?
+            .with_queues(queues.clone()),
+        )
+        .start()
+        .await?;
+        let waiting = queues.enqueue(
+            &crate::actor::ActorKey {
+                actor_type: "Room".into(),
+                actor_id: "one".into(),
+            },
+            "sendMessage".into(),
+        );
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            reports.wait_for(|report| report.as_ref().is_some_and(|queues| queues.len() == 1)),
+        )
+        .await??;
+        assert_eq!(
+            reports.borrow().as_ref().unwrap()[0].waiting[0].operation,
+            "sendMessage"
+        );
+        drop(waiting);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            reports.wait_for(|report| report.as_ref().is_some_and(|queues| queues.is_empty())),
+        )
+        .await??;
         renewal.shutdown().await?;
         Ok(())
     }
