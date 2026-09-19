@@ -6,7 +6,7 @@
     "license": "MIT",
     "sideEffects": false,
     "engines": {
-        "node": ">=20"
+        "node": "^20.19.0 || >=22.12.0"
     },
     "packageManager": "pnpm@10.17.1",
     "keywords": [
@@ -74,15 +74,16 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto && node scripts/build-template.mjs",
+        "build": "pnpm run build:observer && pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto && node scripts/build-template.mjs",
         "generate:proto": "proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_object.proto",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node scripts/check-package.mjs && node --test scripts/codegen-api.test.mjs scripts/build-artifact.test.mjs",
+        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
-        "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
-        "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\""
+        "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
+        "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
+        "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
+        "build:observer": "pnpm --filter little-actors-observer build"
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
@@ -92,13 +93,17 @@
         "ajv": "^8.20.0",
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
+        "dotenv": "^18.0.0",
         "esbuild": "^0.28.2",
         "json-schema-to-typescript": "^16.0.0",
+        "little-actors-observer": "workspace:0.1.0",
+        "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",
         "tsx": "^4.0.0",
         "typescript": "~5.9.3",
         "typescript-json-schema": "^0.68.0",
+        "vite": "^8.3.0",
         "ws": "^8.18.3",
         "zod": "^4.3.6"
     },

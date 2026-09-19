@@ -143,13 +143,42 @@ impl SocketDispatcher for HostSocketDispatcher {
         ticket: &SocketTicket,
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>> {
+        self.dispatch_since(ticket, invocation, std::time::Instant::now())
+            .await
+    }
+
+    fn discard(
+        &self,
+        ticket: &SocketTicket,
+        event: crate::actor::ActorSocketEvent,
+        received: std::time::Instant,
+        outcome: crate::request_traces::RequestOutcome,
+    ) {
+        self.host.discard_socket_event(
+            ActorSocketInvocation {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                actor: ticket.actor.clone(),
+                event,
+                connections: vec![],
+            },
+            received,
+            outcome,
+        );
+    }
+
+    async fn dispatch_since(
+        &self,
+        ticket: &SocketTicket,
+        invocation: ActorSocketInvocation,
+        received: std::time::Instant,
+    ) -> Result<Vec<ActorSocketEffect>> {
         let target = ticket
             .target
             .as_ref()
             .context("socket ticket has no host binding")?;
         match self
             .host
-            .handle_socket_event(invocation, target.owner_epoch)
+            .handle_socket_event_since(invocation, target.owner_epoch, received)
             .await?
         {
             ActorExecutionResult::Completed { effects, .. } => Ok(effects),

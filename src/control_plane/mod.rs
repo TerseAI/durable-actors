@@ -7,6 +7,7 @@ pub(crate) use client::LeaseFence;
 mod event_sink;
 mod inspection;
 #[cfg(test)]
+#[path = "../../tests/unit/control_plane/inspection_tests.rs"]
 mod inspection_tests;
 mod issuer;
 mod local;

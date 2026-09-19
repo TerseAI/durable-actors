@@ -7,6 +7,11 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
+    InventoryChanged,
+    RequestTraces {
+        traces: Vec<crate::request_traces::RequestTrace>,
+        dropped: u64,
+    },
     SocketMessage {
         actor: crate::actor::ActorKey,
         event: crate::actor::ActorSocketEvent,
@@ -44,26 +49,5 @@ pub(crate) fn decode_reply(reply: ControlPlaneReply) -> Result<ControlPlaneComma
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn storage_commands_do_not_return_to_the_control_plane() -> Result<()> {
-        let encoded = encode_command(ControlPlaneCommand::RefreshStorageAccess)?;
-        assert!(matches!(
-            decode_command(encoded)?,
-            ControlPlaneCommand::RefreshStorageAccess
-        ));
-        for command in [
-            "register_lease",
-            "prepare_state_write",
-            "commit_state",
-            "load_actor_state",
-        ] {
-            assert!(
-                serde_json::from_value::<ControlPlaneCommand>(serde_json::json!({"type":command}))
-                    .is_err()
-            );
-        }
-        Ok(())
-    }
-}
+#[path = "../../tests/unit/control_plane/protocol.rs"]
+mod tests;

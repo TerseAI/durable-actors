@@ -16,6 +16,10 @@ class ControlPlaneClient {
         private readonly request: typeof fetch
     ) {}
 
+    async checkConnection(): Promise<void> {
+        await this.requestJson("GET", "/v1/actors?limit=1", undefined, 10_000)
+    }
+
     registerDeployment(deployment: unknown): Promise<unknown> {
         return this.requestJson("PUT", "/v1/deployment", deployment)
     }
@@ -23,6 +27,36 @@ class ControlPlaneClient {
     getContract(revision?: string): Promise<unknown> {
         const query = revision ? `?${new URLSearchParams({ revision })}` : ""
         return this.requestJson("GET", `/v1/deployment/contract${query}`)
+    }
+
+    listActors(): Promise<unknown> {
+        return this.requestJson("GET", "/v1/observe/actors")
+    }
+
+    async openActorStream(signal: AbortSignal): Promise<Response> {
+        return this.openStream("/v1/observe/events", signal)
+    }
+
+    async openRequestStream(signal: AbortSignal, after?: string): Promise<Response> {
+        const query = after ? `?${new URLSearchParams({ after })}` : ""
+        return this.openStream(`/v1/observe/requests/events${query}`, signal)
+    }
+
+    query(query: { sql: string; params?: unknown[] }, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson("POST", "/v1/observe/query", query, 30_000, signal)
+    }
+
+    private async openStream(path: string, signal: AbortSignal): Promise<Response> {
+        const response = await this.request(`${this.connection.controlPlaneUrl}${path}`, {
+            signal,
+            redirect: "error",
+            headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }
+        })
+        if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
+            await response.body?.cancel()
+            throw new Error("Live inventory is unavailable")
+        }
+        return response
     }
 
     listObjects(query: URLSearchParams): Promise<unknown> {
@@ -40,7 +74,8 @@ class ControlPlaneClient {
         method: "GET" | "PUT" | "POST",
         pathname: string,
         body?: unknown,
-        timeoutMs = 30_000
+        timeoutMs = 30_000,
+        signal?: AbortSignal
     ): Promise<unknown> {
         const { controlPlaneUrl, credential } = this.connection
         const response = await this.request(`${controlPlaneUrl}${pathname}`, {
@@ -50,7 +85,7 @@ class ControlPlaneClient {
                 ...(body === undefined ? {} : { "content-type": "application/json" })
             },
             body: body === undefined ? undefined : JSON.stringify(body),
-            signal: AbortSignal.timeout(timeoutMs),
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
             redirect: "error"
         }).catch(() => {
             throw new Error(

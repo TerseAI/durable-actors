@@ -20,8 +20,13 @@ use crate::{
     actor::ActorKey,
     actor_state::ActorStorageKey,
     host::HostId,
-    host_leases::{HostLease, HostLeaseStore},
-    placement::{ObjectPlacement, ObjectPlacementStore, PlacementClaim},
+    host_leases::{
+        ActorQueueInventory, ActorSocketInventory, HostLease, HostLeaseStatus, HostLeaseStore,
+    },
+    placement::{
+        ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
+        ActorResidency, ObjectPlacement, ObjectPlacementStore, PlacementClaim,
+    },
     replication::{
         ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaStream, ReplicaTarget,
         ReplicationTicket, SnapshotRef,
@@ -749,5 +754,109 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             "snapshot writer has been fenced"
         );
         Ok(crate::state_transport::StateWrite::Written)
+    }
+}
+
+#[async_trait]
+impl ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>> {
+        let mut actors = std::collections::BTreeMap::new();
+        let mut hosts = HashMap::new();
+        let prefix = format!("{}owners/", crate::storage_paths::ROOT);
+        for key in self.authority.list(&prefix).await? {
+            let Some(object) = self.authority.get(&key).await? else {
+                continue;
+            };
+            let record: Ownership = serde_json::from_slice(&object.bytes)?;
+            if !hosts.contains_key(&record.owner) {
+                hosts.insert(
+                    record.owner.clone(),
+                    self.leases.inventory_status(&record.owner).await?,
+                );
+            }
+            let (status, residents, sockets, queues) = &hosts[&record.owner];
+            let row = actors
+                .entry(record.actor.actor_type.clone())
+                .or_insert_with(|| ActorInventory {
+                    actor_type: record.actor.actor_type.clone(),
+                    ..Default::default()
+                });
+            let instance = actor_instance_overview(
+                &record,
+                status,
+                residents.as_deref(),
+                sockets,
+                queues.as_deref(),
+            );
+            match instance.status {
+                ActorResidency::Live => row.live += 1,
+                ActorResidency::Dormant => row.dormant += 1,
+                ActorResidency::Unknown => row.unknown += 1,
+            }
+            row.instances.push(instance);
+        }
+        Ok(actors
+            .into_values()
+            .map(|mut actor| {
+                actor
+                    .instances
+                    .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
+                actor
+            })
+            .collect())
+    }
+}
+
+fn actor_instance_overview(
+    record: &Ownership,
+    status: &HostLeaseStatus,
+    residents: Option<&[ActorKey]>,
+    sockets: &[ActorSocketInventory],
+    queues: Option<&[ActorQueueInventory]>,
+) -> ActorInstanceOverview {
+    let owns_active_session = status.is_active()
+        && status
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.session_id == record.session);
+    if !owns_active_session {
+        return ActorInstanceOverview {
+            actor_id: record.actor.actor_id.clone(),
+            status: ActorResidency::Dormant,
+            connections: vec![],
+            waiting: Some(vec![]),
+        };
+    }
+    let residency = match residents {
+        None => ActorResidency::Unknown,
+        Some(residents) if residents.contains(&record.actor) => ActorResidency::Live,
+        Some(_) => ActorResidency::Dormant,
+    };
+    let connections = sockets
+        .iter()
+        .find(|entry| entry.actor == record.actor)
+        .map(|entry| {
+            entry
+                .connections
+                .iter()
+                .map(|connection| ActorConnectionInventory {
+                    id: connection.id.clone(),
+                    metadata: connection.metadata.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let waiting = queues.map(|queues| {
+        queues
+            .iter()
+            .find(|queue| queue.actor == record.actor)
+            .map(|queue| queue.waiting.clone())
+            .unwrap_or_default()
+    });
+    ActorInstanceOverview {
+        actor_id: record.actor.actor_id.clone(),
+        status: residency,
+        connections,
+        waiting,
     }
 }

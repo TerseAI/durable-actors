@@ -13,6 +13,8 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+anstream = "1"
+anstyle = "1"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -46,6 +48,7 @@ postgres-native-tls = "0.5"
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
 moka = { version = "0.12", features = ["future"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "limits"], default-features = false }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

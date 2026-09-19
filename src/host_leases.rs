@@ -1,4 +1,4 @@
-use crate::host::HostId;
+use crate::{actor::ActorKey, host::HostId};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -47,48 +47,71 @@ impl HostLeaseStatus {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActorSocketInventory {
+    pub actor: ActorKey,
+    pub connections: Vec<crate::actor::ActorSocketConnection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActorQueueInventory {
+    pub actor: ActorKey,
+    pub waiting: Vec<WaitingOperation>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaitingOperation {
+    pub id: String,
+    pub operation: String,
+}
+
 #[async_trait]
 pub trait HostLeaseRegistry: Send + Sync {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease>;
+    async fn register_with_residents(
+        &self,
+        request: &HostLeaseRequest,
+        _residents: Option<&[ActorKey]>,
+    ) -> Result<HostLease> {
+        self.register(request).await
+    }
+
+    async fn register_with_inventory(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[ActorKey]>,
+        _sockets: &[ActorSocketInventory],
+        _queues: Option<&[ActorQueueInventory]>,
+    ) -> Result<HostLease> {
+        self.register_with_residents(request, residents).await
+    }
+
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()>;
 }
 
 #[async_trait]
 pub trait HostLeaseStore: HostLeaseRegistry {
+    async fn inventory_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(
+        HostLeaseStatus,
+        Option<Vec<ActorKey>>,
+        Vec<ActorSocketInventory>,
+        Option<Vec<ActorQueueInventory>>,
+    )> {
+        let (status, residents) = self.residency_status(id).await?;
+        Ok((status, residents, vec![], None))
+    }
     async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus>;
+    async fn residency_status(
+        &self,
+        id: &HostId,
+    ) -> Result<(HostLeaseStatus, Option<Vec<ActorKey>>)> {
+        Ok((self.lease_status(id).await?, None))
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lease_status_uses_the_store_clock() {
-        let lease = HostLease {
-            id: HostId::new("node-a"),
-            session_id: "session-a".into(),
-            route: "node-a".into(),
-            expires_at_ms: 1_000,
-        };
-
-        let live = HostLeaseStatus {
-            lease: Some(lease.clone()),
-            store_now_ms: 999,
-        };
-        let expired = HostLeaseStatus {
-            lease: Some(lease),
-            store_now_ms: 1_000,
-        };
-        let absent = HostLeaseStatus {
-            lease: None,
-            store_now_ms: 0,
-        };
-
-        assert!(live.is_active());
-        assert!(!expired.is_active());
-        assert!(!absent.is_active());
-        let encoded = serde_json::to_value(live).expect("serialize lease status");
-        assert_eq!(encoded["registry_now_ms"], 999);
-        assert!(encoded.get("store_now_ms").is_none());
-    }
-}
+#[path = "../tests/unit/host_leases.rs"]
+mod tests;

@@ -3,13 +3,14 @@
     "private": true,
     "license": "MIT",
     "scripts": {
-        "build": "node scripts/build-runtime.mjs && pnpm --dir sdk build",
+        "build": "pnpm --dir sdk build && node scripts/build-runtime.mjs",
+        "build:observer": "pnpm --dir sdk build:observer",
         "dev": "cargo run --release",
-        "format": "cargo fmt --all && pnpm --dir sdk format && prettier --write \"scripts/*.mjs\"",
-        "format:check": "cargo fmt --all -- --check && pnpm --dir sdk format:check && prettier --check \"scripts/*.mjs\"",
+        "format": "cargo fmt --all && pnpm --dir sdk format && prettier --write \"scripts/*.mjs\" \"tests/scripts/*.mjs\" && pnpm --dir packages/observer-ui format",
+        "format:check": "cargo fmt --all -- --check && pnpm --dir sdk format:check && prettier --check \"scripts/*.mjs\" \"tests/scripts/*.mjs\" && pnpm --dir packages/observer-ui format:check",
         "release:prepare": "node scripts/release.mjs prepare",
         "release:verify": "node scripts/release.mjs verify",
-        "test": "node --test scripts/*.test.mjs && cargo test --locked --no-fail-fast && pnpm --dir sdk test"
+        "test": "pnpm --dir packages/observer-ui test && node --test tests/scripts/*.test.mjs && cargo test --locked --no-fail-fast && pnpm --dir sdk test"
     },
     "devDependencies": {
         "@trivago/prettier-plugin-sort-imports": "^6.0.2",

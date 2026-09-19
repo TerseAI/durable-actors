@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use little_actors::{
@@ -10,21 +12,46 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-    if let Err(error) = run().await {
-        error!(error = %format!("{error:#}"), "durable-object process failed");
+    let cli = Cli::parse();
+    let development_logs = cli.command.is_some()
+        || std::env::var("DURABLE_OBJECT_LOG_MODE").as_deref() == Ok("development");
+    init_logging(development_logs);
+    if let Err(error) = run(cli).await {
+        if development_logs {
+            error!(error = %format!("{error:#}"), "local actor runtime failed");
+        } else {
+            error!(error = %format!("{error:#}"), "durable-object process failed");
+        }
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
+fn init_logging(development: bool) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(if development {
+            "little_actors=error,little_actors::dev=info"
+        } else {
+            "info"
+        })
+    });
+    if development {
+        tracing_subscriber::fmt()
+            .compact()
+            .without_time()
+            .with_target(false)
+            .with_ansi(std::io::stdout().is_terminal())
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .init();
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     if let Some(Commands::Dev(options)) = cli.command {
         return serve_local(options, shutdown_signal()).await;
     }

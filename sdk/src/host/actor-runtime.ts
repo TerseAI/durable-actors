@@ -62,8 +62,8 @@ class ActorRuntime {
             )
         }
 
+        const before = snapshotActorState(instance, this.definition.state)
         try {
-            const before = snapshotActorState(instance, this.definition.state)
             const operation = await runWithActorSockets(
                 instance,
                 this.connections,
@@ -83,7 +83,7 @@ class ActorRuntime {
                 ...(effects.length === 0 ? {} : { effects })
             }
         } catch (error) {
-            this.reset()
+            this.createInstance(command.actor, before)
             return failedReply("actor_method_failed", errorMessage(error))
         }
     }
@@ -94,8 +94,8 @@ class ActorRuntime {
         const instance = prepared
         const methodName = lifecycleMethod(command)
         const method: unknown = Reflect.get(instance, methodName)
+        const before = snapshotActorState(instance, this.definition.state)
         try {
-            const before = snapshotActorState(instance, this.definition.state)
             const operation = await runWithActorSockets(
                 instance,
                 command.connections,
@@ -128,7 +128,7 @@ class ActorRuntime {
                 effects: socketEffects(command, publicState(state, this.definition.state), effects)
             }
         } catch (error) {
-            this.reset()
+            this.createInstance(command.actor, before)
             return failedReply("actor_socket_failed", errorMessage(error))
         }
     }

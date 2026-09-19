@@ -89,7 +89,7 @@ async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -
             output.read_line(&mut line).await? != 0,
             "runtime exited before readiness"
         );
-        if let Some((_, origin)) = line.split_once("Local actors ready at ") {
+        if let Some((_, origin)) = line.split_once("  Ready  ") {
             return Ok(origin.trim().to_owned());
         }
         line.clear();

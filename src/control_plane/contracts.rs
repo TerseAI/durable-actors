@@ -457,5 +457,5 @@ fn canonical_json(value: Value) -> Value {
 }
 
 #[cfg(test)]
-#[path = "contract_tests.rs"]
+#[path = "../../tests/unit/control_plane/contract_tests.rs"]
 mod tests;

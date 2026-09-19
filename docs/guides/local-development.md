@@ -1,6 +1,6 @@
 # Local development
 
-Run actors locally using the published npm package. Set the same API key in the actor runtime and your application backend; clients default to `http://127.0.0.1:7100`. For a complete sample application, start with the [Express + React chat example](../../examples/chat/README.md). The steps below cover adding actors to an existing application.
+Run actors locally using the published npm package. For a complete sample application, start with the [Express + React chat example](../../examples/chat/README.md).
 
 ## Install the package
 
@@ -23,11 +23,10 @@ The backend imports `actors` from `generated/index.js`. The frontend fetches a g
 ## Start the actor server
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.little-actors/` and survives restarts.
+Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts.
 
 Startup compiles and publishes your actors' public contract. You can then run `npx little-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
 
@@ -35,9 +34,9 @@ The same terminal shows runtime logs and a request log with the method, path, st
 
 ## Connect your application
 
-Backend actor calls and generated `prepareWebsocket` helpers read [environment settings](../reference/configuration.md). Set `DURABLE_OBJECT_API_KEY=local-dev-key` in the terminal running your backend. Your backend authenticates users and calls `actors.ChatRoom.prepareWebsocket({ actorId, metadata })`. The example serves grants at `/api/socket/{actorType}/{actorId}`; your application chooses its own route.
+If `dev` generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your backend terminal. Backend actor calls and generated `prepareWebsocket` helpers read that setting.
 
-Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` with the same API key.
+Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running.
 
 The frontend never imports the actor implementation. The frontend requests credentials from your backend, then sends socket messages directly to the actor gateway.
 
@@ -45,7 +44,7 @@ For remote servers or a custom data directory, see [configuration](../reference/
 
 ## Update after changes
 
-Keep `little-actors dev` running while editing actor code. It watches TypeScript files across the project, recompiles changes in the entrypoint or its imports, and publishes each valid result to the local control plane. Regenerate the backend helpers when the actor contract changes. Invalid intermediate edits leave the last valid contract active. Keep the same API key across restarts.
+Keep `little-actors dev` running while editing actor code. Restarting it generates a new key unless you provide one explicitly.
 
 ## Troubleshooting
 

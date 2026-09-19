@@ -9,20 +9,18 @@ npx little-actors init documents-example --template documents
 cd documents-example
 npm install
 npx little-actors generate
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Wait for `Local actors ready`. In another terminal, from the same directory:
+Wait for `Local actors ready`. In another terminal, run the printed export command, then:
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npm run dev
 ```
 
 Open [the editor](http://127.0.0.1:3000) in two tabs. Type in Welcome, format some text, and edit from both tabs. Add another document and switch between them. Reload after changes arrive in the other tab to see the saved content.
 
-If you already have this directory, start at `npm install`. No external service is needed; choose the same local API key for both processes.
+If you already have this directory, start at `npm install`. No external service is needed.
 
 ## The code
 

@@ -192,7 +192,7 @@ Remote method arguments, results, and saved state use JSON serialization:
 
 A method returning `undefined` produces `null` at runtime. TypeScript return annotations do not change JSON behavior. Socket messages and metadata use stricter JSON validation: unsupported values such as `undefined`, `Date`, `BigInt`, non-finite numbers, bytes, and circular references are rejected before sending.
 
-When an actor method throws, its state changes are not saved. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
+When an actor method or socket lifecycle hook throws, its state changes are not saved. The worker stays alive and reconstructs the actor from its pre-request persisted state before returning the error; ephemeral fields reset. A worker crash or failed reconstruction still requires eviction. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
 Backend SDK connections receive automatic public persisted state, excluding private and protected fields. Signed browser connections receive only explicit application messages.
 
