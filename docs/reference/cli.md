@@ -42,7 +42,7 @@ Verifies admin access to the control plane, starts a local Web UI on an availabl
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_OBJECT_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
 - `--no-open` — Start the UI and print its URL without launching a browser. If automatic opening fails, the server remains available at the printed URL.
 
-The UI is also available as the embeddable [`@little-actors/observer` package](../../packages/observer-ui/README.md) for hosted and self-hosted applications.
+The UI is also available as the embeddable [`@little-actors/observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
 
 ## Inspect saved objects
 
