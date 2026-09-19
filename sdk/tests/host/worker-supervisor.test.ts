@@ -18,7 +18,7 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const consumerRoot = await createTypeScriptConsumer()
     const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
     try {
-        await exerciseResidency(entrypoint)
+        await exerciseActiveActors(entrypoint)
         await exerciseIdleRecycling(entrypoint)
         await exerciseSocketHibernation(entrypoint)
     } finally {
@@ -37,6 +37,7 @@ test("starts one speculative Worker and gives it to the first actor", async () =
             createWorker: () => {
                 created.push(created.length + 1)
                 return {
+                    isAlive: () => true,
                     async ready() {
                         return ["PreloadedCounter"]
                     },
@@ -66,7 +67,7 @@ test("thrown methods and socket handlers roll back state without restarting the 
         actorSchemas: await prepareActorEntrypoint(entrypoint)
     })
     const seen: number[] = []
-    supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+    supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
     const command = invokeCommand("counter-1", "SessionCounter")
     try {
         await supervisor.handle(command)
@@ -87,7 +88,7 @@ test("thrown methods and socket handlers roll back state without restarting the 
             }
         ]) {
             assert.equal((await supervisor.handle(failure)).type, "failed")
-            assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+            assert.deepEqual(supervisor.activeActors(), [actorIdentity])
             assert.deepEqual(seen, [1])
             assert.deepEqual(
                 await supervisor.handle({ ...command, method: "getCount", resident_only: true, state: undefined }),
@@ -123,6 +124,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
         createWorker: () => {
             created += 1
             return {
+                isAlive: () => true,
                 ready: () => new Promise(() => undefined),
                 async execute() {
                     return { type: "invoked", result: null, state: {} }
@@ -179,6 +181,7 @@ test("discards a failed preload before accepting the first actor", async () => {
             createWorker: () => {
                 const failed = created++ === 0
                 return {
+                    isAlive: () => true,
                     ready: () =>
                         failed ? Promise.reject(new Error("preload failed")) : Promise.resolve(["RetryPreloadCounter"]),
                     async execute() {
@@ -211,6 +214,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
         actorEntrypointUrl: "file:///unused.ts",
         actorSchemas: [],
         createWorker: () => ({
+            isAlive: () => true,
             async ready() {
                 return ["UnusedCounter"]
             },
@@ -253,7 +257,7 @@ test("an actor module that fails inside a Worker returns a failure without hangi
     }
 })
 
-async function exerciseResidency(entrypoint: string): Promise<void> {
+async function exerciseActiveActors(entrypoint: string): Promise<void> {
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
         actorSchemas: await prepareActorEntrypoint(entrypoint)
@@ -324,9 +328,9 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
             ]
         }
     )
-    assert.deepEqual(runtime.residentActors(), [actorIdentity])
+    assert.deepEqual(runtime.activeActors(), [actorIdentity])
     await new Promise(resolve => setTimeout(resolve, 30))
-    assert.deepEqual(runtime.residentActors(), [])
+    assert.deepEqual(runtime.activeActors(), [])
     const published: SocketEffect[] = []
     assert.deepEqual(
         await runtime.handle(
@@ -459,6 +463,7 @@ test("residency reports actual workers and drops evicted and failed instances", 
         actorEntrypointUrl: "file:///unused.mjs",
         actorSchemas: undefined,
         createWorker: () => ({
+            isAlive: () => true,
             ready: async () => ["SessionCounter"],
             execute: async () =>
                 fail
@@ -468,14 +473,14 @@ test("residency reports actual workers and drops evicted and failed instances", 
         })
     })
     try {
-        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(supervisor.activeActors(), [])
         await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
-        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         await supervisor.handle({ type: "evict", actor: actorIdentity })
-        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(supervisor.activeActors(), [])
         fail = true
         await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
-        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(supervisor.activeActors(), [])
     } finally {
         supervisor.close()
     }
@@ -486,6 +491,7 @@ test("residency subscribers see worker creation and eviction immediately", async
         actorEntrypointUrl: "file:///unused.mjs",
         actorSchemas: undefined,
         createWorker: () => ({
+            isAlive: () => true,
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -493,7 +499,7 @@ test("residency subscribers see worker creation and eviction immediately", async
     })
     const seen: number[] = []
     try {
-        const unsubscribe = supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+        const unsubscribe = supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
         await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
         await supervisor.handle({ type: "evict", actor: actorIdentity })
         assert.deepEqual(seen, [1, 0])
@@ -512,23 +518,24 @@ test("activity resets the idle timeout without publishing dormant residency", as
         actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
+            isAlive: () => true,
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
         })
     })
     const seen: number[] = []
-    supervisor.onResidencyChange(() => seen.push(supervisor.residentActors().length))
+    supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
     try {
         await supervisor.ready()
         for (let request = 0; request < 5; request++) {
             await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
             context.mock.timers.tick(9_000)
-            assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+            assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         }
         assert.deepEqual(seen, [1])
         context.mock.timers.tick(1_000)
-        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(supervisor.activeActors(), [])
         assert.deepEqual(seen, [1, 0])
     } finally {
         supervisor.close()
@@ -547,6 +554,7 @@ test("a running request stays resident beyond the idle timeout", async context =
         actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
+            isAlive: () => true,
             ready: async () => ["SessionCounter"],
             async execute() {
                 if (block) await pending
@@ -561,13 +569,13 @@ test("a running request stays resident beyond the idle timeout", async context =
         block = true
         const running = supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
         context.mock.timers.tick(30_000)
-        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         finish!()
         assert.equal((await running).type, "invoked")
         context.mock.timers.tick(9_999)
-        assert.deepEqual(supervisor.residentActors(), [actorIdentity])
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         context.mock.timers.tick(1)
-        assert.deepEqual(supervisor.residentActors(), [])
+        assert.deepEqual(supervisor.activeActors(), [])
     } finally {
         finish?.()
         supervisor.close()

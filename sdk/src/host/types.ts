@@ -1,3 +1,4 @@
+import type { ActorIdentity } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 
@@ -28,8 +29,7 @@ type ActorCommandHandler = (
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
-) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close"> &
-    Partial<Pick<ActorWorkerSupervisor, "residentActors" | "onResidencyChange">>
+) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close" | "activeActors" | "onActiveActorsChange">
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
@@ -39,7 +39,8 @@ interface ActorWorkerSupervisorOptions {
 }
 
 interface ResidentActorWorkerOptions {
-    readonly onResidencyChange?: () => void
+    readonly identity: ActorIdentity
+    readonly onActiveActorsChange: () => void
     readonly moduleUrl: string
     readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
@@ -49,7 +50,7 @@ interface ResidentActorWorkerOptions {
 }
 
 interface ActorWorkerHandle {
-    isAlive?(): boolean
+    isAlive(): boolean
     ready(): Promise<readonly string[]>
     execute(
         command: InvokeCommand | WebSocketEventCommand,

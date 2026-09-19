@@ -66,8 +66,8 @@ class ActorSession {
                 actorTypes,
                 commandHandler,
                 this.settings.startupTimeoutMs,
-                supervisor.residentActors?.bind(supervisor),
-                supervisor.onResidencyChange?.bind(supervisor)
+                supervisor.activeActors.bind(supervisor),
+                supervisor.onActiveActorsChange.bind(supervisor)
             )
             void this.connection.closed().then(() => supervisor.close())
         } catch (error) {
@@ -98,8 +98,8 @@ async function discoverActorTypes(
 }
 
 class ActorSessionConnection {
-    private unsubscribeResidency: (() => void) | undefined
-    private residencyTimer: NodeJS.Timeout | undefined
+    private unsubscribeActivity: (() => void) | undefined
+    private activityTimer: NodeJS.Timeout | undefined
     private buffer = ""
     private attachedResolve: (() => void) | undefined
     private attachedReject: ((error: Error) => void) | undefined
@@ -117,13 +117,13 @@ class ActorSessionConnection {
         actorTypes: readonly string[],
         commandHandler: ActorCommandHandler,
         timeoutMs: number,
-        residentActors?: () => readonly ActorIdentity[],
-        watchResidency?: (listener: () => void) => () => void
+        activeActors: () => readonly ActorIdentity[],
+        watchActiveActors: (listener: () => void) => () => void
     ): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
-        const connection = new ActorSessionConnection(socket, commandHandler, residentActors, watchResidency)
+        const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
         connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
@@ -136,8 +136,8 @@ class ActorSessionConnection {
     private constructor(
         private readonly socket: Socket,
         private readonly commandHandler: ActorCommandHandler,
-        private readonly residentActors?: () => readonly ActorIdentity[],
-        private readonly watchResidency?: (listener: () => void) => () => void
+        private readonly activeActors: () => readonly ActorIdentity[],
+        private readonly watchActiveActors: (listener: () => void) => () => void
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -185,30 +185,30 @@ class ActorSessionConnection {
 
         let newline = this.buffer.indexOf("\n")
         while (newline !== -1) {
-            const document = this.buffer.slice(0, newline)
+            const rawMessage = this.buffer.slice(0, newline)
             this.buffer = this.buffer.slice(newline + 1)
-            void this.handle(document)
+            void this.handle(rawMessage)
             newline = this.buffer.indexOf("\n")
         }
     }
 
-    private async handle(document: string): Promise<void> {
+    private async handle(rawMessage: string): Promise<void> {
         try {
-            const message = parseActorSessionServerMessage(document)
+            const message = parseActorSessionServerMessage(rawMessage)
             switch (message.type) {
                 case "attached":
-                    if (message.supports_residency && this.residentActors && !this.residencyTimer) {
+                    if (message.supports_residency && !this.activityTimer) {
                         const report = () => {
                             try {
-                                this.send({ type: "residency", actors: this.residentActors!() })
+                                this.send({ type: "residency", actors: this.activeActors() })
                             } catch (error) {
                                 this.fail(sessionError(error))
                             }
                         }
-                        this.unsubscribeResidency = this.watchResidency?.(report)
+                        this.unsubscribeActivity = this.watchActiveActors(report)
                         report()
-                        this.residencyTimer = setInterval(report, 1_000)
-                        this.residencyTimer.unref()
+                        this.activityTimer = setInterval(report, 1_000)
+                        this.activityTimer.unref()
                     }
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
@@ -308,9 +308,9 @@ class ActorSessionConnection {
     }
 
     private close(): void {
-        clearInterval(this.residencyTimer)
-        this.unsubscribeResidency?.()
-        this.unsubscribeResidency = undefined
+        clearInterval(this.activityTimer)
+        this.unsubscribeActivity?.()
+        this.unsubscribeActivity = undefined
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

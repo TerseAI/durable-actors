@@ -20,8 +20,13 @@ use crate::{
     actor::ActorKey,
     actor_state::ActorStorageKey,
     host::HostId,
-    host_leases::{HostLease, HostLeaseStore},
-    placement::{ObjectPlacement, ObjectPlacementStore, PlacementClaim},
+    host_leases::{
+        ActorQueueInventory, ActorSocketInventory, HostLease, HostLeaseStatus, HostLeaseStore,
+    },
+    placement::{
+        ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
+        ActorResidency, ObjectPlacement, ObjectPlacementStore, PlacementClaim,
+    },
     replication::{
         ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaStream, ReplicaTarget,
         ReplicationTicket, SnapshotRef,
@@ -753,8 +758,8 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
 }
 
 #[async_trait]
-impl crate::placement::ActorInventoryReader for RuntimeStorage {
-    async fn actor_inventory(&self) -> Result<Vec<crate::placement::ActorInventory>> {
+impl ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>> {
         let mut actors = std::collections::BTreeMap::new();
         let mut hosts = HashMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);
@@ -772,77 +777,23 @@ impl crate::placement::ActorInventoryReader for RuntimeStorage {
             let (status, residents, sockets, queues) = &hosts[&record.owner];
             let row = actors
                 .entry(record.actor.actor_type.clone())
-                .or_insert_with(|| crate::placement::ActorInventory {
+                .or_insert_with(|| ActorInventory {
                     actor_type: record.actor.actor_type.clone(),
                     ..Default::default()
                 });
-            let residency = if !status.is_active()
-                || status
-                    .lease
-                    .as_ref()
-                    .is_none_or(|lease| lease.session_id != record.session)
-            {
-                crate::placement::ActorResidency::Dormant
-            } else if let Some(residents) = residents {
-                if residents.contains(&record.actor) {
-                    crate::placement::ActorResidency::Live
-                } else {
-                    crate::placement::ActorResidency::Dormant
-                }
-            } else {
-                crate::placement::ActorResidency::Unknown
-            };
-            match residency {
-                crate::placement::ActorResidency::Live => row.live += 1,
-                crate::placement::ActorResidency::Dormant => row.dormant += 1,
-                crate::placement::ActorResidency::Unknown => row.unknown += 1,
+            let instance = actor_instance_overview(
+                &record,
+                status,
+                residents.as_deref(),
+                sockets,
+                queues.as_deref(),
+            );
+            match instance.status {
+                ActorResidency::Live => row.live += 1,
+                ActorResidency::Dormant => row.dormant += 1,
+                ActorResidency::Unknown => row.unknown += 1,
             }
-            let connections = if status.is_active()
-                && status
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.session_id == record.session)
-            {
-                sockets
-                    .iter()
-                    .find(|entry| entry.actor == record.actor)
-                    .map(|entry| {
-                        entry
-                            .connections
-                            .iter()
-                            .map(|connection| crate::placement::ActorConnectionInventory {
-                                id: connection.id.clone(),
-                                metadata: connection.metadata.clone(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-            let waiting = if status.is_active()
-                && status
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.session_id == record.session)
-            {
-                queues.as_ref().map(|queues| {
-                    queues
-                        .iter()
-                        .find(|queue| queue.actor == record.actor)
-                        .map(|queue| queue.waiting.clone())
-                        .unwrap_or_default()
-                })
-            } else {
-                Some(vec![])
-            };
-            row.instances
-                .push(crate::placement::ActorInstanceInventory {
-                    actor_id: record.actor.actor_id,
-                    status: residency,
-                    connections,
-                    waiting,
-                });
+            row.instances.push(instance);
         }
         Ok(actors
             .into_values()
@@ -853,5 +804,59 @@ impl crate::placement::ActorInventoryReader for RuntimeStorage {
                 actor
             })
             .collect())
+    }
+}
+
+fn actor_instance_overview(
+    record: &Ownership,
+    status: &HostLeaseStatus,
+    residents: Option<&[ActorKey]>,
+    sockets: &[ActorSocketInventory],
+    queues: Option<&[ActorQueueInventory]>,
+) -> ActorInstanceOverview {
+    let owns_active_session = status.is_active()
+        && status
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.session_id == record.session);
+    if !owns_active_session {
+        return ActorInstanceOverview {
+            actor_id: record.actor.actor_id.clone(),
+            status: ActorResidency::Dormant,
+            connections: vec![],
+            waiting: Some(vec![]),
+        };
+    }
+    let residency = match residents {
+        None => ActorResidency::Unknown,
+        Some(residents) if residents.contains(&record.actor) => ActorResidency::Live,
+        Some(_) => ActorResidency::Dormant,
+    };
+    let connections = sockets
+        .iter()
+        .find(|entry| entry.actor == record.actor)
+        .map(|entry| {
+            entry
+                .connections
+                .iter()
+                .map(|connection| ActorConnectionInventory {
+                    id: connection.id.clone(),
+                    metadata: connection.metadata.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let waiting = queues.map(|queues| {
+        queues
+            .iter()
+            .find(|queue| queue.actor == record.actor)
+            .map(|queue| queue.waiting.clone())
+            .unwrap_or_default()
+    });
+    ActorInstanceOverview {
+        actor_id: record.actor.actor_id.clone(),
+        status: residency,
+        connections,
+        waiting,
     }
 }

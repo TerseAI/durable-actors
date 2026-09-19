@@ -69,7 +69,7 @@ pub enum ActorResidency {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ActorInstanceInventory {
+pub struct ActorInstanceOverview {
     pub actor_id: String,
     pub status: ActorResidency,
     pub connections: Vec<ActorConnectionInventory>,
@@ -90,7 +90,7 @@ pub struct ActorInventory {
     pub live: u64,
     pub dormant: u64,
     pub unknown: u64,
-    pub instances: Vec<ActorInstanceInventory>,
+    pub instances: Vec<ActorInstanceOverview>,
 }
 
 #[async_trait]

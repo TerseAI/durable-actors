@@ -35,8 +35,8 @@ class ActorWorkerSupervisor {
     private readonly actorSchemas: readonly ActorSchema[] | undefined
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
-    private lastResidency = ""
-    private readonly residencyListeners = new Set<() => void>()
+    private lastActiveActors = ""
+    private readonly activeActorListeners = new Set<() => void>()
     private readonly actors = new Map<string, ResidentActorWorker>()
     private speculativeWorker: ActorWorkerHandle | undefined
     private speculativeTimer: NodeJS.Timeout | undefined
@@ -89,27 +89,22 @@ class ActorWorkerSupervisor {
         }
     }
 
-    onResidencyChange(listener: () => void): () => void {
-        this.residencyListeners.add(listener)
+    onActiveActorsChange(listener: () => void): () => void {
+        this.activeActorListeners.add(listener)
         return () => {
-            this.residencyListeners.delete(listener)
+            this.activeActorListeners.delete(listener)
         }
     }
 
-    private notifyResidencyChange(): void {
-        const current = JSON.stringify(this.residentActors())
-        if (current === this.lastResidency) return
-        this.lastResidency = current
-        for (const listener of this.residencyListeners) listener()
+    private notifyActiveActorsChange(): void {
+        const current = JSON.stringify(this.activeActors())
+        if (current === this.lastActiveActors) return
+        this.lastActiveActors = current
+        for (const listener of this.activeActorListeners) listener()
     }
 
-    residentActors(): readonly ActorIdentity[] {
-        return [...this.actors.entries()]
-            .filter(([, actor]) => actor.isActive())
-            .map(([key]) => {
-                const [actor_type, actor_id] = key.split("\u001f") as [string, string]
-                return { actor_type, actor_id }
-            })
+    activeActors(): readonly ActorIdentity[] {
+        return [...this.actors.values()].filter(actor => actor.isActive()).map(actor => actor.identity)
     }
 
     close(): void {
@@ -159,13 +154,14 @@ class ActorWorkerSupervisor {
                 )
             }
             actor = new ResidentActorWorker({
+                identity: command.actor,
                 moduleUrl: this.actorEntrypointUrl,
                 schemas: this.actorSchemas,
                 idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
                 onIdle: candidate => this.removeIfCurrent(key, candidate),
-                onResidencyChange: () => this.notifyResidencyChange()
+                onActiveActorsChange: () => this.notifyActiveActorsChange()
             })
             this.actors.set(key, actor)
         }
@@ -209,23 +205,25 @@ class ActorWorkerSupervisor {
 }
 
 class ResidentActorWorker {
+    readonly identity: ActorIdentity
     readonly moduleUrl: string
     readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
     readonly createWorker: ActorWorkerFactory
     readonly onIdle: (actor: ResidentActorWorker) => void
     lastCompletedAt = Date.now()
-    private readonly onResidencyChange: () => void
+    private readonly onActiveActorsChange: () => void
     private worker: ActorWorkerHandle | undefined
     private idleTimer: NodeJS.Timeout | undefined
 
     constructor(options: ResidentActorWorkerOptions) {
+        this.identity = { ...options.identity }
         this.moduleUrl = options.moduleUrl
         this.schemas = options.schemas
         this.idleTimeoutMs = options.idleTimeoutMs
         this.createWorker = options.createWorker
         this.onIdle = options.onIdle
-        this.onResidencyChange = options.onResidencyChange ?? (() => {})
+        this.onActiveActorsChange = options.onActiveActorsChange
         this.worker = options.worker
     }
 
@@ -239,7 +237,7 @@ class ResidentActorWorker {
         this.idleTimer = undefined
         this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl, schemas: this.schemas })
         const worker = this.worker
-        this.onResidencyChange()
+        this.onActiveActorsChange()
         let reply: ActorExecutorReply
         try {
             reply = await worker.execute(command, publish, connections)
@@ -256,7 +254,7 @@ class ResidentActorWorker {
         if (reply.type === "failed" && reply.code !== "actor_method_failed" && reply.code !== "actor_socket_failed") {
             worker.terminate("actor invocation failed")
             this.worker = undefined
-            this.onResidencyChange()
+            this.onActiveActorsChange()
         }
         this.idleTimer = setTimeout(() => this.onIdle(this), this.idleTimeoutMs)
         this.idleTimer.unref()
@@ -264,7 +262,7 @@ class ResidentActorWorker {
     }
 
     isActive(): boolean {
-        return this.worker !== undefined && (this.worker.isAlive?.() ?? true)
+        return this.worker !== undefined && this.worker.isAlive()
     }
 
     isIdle(): boolean {
@@ -276,7 +274,7 @@ class ResidentActorWorker {
         this.idleTimer = undefined
         this.worker?.terminate(reason)
         this.worker = undefined
-        this.onResidencyChange()
+        this.onActiveActorsChange()
     }
 }
 

@@ -59,7 +59,9 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
             },
             close() {
                 closed += 1
-            }
+            },
+            activeActors: () => [],
+            onActiveActorsChange: () => () => {}
         })
     )
     await assert.rejects(session.start(), /actor module loading timed out/)
@@ -292,7 +294,9 @@ test("a failed session connection cleans up the speculative Worker", async () =>
             },
             close() {
                 closed += 1
-            }
+            },
+            activeActors: () => [],
+            onActiveActorsChange: () => () => {}
         })
     )
     await assert.rejects(session.start(), /could not attach to Rust host/)
@@ -348,7 +352,8 @@ test("reports resident instances when the Rust host advertises support", { timeo
             ready: async () => ["SessionCounter"],
             handle: async () => ({ type: "evicted" }),
             close() {},
-            residentActors: () => [actor]
+            activeActors: () => [actor],
+            onActiveActorsChange: () => () => {}
         })
     )
     try {
