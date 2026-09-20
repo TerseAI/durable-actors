@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -124,7 +124,20 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     const publication = {
         codeRevision: "release-1",
         contractHash: `sha256:${"a".repeat(64)}`,
-        contract: undefined
+        contract: JSON.parse(
+            (
+                await run(
+                    "bun",
+                    [
+                        path.join(sdk, "dist/compiler/deployment-build.js"),
+                        author,
+                        "src/durable-objects.ts",
+                        path.join(author, "build")
+                    ],
+                    { env }
+                )
+            ).stdout
+        )
     }
     const server = createServer(async (request, response) => {
         assert.equal(request.headers.authorization, "Bearer contract-key")
@@ -133,7 +146,6 @@ test("deploy publishes the inferred API directly and a separate consumer generat
             const chunks: Buffer[] = []
             for await (const chunk of request) chunks.push(Buffer.from(chunk))
             deployment = JSON.parse(Buffer.concat(chunks).toString())
-            publication.contract = deployment.contract
             response.end(JSON.stringify({ changed: true }))
             return
         }
@@ -146,27 +158,20 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const provider = path.join(author, "provider.mjs")
-    await writeFile(
-        provider,
-        '#!/usr/bin/env node\nprocess.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({status:"success",result:{codeSnapshot:"im-code"}})))\n'
-    )
-    await chmod(provider, 0o700)
     const beforeDeploy = await readdir(author)
     const deployed = await run(
         process.execPath,
         [cli, "deploy", "--url", origin, "--image", "im-chat", "--revision", "release-1", "--secret", "chat-secrets"],
-        { cwd: author, env: { ...env, DURABLE_OBJECT_SANDBOX_COMMAND: provider } }
+        { cwd: author, env }
     )
     assert.match(deployed.stdout, /release-1/)
     assert.deepEqual(await readdir(author), beforeDeploy)
-    const { contract, ...specification } = deployment
-    assert.deepEqual(specification, {
+    const { contract } = publication
+    assert.deepEqual(deployment, {
         codeRevision: "release-1",
         imageRef: "im-chat",
-        codeSnapshot: "im-code",
         workingDirectory: "/customer",
-        actorEntrypoint: "actors.mjs",
+        actorEntrypoint: "src/durable-objects.ts",
         secretRefs: ["chat-secrets"]
     })
     assert.equal(contract.version, 1)

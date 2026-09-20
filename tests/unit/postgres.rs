@@ -227,7 +227,7 @@ async fn check_concurrent_migrations(database: &TestDatabase, version: i32) -> R
         .iter()
         .map(|row| row.get(0))
         .collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
     Ok(())
 }
 

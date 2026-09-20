@@ -14,6 +14,8 @@ use super::contracts::{PublicActorContract, PublishedContract, check_contract_ha
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DeploymentSource>,
     pub code_revision: String,
     pub image_ref: String,
     #[serde(default)]
@@ -21,6 +23,24 @@ pub(crate) struct HostLaunchSpec {
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeploymentSource {
+    pub image_ref: String,
+    pub working_directory: String,
+    pub actor_entrypoint: Option<String>,
+}
+
+impl From<&HostLaunchSpec> for DeploymentSource {
+    fn from(spec: &HostLaunchSpec) -> Self {
+        Self {
+            image_ref: spec.image_ref.clone(),
+            working_directory: spec.working_directory.clone(),
+            actor_entrypoint: spec.actor_entrypoint.clone(),
+        }
+    }
 }
 
 impl HostLaunchSpec {
@@ -336,21 +356,21 @@ impl AdminRegistry for PostgresAdminRegistry {
         let changed = transaction
             .execute(
                 "INSERT INTO durable_object_deployment \
-                   (singleton, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot) \
-                 VALUES (TRUE, $1, $2, $3, $4, $5, $6) \
+                   (singleton, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json) \
+                 VALUES (TRUE, $1, $2, $3, $4, $5, $6, $7) \
                  ON CONFLICT (singleton) DO UPDATE SET \
                    code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
-                   secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, \
+                   secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, \
                    updated_at = clock_timestamp() \
                  WHERE (durable_object_deployment.code_revision, \
                         durable_object_deployment.image_ref, \
                         durable_object_deployment.working_directory, \
                         durable_object_deployment.actor_entrypoint, \
-                        durable_object_deployment.secret_refs, durable_object_deployment.code_snapshot) \
+                        durable_object_deployment.secret_refs, durable_object_deployment.code_snapshot, durable_object_deployment.source_json) \
                        IS DISTINCT FROM \
                        (EXCLUDED.code_revision, EXCLUDED.image_ref, \
-                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.code_snapshot)",
+                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json)",
                 &[
                     &spec.code_revision,
                     &spec.image_ref,
@@ -358,6 +378,7 @@ impl AdminRegistry for PostgresAdminRegistry {
                     &spec.actor_entrypoint,
                     &spec.secret_refs,
                     &spec.code_snapshot,
+                    &spec.source.as_ref().map(serde_json::to_string).transpose()?,
                 ],
             )
             .await
@@ -413,16 +434,17 @@ impl AdminRegistry for PostgresAdminRegistry {
     }
 
     async fn launch_spec(&self) -> Result<Option<HostLaunchSpec>> {
-        Ok(self
+        self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot \
+                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json \
                  FROM durable_object_deployment",
                 &[],
             )
             .await
             .context("load PostgreSQL host launch spec")?
-            .map(|row| HostLaunchSpec {
+            .map(|row| Ok(HostLaunchSpec {
+                source: row.get::<_, Option<&str>>(6).map(serde_json::from_str).transpose()?,
                 code_snapshot: row.get(5),
                 code_revision: row.get(0),
                 image_ref: row.get(1),
@@ -430,6 +452,7 @@ impl AdminRegistry for PostgresAdminRegistry {
                 actor_entrypoint: row.get(3),
                 secret_refs: row.get(4),
             }))
+            .transpose()
     }
 }
 

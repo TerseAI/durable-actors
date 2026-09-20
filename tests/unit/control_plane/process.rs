@@ -50,6 +50,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
         ("DURABLE_OBJECT_API_KEY", "api-key"),
         ("DURABLE_OBJECT_BUCKET", "actor-state-test"),
         ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_OBJECT_RUNTIME_IMAGE", "im-runtime"),
         (
             "DURABLE_OBJECT_CONTROL_PLANE_URL",
             "https://objects.example.com",
@@ -73,6 +74,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
     let mut values = HashMap::from([
         ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_OBJECT_RUNTIME_IMAGE", "im-runtime"),
         (
             "DURABLE_OBJECT_CONTROL_PLANE_URL",
             "https://control.example",

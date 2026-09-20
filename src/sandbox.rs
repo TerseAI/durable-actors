@@ -16,7 +16,7 @@ pub(crate) mod pool;
 pub(crate) use local::LocalSandboxProvider;
 
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_PROVIDER_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_PROVIDER_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +71,22 @@ pub struct CreateSpareRequest {
     pub image_ref: String,
     pub canonical_region: String,
     pub resources: ResourceLimits,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildCodeRequest {
+    pub image_ref: String,
+    pub working_directory: String,
+    pub actor_entrypoint: String,
+    pub canonical_region: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltActorCode {
+    pub code_snapshot: String,
+    pub contract: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -169,6 +185,7 @@ pub struct SocketCredentials {
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }
@@ -229,6 +246,9 @@ impl CommandSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for CommandSandboxProvider {
+    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
+        self.execute("build_code", request).await
+    }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         self.execute("create_spare", request).await
     }

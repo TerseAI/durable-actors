@@ -10,6 +10,8 @@ import (
 )
 
 const maximumCommandBytes = 1024 * 1024
+const maximumContractBytes = 4 * 1024 * 1024
+const maximumResponseBytes = maximumContractBytes + 1024*1024
 
 type apiFactory func() (modalAPI, func(), error)
 type command struct {
@@ -32,7 +34,7 @@ func runCommand(ctx context.Context, input io.Reader, output io.Writer, factory 
 	if err != nil {
 		return err
 	}
-	if len(document) >= maximumCommandBytes {
+	if len(document) >= maximumResponseBytes {
 		return fmt.Errorf("provider response is too large")
 	}
 	_, err = output.Write(append(document, '\n'))
@@ -65,12 +67,12 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 			return nil, err
 		}
 		return struct{}{}, p.retireSpare(ctx, request)
-	case "publish_code":
-		var request publishCodeRequest
+	case "build_code":
+		var request buildCodeRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
 			return nil, err
 		}
-		return p.publishCode(ctx, request)
+		return p.buildCode(ctx, request)
 	case "socket_credentials":
 		var request socketRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
@@ -101,7 +103,7 @@ func readCommand(input io.Reader) (command, error) {
 		return cmd, err
 	}
 	switch cmd.Operation {
-	case "ensure_host", "socket_credentials", "create_spare", "retire_spare", "publish_code":
+	case "ensure_host", "socket_credentials", "create_spare", "retire_spare", "build_code":
 		return cmd, nil
 	default:
 		return cmd, fmt.Errorf("unsupported sandbox operation")

@@ -27,10 +27,10 @@ type sandbox interface {
 	ID() string
 	Route(context.Context) (string, error)
 	Connect(context.Context) (socketCredentials, error)
-	WriteFile(context.Context, string, string) error
 	ControlRoute(context.Context) (string, error)
 	Mount(context.Context, *modal.Image) error
 	Snapshot(context.Context) (string, error)
+	BuildCode(context.Context, string, string) (json.RawMessage, error)
 	Ready(context.Context) error
 	Metadata(context.Context) ([]byte, error)
 	Terminate(context.Context) error

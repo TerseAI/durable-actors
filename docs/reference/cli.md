@@ -72,17 +72,16 @@ Checks TypeScript and bundles actor code with its generated schemas into `dist/a
 ## Deploy actors
 
 ```sh
-npx little-actors deploy --image im-runtime
+npx little-actors deploy src/actors.ts --image im-customer-build
 ```
 
-Compiles and publishes the customer code snapshot, then registers it with the generic runtime image and public API contract. Requires Modal credentials in the deployment terminal.
+Sends one deployment request containing the customer build image and source entrypoint. The control plane compiles and publishes the code internally; the deployment terminal needs only the control-plane URL and API key. See [image packaging](../guides/self-hosting.md#4-package-and-deploy-customer-code).
 
-- `[entrypoint]` — TypeScript source file, default `src/durable-objects.ts`.
-- `--image <ref>` — Published generic Bun/Rust runtime image ID.
+- `[entrypoint]` — Source file inside the build image, default `src/durable-objects.ts`.
+- `--image <ref>` — Published customer build image ID.
+- `--working-directory <path>` — Project directory inside that image; default `/customer`.
 - `--revision <id>` — Optional revision name. Defaults to a new generated ID for each deploy.
-- `--config <file>` — TypeScript configuration for extraction.
 - `--secret <name>` — Modal secret reference. Repeatable; uses an on-demand generic sandbox.
-- `--region <region>` — Canonical region used when publishing code; default `north-america-east`.
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ## Generate a client and proxy

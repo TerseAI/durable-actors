@@ -9,37 +9,13 @@ Recommended setup:
 - One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
 Create `control-plane.env` using [hosted server setup](../reference/configuration.md), then configure the [client connection](../reference/configuration.md) for your deployment terminal and backend. The configuration page contains all credentials, storage settings, and defaults used by this guide.
 
-## 2. Run the control plane
-
-Use the prebuilt runtime container:
-
-```sh
-docker run --rm --name durable-objects \
-    -p 7100:7100 \
-    --env-file control-plane.env \
-    --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION
-```
-
-For an attached Google service account, follow the [Google credentials configuration](../reference/configuration.md) and omit the mount.
-
-Port `7100` serves the HTTP and gRPC control-plane APIs. Use an HTTPS proxy that forwards HTTP/2. The public URL must be reachable by Modal hosts and clients. Direct WebSockets use the actor host on port `7101` through Modal ingress.
-
-From the configured deployment terminal, check the public endpoint:
-
-```sh
-curl --fail --silent --show-error https://objects.example.com/.well-known/jwks.json
-```
-
-Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
-
-## 3. Publish the generic runtime image
+## 2. Publish the generic runtime image
 
 Build and publish this repository's runtime image once per runtime version. It contains Rust, Bun, and the matching SDK. Import that image into Modal; customer code is published separately. Use the same SDK version in the actor source project:
 
@@ -64,17 +40,55 @@ with modal.enable_output():
 print(image.object_id)
 ```
 
-Run `.venv/bin/python build_image.py` and keep the printed `im-...` ID. Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
+Run `.venv/bin/python build_image.py` and set the printed `im-...` ID as the shared runtime image in `control-plane.env` using the [configuration table](../reference/configuration.md). Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
 
-## 4. Publish customer code and register the deployment
+## 3. Run the control plane
 
-Configure Modal credentials in the deployment terminal, then run from the actor source project:
+Use the prebuilt runtime container:
 
 ```sh
-npx little-actors deploy --image im-YOUR_RUNTIME_IMAGE_ID
+docker run --rm --name durable-objects \
+    -p 7100:7100 \
+    --env-file control-plane.env \
+    --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION
 ```
 
-The CLI checks the actor contract, bundles customer code and JavaScript dependencies into `actors.mjs`, and publishes a permanent Modal directory snapshot. Only after publication succeeds does it register the snapshot, generic image, and contract. The shared SDK remains external to the bundle. Native add-ons and additional filesystem assets require separate packaging support.
+For an attached Google service account, follow the [Google credentials configuration](../reference/configuration.md) and omit the mount.
+
+Port `7100` serves the HTTP and gRPC control-plane APIs. Use an HTTPS proxy that forwards HTTP/2. The public URL must be reachable by Modal hosts and clients. Direct WebSockets use the actor host on port `7101` through Modal ingress.
+
+From the configured deployment terminal, check the public endpoint:
+
+```sh
+curl --fail --silent --show-error https://objects.example.com/.well-known/jwks.json
+```
+
+Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
+
+## 4. Package and deploy customer code
+
+Publish a customer build image containing the source project, its TypeScript configuration, and installed dependencies. Base it on the same runtime version so Bun and the compiler are available. For example, extend `build_image.py` after building the shared image:
+
+```python
+customer = image.add_local_dir(
+    ".", "/customer", copy=True,
+    ignore=["node_modules", ".git", ".venv", ".env*", "*.env", ".little-actors"],
+).run_commands("cd /customer && bun install")
+with modal.enable_output():
+    customer.build(app)
+print(customer.object_id)
+```
+
+Register that customer image with one call:
+
+```sh
+npx little-actors deploy --image im-YOUR_CUSTOMER_IMAGE_ID
+```
+
+The control plane creates a temporary builder from the customer image, checks its actor contract, bundles code and JavaScript dependencies, and publishes a permanent Modal directory snapshot. It registers the snapshot and contract against the shared runtime image before returning success, then terminates the builder. Unchanged source metadata reuses the current compiled code, including when secrets change. The deployment terminal does not need source files or Modal credentials to make this API call.
+
+The shared SDK remains external to the internal bundle. Native add-ons and additional filesystem assets require separate packaging support. Customer-image system packages and environment variables do not transfer into generic actor sandboxes; use the deployment's secret references for runtime secrets.
 
 Spare sandboxes initialize Rust, Bun, the SDK worker, and IPC before admission. On assignment, the provider mounts the immutable code snapshot while Rust restores committed state. Routing begins after Bun has loaded the code and hydrated the actor. A sandbox belongs to that actor for its entire lifetime; subsequent calls reuse it. A crash or sandbox expiration starts a fresh activation from committed state, using the existing bucket and replication machinery.
 
@@ -82,7 +96,7 @@ Configure spare capacity, regions, lifetimes, and resource limits using the [con
 
 Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses; see [replica lifecycle](replication.md#repair-and-lifecycle). Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
 
-Old code snapshots remain immutable deployment artifacts; retiring hosts does not delete snapshots. Track published snapshot IDs if you need artifact retention cleanup.
+Old code snapshots remain immutable deployment artifacts; retiring hosts does not delete snapshots. Snapshot retention is managed separately from actor lifecycle; deployment replacement and deletion currently retain these artifacts.
 
 ## 5. Connect your web app
 

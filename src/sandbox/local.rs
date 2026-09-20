@@ -141,6 +141,9 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
+    async fn build_code(&self, _: &super::BuildCodeRequest) -> Result<super::BuiltActorCode> {
+        anyhow::bail!("local deployments load actor source directly")
+    }
     async fn wait_ready(&self, host: &crate::host::HostId) -> Result<()> {
         let hosts = self.hosts.lock().await;
         ensure!(

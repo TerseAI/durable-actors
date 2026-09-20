@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 )
 
 const spareReadyFile = "/tmp/durable-object-spare-ready"
+const compiledCodeDirectory = "/tmp/little-actors-code"
 
 type resourceLimits struct {
 	CPUMillis int `json:"cpuMillis"`
@@ -229,19 +229,16 @@ func validateAssignment(request ensureRequest) error {
 	return nil
 }
 
-type publishCodeRequest struct {
-	ImageRef        string `json:"imageRef"`
-	CanonicalRegion string `json:"canonicalRegion"`
-	CodePath        string `json:"codePath"`
+type buildCodeRequest struct {
+	ImageRef         string `json:"imageRef"`
+	CanonicalRegion  string `json:"canonicalRegion"`
+	WorkingDirectory string `json:"workingDirectory"`
+	ActorEntrypoint  string `json:"actorEntrypoint"`
 }
 
-func (p *provider) publishCode(ctx context.Context, request publishCodeRequest) (map[string]string, error) {
-	code, err := os.ReadFile(request.CodePath)
-	if err != nil {
-		return nil, err
-	}
-	if len(code) == 0 || len(code) > 32*1024*1024 {
-		return nil, fmt.Errorf("compiled customer code must contain 1–33554432 bytes")
+func (p *provider) buildCode(ctx context.Context, request buildCodeRequest) (map[string]any, error) {
+	if !strings.HasPrefix(request.ImageRef, "im-") || request.WorkingDirectory == "" || !strings.HasPrefix(request.WorkingDirectory, "/") || request.ActorEntrypoint == "" {
+		return nil, fmt.Errorf("actor build requires a customer image, absolute project directory, and entrypoint")
 	}
 	region, err := modalRegion(request.CanonicalRegion)
 	if err != nil {
@@ -251,18 +248,19 @@ func (p *provider) publishCode(ctx context.Context, request publishCodeRequest) 
 	if err != nil {
 		return nil, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, CPU: 1, CPULimit: 1, MemoryMiB: 1024, MemoryLimitMiB: 1024})
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion), CPU: 1, CPULimit: 1, MemoryMiB: 1024, MemoryLimitMiB: 1024})
 	if err != nil {
 		return nil, err
 	}
 	defer sb.Detach()
 	defer terminateForCleanup(sb)
-	if err := sb.WriteFile(ctx, "/customer/actors.mjs", string(code)); err != nil {
+	contract, err := sb.BuildCode(ctx, request.WorkingDirectory, request.ActorEntrypoint)
+	if err != nil {
 		return nil, err
 	}
 	snapshot, err := sb.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"codeSnapshot": snapshot}, nil
+	return map[string]any{"codeSnapshot": snapshot, "contract": contract}, nil
 }

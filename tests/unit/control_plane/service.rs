@@ -31,6 +31,18 @@ struct UnavailableProvisioner;
 
 #[async_trait]
 impl HostProvisioner for UnavailableProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn ensure_actor_host(
         &self,
         _spec: &HostLaunchSpec,
@@ -57,6 +69,18 @@ struct FakeRetiringProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRetiringProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn ensure_actor_host(
         &self,
         _spec: &HostLaunchSpec,
@@ -137,6 +161,18 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
+        async fn prepare_deployment(
+            &self,
+            source: &HostLaunchSpec,
+            _previous: Option<&HostLaunchSpec>,
+            _region: &str,
+        ) -> Result<(
+            HostLaunchSpec,
+            Option<crate::control_plane::contracts::PublicActorContract>,
+        )> {
+            Ok((source.clone(), None))
+        }
+
         async fn ensure_actor_host(
             &self,
             _: &HostLaunchSpec,
@@ -178,6 +214,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            source: None,
             code_snapshot: None,
             code_revision: "revision".into(),
             image_ref: "image".into(),
@@ -252,6 +289,7 @@ async fn replacing_a_deployment_terminates_the_previous_revision_hosts() -> Resu
         provisioner.clone(),
     );
     let first = HostLaunchSpec {
+        source: None,
         code_snapshot: None,
         code_revision: "revision-1".into(),
         image_ref: "image-1".into(),
@@ -455,6 +493,18 @@ struct LosingActivation {
 
 #[async_trait]
 impl HostProvisioner for LosingActivation {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -491,6 +541,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            source: None,
             code_revision: "revision".into(),
             image_ref: "im-runtime".into(),
             code_snapshot: Some("im-code".into()),
@@ -525,6 +576,18 @@ struct FakeRoutingProvisioner {
 
 #[async_trait]
 impl HostProvisioner for FakeRoutingProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn socket_credentials(
         &self,
         _spec: &HostLaunchSpec,
@@ -611,6 +674,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                source: None,
                 code_snapshot: None,
                 code_revision: "revision".into(),
                 image_ref: "image".into(),
@@ -685,6 +749,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            source: None,
             code_snapshot: None,
             code_revision: "v1".into(),
             image_ref: "image".into(),
@@ -789,6 +854,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
+            source: None,
             code_revision: "v1".into(),
             image_ref: "im-runtime".into(),
             code_snapshot: Some("im-code".into()),
@@ -846,7 +912,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         );
     }
     client.put(format!("{origin}/v1/deployment")).bearer_auth("api-key")
-        .json(&serde_json::json!({"codeRevision":"v1","imageRef":"im-runtime","codeSnapshot":"im-code","workingDirectory":"/customer"}))
+        .json(&serde_json::json!({"codeRevision":"v1","imageRef":"im-runtime","workingDirectory":"/customer"}))
         .send().await?.error_for_status()?;
     for operation in ["websocket", "grpc"] {
         let response = client
@@ -930,6 +996,7 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
             HostLaunchSpec {
+                source: None,
                 code_revision: "revision".into(),
                 image_ref: "im-runtime".into(),
                 code_snapshot: Some("im-code".into()),
@@ -964,7 +1031,7 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "im-runtime", "codeSnapshot": "im-code", "workingDirectory": "/customer" });
+    let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "im-runtime", "workingDirectory": "/customer" });
     let registered = client
         .put(format!("{origin}/v1/deployment"))
         .bearer_auth("api-key")
@@ -1047,6 +1114,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
     admin
         .register_test_deployment(&HostLaunchSpec {
+            source: None,
             code_snapshot: None,
             code_revision: "revision-1".into(),
             image_ref: "image-1".into(),
@@ -1183,7 +1251,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     let document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
-    let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"im-runtime", "codeSnapshot":"im-code", "workingDirectory":"/customer", "contract":document});
+    let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"im-runtime", "workingDirectory":"/customer", "contract":document});
     for scope in ["/v1"] {
         for changed in [true, false] {
             let reply: serde_json::Value = client

@@ -150,7 +150,7 @@ if (request.barrier) {
 } else if (request.fail) {
   process.stdout.write(JSON.stringify({status: 'failure', error: 'test failure'}) + '\n');
 } else if (request.oversized) {
-  process.stdout.write('x'.repeat(1024 * 1024 + 1));
+  process.stdout.write('x'.repeat(5 * 1024 * 1024 + 1));
 } else if (request.malformed) {
   process.stdout.write('not json\n');
 } else if (request.exit) {

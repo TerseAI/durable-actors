@@ -503,6 +503,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                source: None,
                 code_revision: "revision".into(),
                 code_snapshot: Some("im-code".into()),
                 image_ref: "test-image".into(),

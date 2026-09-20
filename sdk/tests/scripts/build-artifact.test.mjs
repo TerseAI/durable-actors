@@ -13,6 +13,22 @@ import { promisify } from "node:util"
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
 
+test("deployment builds produce code and a contract without executing customer code", async t => {
+    const root = await project(t)
+    await writeFile(
+        path.join(root, "src/durable-objects.ts"),
+        'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<number> { return 42 } }; throw new Error("customer code executed during build")'
+    )
+    const output = path.join(root, "published")
+    const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output])
+    const contract = JSON.parse(stdout)
+    assert.equal(contract.actors[0].actorType, "Counter")
+    assert.equal(contract.actors[0].rpc.methods[0].name, "get")
+    assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
+    await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
+    await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output]), /JSON-compatible/)
+})
+
 test("built actors run without source, compiler, or TypeScript loader", { timeout: 30_000 }, async t => {
     const root = await project(t)
     await writeFile(path.join(root, "src/increment.ts"), "export const increment = (amount: number) => amount + 1\n")

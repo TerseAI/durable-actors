@@ -44,6 +44,9 @@ struct HostProvider {
 
 #[async_trait]
 impl SandboxProvider for HostProvider {
+    async fn build_code(&self, _: &crate::sandbox::BuildCodeRequest) -> Result<crate::sandbox::BuiltActorCode> {
+        anyhow::bail!("fixture does not build deployment images")
+    }
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
         *self.assigned.lock().unwrap() = Some(request.clone());
         let actor = request.actor.as_ref().unwrap();
@@ -112,6 +115,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            source: None,
             code_snapshot: None,
             code_revision: "revision".into(),
             image_ref: "image".into(),
@@ -130,6 +134,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
             host_idle_timeout_ms: 60_000,
         },
         issuer.clone(),
+        None,
     ));
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::File {

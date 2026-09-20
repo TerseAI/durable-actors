@@ -34,6 +34,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
+    deployment_update: Arc<tokio::sync::Mutex<()>>,
     pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: tokio::sync::watch::Sender<()>,
     pub(super) region: Option<String>,
@@ -63,6 +64,7 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            deployment_update: Arc::new(tokio::sync::Mutex::new(())),
             traces: crate::request_traces::TraceStore::default(),
             changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
@@ -122,7 +124,49 @@ impl ControlPlaneService {
         Ok(changed)
     }
 
+    pub(super) async fn deploy_source(
+        &self,
+        admin: &AdminService,
+        source: &HostLaunchSpec,
+        supplied_contract: Option<&super::contracts::PublicActorContract>,
+    ) -> Result<bool> {
+        let _update = self.deployment_update.lock().await;
+        source.validate()?;
+        admin
+            .validate_contract_registration(source, supplied_contract)
+            .await?;
+        let previous = admin.current_deployment().await?;
+        let (prepared, mut compiled_contract) = self
+            .provisioner
+            .prepare_deployment(source, previous.as_ref(), self.default_region())
+            .await?;
+        if compiled_contract.is_none() && prepared.code_snapshot.is_some() {
+            let previous = previous
+                .as_ref()
+                .filter(|old| old.code_snapshot == prepared.code_snapshot)
+                .context("compiled deployment has no matching source contract")?;
+            let record = admin
+                .deployment_contract(Some(&previous.code_revision))
+                .await?
+                .context("compiled deployment contract is missing")?;
+            compiled_contract = Some(super::contracts::PublicActorContract::new(record.contract)?);
+        }
+        if let (Some(compiled), Some(supplied)) = (&compiled_contract, supplied_contract) {
+            ensure!(
+                compiled.hash() == supplied.hash(),
+                "supplied actor contract differs from compiled actor code"
+            );
+        }
+        self.register_deployment(
+            admin,
+            &prepared,
+            compiled_contract.as_ref().or(supplied_contract),
+        )
+        .await
+    }
+
     pub(super) async fn delete_deployment(&self, admin: &AdminService) -> Result<bool> {
+        let _update = self.deployment_update.lock().await;
         let Some(previous) = admin.current_deployment().await? else {
             return Ok(false);
         };
@@ -642,6 +686,15 @@ impl std::error::Error for RegionConflict {}
 
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        previous: Option<&HostLaunchSpec>,
+        region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<super::contracts::PublicActorContract>,
+    )>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }
@@ -670,6 +723,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
+    runtime_image: Option<String>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
@@ -694,8 +748,10 @@ impl SandboxHostProvisioner {
         provider: Arc<dyn SandboxProvider>,
         runtime: HostSandboxRuntimeConfig,
         issuer: ActorJwtIssuer,
+        runtime_image: Option<String>,
     ) -> Self {
         Self {
+            runtime_image,
             pool: None,
             runtime_access: None,
             provider,
@@ -707,6 +763,58 @@ impl SandboxHostProvisioner {
 
 #[async_trait]
 impl HostProvisioner for SandboxHostProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        previous: Option<&HostLaunchSpec>,
+        region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<super::contracts::PublicActorContract>,
+    )> {
+        let Some(image) = &self.runtime_image else {
+            ensure!(
+                source.image_ref == "local",
+                "local control plane requires a local deployment"
+            );
+            return Ok((source.clone(), None));
+        };
+        let input = super::admin::DeploymentSource::from(source);
+        if let Some(previous) = previous.filter(|old| {
+            old.source.as_ref() == Some(&input)
+                && old.image_ref == *image
+                && old.code_snapshot.is_some()
+        }) {
+            let mut prepared = previous.clone();
+            prepared.code_revision.clone_from(&source.code_revision);
+            prepared.secret_refs.clone_from(&source.secret_refs);
+            return Ok((prepared, None));
+        }
+        let built = self
+            .provider
+            .build_code(&crate::sandbox::BuildCodeRequest {
+                image_ref: input.image_ref.clone(),
+                working_directory: input.working_directory.clone(),
+                actor_entrypoint: input
+                    .actor_entrypoint
+                    .clone()
+                    .unwrap_or_else(|| "src/durable-objects.ts".into()),
+                canonical_region: region.into(),
+            })
+            .await?;
+        let contract = super::contracts::PublicActorContract::new(built.contract)?;
+        let prepared = HostLaunchSpec {
+            source: Some(input),
+            code_revision: source.code_revision.clone(),
+            image_ref: image.clone(),
+            code_snapshot: Some(built.code_snapshot),
+            working_directory: "/customer".into(),
+            actor_entrypoint: Some("actors.mjs".into()),
+            secret_refs: source.secret_refs.clone(),
+        };
+        prepared.validate()?;
+        Ok((prepared, Some(contract)))
+    }
     async fn wait_ready(&self, host: &HostId) -> Result<()> {
         match &self.pool {
             Some(pool) => pool.wait_ready(host.as_str()).await,
@@ -1057,6 +1165,10 @@ fn internal(error: impl std::fmt::Display) -> Status {
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/streaming_tests.rs"]
 mod streaming_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/deployment.rs"]
+mod deployment_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/service.rs"]

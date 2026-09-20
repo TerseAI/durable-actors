@@ -497,6 +497,7 @@ impl Stack {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                source: None,
                 code_snapshot: None,
                 code_revision: "revision".into(),
                 image_ref: "test-image".into(),
@@ -817,6 +818,18 @@ struct SocketTestProvisioner;
 
 #[async_trait]
 impl HostProvisioner for SocketTestProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn socket_credentials(
         &self,
         _spec: &HostLaunchSpec,

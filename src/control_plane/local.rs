@@ -306,6 +306,7 @@ async fn local_routes(
         Duration::from_secs(86_400),
     )?;
     let spec = HostLaunchSpec {
+        source: None,
         code_snapshot: None,
         code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
@@ -327,7 +328,7 @@ async fn local_routes(
         host_idle_timeout_ms: 300_000,
     };
     let provisioner = Arc::new(
-        SandboxHostProvisioner::new(provider, runtime, issuer.clone())
+        SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)
             .with_runtime_access(storage.access.clone()),
     );
     let service = ControlPlaneService::new(

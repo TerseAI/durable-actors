@@ -41,6 +41,7 @@ pub struct ControlPlaneStorageConfig {
 }
 
 pub struct SandboxProviderConfig {
+    pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub provider_name: String,
     pub command: String,
@@ -189,9 +190,14 @@ fn sandbox_provisioner(
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
     pool.start(registry, stop);
     Ok(Arc::new(
-        super::service::SandboxHostProvisioner::new(provider, config.runtime, issuer.clone())
-            .with_runtime_access(access)
-            .with_pool(pool),
+        super::service::SandboxHostProvisioner::new(
+            provider,
+            config.runtime,
+            issuer.clone(),
+            Some(config.runtime_image),
+        )
+        .with_runtime_access(access)
+        .with_pool(pool),
     ))
 }
 
@@ -312,6 +318,14 @@ fn sandbox_provider_config(
         super::regions::storage_region(region)?;
     }
     Ok(SandboxProviderConfig {
+        runtime_image: {
+            let image = required(get, "DURABLE_OBJECT_RUNTIME_IMAGE")?;
+            ensure!(
+                image.starts_with("im-") && image.len() > 3 && image.len() <= 255,
+                "DURABLE_OBJECT_RUNTIME_IMAGE must be a published Modal runtime image ID"
+            );
+            image
+        },
         pool: crate::sandbox::pool::PoolConfig {
             kind: crate::sandbox::SpareKind::Actor,
             idle,

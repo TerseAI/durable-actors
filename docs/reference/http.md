@@ -45,15 +45,14 @@ All three operations require the API key and manage the installation's active de
 
 ### PUT /v1/deployment
 
-Registers actor code for your application. There is one active deployment. The JSON request replaces the complete deployment specification.
+Builds and registers actor code from a published customer image in one request. There is one active deployment. The JSON request replaces the complete source specification.
 
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-generic-runtime",
-    "codeSnapshot": "im-published-code",
+    "imageRef": "im-customer-build",
     "workingDirectory": "/customer",
-    "actorEntrypoint": "actors.mjs",
+    "actorEntrypoint": "src/actors.ts",
     "secretRefs": []
 }
 ```
@@ -61,12 +60,15 @@ Registers actor code for your application. There is one active deployment. The J
 **JSON parameters**
 
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
-- `imageRef` (`string`, required) — Generic Bun/Rust runtime image reference, 1–255 bytes. Registration does not upload or build the image.
-- `codeSnapshot` (`string`, required) — Previously published Modal directory snapshot ID containing the compiled code.
-- `workingDirectory` (`string`, required) — Must be `/customer`, the code snapshot mount point.
-- `actorEntrypoint` (`string | null`, default `null`) — Relative compiled `.mjs` artifact path within the snapshot; defaults to `actors.mjs`. Cloud execution accepts compiled modules only.
-- `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
-- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with the code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
+- `imageRef` (`string`, required) — Published Modal customer build image ID (`im-...`). The image contains the project source, installed dependencies, Bun, and the matching SDK at `/opt/little-actors/sdk`. Base it on the matching runtime image; this endpoint does not build Docker images.
+- `workingDirectory` (`string`, required) — Absolute project directory inside the build image, at most 1024 bytes.
+- `actorEntrypoint` (`string | null`, default `null`) — Source entrypoint inside that image, at most 1024 bytes; defaults to `src/durable-objects.ts` relative to the project directory.
+- `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`. Secrets are attached to actor sandboxes, not the temporary compiler sandbox.
+- `contract` (`object | null`, default `null`) — Optional public actor contract, up to 4 MiB. Hosted deployments generate it from the source automatically; a supplied contract must match. Different contract content for the active revision returns `409`. Local deployments can supply their compiled contract directly.
+
+The control plane starts a temporary sandbox from the customer image, compiles the code and public contract, publishes a permanent directory snapshot, and registers the result against the configured shared runtime image. The internal bundle and snapshot are not API parameters. Build failures leave the current deployment running. The builder is terminated after success or failure.
+
+Repeating the current image, project directory, and entrypoint reuses its compiled snapshot and contract when the shared runtime image is unchanged. Secret updates and revision-label changes do not rebuild that code.
 
 **Response:** `200 OK` with JSON:
 
@@ -78,7 +80,7 @@ An identical deployment returns `{"changed":false}`. Changing the specification 
 
 Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
 
-**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
+**Errors:** `400` for an invalid specification, contract, or failed build, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
 
 ### GET /v1/deployment/contract
 
@@ -111,15 +113,14 @@ The example represents an empty actor API; a missing contract returns `404` with
 
 Reads the active deployment.
 
-**Response:** `200 OK` with the stored specification, including its code revision:
+**Response:** `200 OK` with the original customer image and source paths, including its code revision. Internal runtime image and snapshot IDs are not returned, so this response can be sent back to `PUT /v1/deployment` when changing secrets:
 
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-generic-runtime",
-    "codeSnapshot": "im-published-code",
+    "imageRef": "im-customer-build",
     "workingDirectory": "/customer",
-    "actorEntrypoint": "actors.mjs",
+    "actorEntrypoint": "src/actors.ts",
     "secretRefs": []
 }
 ```

@@ -111,6 +111,9 @@ type fakeSandbox struct {
 	assignmentStarted chan struct{}
 	calls             []string
 	metadata          string
+	buildErr          error
+	snapshotErr       error
+	contract          json.RawMessage
 }
 
 func TestSocketCredentialsRequireTheResolvedHostSession(t *testing.T) {
@@ -146,10 +149,6 @@ func (s *fakeSandbox) ID() string { return "sb-test" }
 func (s *fakeSandbox) Route(context.Context) (string, error) {
 	s.calls = append(s.calls, "route")
 	return "https://host.test", nil
-}
-func (s *fakeSandbox) WriteFile(_ context.Context, path, _ string) error {
-	s.calls = append(s.calls, "write:"+path)
-	return nil
 }
 func (s *fakeSandbox) Ready(context.Context) error { s.calls = append(s.calls, "ready"); return nil }
 func (s *fakeSandbox) Metadata(context.Context) ([]byte, error) {
@@ -212,7 +211,18 @@ func (s *fakeSandbox) assign(ctx context.Context, environment map[string]string)
 	}
 	return nil
 }
-func (s *fakeSandbox) Snapshot(context.Context) (string, error) { return "im-code", nil }
+func (s *fakeSandbox) Snapshot(context.Context) (string, error) {
+	s.calls = append(s.calls, "snapshot")
+	return "im-code", s.snapshotErr
+}
+
+func (s *fakeSandbox) BuildCode(_ context.Context, directory, entrypoint string) (json.RawMessage, error) {
+	s.calls = append(s.calls, "build:"+directory+":"+entrypoint)
+	if s.contract != nil {
+		return s.contract, s.buildErr
+	}
+	return json.RawMessage(`{"version":1,"actors":[]}`), s.buildErr
+}
 
 func (s *fakeSandbox) ControlRoute(context.Context) (string, error) {
 	if s.controlRoute != "" {

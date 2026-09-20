@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -89,10 +90,6 @@ func (s *sdkSandbox) Terminate(ctx context.Context) error {
 func (s *sdkSandbox) Ready(ctx context.Context) error {
 	return s.sb.WaitUntilReady(ctx, time.Minute, nil)
 }
-func (s *sdkSandbox) WriteFile(ctx context.Context, path, data string) error {
-	return s.sb.Filesystem.WriteText(ctx, data, path, nil)
-}
-
 func (s *sdkSandbox) Route(ctx context.Context) (string, error)        { return s.route(ctx, 7101) }
 func (s *sdkSandbox) ControlRoute(ctx context.Context) (string, error) { return s.route(ctx, 7102) }
 func (s *sdkSandbox) route(ctx context.Context, port int) (string, error) {
@@ -143,9 +140,42 @@ func (s *sdkSandbox) Mount(ctx context.Context, image *modal.Image) error {
 }
 
 func (s *sdkSandbox) Snapshot(ctx context.Context) (string, error) {
-	image, err := s.sb.SnapshotDirectory(ctx, "/customer", &modal.SandboxSnapshotDirectoryParams{TTL: modal.NoExpiryTTL})
+	image, err := s.sb.SnapshotDirectory(ctx, compiledCodeDirectory, &modal.SandboxSnapshotDirectoryParams{TTL: modal.NoExpiryTTL})
 	if err != nil {
 		return "", err
 	}
 	return image.ImageID, nil
+}
+
+func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string) (json.RawMessage, error) {
+	process, err := s.sb.Exec(ctx, []string{"bun", "/opt/little-actors/sdk/dist/compiler/deployment-build.js", directory, entrypoint, compiledCodeDirectory}, &modal.SandboxExecParams{Stdout: modal.Pipe, Stderr: modal.Pipe, Timeout: time.Minute})
+	if err != nil {
+		return nil, fmt.Errorf("start actor compiler (build image requires matching Bun and little-actors SDK): %w", err)
+	}
+	defer process.Stdout.Close()
+	defer process.Stderr.Close()
+	var output, diagnostics []byte
+	var exit int
+	group, _ := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		output, err = io.ReadAll(io.LimitReader(process.Stdout, maximumContractBytes+1))
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		diagnostics, err = io.ReadAll(io.LimitReader(process.Stderr, maximumCommandBytes+1))
+		return err
+	})
+	group.Go(func() error { var err error; exit, err = process.Wait(ctx, nil); return err })
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	if exit != 0 {
+		return nil, fmt.Errorf("actor compilation failed: %s", diagnostics)
+	}
+	if len(output) > maximumContractBytes || !json.Valid(output) {
+		return nil, fmt.Errorf("actor compiler returned an invalid or oversized contract")
+	}
+	return json.RawMessage(output), nil
 }

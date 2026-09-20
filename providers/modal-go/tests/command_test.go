@@ -98,3 +98,57 @@ func TestRetireCommandReturnsResultAfterTerminatingSandbox(t *testing.T) {
 		t.Fatalf("sandbox was not retired: %v", sb.calls)
 	}
 }
+
+func TestDeploymentBuildPublishesAfterCompilationAndAlwaysStopsTheBuilder(t *testing.T) {
+	for _, failure := range []string{"", "compile", "publish"} {
+		sb := &fakeSandbox{}
+		if failure == "compile" {
+			sb.buildErr = errors.New("invalid actor source")
+		}
+		if failure == "publish" {
+			sb.snapshotErr = errors.New("snapshot failed")
+		}
+		api := &fakeAPI{created: sb}
+		factory := func() (modalAPI, func(), error) { return api, func() {}, nil }
+		var output bytes.Buffer
+		input := strings.NewReader(`{"operation":"build_code","request":{"imageRef":"im-customer","workingDirectory":"/project","actorEntrypoint":"src/actors.ts","canonicalRegion":"north-america-east"}}`)
+		if err := runCommand(context.Background(), input, &output, factory, time.Now); err != nil {
+			t.Fatal(err)
+		}
+		if len(sb.calls) < 3 || sb.calls[0] != "build:/project:src/actors.ts" || sb.calls[len(sb.calls)-2] != "terminate" || sb.calls[len(sb.calls)-1] != "detach" {
+			t.Fatalf("build lifecycle: %v, %s", sb.calls, output.String())
+		}
+		if failure == "compile" {
+			if len(sb.calls) != 3 || !strings.Contains(output.String(), "invalid actor source") {
+				t.Fatal(output.String(), sb.calls)
+			}
+		} else if failure == "publish" {
+			if !strings.Contains(output.String(), "snapshot failed") {
+				t.Fatal(output.String())
+			}
+		} else if !strings.Contains(output.String(), `"codeSnapshot":"im-code"`) || sb.calls[1] != "snapshot" {
+			t.Fatal(output.String(), sb.calls)
+		}
+	}
+}
+
+func TestBuildReplyCanCarryAContractLargerThanTheCommandLimit(t *testing.T) {
+	document, _ := json.Marshal(map[string]any{"version": 1, "actors": []any{}, "padding": strings.Repeat("a", maximumCommandBytes)})
+	sb := &fakeSandbox{contract: document}
+	factory := func() (modalAPI, func(), error) { return &fakeAPI{created: sb}, func() {}, nil }
+	var output bytes.Buffer
+	input := strings.NewReader(`{"operation":"build_code","request":{"imageRef":"im-customer","workingDirectory":"/project","actorEntrypoint":"src/actors.ts","canonicalRegion":"north-america-east"}}`)
+	if err := runCommand(context.Background(), input, &output, factory, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	var reply struct {
+		Status string
+		Result struct{ Contract json.RawMessage }
+	}
+	if err := json.Unmarshal(output.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Status != "success" || !bytes.Equal(reply.Result.Contract, document) {
+		t.Fatal("build contract was lost")
+	}
+}

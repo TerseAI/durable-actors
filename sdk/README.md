@@ -60,10 +60,10 @@ await room.sendMessage({ text: "Hello" }) // Arguments and return types come fro
 
 The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
 
-For a hosted deployment, configure the [remote connection](#hosted-backends) once, then deploy from the actor source project using a matching generic runtime image. The CLI compiles and publishes a code snapshot before registering it with the public contract:
+For a hosted deployment, configure the [remote connection](#hosted-backends), then supply your published customer build image. The control plane compiles the code and public contract, publishes the snapshot, and registers the deployment in one request:
 
 ```sh
-npx little-actors deploy --image im-runtime
+npx little-actors deploy --image im-customer-build
 ```
 
 Then generate clients in another repository using the same environment settings:
