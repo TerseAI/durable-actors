@@ -20,8 +20,11 @@ use crate::{
     actor::ActorKey,
     actor_state::ActorStorageKey,
     host::HostId,
-    host_leases::HostLease,
-    placement::{ObjectPlacement, ObjectPlacementStore},
+    host_leases::{ActivationInventory, HostLease},
+    placement::{
+        ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
+        ActorResidency, ObjectPlacement, ObjectPlacementStore,
+    },
     replication::{
         ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaScope, ReplicaStream,
         ReplicaTarget, ReplicationTicket, SnapshotRef,
@@ -37,8 +40,10 @@ mod session;
 pub use repair::ReplicaMembership;
 
 #[cfg(test)]
+#[path = "../../tests/unit/bucket/activation.rs"]
 mod activation_tests;
 #[cfg(test)]
+#[path = "../../tests/unit/bucket/repair.rs"]
 mod repair_tests;
 
 pub struct RuntimeStorage {
@@ -54,6 +59,7 @@ pub struct RuntimeStorage {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    inventory: ActivationInventory,
     lease: HostLease,
     mutation: String,
     actor: ActorKey,
@@ -557,5 +563,70 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
         );
         self.persist(&snapshot.object, bytes).await?;
         Ok(crate::state_transport::StateWrite::Written)
+    }
+}
+
+#[async_trait]
+impl ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>> {
+        let mut actors = std::collections::BTreeMap::new();
+        let prefix = format!("{}owners/", crate::storage_paths::ROOT);
+        for key in self.authority.list(&prefix).await? {
+            let Some(object) = self.authority.get(&key).await? else {
+                continue;
+            };
+            let record: Ownership = serde_json::from_slice(&object.bytes)?;
+            let row = actors
+                .entry(record.actor.actor_type.clone())
+                .or_insert_with(|| ActorInventory {
+                    actor_type: record.actor.actor_type.clone(),
+                    ..Default::default()
+                });
+            let instance = actor_instance_overview(&record, self.clock.now_ms()?);
+            match instance.status {
+                ActorResidency::Live => row.live += 1,
+                ActorResidency::Dormant => row.dormant += 1,
+                ActorResidency::Unknown => row.unknown += 1,
+            }
+            row.instances.push(instance);
+        }
+        Ok(actors
+            .into_values()
+            .map(|mut actor| {
+                actor
+                    .instances
+                    .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
+                actor
+            })
+            .collect())
+    }
+}
+
+fn actor_instance_overview(record: &Ownership, now: u64) -> ActorInstanceOverview {
+    if record.lease.expires_at_ms <= now {
+        return ActorInstanceOverview {
+            actor_id: record.actor.actor_id.clone(),
+            status: ActorResidency::Dormant,
+            connections: vec![],
+            waiting: Some(vec![]),
+        };
+    }
+    ActorInstanceOverview {
+        actor_id: record.actor.actor_id.clone(),
+        status: match record.inventory.resident {
+            Some(true) => ActorResidency::Live,
+            Some(false) => ActorResidency::Dormant,
+            None => ActorResidency::Unknown,
+        },
+        connections: record
+            .inventory
+            .connections
+            .iter()
+            .map(|connection| ActorConnectionInventory {
+                id: connection.id.clone(),
+                metadata: connection.metadata.clone(),
+            })
+            .collect(),
+        waiting: record.inventory.waiting.clone(),
     }
 }

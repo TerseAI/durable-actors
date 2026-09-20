@@ -7,10 +7,12 @@ pub(crate) use client::LeaseFence;
 mod event_sink;
 mod inspection;
 #[cfg(test)]
+#[path = "../../tests/unit/control_plane/inspection_tests.rs"]
 mod inspection_tests;
 mod issuer;
 mod local;
 mod process;
+pub(crate) use process::actor_idle_timeout_seconds;
 mod protocol;
 mod public_api;
 mod regions;

@@ -150,6 +150,11 @@ pub(super) async fn serve_assigned_host(
             return Err(error);
         }
     };
+    lease.observe(
+        executor_connection.executor(),
+        sockets.registry.clone(),
+        host.queues(),
+    );
     if let Some(readiness) = readiness {
         let _ = readiness.send(ready);
     }
@@ -411,22 +416,28 @@ async fn prepare_actor_host(
         }
     };
     let sockets = Arc::new(super::sockets::HostSockets::new(storage.clone()));
-    let host = Arc::new(ActorHost::new(
-        endpoint,
-        executor_connection.executor(),
-        storage.clone(),
-        super::replication::ActorReplication::start(
+    let host = Arc::new(
+        ActorHost::new(
+            endpoint,
+            executor_connection.executor(),
             storage.clone(),
-            crate::replication::ReplicaScope {
-                actor: config.actor.clone().context("actor identity missing")?,
-                host: config.host_id.clone(),
-                session: config.session_id.clone(),
-                region: config.runtime_config.region.clone(),
-            },
-            storage.stop.clone(),
-        ),
-        sockets.clone(),
-    ));
+            super::replication::ActorReplication::start(
+                storage.clone(),
+                crate::replication::ReplicaScope {
+                    actor: config.actor.clone().context("actor identity missing")?,
+                    host: config.host_id.clone(),
+                    session: config.session_id.clone(),
+                    region: config.runtime_config.region.clone(),
+                },
+                storage.stop.clone(),
+            ),
+            sockets.clone(),
+        )
+        .with_traces(crate::request_traces::TraceSender::start(
+            control_plane.clone(),
+            storage.stop.child_token(),
+        )),
+    );
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
         storage,
@@ -708,158 +719,5 @@ fn duration_seconds(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    #[test]
-    fn host_needs_no_local_state_directory() -> Result<()> {
-        let values = values();
-        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-        assert_eq!(
-            config.executor_socket,
-            PathBuf::from("/tmp/durable-object-executor.sock")
-        );
-        assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
-        assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn host_publishes_complete_metadata_before_dependencies_are_ready() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("host.json");
-        let mut values = values();
-        values.insert("DURABLE_OBJECT_HOST_BIND".into(), "127.0.0.1:0".into());
-        values.insert(
-            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
-            path.display().to_string(),
-        );
-        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
-        values.insert(
-            "DURABLE_OBJECT_HOST_ROUTE".into(),
-            "https://host.example.com".into(),
-        );
-        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-        let (_, route, _) = bind_host_listener(&config, None).await?;
-        let metadata: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
-        assert_eq!(
-            metadata,
-            serde_json::json!({
-                    "hostId": config.host_id,
-            "sessionId": config.session_id,
-                    "route": route,
-                    "canonicalRegion": "north-america-east",
-                })
-        );
-        let handle: crate::sandbox::ActorHostHandle = serde_json::from_value(metadata)?;
-        assert_eq!(handle.host_id, config.host_id);
-        assert_eq!(std::fs::read_dir(directory.path())?.count(), 1);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn metadata_publication_failure_prevents_host_readiness() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let mut values = values();
-        values.insert(
-            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
-            directory
-                .path()
-                .join("missing/host.json")
-                .display()
-                .to_string(),
-        );
-        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
-        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-        assert!(bind_host_listener(&config, None).await.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn host_metadata_requires_a_valid_region() {
-        for region in [None, Some(""), Some("bad/region")] {
-            let mut values = values();
-            values.insert(
-                "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
-                "/tmp/host.json".into(),
-            );
-            if let Some(region) = region {
-                values.insert("DURABLE_OBJECT_REGION".into(), region.into());
-            }
-            assert!(ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err());
-        }
-    }
-
-    #[test]
-    fn startup_timings_begin_with_only_configuration_loaded() {
-        let values = values();
-        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned()).unwrap();
-        let timings = HostStartupTimings::new(&config);
-
-        assert!(timings.configuration_loaded_at_ms <= timings.elapsed_ms());
-        assert!(timings.javascript_spawned_at_ms.is_none());
-        assert!(timings.executor_notified_at_ms.is_none());
-    }
-
-    #[tokio::test]
-    async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
-        let mut server = Box::pin(std::future::pending::<Result<()>>());
-        let mut executor = Box::pin(std::future::pending::<Result<()>>());
-        let mut shutdown = Box::pin(std::future::pending::<()>());
-        let mut javascript = tokio::process::Command::new("sleep")
-            .arg("60")
-            .kill_on_drop(true)
-            .spawn()?;
-        let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
-        let (_activity_sender, mut activity) = tokio::sync::watch::channel(0);
-        let (sockets, mut socket_activity) = tokio::sync::watch::channel(1);
-        let mut stopped = Box::pin(wait_for_host_stop(
-            server.as_mut(),
-            executor.as_mut(),
-            &mut javascript,
-            shutdown.as_mut(),
-            &mut lease,
-            (&mut activity, &mut socket_activity),
-            Duration::from_millis(10),
-        ));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), stopped.as_mut())
-                .await
-                .is_err()
-        );
-        sockets.send_replace(0);
-        tokio::time::timeout(Duration::from_secs(1), stopped.as_mut()).await??;
-        drop(stopped);
-        javascript.kill().await?;
-        Ok(())
-    }
-
-    fn values() -> HashMap<String, String> {
-        HashMap::from([
-            (
-                "DURABLE_OBJECT_RUNTIME_CONFIG".into(),
-                serde_json::json!({
-                    "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
-                    "region":"north-america-east", "replicaSecret":"secret", "replicaRegions":[],
-                    "token":null
-                })
-                .to_string(),
-            ),
-            (
-                "DURABLE_OBJECT_CONTROL_PLANE_URL".into(),
-                "http://127.0.0.1:7100".into(),
-            ),
-            ("DURABLE_OBJECT_HOST_TOKEN".into(), "host-jwt".into()),
-            ("DURABLE_OBJECT_JWT_PUBLIC_KEYS".into(), "{}".into()),
-            (
-                "DURABLE_OBJECT_HOST_ID".into(),
-                "host.v3.revision-1.host-1".into(),
-            ),
-            (
-                "DURABLE_OBJECT_SESSION_ID".into(),
-                "00000000-0000-4000-8000-000000000001".into(),
-            ),
-        ])
-    }
-}
+#[path = "../../tests/unit/host/process.rs"]
+mod tests;

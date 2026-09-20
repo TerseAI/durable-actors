@@ -22,11 +22,11 @@ jobs:
                   go-version: "1.27.1"
                   cache-dependency-path: providers/modal-go/go.sum
             - run: test -z "$(gofmt -l .)"
-            - run: go test -race -mod=readonly ./...
-            - run: go vet -mod=readonly ./...
+            - run: go test -race -mod=readonly -overlay tests/overlay.json ./...
+            - run: go vet -mod=readonly -overlay tests/overlay.json ./...
             - name: Verify provider image packaging
               working-directory: .
-              run: node --test scripts/release-workflow.test.mjs
+              run: node --test tests/scripts/release-workflow.test.mjs
 
     rust:
         name: Rust runtime
@@ -101,7 +101,10 @@ jobs:
                   bun-version: "1.4.2"
             - run: pnpm install --frozen-lockfile
             - run: pnpm --dir sdk format:check
+            - run: pnpm --dir packages/observer-ui format:check
+            - run: pnpm --dir packages/observer-ui test
             - run: pnpm --dir sdk test
+            - run: pnpm --dir packages/observer-ui package:check
             - name: Verify npm package
               working-directory: sdk
               run: npm pack --dry-run

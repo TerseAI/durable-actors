@@ -65,10 +65,9 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                 .any(|part| matches!(part, std::path::Component::ParentDir)),
         "customer entrypoint must be a compiled module under /customer"
     );
-    let actor_idle_timeout_ms = environment
-        .get("DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS")
-        .context("missing actor idle timeout")?
-        .parse()?;
+    let actor_idle_timeout_ms = crate::control_plane::actor_idle_timeout_seconds(&mut |name| {
+        environment.get(name).cloned()
+    })? * 1_000;
     let warm = WarmHost {
         readiness: Some(assigned.ready),
         listener,
@@ -81,5 +80,5 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
 }
 
 #[cfg(test)]
-#[path = "spare_tests.rs"]
+#[path = "../../tests/unit/host/spare.rs"]
 mod tests;

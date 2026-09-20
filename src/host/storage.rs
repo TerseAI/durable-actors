@@ -29,6 +29,7 @@ pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     pub transport: crate::state_transport::GrpcStateTransport,
     pub(super) stop: CancellationToken,
+    observer: Arc<ControlPlaneClient>,
     host: HostId,
     session: String,
     region: String,
@@ -62,7 +63,7 @@ impl HostStorage {
         let runtime = Arc::new(RuntimeStorage::new(
             authority,
             Arc::new(super::replica_provisioner::HostReplicaProvisioner {
-                client,
+                client: client.clone(),
                 regions: config.replica_regions,
             }),
             Arc::new(GrpcReplicaPeers::with_transport(
@@ -74,6 +75,7 @@ impl HostStorage {
             std::sync::Arc::new(crate::clock::SystemClock),
         )?);
         Ok(Self {
+            observer: client,
             stop,
             runtime,
             transport,
@@ -101,6 +103,14 @@ impl HostStorage {
             .unwrap()
             .clone()
             .context("activation lease missing")
+    }
+
+    fn notify_observer(&self) {
+        let client = self.observer.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_secs(2), client.notify_inventory_changed())
+                .await;
+        });
     }
 
     fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
@@ -198,6 +208,25 @@ impl ActorStorage for HostStorage {
 #[async_trait]
 impl HostLeaseRegistry for HostStorage {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+        self.register_with_residents(request, None).await
+    }
+
+    async fn register_with_residents(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[crate::actor::ActorKey]>,
+    ) -> Result<HostLease> {
+        self.register_with_inventory(request, residents, &[], None)
+            .await
+    }
+
+    async fn register_with_inventory(
+        &self,
+        request: &HostLeaseRequest,
+        residents: Option<&[crate::actor::ActorKey]>,
+        sockets: &[crate::host_leases::ActorSocketInventory],
+        queues: Option<&[crate::host_leases::ActorQueueInventory]>,
+    ) -> Result<HostLease> {
         ensure!(
             request.id == self.host && request.session_id == self.session,
             "host lease scope mismatch"
@@ -205,6 +234,30 @@ impl HostLeaseRegistry for HostStorage {
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
         let actor = self.actor.as_ref().context("host actor identity missing")?;
+        ensure!(
+            residents.is_none_or(
+                |actors| actors.len() <= 1 && actors.iter().all(|candidate| candidate == actor)
+            ),
+            "resident actor scope mismatch"
+        );
+        ensure!(
+            sockets.iter().all(|entry| entry.actor == *actor)
+                && queues.is_none_or(|entries| entries.iter().all(|entry| entry.actor == *actor)),
+            "inventory actor scope mismatch"
+        );
+        let inventory = crate::host_leases::ActivationInventory {
+            resident: residents.map(|actors| actors.contains(actor)),
+            connections: sockets
+                .iter()
+                .flat_map(|entry| entry.connections.clone())
+                .collect(),
+            waiting: queues.map(|entries| {
+                entries
+                    .iter()
+                    .flat_map(|entry| entry.waiting.clone())
+                    .collect()
+            }),
+        };
         let first = self.lease.lock().unwrap().is_none();
         let lease = if first {
             let loaded = self
@@ -219,7 +272,9 @@ impl HostLeaseRegistry for HostStorage {
             });
             lease
         } else {
-            self.runtime.renew_activation(actor, request).await?
+            self.runtime
+                .renew_activation(actor, request, inventory)
+                .await?
         };
         self.fence.lock().unwrap().confirm(
             started,
@@ -227,6 +282,7 @@ impl HostLeaseRegistry for HostStorage {
             Instant::now(),
         )?;
         self.lease.lock().unwrap().replace(lease.clone());
+        self.notify_observer();
         Ok(lease)
     }
     async fn unregister(&self, host: &HostId, session: &str) -> Result<()> {
@@ -241,7 +297,9 @@ impl HostLeaseRegistry for HostStorage {
                 host,
                 session,
             )
-            .await
+            .await?;
+        self.notify_observer();
+        Ok(())
     }
 }
 
@@ -323,149 +381,9 @@ impl CredentialsProvider for HostCredentials {
 }
 
 #[cfg(test)]
-#[path = "replication_tests.rs"]
+#[path = "../../tests/unit/host/replication_tests.rs"]
 mod replication_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        bucket::BucketObject, replication::ReplicaSet, state_log::StateSnapshot,
-        state_transport::SnapshotWriter,
-    };
-    use std::collections::HashMap;
-
-    #[derive(Default)]
-    struct MemoryBucket {
-        objects: Mutex<HashMap<String, BucketObject>>,
-        owner_reads: std::sync::atomic::AtomicUsize,
-    }
-    #[async_trait]
-    impl Bucket for MemoryBucket {
-        async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
-            if key.contains("/owners/") {
-                self.owner_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            Ok(self.objects.lock().unwrap().get(key).cloned())
-        }
-        async fn compare_and_swap(
-            &self,
-            key: &str,
-            generation: Option<i64>,
-            bytes: Vec<u8>,
-        ) -> Result<bool> {
-            let mut objects = self.objects.lock().unwrap();
-            let current = objects.get(key).map(|object| object.generation);
-            if current != generation {
-                return Ok(false);
-            }
-            objects.insert(
-                key.into(),
-                BucketObject {
-                    generation: current.unwrap_or(0) + 1,
-                    bytes,
-                },
-            );
-            Ok(true)
-        }
-        async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-            Ok(self
-                .objects
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|key| key.starts_with(prefix))
-                .cloned()
-                .collect())
-        }
-    }
-
-    #[tokio::test]
-    async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
-        let bucket = Arc::new(MemoryBucket::default());
-        let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
-        let runtime = Arc::new(RuntimeStorage::new(
-            bucket.clone(),
-            Arc::new(ReplicaSet(vec![])),
-            Arc::new(GrpcReplicaPeers::new(access.clone())?),
-            access,
-            "http://control-plane-unavailable.invalid".into(),
-            std::sync::Arc::new(crate::clock::SystemClock),
-        )?);
-        let host = HostId::new("host.v3.revision.host");
-        let storage = HostStorage {
-            stop: CancellationToken::new(),
-            runtime,
-            transport: crate::state_transport::GrpcStateTransport::new(),
-            host: host.clone(),
-            session: "session".into(),
-            region: "us-east".into(),
-            actor: Some(ActorKey {
-                actor_type: "Counter".into(),
-                actor_id: "one".into(),
-            }),
-            new_actor: true,
-            activation: Mutex::new(None),
-            fence: Mutex::new(LeaseFence::default()),
-            lease: Mutex::new(None),
-        };
-        let actor = ActorKey {
-            actor_type: "Counter".into(),
-            actor_id: "one".into(),
-        };
-        assert!(storage.acquire_actor(&actor, &host).await.is_err());
-        storage
-            .register(&HostLeaseRequest {
-                id: host.clone(),
-                session_id: "session".into(),
-                route: "http://host".into(),
-                duration_ms: 30_000,
-            })
-            .await?;
-        let activation = storage.acquire_actor(&actor, &host).await?;
-        assert_eq!(activation.owner_epoch, 1);
-        assert_eq!(activation.state_version, 0);
-        assert_eq!(
-            bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        let snapshot = StateSnapshot::new(
-            1,
-            1,
-            "write".into(),
-            serde_json::json!({"count":1}),
-            serde_json::json!(1),
-        )?
-        .encode()?;
-        let ticket = storage.prepare_state_write(&actor, &host, 1, 0).await?;
-        assert_eq!(
-            bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "the first write uses locally established ownership"
-        );
-        storage
-            .runtime
-            .write_snapshot(&ticket, snapshot.clone())
-            .await?;
-        let (version, loaded) = storage.load_actor_state(&actor, &host, 1).await?;
-        assert_eq!(version, 1);
-        assert_eq!(loaded.as_ref(), snapshot.as_slice());
-        assert!(
-            storage
-                .prepare_state_write(&actor, &host, 2, 1)
-                .await
-                .is_err()
-        );
-        assert!(
-            storage
-                .acquire_actor(&actor, &HostId::new("another-host"))
-                .await
-                .is_err()
-        );
-        storage.unregister(&host, "session").await?;
-        assert!(storage.ensure_authority().is_err());
-        assert!(storage.acquire_actor(&actor, &host).await.is_err());
-        Ok(())
-    }
-}
+#[path = "../../tests/unit/host/storage.rs"]
+mod tests;

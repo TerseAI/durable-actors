@@ -13,22 +13,24 @@ import { ControlPlaneClient } from "./control-plane.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
-    apiKey: string
+    apiKey?: string
     port: number
     project: string
     entrypoint: string
     storage: "local" | "gcs"
     dataDir?: string
+    watch: boolean
 }
 
 function registerDevCommand(program: Command): void {
     program
         .command("dev")
         .description("Start local actors with persistent file storage")
+        .option("--no-watch", "Disable automatic actor reload when source files change")
         .addOption(
-            new Option("--api-key <key>", "API key for local clients")
-                .env("DURABLE_OBJECT_API_KEY")
-                .makeOptionMandatory()
+            new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
+                "DURABLE_OBJECT_API_KEY"
+            )
         )
         .addOption(
             new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
@@ -89,19 +91,19 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
         true,
         true
     )
-    const client = runtimeConnection(runtime.readiness!, runtime.exited).then(
-        connection =>
-            new ControlPlaneClient(
-                configuredSettings(z.object({ controlPlaneUrl: z.string(), apiKey: z.string() }).parse(connection)),
-                fetch
-            )
+    const connection = runtimeConnection(runtime.readiness!, runtime.exited)
+    const settings = connection.then(value =>
+        configuredSettings(z.object({ controlPlaneUrl: z.string(), apiKey: z.string() }).parse(value))
     )
+    const client = settings.then(settings => new ControlPlaneClient(settings, fetch))
     void client.catch(() => {})
     let watcher: ActorSourceWatcher | undefined
     try {
-        watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
-            publishLocalContract(options, project, await client)
-        )
+        if (options.watch) {
+            watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
+                publishLocalContract(options, project, await client)
+            )
+        }
         await client
         return await runtime.exited
     } catch (error) {
@@ -147,10 +149,9 @@ function devArguments(options: DevOptions): string[] {
         "--entrypoint",
         options.entrypoint,
         "--storage",
-        options.storage,
-        "--api-key",
-        options.apiKey
+        options.storage
     ]
+    if (options.apiKey) args.push("--api-key", options.apiKey)
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args
 }

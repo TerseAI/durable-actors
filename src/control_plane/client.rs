@@ -42,6 +42,23 @@ impl ControlPlaneClient {
         }
     }
 
+    pub(crate) async fn report_traces(
+        &self,
+        traces: Vec<crate::request_traces::RequestTrace>,
+        dropped: u64,
+    ) -> Result<()> {
+        self.execute(ControlPlaneCommand::RequestTraces { traces, dropped })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn notify_inventory_changed(&self) -> Result<()> {
+        match self.execute(ControlPlaneCommand::InventoryChanged).await? {
+            ControlPlaneCommandReply::Unit => Ok(()),
+            _ => anyhow::bail!("unexpected inventory notification response"),
+        }
+    }
+
     pub(crate) async fn notify_socket_message(
         &self,
         actor: ActorKey,
@@ -193,102 +210,8 @@ fn bearer_authorization(token: &str) -> Result<MetadataValue<tonic::metadata::As
 }
 
 #[cfg(test)]
-mod lease_fence_tests {
-    use super::*;
-
-    #[test]
-    fn an_early_request_does_not_prevent_initial_lease_confirmation() -> Result<()> {
-        let now = Instant::now();
-        let mut fence = LeaseFence::default();
-        assert!(fence.check(now).is_err());
-        fence.confirm(now, Duration::from_secs(30), now + Duration::from_secs(1))?;
-        fence.check(now + Duration::from_secs(2))
-    }
-
-    #[test]
-    fn slow_renewal_cannot_revive_an_expired_process() -> Result<()> {
-        let start = Instant::now();
-        let mut fence = LeaseFence::default();
-        fence.confirm(
-            start,
-            Duration::from_secs(30),
-            start + Duration::from_secs(1),
-        )?;
-        fence.check(start + Duration::from_secs(24))?;
-        assert!(
-            fence
-                .confirm(
-                    start + Duration::from_secs(20),
-                    Duration::from_secs(30),
-                    start + Duration::from_secs(26)
-                )
-                .is_err()
-        );
-        assert!(fence.begin(start + Duration::from_secs(27)).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn response_gate_expires_from_request_start_even_without_a_timer() -> Result<()> {
-        let start = Instant::now();
-        let mut fence = LeaseFence::default();
-        fence.confirm(
-            start,
-            Duration::from_secs(30),
-            start + Duration::from_secs(10),
-        )?;
-        assert!(fence.check(start + Duration::from_secs(25)).is_err());
-        Ok(())
-    }
-}
-
+#[path = "../../tests/unit/control_plane/client_lease_fence_tests.rs"]
+mod lease_fence_tests;
 #[cfg(test)]
-mod refresh_tests {
-    use super::*;
-    use crate::grpc::proto::{
-        ControlPlaneReply, ControlPlaneRequest,
-        actor_control_plane_service_server::{
-            ActorControlPlaneService, ActorControlPlaneServiceServer,
-        },
-    };
-
-    struct LocalCredentials;
-    #[tonic::async_trait]
-    impl ActorControlPlaneService for LocalCredentials {
-        async fn execute(
-            &self,
-            _: Request<ControlPlaneRequest>,
-        ) -> Result<tonic::Response<ControlPlaneReply>, tonic::Status> {
-            Ok(tonic::Response::new(
-                super::super::protocol::encode_reply(ControlPlaneCommandReply::StorageAccess {
-                    token: None,
-                    replacement_token: "renewed-local-token".into(),
-                })
-                .unwrap(),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn local_hosts_refresh_socket_credentials_without_a_cloud_token() -> Result<()> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let client = ControlPlaneClient::connect(
-            format!("http://{}", listener.local_addr()?),
-            "initial-token",
-        )
-        .await?;
-        let server = tokio::spawn(
-            tonic::transport::Server::builder()
-                .add_service(ActorControlPlaneServiceServer::new(LocalCredentials))
-                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
-        );
-        let result = client.refresh_storage_access().await;
-        server.abort();
-        result?;
-        assert_eq!(
-            client.authorization.read().unwrap().to_str()?,
-            "Bearer renewed-local-token"
-        );
-        Ok(())
-    }
-}
+#[path = "../../tests/unit/control_plane/client_refresh_tests.rs"]
+mod refresh_tests;

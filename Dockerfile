@@ -20,14 +20,17 @@ FROM node:22.19.0-bookworm AS sdk-builder
 WORKDIR /build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY sdk/package.json ./sdk/package.json
+COPY packages/observer-ui/package.json ./packages/observer-ui/package.json
 COPY examples/chat/package.json ./examples/chat/package.json
 COPY examples/ai-chat/package.json ./examples/ai-chat/package.json
 COPY examples/documents/package.json ./examples/documents/package.json
 RUN corepack enable && pnpm install --frozen-lockfile
+COPY packages/observer-ui ./packages/observer-ui
 COPY sdk/src ./sdk/src
 COPY sdk/tsconfig*.json ./sdk/
 COPY proto ./proto
-RUN pnpm --dir sdk exec tsc -p tsconfig.build.json \
+RUN pnpm --dir packages/observer-ui build \
+    && pnpm --dir sdk exec tsc -p tsconfig.build.json \
     && cp proto/durable_object.proto sdk/dist/generated/durable_object.proto
 
 FROM oven/bun:1.4.2 AS bun
@@ -43,6 +46,7 @@ COPY --from=modal-builder /out/little-actors-modal-go /usr/local/bin/little-acto
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /build/node_modules /opt/little-actors/node_modules
 COPY --from=sdk-builder /build/sdk/node_modules /opt/little-actors/sdk/node_modules
+COPY --from=sdk-builder /build/packages/observer-ui /opt/little-actors/packages/observer-ui
 COPY --from=sdk-builder /build/sdk/dist /opt/little-actors/sdk/dist
 COPY sdk/package.json /opt/little-actors/sdk/package.json
 RUN mkdir -p /customer /node_modules \

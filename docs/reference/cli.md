@@ -19,18 +19,30 @@ npx little-actors init chat-example
 ## Run a development server
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
 Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
-- `--api-key <key>` — Required API key, or set `DURABLE_OBJECT_API_KEY`.
+- `--api-key <key>` — API key override. `dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one, saves it in `<data-dir>/api-key` with owner-only permissions, and prints an export command that reads the file. The key changes on each restart and is not printed.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.little-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
+
+## Open the observability UI
+
+```sh
+npx little-actors observe
+```
+
+Verifies admin access to the control plane, starts a local Web UI on an available loopback port, and opens it in your default browser. The React UI checks connectivity through the local server and offers a check/retry button; it does not yet monitor live activity. Control-plane credentials stay on the local server. The terminal prints the UI URL. Press Ctrl+C to stop the server. Failed connection checks print an error and exit with code `1`.
+
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_OBJECT_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
+- `--no-open` — Start the UI and print its URL without launching a browser. If automatic opening fails, the server remains available at the printed URL.
+
+The CLI serves the built UI directly from its `little-actors-observer` runtime dependency. The UI is also available as the embeddable [`little-actors-observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
 
 ## Inspect saved objects
 
@@ -111,3 +123,35 @@ npx little-actors start
 ```
 
 Starts the packaged server using the [hosted server configuration](configuration.md). It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
+
+### Actor inventory
+
+The observe page lists actor types in the connected deployment with live (resident in memory), dormant, and total instance counts. Deployed types with zero instances remain visible. Unknown counts indicate a live host without a fresh residency report.
+
+Inventory changes stream from the Rust control plane over SSE, with automatic reconnection and stale-data warnings. Worker residency changes trigger an early host report; socket connections and disconnections publish immediately. Updated Rust hosts, control planes, and SDKs are required. The admin-only stream is `GET /v1/observe/events`; `GET /v1/observe/actors` remains available for single reads. Neither activates actors.
+
+A fifteen-second reconciliation catches missed notifications and lease expiry. Notifications are local to a control-plane process. Socket snapshots are persisted with host leases, so other control-plane processes reconcile the same data. Expired or replaced host sessions cannot contribute connection counts.
+
+### Request timings
+
+The Requests view streams completed method calls and WebSocket lifecycle/message events. Each row shows the actor, operation, request ID, outcome, total duration, and queue wait. Pause freezes the display while collection continues; expand a row to inspect its request, host, and connection IDs.
+
+Total is measured from host submission (or WebSocket message receipt) until actor processing and persistence finish. Queue wait ends when the actor begins processing and includes the per-connection WebSocket message queue. These are host-side timings: they exclude client-side routing, authentication before host submission, and the network round trip. A request rejected or interrupted before processing has no queue-wait value. Retries appear as separate attempts, even when they share a request ID.
+
+Hosts deliver timing records asynchronously; tracing never waits on control-plane delivery in the actor request path. The control plane appends each batch to storage, then wakes the live feed after commit. Each event has a stable UUID, separate from its request ID and the UI's live sequence number. Appending the same retained event again does not duplicate it; distinct attempts sharing a request ID remain distinct events.
+
+The local runtime uses SQLite at `request-traces.sqlite3` inside its state directory (by default `.little-actors`, overridden with `--data-dir`), including with `--storage gcs`. It retains the latest 10,000 events independently of the 500-event live UI window. Event IDs and replay cursors survive restart. Delivery-loss counters describe the current process and reset on restart. Earlier SQLite schemas and `request-traces.json` snapshots are migrated on open; the original JSON file is preserved. Invalid or unsupported storage fails startup instead of being silently overwritten.
+
+Persistence is injected through the Rust `TracePersistence` trait: `append(events)` commits events, `query({ sql, params })` returns SQL rows, and `replay(...)` supplies the live stream's saved-event cursor. Historical filtering and pagination are owned by the observer UI. The adapter owns SQL execution, retention, deduplication, and live replay. Hosted servers currently use an in-memory SQLite adapter; shared durable cloud storage is not configured yet. A hosted replacement must preserve the public SQL schema and support the UI's SQL dialect and parameter syntax (or adapt those explicitly).
+
+The UI sends raw SQL and bound values to `POST /api/observe/query`; the local CLI forwards them to the admin-only `POST /v1/observe/query` and attaches the API key server-side. Credentials never enter browser JavaScript. Requests contain `{ "sql": "SELECT outcome, COUNT(*) AS total FROM request_events WHERE started_at_ms >= ? GROUP BY outcome", "params": [0] }`; responses contain `{ "rows": [{ "outcome": "completed", "total": 12 }], "truncated": false }`. Values use positional `?` bindings; parameters are JSON strings, numbers, booleans, or null. Result columns must have unique names, and binary results are unsupported.
+
+The public `request_events` view exposes `sequence`, `event_id`, `started_at_ms`, `actor_type`, `actor_id`, `outcome`, `request_id`, `host_id`, `session_id`, `kind`, `operation`, `connection_id`, `duration_ms`, `queue_wait_ms`, and `event` (the original JSON text). `request_history` exposes one row with `generation`, `watermark` (last ingestion position), `pruned` (retention boundary), and `total` (inserted event count). The Requests screen builds SQL for time, actor-ID, and outcome filters and pages by `(started_at_ms, sequence)`, keeping the initial watermark to exclude later appends.
+
+SQL uses SQLite’s authorizer to permit reads and built-in functions in the trace database. There is no custom table or function allowlist. Writes, schema changes, PRAGMAs, attached databases, and extension loading are denied. The public views are the supported UI contract; internal trace tables are also readable. Queries are one statement, at most 16 KiB of SQL and 100 scalar parameters; HTTP bodies are capped at 64 KiB. Results are capped at 500 rows (`truncated` signals more) and 4 MiB; SQLite values are capped at 1 MiB. A progress handler interrupts execution after 500 ms. Queries never execute actor code or access actor state. Hosted reuse additionally requires server-enforced project isolation and restricted database credentials; a tenant filter supplied by browser SQL is not authorization.
+
+The live feed uses the same saved events. An append commits before waking subscribers; notifications only trigger a database read. `GET /v1/observe/requests/events` sends an initial recent page, then events in ingestion order. SSE IDs and `resumeCursor` are opaque replay tokens: reconnect with `after=<resumeCursor>` (or `Last-Event-ID`) to catch up, including late-arriving events. Subscribe-before-read and five-second reconciliation cover missed notifications. If retention or storage replacement invalidates a replay position, `reset` tells the UI to replace its window with available history. This is an SSE feed; no SQLite hook or separate WebSocket transport is required.
+
+Collection is best effort before commit. Failed appends are not published as saved events: they are logged and set `persistenceFailed`, and the UI warns that history may be incomplete. That warning remains for the life of the process. At most 64 batches can await persistence. Overload, disconnection, and process termination can lose records before saving, and an abrupt host exit can lose buffered records without a loss report. Already committed events remain queryable.
+
+The admin-only endpoints are `POST /v1/observe/query` (SQL) and `GET /v1/observe/requests/events` (SSE). Both require updated Rust hosts and control planes; the CLI and observer must also be updated. Neither endpoint executes actor code or changes actor state.

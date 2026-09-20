@@ -37,6 +37,7 @@ impl RuntimeStorage {
             None => None,
         };
         let mut record = Ownership {
+            inventory: ActivationInventory::default(),
             actor: actor.clone(),
             epoch: current
                 .as_ref()
@@ -58,6 +59,7 @@ impl RuntimeStorage {
         &self,
         actor: &ActorKey,
         request: &HostLeaseRequest,
+        inventory: ActivationInventory,
     ) -> Result<HostLease> {
         let (generation, mut record) = self
             .load(&actor.storage_key())
@@ -80,6 +82,7 @@ impl RuntimeStorage {
         );
         let lease = self.new_lease(request)?;
         record.lease = lease.clone();
+        record.inventory = inventory;
         self.save_activation(&mut record, Some(generation)).await?;
         Ok(lease)
     }
@@ -90,14 +93,25 @@ impl RuntimeStorage {
         host: &HostId,
         session: &str,
     ) -> Result<()> {
-        let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
-            return Ok(());
-        };
-        if record.lease.id != *host || record.lease.session_id != session {
-            return Ok(());
+        for _ in 0..3 {
+            let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
+                return Ok(());
+            };
+            if record.lease.id != *host
+                || record.lease.session_id != session
+                || record.lease.expires_at_ms == 0
+            {
+                return Ok(());
+            }
+            record.lease.expires_at_ms = 0;
+            if self
+                .replace_activation(&mut record, Some(generation))
+                .await?
+            {
+                return Ok(());
+            }
         }
-        record.lease.expires_at_ms = 0;
-        self.save_activation(&mut record, Some(generation)).await
+        anyhow::bail!("actor activation kept changing during release")
     }
 
     fn new_lease(&self, request: &HostLeaseRequest) -> Result<HostLease> {
@@ -119,17 +133,25 @@ impl RuntimeStorage {
     }
 
     async fn save_activation(&self, record: &mut Ownership, generation: Option<i64>) -> Result<()> {
-        record.mutation = uuid::Uuid::new_v4().to_string();
         ensure!(
-            replace(
-                self.authority.as_ref(),
-                &ownership_key(&record.actor.storage_key())?,
-                generation,
-                serde_json::to_vec(record)?
-            )
-            .await?,
+            self.replace_activation(record, generation).await?,
             "actor activation changed concurrently"
         );
         Ok(())
+    }
+
+    async fn replace_activation(
+        &self,
+        record: &mut Ownership,
+        generation: Option<i64>,
+    ) -> Result<bool> {
+        record.mutation = uuid::Uuid::new_v4().to_string();
+        replace(
+            self.authority.as_ref(),
+            &ownership_key(&record.actor.storage_key())?,
+            generation,
+            serde_json::to_vec(record)?,
+        )
+        .await
     }
 }

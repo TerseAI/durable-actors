@@ -15,7 +15,7 @@ const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
-const DEFAULT_ACTOR_IDLE_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
@@ -159,7 +159,13 @@ async fn control_plane_routes(
     .with_socket_event_sink(socket_events);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
-    let inspector = super::inspection::ActorInspector::new(placements, storage.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        placements,
+        storage.clone(),
+        storage.clone(),
+        service.changes.clone(),
+    )
+    .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.router());
@@ -324,15 +330,12 @@ fn sandbox_provider_config(
             control_plane_url,
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
-            actor_idle_timeout_ms: idle_timeout(
-                get,
-                "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS",
-                DEFAULT_ACTOR_IDLE_TIMEOUT_MS,
-            )?,
+            actor_idle_timeout_seconds: actor_idle_timeout_seconds(get)?,
             host_idle_timeout_ms: idle_timeout(
                 get,
                 "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
                 DEFAULT_HOST_IDLE_TIMEOUT_MS,
+                MAX_IDLE_TIMEOUT_MS,
             )?,
         },
     })
@@ -378,10 +381,22 @@ fn validated_http_url(value: &str, name: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
+pub(crate) fn actor_idle_timeout_seconds(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<u64> {
+    idle_timeout(
+        get,
+        "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS",
+        DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS,
+        86_400,
+    )
+}
+
 fn idle_timeout(
     get: &mut impl FnMut(&str) -> Option<String>,
     name: &str,
     default: u64,
+    maximum: u64,
 ) -> Result<u64> {
     let value = get(name)
         .map(|value| value.parse())
@@ -389,126 +404,12 @@ fn idle_timeout(
         .with_context(|| format!("{name} must be an integer"))?
         .unwrap_or(default);
     ensure!(
-        (1..=MAX_IDLE_TIMEOUT_MS).contains(&value),
-        "{name} is outside the supported range"
+        (1..=maximum).contains(&value),
+        "{name} must be an integer between 1 and {maximum}"
     );
     Ok(value)
 }
 
 #[cfg(test)]
-mod tests {
-    use axum::{Router, extract::WebSocketUpgrade, response::Response, routing::get};
-    use futures_util::{SinkExt, StreamExt};
-    use tokio::sync::oneshot;
-    use tokio_tungstenite::{connect_async, tungstenite::Message};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn server_carries_websocket_upgrades() -> Result<()> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let routes =
-            tonic::service::Routes::from(Router::new().route("/socket", get(echo_websocket)));
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let server = tokio::spawn(serve_routes(listener, routes, async {
-            let _ = shutdown_rx.await;
-        }));
-
-        let (mut socket, _) = connect_async(format!("ws://{address}/socket")).await?;
-        socket.send(Message::Text("hello".into())).await?;
-        assert_eq!(
-            socket.next().await.transpose()?,
-            Some(Message::Text("hello".into()))
-        );
-        socket.close(None).await?;
-        let _ = shutdown_tx.send(());
-        server.await??;
-        Ok(())
-    }
-
-    #[test]
-    fn parses_the_minimal_storage_configuration() -> Result<()> {
-        let values = HashMap::from([
-            ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-            ("DURABLE_OBJECT_API_KEY", "api-key"),
-            ("DURABLE_OBJECT_BUCKET", "actor-state-test"),
-            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
-            (
-                "DURABLE_OBJECT_CONTROL_PLANE_URL",
-                "https://objects.example.com",
-            ),
-            ("MODAL_TOKEN_ID", "modal-token-id"),
-            ("MODAL_TOKEN_SECRET", "modal-token-secret"),
-            (
-                "DURABLE_OBJECT_POSTGRES_URL",
-                "postgresql://localhost/actors",
-            ),
-        ]);
-        let config = ControlPlaneProcessConfig::from_lookup(|name| {
-            values.get(name).map(|value| (*value).into())
-        })?;
-        assert_eq!(config.storage.bucket, "actor-state-test");
-        assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
-        Ok(())
-    }
-
-    #[test]
-    fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
-        let mut values = HashMap::from([
-            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
-            (
-                "DURABLE_OBJECT_CONTROL_PLANE_URL",
-                "https://control.example",
-            ),
-            ("MODAL_TOKEN_ID", "id"),
-            ("MODAL_TOKEN_SECRET", "secret"),
-        ]);
-        let configure = |values: &HashMap<&str, &str>| {
-            sandbox_provider_config(
-                &mut |name| values.get(name).map(|v| (*v).into()),
-                "issuer",
-                "audience",
-            )
-        };
-        assert!(
-            !configure(&values)?
-                .environment
-                .contains_key("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK")
-        );
-        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "true");
-        assert_eq!(
-            configure(&values)?.environment["DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"],
-            "true"
-        );
-        values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "yes");
-        assert!(configure(&values).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn configures_socket_events_without_a_separate_key() -> Result<()> {
-        let mut complete = HashMap::from([(
-            "DURABLE_OBJECT_SOCKET_EVENT_URL",
-            "https://api.example.com/events",
-        )]);
-        let sink =
-            socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
-                .context("socket event sink was not configured")?;
-        assert_eq!(sink.url, "https://api.example.com/events");
-        complete.remove("DURABLE_OBJECT_SOCKET_EVENT_URL");
-        assert!(
-            socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
-                .is_none()
-        );
-        Ok(())
-    }
-
-    async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
-        upgrade.on_upgrade(async |mut socket| {
-            if let Some(Ok(message)) = socket.recv().await {
-                let _ = socket.send(message).await;
-            }
-        })
-    }
-}
+#[path = "../../tests/unit/control_plane/process.rs"]
+mod tests;

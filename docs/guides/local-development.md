@@ -1,6 +1,6 @@
 # Local development
 
-Run actors locally using the published npm package. Set the same API key in the actor runtime and your application backend; clients default to `http://127.0.0.1:7100`. For a complete sample application, start with the [Express + React chat example](../../examples/chat/README.md). The steps below cover adding actors to an existing application.
+Run actors locally using the published npm package. For a complete sample application, start with the [Express + React chat example](../../examples/chat/README.md).
 
 ## Install the package
 
@@ -25,11 +25,10 @@ The backend imports `actors` from `generated/index.js`. The frontend fetches a g
 ## Start the actor server
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.little-actors/` and survives restarts.
+Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts.
 
 Startup compiles and publishes your actors' public contract. You can then run `npx little-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
 
@@ -37,9 +36,9 @@ The same terminal shows runtime logs and a request log with the method, path, st
 
 ## Connect your application
 
-Backend actor calls and generated `prepareWebsocket` helpers read [environment settings](../reference/configuration.md). Set `DURABLE_OBJECT_API_KEY=local-dev-key` in the terminal running your backend. Your backend authenticates users and calls `actors.ChatRoom.prepareWebsocket({ actorId, metadata })`. The example serves grants at `/api/socket/{actorType}/{actorId}`; your application chooses its own route.
+If `dev` generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your backend terminal. Backend actor calls and generated `prepareWebsocket` helpers read that setting.
 
-Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` with the same API key.
+Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running.
 
 The frontend never imports the actor implementation. The frontend requests credentials from your backend, then sends socket messages directly to the actor gateway.
 
@@ -47,7 +46,43 @@ For remote servers or a custom data directory, see [configuration](../reference/
 
 ## Update after changes
 
-Keep `little-actors dev` running while editing actor code. It watches TypeScript files across the project, recompiles changes in the entrypoint or its imports, and publishes each valid result to the local control plane. Regenerate the backend helpers when the actor contract changes. Invalid intermediate edits leave the last valid contract active. Keep the same API key across restarts.
+Keep `little-actors dev` running while editing actor code. Restarting it generates a new key unless you provide one explicitly.
+
+## Test Modal hosts against a local control plane
+
+Modal hosts need to reach your control plane over the internet. From this repository, `pnpm run start:cloud` starts an ngrok HTTPS endpoint and then your control plane. The tunnel forwards to `127.0.0.1:7100` by default. It uses HTTP/2 upstream forwarding because the control plane serves gRPC as well as HTTP. See the [ngrok CLI reference](https://ngrok.com/docs/agent/cli).
+
+Install the [ngrok CLI](https://ngrok.com/download), then add your agent authtoken to the repository's ignored `.env` file:
+
+```dotenv
+NGROK_AUTH_TOKEN=your-ngrok-authtoken
+# Optional: use a domain assigned to your ngrok account.
+NGROK_DOMAIN=your-domain.ngrok.app
+```
+
+Omit `NGROK_DOMAIN` to let ngrok choose the URL. The domain may also include `https://`. The helper also accepts `NGROK_AUTHTOKEN` and `NGROK_URL` as fallbacks, or an authtoken already saved in your ngrok configuration. It loads `.env` from the current directory; exported shell variables take precedence. It does not need an ngrok API key.
+
+Configure the [self-hosting settings](../reference/configuration.md) in `.env`: `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`, both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, the API key, JWT signing key, PostgreSQL URL, GCS bucket, and Google credentials. Build once, then start both processes from the repository root:
+
+```sh
+pnpm run build
+pnpm run start:cloud
+```
+
+The command waits for the tunnel to be ready, saves `DURABLE_OBJECT_CONTROL_PLANE_URL=https://...` in `.env`, and starts the control plane with that URL. Other settings and comments are preserved; `.env` is created if needed. The discovered URL overrides any older shell export for the launched control plane. Ctrl+C stops both processes. If either process exits, the other is stopped too.
+
+For a quick check in another terminal, use the built CLI:
+
+```sh
+node sdk/dist/cli.js objects list
+node sdk/dist/cli.js objects inspect Counter YOUR_ACTOR_ID
+```
+
+You can still run `pnpm run tunnel` and `pnpm run start` separately. In that case, wait for the tunnel before starting the control plane; unset any older shell export of `DURABLE_OBJECT_CONTROL_PLANE_URL` so `.env` takes precedence. A running process or another terminal's environment cannot be changed by the helper.
+
+If you change `DURABLE_OBJECT_CONTROL_PLANE_BIND`, the tunnel forwards to that address and port instead; wildcard addresses use loopback. `start` runs the hosted control plane locally and provisions actors on Modal. `little-actors dev` always uses local actor processes, even when Modal credentials are set.
+
+Follow the [self-hosting guide](self-hosting.md#3-package-your-actor-code) to package and register your Modal actor image. Use the printed public URL and the same API key in your deployment and application backend terminals. If the tunnel URL changes, restart the control plane and replace existing Modal hosts so they receive the new callback address.
 
 ## Troubleshooting
 

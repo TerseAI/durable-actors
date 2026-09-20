@@ -8,15 +8,16 @@ use std::{
     time::Duration,
 };
 
+use anstyle::{AnsiColor, Style};
 use anyhow::{Context, Result, ensure};
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
-use axum::{Router, extract::Request};
+use axum::{Router, extract::Request, response::Response};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, ValueEnum};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower_http::trace::{DefaultOnResponse, TraceLayer};
-use tracing::{Level, info_span};
+use tower_http::trace::TraceLayer;
+use tracing::{Span, info, info_span};
 
 use crate::{
     bucket::{
@@ -38,7 +39,7 @@ use super::{
 #[derive(Args)]
 pub struct DevOptions {
     #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
-    pub api_key: String,
+    pub api_key: Option<String>,
     #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
     pub project: PathBuf,
     #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
@@ -94,6 +95,11 @@ pub async fn serve_local(
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let generated_api_key = options.api_key.is_none();
+    let api_key = options
+        .api_key
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let storage = local_storage(&options, &directory, &origin).await?;
     let provider = Arc::new(LocalSandboxProvider::new(
         std::env::current_exe()?,
@@ -107,23 +113,39 @@ pub async fn serve_local(
         &origin,
         &storage,
         provider.clone(),
-        &options.api_key,
+        &api_key,
     )
     .await?;
+    let key_file = generated_api_key
+        .then(|| save_generated_api_key(&directory, &api_key))
+        .transpose()?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = notify_launcher(&origin, &options.api_key, &storage.region, options.ready_fd);
+    let ready = notify_launcher(&origin, &api_key, &storage.region, options.ready_fd);
     if ready.is_ok() {
-        println!(
-            "Local actors ready at {origin}\nState: {}\nGenerate backend helpers: npx little-actors generate --url",
-            directory.display()
-        );
-        if matches!(options.storage, DevStorage::Local) {
+        if let Some(key_file) = key_file {
+            let path = key_file.to_string_lossy().replace('\'', "'\\''");
             println!(
-                "Local storage is for development; losing this directory loses your actor state."
+                "Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY=\"$(cat -- '{path}')\""
             );
         }
+        anstream::println!(
+            "{}",
+            styled_local_ready_message(
+                &origin,
+                &directory,
+                matches!(options.storage, DevStorage::Local)
+            )
+        );
     }
     server.run_until(shutdown, ready).await
+}
+
+fn save_generated_api_key(directory: &Path, api_key: &str) -> Result<PathBuf> {
+    let path = directory.join("api-key");
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(api_key.as_bytes())?;
+    file.persist(&path)?;
+    Ok(path.canonicalize()?)
 }
 
 struct LocalServer {
@@ -185,12 +207,22 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
         TraceLayer::new_for_http()
             .make_span_with(|request: &Request| {
                 info_span!(
+                    target: "little_actors::dev",
                     "control_plane_request",
                     method = %request.method(),
-                    path = request.uri().path(),
+                    path = %request.uri().path(),
                 )
             })
-            .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            .on_response(|response: &Response, latency: Duration, span: &Span| {
+                info!(
+                    target: "little_actors::dev",
+                    parent: span,
+                    status = response.status().as_u16(),
+                    latency_ms = %format_args!("{:.1}", latency.as_secs_f64() * 1_000.0),
+                    "request completed"
+                );
+            })
+            .on_failure(()),
     )
 }
 
@@ -209,6 +241,7 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 }
 
 struct LocalState {
+    traces: crate::request_traces::TraceStore,
     runtime: Arc<RuntimeStorage>,
     access: Arc<RuntimeAccess>,
     region: String,
@@ -243,6 +276,12 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         std::sync::Arc::new(crate::clock::SystemClock),
     )?);
     Ok(LocalState {
+        traces: crate::request_traces::TraceStore::open(Arc::new(
+            crate::request_traces::persistence::SqliteTracePersistence::new(
+                directory.join("request-traces.sqlite3"),
+            ),
+        ))
+        .await?,
         runtime,
         access: bootstrap,
         region: "north-america-east".into(),
@@ -282,7 +321,9 @@ async fn local_routes(
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-object-control-plane".into(),
         invocation_jwt_audience: "durable-object-invoke".into(),
-        actor_idle_timeout_ms: 60_000,
+        actor_idle_timeout_seconds: super::process::actor_idle_timeout_seconds(&mut |name| {
+            std::env::var(name).ok()
+        })?,
         host_idle_timeout_ms: 300_000,
     };
     let provisioner = Arc::new(
@@ -296,10 +337,16 @@ async fn local_routes(
         issuer.clone(),
         provisioner,
     )
-    .with_runtime_access(storage.access.clone());
+    .with_runtime_access(storage.access.clone())
+    .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
-    let inspector =
-        super::inspection::ActorInspector::new(storage.runtime.clone(), storage.runtime.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        storage.runtime.clone(),
+        storage.runtime.clone(),
+        storage.runtime.clone(),
+        service.changes.clone(),
+    )
+    .with_traces(service.traces.clone());
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.runtime.clone().router());
@@ -335,36 +382,55 @@ fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn relative_state_directories_are_absolute_in_host_configuration() -> Result<()> {
-        let cwd = std::env::current_dir()?;
-        let directory = tempfile::tempdir_in(&cwd)?;
-        let relative = directory.path().strip_prefix(&cwd)?;
-        let options = DevOptions {
-            api_key: "test-key".into(),
-            contract: None,
-            project: cwd.clone(),
-            port: 0,
-            data_dir: Some(relative.into()),
-            entrypoint: "actors.ts".into(),
-            storage: DevStorage::Local,
-            ready_fd: None,
-            sdk_host: None,
-        };
-        let state = local_storage(&options, relative, "http://localhost:7100").await?;
-        let config: crate::bucket::access::HostStorageConfig =
-            serde_json::from_str(&state.access.bootstrap(&state.region).await?)?;
-        let BucketLocation::File {
-            directory: configured,
-        } = config.bucket
-        else {
-            panic!("expected file bucket")
-        };
-        assert_eq!(configured, directory.path().canonicalize()?.join("objects"));
-        Ok(())
-    }
+fn styled_local_ready_message(origin: &str, directory: &Path, local_storage: bool) -> String {
+    let styles = LocalReadyStyles {
+        title: Style::new().bold().fg_color(Some(AnsiColor::Cyan.into())),
+        context: Style::new().fg_color(Some(AnsiColor::BrightBlack.into())),
+        ready: Style::new().bold().fg_color(Some(AnsiColor::Green.into())),
+        label: Style::new().bold(),
+        command: Style::new().fg_color(Some(AnsiColor::Cyan.into())),
+    };
+    format_local_ready_message(origin, directory, local_storage, styles)
 }
+
+#[cfg(test)]
+fn local_ready_message(origin: &str, directory: &Path) -> String {
+    format_local_ready_message(origin, directory, true, LocalReadyStyles::default())
+}
+
+fn format_local_ready_message(
+    origin: &str,
+    directory: &Path,
+    local_storage: bool,
+    styles: LocalReadyStyles,
+) -> String {
+    let LocalReadyStyles {
+        title,
+        context,
+        ready,
+        label,
+        command,
+    } = styles;
+    let note = if local_storage {
+        "\n\n  State persists between restarts. Delete the state directory to start fresh."
+    } else {
+        ""
+    };
+    format!(
+        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx little-actors generate --url {origin}{command:#}{note}",
+        directory.display(),
+    )
+}
+
+#[derive(Clone, Copy, Default)]
+struct LocalReadyStyles {
+    title: Style,
+    context: Style,
+    ready: Style,
+    label: Style,
+    command: Style,
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/local.rs"]
+mod tests;

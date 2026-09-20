@@ -1,6 +1,6 @@
 # little-actors
 
-Named actors with serial method calls and saved state. Requires Node.js 20+ for tooling and Bun 1.4.2+ for local actor execution.
+Named actors with serial method calls and saved state. Requires Node.js 20.19+ or 22.12+ (matching Vite's runtime requirement). The CLI uses Node.js; actor execution requires Bun 1.4.2+.
 
 ```sh
 npm install little-actors
@@ -25,11 +25,10 @@ For a collaborative Tiptap editor, use `npx little-actors init documents-example
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
-export DURABLE_OBJECT_API_KEY=local-dev-key
 npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. Set the same `DURABLE_OBJECT_API_KEY` for the actor runtime and your application backend. Local clients default to `http://127.0.0.1:7100`.
+Wait for the `Ready` line. If `dev` generates a key, run its printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
 
 Generate source once for your backend and web app:
 

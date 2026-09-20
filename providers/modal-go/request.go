@@ -7,28 +7,28 @@ import (
 )
 
 type ensureRequest struct {
-	ActorIsNew            bool            `json:"actorIsNew"`
-	Actor                 json.RawMessage `json:"actor"`
-	CodeSnapshot          string          `json:"codeSnapshot"`
-	Spare                 *spareHandle    `json:"spare"`
-	Resources             resourceLimits  `json:"resources"`
-	SocketJWTAudience     string          `json:"socketJwtAudience"`
-	RuntimeConfig         string          `json:"runtimeConfig"`
-	CodeRevision          string          `json:"codeRevision"`
-	CanonicalRegion       string          `json:"canonicalRegion"`
-	HostID                string          `json:"hostId"`
-	SessionID             string          `json:"sessionId"`
-	HostToken             string          `json:"hostToken"`
-	JWTPublicKeys         string          `json:"jwtPublicKeys"`
-	ControlPlaneURL       string          `json:"controlPlaneUrl"`
-	JWTIssuer             string          `json:"jwtIssuer"`
-	InvocationJWTAudience string          `json:"invocationJwtAudience"`
-	ImageRef              string          `json:"imageRef"`
-	WorkingDirectory      string          `json:"workingDirectory"`
-	ActorEntrypoint       string          `json:"actorEntrypoint"`
-	SecretRefs            []string        `json:"secretRefs"`
-	ActorIdleTimeoutMS    int64           `json:"actorIdleTimeoutMs"`
-	HostIdleTimeoutMS     int64           `json:"hostIdleTimeoutMs"`
+	ActorIsNew              bool            `json:"actorIsNew"`
+	Actor                   json.RawMessage `json:"actor"`
+	CodeSnapshot            string          `json:"codeSnapshot"`
+	Spare                   *spareHandle    `json:"spare"`
+	Resources               resourceLimits  `json:"resources"`
+	SocketJWTAudience       string          `json:"socketJwtAudience"`
+	RuntimeConfig           string          `json:"runtimeConfig"`
+	CodeRevision            string          `json:"codeRevision"`
+	CanonicalRegion         string          `json:"canonicalRegion"`
+	HostID                  string          `json:"hostId"`
+	SessionID               string          `json:"sessionId"`
+	HostToken               string          `json:"hostToken"`
+	JWTPublicKeys           string          `json:"jwtPublicKeys"`
+	ControlPlaneURL         string          `json:"controlPlaneUrl"`
+	JWTIssuer               string          `json:"jwtIssuer"`
+	InvocationJWTAudience   string          `json:"invocationJwtAudience"`
+	ImageRef                string          `json:"imageRef"`
+	WorkingDirectory        string          `json:"workingDirectory"`
+	ActorEntrypoint         string          `json:"actorEntrypoint"`
+	SecretRefs              []string        `json:"secretRefs"`
+	ActorIdleTimeoutSeconds int64           `json:"actorIdleTimeoutSeconds"`
+	HostIdleTimeoutMS       int64           `json:"hostIdleTimeoutMs"`
 }
 type hostHandle struct {
 	Lease           *activationLease `json:"lease,omitempty"`
@@ -64,10 +64,11 @@ func validateEnsure(request ensureRequest) error {
 	if request.SessionID == "" || request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v3."+request.CodeRevision+".") {
 		return fmt.Errorf("invalid host identity or image")
 	}
-	for _, timeout := range []int64{request.ActorIdleTimeoutMS, request.HostIdleTimeoutMS} {
-		if timeout <= 0 || timeout > 86400000 {
-			return fmt.Errorf("actor or host idle timeout is invalid")
-		}
+	if request.ActorIdleTimeoutSeconds <= 0 || request.ActorIdleTimeoutSeconds > 86400 {
+		return fmt.Errorf("actor idle timeout must be between 1 and 86400 seconds")
+	}
+	if request.HostIdleTimeoutMS <= 0 || request.HostIdleTimeoutMS > 86400000 {
+		return fmt.Errorf("host idle timeout is invalid")
 	}
 	return nil
 }
@@ -96,8 +97,8 @@ func hostEnvironment(r ensureRequest) map[string]string {
 		"DURABLE_OBJECT_SESSION_ID": r.SessionID, "DURABLE_OBJECT_REGION": r.CanonicalRegion,
 		"DURABLE_OBJECT_CODE_REVISION": r.CodeRevision, "DURABLE_OBJECT_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
 		"DURABLE_OBJECT_HOST_READY_FILE": readyFile, "DURABLE_OBJECT_HOST_METADATA_FILE": metadataFile,
-		"DURABLE_OBJECT_HOST_BIND":             "0.0.0.0:7101",
-		"DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS": fmt.Sprint(r.ActorIdleTimeoutMS), "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+		"DURABLE_OBJECT_HOST_BIND":                  "0.0.0.0:7101",
+		"DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS": fmt.Sprint(r.ActorIdleTimeoutSeconds), "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
 	}
 	env["DURABLE_OBJECT_ACTOR"] = string(r.Actor)
 	env["DURABLE_OBJECT_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)

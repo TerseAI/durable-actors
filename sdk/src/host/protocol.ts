@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import type { ActorIdentity } from "../actor/identity.js"
 import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
@@ -64,7 +65,7 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(16) }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(16), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -96,6 +97,7 @@ type ActorExecutorReply =
     | { readonly type: "hydrated" }
     | { readonly type: "state_required" }
 type ActorSessionClientMessage =
+    | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }
     | AttachMessage
     | ReplyMessage
     | { readonly type: "get_connections"; readonly message_id: number }

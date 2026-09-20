@@ -391,7 +391,9 @@ impl ActorRuntime {
                 }
             },
             Ok(ActorMethodOutcome::Failed(failure)) => {
-                self.evict(&invocation.actor).await;
+                if failure.code != "actor_method_failed" {
+                    self.evict(&invocation.actor).await;
+                }
                 let code = match failure.code.as_str() {
                     "resource_exhausted" => "resource_exhausted",
                     _ => "actor_error",

@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
+use gcp_auth::TokenProvider;
 use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -43,7 +44,7 @@ impl std::fmt::Debug for StorageToken {
 }
 
 pub(crate) struct RuntimeAccess {
-    credentials: Option<AccessTokenCredentials>,
+    credentials: Option<StorageCredentials>,
     http: reqwest::Client,
     location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
@@ -59,9 +60,7 @@ impl RuntimeAccess {
     ) -> Result<Self> {
         Ok(Self {
             credentials: match &location {
-                BucketLocation::Gcs { .. } => {
-                    Some(Builder::default().build_access_token_credentials()?)
-                }
+                BucketLocation::Gcs { .. } => Some(StorageCredentials::new()?),
                 BucketLocation::File { .. } => None,
             },
             http: reqwest::Client::builder()
@@ -130,7 +129,7 @@ impl RuntimeAccess {
             .credentials
             .as_ref()
             .context("GCS credentials missing")?
-            .access_token()
+            .token()
             .await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
@@ -146,7 +145,7 @@ impl RuntimeAccess {
                 "requested_token_type",
                 "urn:ietf:params:oauth:token-type:access_token",
             ),
-            ("subject_token", &source.token),
+            ("subject_token", &source),
             ("options", &boundary.to_string()),
         ]);
         let started = SystemClock.now_ms()?;
@@ -178,6 +177,40 @@ impl RuntimeAccess {
     }
 }
 
+enum StorageCredentials {
+    ServiceAccount(gcp_auth::CustomServiceAccount),
+    ApplicationDefault(AccessTokenCredentials),
+}
+
+impl StorageCredentials {
+    fn new() -> Result<Self> {
+        if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
+            let document = std::fs::read_to_string(path)?;
+            let value: Value = serde_json::from_str(&document)?;
+            if value["type"] == "service_account" {
+                return Ok(Self::ServiceAccount(
+                    gcp_auth::CustomServiceAccount::from_json(&document)?,
+                ));
+            }
+        }
+        Ok(Self::ApplicationDefault(
+            Builder::default().build_access_token_credentials()?,
+        ))
+    }
+
+    async fn token(&self) -> Result<String> {
+        match self {
+            // STS requires an OAuth access token, not the default library's self-signed JWT.
+            Self::ServiceAccount(credentials) => Ok(credentials
+                .token(&["https://www.googleapis.com/auth/cloud-platform"])
+                .await?
+                .as_str()
+                .to_owned()),
+            Self::ApplicationDefault(credentials) => Ok(credentials.access_token().await?.token),
+        }
+    }
+}
+
 fn boundary(bucket: &str) -> Value {
     let prefix = crate::storage_paths::ROOT;
     json!({"accessBoundary": {"accessBoundaryRules": [
@@ -196,36 +229,5 @@ fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {
-        let boundary = boundary("actors");
-        let rules = boundary["accessBoundary"]["accessBoundaryRules"]
-            .as_array()
-            .unwrap();
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0]["availableResource"], rules[1]["availableResource"]);
-        assert!(
-            rules[0]["availabilityCondition"]["expression"]
-                .as_str()
-                .unwrap()
-                .contains("little-actors/v2/owners/")
-        );
-        assert_eq!(
-            rules[1]["availablePermissions"],
-            json!([
-                "inRole:roles/storage.objectViewer",
-                "inRole:roles/storage.objectCreator"
-            ])
-        );
-        assert!(
-            rules[1]["availabilityCondition"]["expression"]
-                .as_str()
-                .unwrap()
-                .contains("little-actors/v2/snapshots/")
-        );
-        Ok(())
-    }
-}
+#[path = "../../tests/unit/bucket/access.rs"]
+mod tests;

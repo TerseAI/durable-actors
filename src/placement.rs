@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[path = "../tests/support/placement.rs"]
 pub(crate) mod testing;
 
 use anyhow::{Result, ensure};
@@ -43,4 +44,43 @@ pub fn validate_region(region: &str) -> Result<()> {
         "sandbox region is invalid"
     );
     Ok(())
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorResidency {
+    Live,
+    Dormant,
+    Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorInstanceOverview {
+    pub actor_id: String,
+    pub status: ActorResidency,
+    pub connections: Vec<ActorConnectionInventory>,
+    pub waiting: Option<Vec<crate::host_leases::WaitingOperation>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorConnectionInventory {
+    pub id: String,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorInventory {
+    pub actor_type: String,
+    pub live: u64,
+    pub dormant: u64,
+    pub unknown: u64,
+    pub instances: Vec<ActorInstanceOverview>,
+}
+
+#[async_trait]
+pub trait ActorInventoryReader: Send + Sync {
+    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>>;
 }

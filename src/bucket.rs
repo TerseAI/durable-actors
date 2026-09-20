@@ -56,4 +56,5 @@ pub(crate) async fn replace(
 }
 
 #[cfg(test)]
+#[path = "../tests/support/bucket.rs"]
 pub(crate) mod testing;

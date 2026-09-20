@@ -5,6 +5,7 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { z } from "zod"
 
+import type { ActorIdentity } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
@@ -63,6 +64,8 @@ class ActorSession {
                 actorTypes,
                 commandHandler,
                 this.settings.startupTimeoutMs,
+                supervisor.activeActors.bind(supervisor),
+                supervisor.onActiveActorsChange.bind(supervisor),
                 this.socket
             )
             void this.connection.closed().then(() => supervisor.close())
@@ -94,6 +97,8 @@ async function discoverActorTypes(
 }
 
 class ActorSessionConnection {
+    private unsubscribeActivity: (() => void) | undefined
+    private activityTimer: NodeJS.Timeout | undefined
     private buffer = ""
     private attachedResolve: (() => void) | undefined
     private attachedReject: ((error: Error) => void) | undefined
@@ -111,12 +116,14 @@ class ActorSessionConnection {
         actorTypes: readonly string[],
         commandHandler: ActorCommandHandler,
         timeoutMs: number,
+        activeActors: () => readonly ActorIdentity[],
+        watchActiveActors: (listener: () => void) => () => void,
         connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
-        const connection = new ActorSessionConnection(socket, commandHandler)
+        const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
         connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
@@ -128,7 +135,9 @@ class ActorSessionConnection {
 
     private constructor(
         private readonly socket: Socket,
-        private readonly commandHandler: ActorCommandHandler
+        private readonly commandHandler: ActorCommandHandler,
+        private readonly activeActors: () => readonly ActorIdentity[],
+        private readonly watchActiveActors: (listener: () => void) => () => void
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -176,18 +185,31 @@ class ActorSessionConnection {
 
         let newline = this.buffer.indexOf("\n")
         while (newline !== -1) {
-            const document = this.buffer.slice(0, newline)
+            const rawMessage = this.buffer.slice(0, newline)
             this.buffer = this.buffer.slice(newline + 1)
-            void this.handle(document)
+            void this.handle(rawMessage)
             newline = this.buffer.indexOf("\n")
         }
     }
 
-    private async handle(document: string): Promise<void> {
+    private async handle(rawMessage: string): Promise<void> {
         try {
-            const message = parseActorSessionServerMessage(document)
+            const message = parseActorSessionServerMessage(rawMessage)
             switch (message.type) {
                 case "attached":
+                    if (message.supports_residency && !this.activityTimer) {
+                        const report = () => {
+                            try {
+                                this.send({ type: "residency", actors: this.activeActors() })
+                            } catch (error) {
+                                this.fail(sessionError(error))
+                            }
+                        }
+                        this.unsubscribeActivity = this.watchActiveActors(report)
+                        report()
+                        this.activityTimer = setInterval(report, 1_000)
+                        this.activityTimer.unref()
+                    }
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
                     this.attachedReject = undefined
@@ -286,6 +308,9 @@ class ActorSessionConnection {
     }
 
     private close(): void {
+        clearInterval(this.activityTimer)
+        this.unsubscribeActivity?.()
+        this.unsubscribeActivity = undefined
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()
@@ -386,7 +411,7 @@ function parseHostSettings(environment: NodeJS.ProcessEnv): ActorHostSettings {
         socketPath: result.data.DURABLE_OBJECT_EXECUTOR_SOCKET,
         actorEntrypoint: result.data.DURABLE_OBJECT_ENTRYPOINT,
         startupTimeoutMs: parseStartupTimeout(environment.DURABLE_OBJECT_HOST_STARTUP_MS),
-        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS)
+        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS)
     }
 }
 
@@ -401,16 +426,16 @@ function parseStartupTimeout(value: string | undefined): number {
 function parseActorIdleTimeout(value: string | undefined): number {
     if (value === undefined) return DEFAULT_ACTOR_IDLE_TIMEOUT_MS
     const parsed = Number(value)
-    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_IDLE_TIMEOUT_MS) {
+    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_ACTOR_IDLE_TIMEOUT_SECONDS) {
         throw new ActorConfigurationError(
-            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS must be an integer between 1 and ${MAX_IDLE_TIMEOUT_MS}`
+            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS must be an integer between 1 and ${MAX_ACTOR_IDLE_TIMEOUT_SECONDS}`
         )
     }
-    return parsed
+    return parsed * 1_000
 }
 
 const DEFAULT_ACTOR_STARTUP_TIMEOUT_MS = 10_000
-const MAX_IDLE_TIMEOUT_MS = 86_400_000
+const MAX_ACTOR_IDLE_TIMEOUT_SECONDS = 86_400
 
 const actorSessionSettingsSchema = z.object({
     DURABLE_OBJECT_EXECUTOR_SOCKET: z.string().trim().min(1),

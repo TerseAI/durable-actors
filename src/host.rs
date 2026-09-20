@@ -3,6 +3,7 @@ mod actor_runtime;
 mod assignment;
 mod lease_maintenance;
 mod process;
+mod queues;
 mod replica_provisioner;
 mod replication;
 pub(crate) mod sockets;

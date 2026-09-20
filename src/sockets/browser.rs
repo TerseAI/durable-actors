@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use axum::{
     extract::{
@@ -32,6 +35,22 @@ pub(crate) trait SocketDispatcher: Send + Sync {
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>>;
     fn notify(&self, _ticket: &SocketTicket, _event: &ActorSocketEvent) {}
+    async fn dispatch_since(
+        &self,
+        ticket: &SocketTicket,
+        invocation: ActorSocketInvocation,
+        _received: Instant,
+    ) -> Result<Vec<ActorSocketEffect>> {
+        self.dispatch(ticket, invocation).await
+    }
+    fn discard(
+        &self,
+        _ticket: &SocketTicket,
+        _event: ActorSocketEvent,
+        _received: Instant,
+        _outcome: crate::request_traces::RequestOutcome,
+    ) {
+    }
 }
 
 #[derive(Clone)]
@@ -129,7 +148,7 @@ struct Session {
     ticket: SocketTicket,
     connection: ActorSocketConnection,
     outbound: SocketReceiver,
-    pending: VecDeque<ActorSocketMessage>,
+    pending: VecDeque<(ActorSocketMessage, Instant)>,
     handler: Option<JoinHandle<bool>>,
 }
 
@@ -148,7 +167,7 @@ impl Session {
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
                     if !result.unwrap_or(false) { return Err((4400, "actor socket handler failed")); }
-                    if let Some(message) = self.pending.pop_front() { self.start_message(message); }
+                    if let Some((message, received)) = self.pending.pop_front() { self.start_message(message, received); }
                 }
                 inbound = socket.recv() => self.receive(socket, inbound).await?,
                 outbound = self.outbound.recv() => self.send_outbound(socket, outbound.ok_or((1006, "socket closed"))?).await?,
@@ -180,29 +199,61 @@ impl Session {
     }
 
     fn enqueue(&mut self, message: ActorSocketMessage) -> Result<(), Closed> {
+        let received = Instant::now();
         if self.handler.is_none() {
-            self.start_message(message);
+            self.start_message(message, received);
         } else if self.pending.len() < 32 {
-            self.pending.push_back(message);
+            self.pending.push_back((message, received));
         } else {
+            self.discard(
+                message,
+                received,
+                crate::request_traces::RequestOutcome::Rejected,
+            );
             return Err((1013, "socket operation queue is full"));
         }
         Ok(())
     }
 
-    fn start_message(&mut self, message: ActorSocketMessage) {
-        self.start(ActorSocketEvent::Message {
-            connection_id: self.connection.id.clone(),
-            message,
-        });
+    fn start_message(&mut self, message: ActorSocketMessage, received: Instant) {
+        self.start_since(
+            ActorSocketEvent::Message {
+                connection_id: self.connection.id.clone(),
+                message,
+            },
+            received,
+        );
     }
 
     fn start(&mut self, event: ActorSocketEvent) {
+        self.start_since(event, Instant::now());
+    }
+
+    fn start_since(&mut self, event: ActorSocketEvent, received: Instant) {
         let state = self.state.clone();
         let ticket = self.ticket.clone();
         self.handler = Some(tokio::spawn(async move {
-            dispatch(&state, &ticket, event).await.is_ok()
+            dispatch_since(&state, &ticket, event, received)
+                .await
+                .is_ok()
         }));
+    }
+
+    fn discard(
+        &self,
+        message: ActorSocketMessage,
+        received: Instant,
+        outcome: crate::request_traces::RequestOutcome,
+    ) {
+        self.state.dispatcher.discard(
+            &self.ticket,
+            ActorSocketEvent::Message {
+                connection_id: self.connection.id.clone(),
+                message,
+            },
+            received,
+            outcome,
+        );
     }
 
     async fn send_outbound(
@@ -267,6 +318,13 @@ impl Session {
     }
 
     async fn disconnect(mut self, closed: Closed) {
+        while let Some((message, received)) = self.pending.pop_front() {
+            self.discard(
+                message,
+                received,
+                crate::request_traces::RequestOutcome::Interrupted,
+            );
+        }
         let connection = self
             .state
             .registry
@@ -316,6 +374,15 @@ async fn dispatch(
     ticket: &SocketTicket,
     event: ActorSocketEvent,
 ) -> Result<()> {
+    dispatch_since(state, ticket, event, Instant::now()).await
+}
+
+async fn dispatch_since(
+    state: &SocketServerState,
+    ticket: &SocketTicket,
+    event: ActorSocketEvent,
+    received: Instant,
+) -> Result<()> {
     ensure!(!state.stop.is_cancelled(), "actor host stopping");
     state.dispatcher.ensure_authority()?;
     let (event, connections) = state.registry.prepare_event(&ticket.actor, event).await;
@@ -325,7 +392,10 @@ async fn dispatch(
         event: event.clone(),
         connections,
     };
-    let effects = state.dispatcher.dispatch(ticket, invocation).await?;
+    let effects = state
+        .dispatcher
+        .dispatch_since(ticket, invocation, received)
+        .await?;
     state.dispatcher.ensure_authority()?;
     validate_socket_effects(&effects)?;
     state.registry.apply(&ticket.actor, effects).await;

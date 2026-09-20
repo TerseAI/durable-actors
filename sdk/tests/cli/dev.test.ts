@@ -1,0 +1,96 @@
+import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { test } from "node:test"
+import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
+
+const run = promisify(execFile)
+const sdk = fileURLToPath(new URL("../../../", import.meta.url))
+const cli = path.join(sdk, "dist/cli.js")
+
+test("dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const project = path.join(directory, "actor project")
+    await mkdir(path.join(project, "node_modules"), { recursive: true })
+    await symlink(sdk, path.join(project, "node_modules/little-actors"), "dir")
+    await writeFile(path.join(project, "package.json"), '{"type":"module"}')
+    const source = path.join(project, "actors.ts")
+    await writeFile(
+        source,
+        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(): Promise<string> { return "hi" } }\nthrow new Error("must not execute actor source")'
+    )
+    const executable = path.join(directory, "runtime.mjs")
+    await writeFile(
+        executable,
+        `#!/usr/bin/env node
+import { createWriteStream, readFileSync, appendFileSync } from "node:fs"
+import { createServer } from "node:http"
+const args = process.argv.slice(2)
+const index = args.indexOf("--contract")
+if (index < 0) throw new Error("No public contract supplied to runtime")
+const file = args[index + 1]
+let updates = 0
+const server = createServer((_request, response) => { updates++; response.end("{}") })
+let controlPlaneUrl = "http://127.0.0.1:7100"
+if (process.env.TEST_WATCH_SOURCE) {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
+    controlPlaneUrl = "http://127.0.0.1:" + server.address().port
+}
+createWriteStream(null, { fd: 3 }).end(JSON.stringify({
+    pid: process.pid,
+    controlPlaneUrl,
+    apiKey: "test-key",
+    storageRegion: "local"
+}))
+if (process.env.TEST_WATCH_SOURCE) {
+    setTimeout(() => appendFileSync(process.env.TEST_WATCH_SOURCE, "\\n// source changed"), 400)
+    setTimeout(() => { server.close(); console.log(JSON.stringify({ updates })) }, 2500)
+} else {
+    console.log(JSON.stringify({ args, file, contract: JSON.parse(readFileSync(file, "utf8")) }))
+}
+process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
+`,
+        { mode: 0o755 }
+    )
+    const env = { ...process.env, DURABLE_OBJECT_BINARY: executable, DURABLE_OBJECT_API_KEY: "test-key" }
+    const args = [cli, "dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
+    const { stdout } = await run(process.execPath, args, { cwd: directory, env })
+    const result = JSON.parse(stdout)
+    assert.equal(result.contract.actors[0].actorType, "Room")
+    assert.deepEqual(
+        result.contract.actors[0].rpc.methods.map((method: { name: string }) => method.name),
+        ["hello"]
+    )
+    assert.ok(result.args.includes(project))
+    await assert.rejects(readFile(result.file), { code: "ENOENT" })
+
+    const failure = await run(process.execPath, args, {
+        cwd: directory,
+        env: { ...env, TEST_RUNTIME_EXIT_CODE: "7" }
+    }).then(
+        () => assert.fail("runtime failure should propagate"),
+        (error: Error & { code: number; stdout: string }) => error
+    )
+    assert.equal(failure.code, 7)
+    await assert.rejects(readFile(JSON.parse(failure.stdout).file), { code: "ENOENT" })
+    const watching = await run(process.execPath, args, {
+        cwd: directory,
+        env: { ...env, TEST_WATCH_SOURCE: source }
+    })
+    assert.ok(JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates > 0, "dev watches sources by default")
+    const notWatching = await run(process.execPath, [...args, "--no-watch"], {
+        cwd: directory,
+        env: { ...env, TEST_WATCH_SOURCE: source }
+    })
+    assert.equal(JSON.parse(notWatching.stdout).updates, 0, "--no-watch prevents source-triggered redeployments")
+
+    await writeFile(
+        source,
+        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
+    )
+    await assert.rejects(run(process.execPath, args, { cwd: directory, env }), /JSON-compatible/)
+})
