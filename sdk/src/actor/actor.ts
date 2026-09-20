@@ -54,24 +54,17 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
 
 function registerActorClass<Instance extends AnyActor>(
     actorClass: ActorClass<Instance>,
-    state?: ActorSchema
+    state: ActorSchema
 ): ActorDefinition {
     const actorName = actorClassName(actorClass)
     const existing = actorDefinitions.get(actorName)
     if (existing !== undefined) {
         if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor name ${actorName}`)
-        if (state !== undefined) existing.state = state
+        existing.state = state
         return existing
     }
 
-    validateActorClass(actorClass, actorName)
-    const definition = {
-        actorName: validateActorComponent("actor name", actorName),
-        actorClass,
-        state: state ?? { actorName, fields: [] },
-        schemas: actorClass.schemas ?? {},
-        methods: new Set(discoverMethods(actorClass, actorName))
-    }
+    const definition = { ...describeActorClass(actorClass), state }
     actorDefinitions.set(actorName, definition)
     return definition
 }
@@ -84,8 +77,7 @@ function getActorReference<TActorClass extends ActorClass>(
     actorClass: TActorClass,
     actorId: string
 ): ActorReference<TActorClass["prototype"]> {
-    const definition = registerActorClass(actorClass)
-    const Reference = referenceClass(definition)
+    const Reference = referenceClass(actorClass)
     return new Reference(actorId) as unknown as ActorReference<TActorClass["prototype"]>
 }
 
@@ -93,9 +85,10 @@ function bindActorIdentity(instance: AnyActor, actorId: string): void {
     actorMetadata.set(instance, { actorId: validateActorComponent("actor ID", actorId) })
 }
 
-function referenceClass(definition: ActorDefinition): ActorReferenceClass {
-    const existing = referenceClasses.get(definition.actorClass)
+function referenceClass(actorClass: ActorClass): ActorReferenceClass {
+    const existing = referenceClasses.get(actorClass)
     if (existing !== undefined) return existing
+    const definition = describeActorClass(actorClass)
 
     class ActorReference extends Actor {
         constructor(actorId: string) {
@@ -150,6 +143,17 @@ function metadataFor(instance: AnyActor): ActorMetadata {
     return metadata
 }
 
+function describeActorClass(actorClass: ActorClass): ActorClassDescription {
+    const actorName = actorClassName(actorClass)
+    validateActorClass(actorClass, actorName)
+    return {
+        actorName: validateActorComponent("actor name", actorName),
+        actorClass,
+        schemas: actorClass.schemas ?? {},
+        methods: new Set(discoverMethods(actorClass, actorName))
+    }
+}
+
 function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
     if (Object.getOwnPropertySymbols(actorClass.prototype).length > 0)
         throw new ActorDefinitionError(`actor class ${actorName} cannot define symbol methods`)
@@ -184,10 +188,13 @@ function actorClassName(actorClass: ActorClass): string {
     return actorClass.name
 }
 
-interface ActorDefinition {
+interface ActorDefinition extends ActorClassDescription {
+    state: ActorSchema
+}
+
+interface ActorClassDescription {
     readonly actorName: string
     readonly actorClass: ActorClass
-    state: ActorSchema
     readonly schemas: ActorSchemas
     readonly methods: ReadonlySet<string>
 }

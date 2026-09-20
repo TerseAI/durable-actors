@@ -94,12 +94,12 @@ const counterDefinition = registerActorClass(Counter, {
     actorName: "Counter",
     fields: [{ name: "count", persistence: Persistence.Persisted }]
 })
-const forwarderDefinition = registerActorClass(Forwarder)
+const forwarderDefinition = registerActorClass(Forwarder, { actorName: "Forwarder", fields: [] })
 const chatDefinition = registerActorClass(ChatRoom, {
     actorName: "ChatRoom",
     fields: [{ name: "events", persistence: Persistence.Persisted, visibility: "private" }]
 })
-const rejectingDefinition = registerActorClass(RejectingRoom)
+const rejectingDefinition = registerActorClass(RejectingRoom, { actorName: "RejectingRoom", fields: [] })
 
 test("ephemeral caches survive resident calls and reset after failure or reconstruction", async () => {
     class CachingCounter extends Actor {
@@ -163,7 +163,7 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
             throw new Error("request failed")
         }
     }
-    const runtime = new ActorRuntime(registerActorClass(RecoveryFailure))
+    const runtime = new ActorRuntime(registerActorClass(RecoveryFailure, { actorName: "RecoveryFailure", fields: [] }))
     const command = {
         type: "invoke" as const,
         actor: { project_id: "default", actor_name: "RecoveryFailure", actor_id: "one" },
@@ -199,10 +199,13 @@ test("streams actor output before execution finishes without replaying it in the
     const published = new Promise<void>(resolve => {
         first = resolve
     })
-    const runtime = new ActorRuntime(registerActorClass(StreamingActor), async batch => {
-        effects.push(...batch)
-        first()
-    })
+    const runtime = new ActorRuntime(
+        registerActorClass(StreamingActor, { actorName: "StreamingActor", fields: [] }),
+        async batch => {
+            effects.push(...batch)
+            first()
+        }
+    )
     let completed = false
     const invocation = runtime
         .handle({
@@ -259,7 +262,7 @@ test("batches pending stream output in order and surfaces publish failures", asy
         }
     }
     const batches: (readonly SocketEffect[])[] = []
-    const definition = registerActorClass(BurstActor)
+    const definition = registerActorClass(BurstActor, { actorName: "BurstActor", fields: [] })
     const command = {
         type: "invoke" as const,
         request_id: "burst",

@@ -56,7 +56,7 @@ class ValidatedRoom extends Actor<
     }
 }
 
-const definition = registerActorClass(ValidatedRoom)
+const definition = registerActorClass(ValidatedRoom, { actorName: "ValidatedRoom", fields: [] })
 const actor = { project_id: "default", actor_name: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
