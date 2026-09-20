@@ -46,6 +46,42 @@ For remote servers or a custom data directory, see [configuration](../reference/
 
 Keep `little-actors dev` running while editing actor code. Restarting it generates a new key unless you provide one explicitly.
 
+## Test Modal hosts against a local control plane
+
+Modal hosts need to reach your control plane over the internet. From this repository, `pnpm run start:cloud` starts an ngrok HTTPS endpoint and then your control plane. The tunnel forwards to `127.0.0.1:7100` by default. It uses HTTP/2 upstream forwarding because the control plane serves gRPC as well as HTTP. See the [ngrok CLI reference](https://ngrok.com/docs/agent/cli).
+
+Install the [ngrok CLI](https://ngrok.com/download), then add your agent authtoken to the repository's ignored `.env` file:
+
+```dotenv
+NGROK_AUTH_TOKEN=your-ngrok-authtoken
+# Optional: use a domain assigned to your ngrok account.
+NGROK_DOMAIN=your-domain.ngrok.app
+```
+
+Omit `NGROK_DOMAIN` to let ngrok choose the URL. The domain may also include `https://`. The helper also accepts `NGROK_AUTHTOKEN` and `NGROK_URL` as fallbacks, or an authtoken already saved in your ngrok configuration. It loads `.env` from the current directory; exported shell variables take precedence. It does not need an ngrok API key.
+
+Configure the [self-hosting settings](../reference/configuration.md) in `.env`: `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`, both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, the API key, JWT signing key, PostgreSQL URL, GCS bucket, and Google credentials. Build once, then start both processes from the repository root:
+
+```sh
+pnpm run build
+pnpm run start:cloud
+```
+
+The command waits for the tunnel to be ready, saves `DURABLE_OBJECT_CONTROL_PLANE_URL=https://...` in `.env`, and starts the control plane with that URL. Other settings and comments are preserved; `.env` is created if needed. The discovered URL overrides any older shell export for the launched control plane. Ctrl+C stops both processes. If either process exits, the other is stopped too.
+
+For a quick check in another terminal, use the built CLI:
+
+```sh
+node sdk/dist/cli.js objects list
+node sdk/dist/cli.js objects inspect Counter YOUR_ACTOR_ID
+```
+
+You can still run `pnpm run tunnel` and `pnpm run start` separately. In that case, wait for the tunnel before starting the control plane; unset any older shell export of `DURABLE_OBJECT_CONTROL_PLANE_URL` so `.env` takes precedence. A running process or another terminal's environment cannot be changed by the helper.
+
+If you change `DURABLE_OBJECT_CONTROL_PLANE_BIND`, the tunnel forwards to that address and port instead; wildcard addresses use loopback. `start` runs the hosted control plane locally and provisions actors on Modal. `little-actors dev` always uses local actor processes, even when Modal credentials are set.
+
+Follow the [self-hosting guide](self-hosting.md#3-package-your-actor-code) to package and register your Modal actor image. Use the printed public URL and the same API key in your deployment and application backend terminals. If the tunnel URL changes, restart the control plane and replace existing Modal hosts so they receive the new callback address.
+
 ## Troubleshooting
 
 If the CLI is missing, run `npm install little-actors` in your application directory before invoking `npx little-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.

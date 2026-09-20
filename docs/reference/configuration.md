@@ -39,4 +39,6 @@
 
 When `dev` generates a local key, set the printed environment variable in your backend terminal. Explicit CLI flags override their environment variables; no connection file is written.
 
+For the repository's local [`pnpm tunnel` helper](../guides/local-development.md#test-modal-hosts-against-a-local-control-plane), set `NGROK_AUTH_TOKEN` (or use ngrok's saved credentials) and optionally `NGROK_DOMAIN` for a fixed domain. `NGROK_AUTHTOKEN` and `NGROK_URL` are also accepted as fallbacks. It forwards to `DURABLE_OBJECT_CONTROL_PLANE_BIND`, defaulting to `127.0.0.1:7100`, and automatically saves the public `DURABLE_OBJECT_CONTROL_PLANE_URL` to `.env` before reporting readiness. Use `pnpm run start:cloud` to start the tunnel and control plane together: it waits for the URL and passes it directly to the control plane, overriding an older shell export. Ctrl+C stops both processes. With standalone `pnpm tunnel`, restart the control plane to load the new value and unset any older shell export that would override it.
+
 `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS` replaces `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS`. Divide existing values by 1000 when migrating (for example, `10000` ms becomes `10` seconds). Restart the control plane and existing hosts to apply the new setting.

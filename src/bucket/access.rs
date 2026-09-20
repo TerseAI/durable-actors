@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
+use gcp_auth::TokenProvider;
 use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +45,7 @@ impl std::fmt::Debug for StorageToken {
 }
 
 pub(crate) struct RuntimeAccess {
-    credentials: Option<AccessTokenCredentials>,
+    credentials: Option<StorageCredentials>,
     http: reqwest::Client,
     location: BucketLocation,
     fleet: Arc<dyn ReplicaProvisioner>,
@@ -60,9 +61,7 @@ impl RuntimeAccess {
     ) -> Result<Self> {
         Ok(Self {
             credentials: match &location {
-                BucketLocation::Gcs { .. } => {
-                    Some(Builder::default().build_access_token_credentials()?)
-                }
+                BucketLocation::Gcs { .. } => Some(StorageCredentials::new()?),
                 BucketLocation::File { .. } => None,
             },
             http: reqwest::Client::builder()
@@ -123,7 +122,7 @@ impl RuntimeAccess {
             .credentials
             .as_ref()
             .context("GCS credentials missing")?
-            .access_token()
+            .token()
             .await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
@@ -139,7 +138,7 @@ impl RuntimeAccess {
                 "requested_token_type",
                 "urn:ietf:params:oauth:token-type:access_token",
             ),
-            ("subject_token", &source.token),
+            ("subject_token", &source),
             ("options", &boundary.to_string()),
         ]);
         let started = SystemClock.now_ms()?;
@@ -168,6 +167,40 @@ impl RuntimeAccess {
             access_token: token.access_token,
             expires_at_ms: started + (token.expires_in - 30) * 1000,
         })
+    }
+}
+
+enum StorageCredentials {
+    ServiceAccount(gcp_auth::CustomServiceAccount),
+    ApplicationDefault(AccessTokenCredentials),
+}
+
+impl StorageCredentials {
+    fn new() -> Result<Self> {
+        if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
+            let document = std::fs::read_to_string(path)?;
+            let value: Value = serde_json::from_str(&document)?;
+            if value["type"] == "service_account" {
+                return Ok(Self::ServiceAccount(
+                    gcp_auth::CustomServiceAccount::from_json(&document)?,
+                ));
+            }
+        }
+        Ok(Self::ApplicationDefault(
+            Builder::default().build_access_token_credentials()?,
+        ))
+    }
+
+    async fn token(&self) -> Result<String> {
+        match self {
+            // STS requires an OAuth access token, not the default library's self-signed JWT.
+            Self::ServiceAccount(credentials) => Ok(credentials
+                .token(&["https://www.googleapis.com/auth/cloud-platform"])
+                .await?
+                .as_str()
+                .to_owned()),
+            Self::ApplicationDefault(credentials) => Ok(credentials.access_token().await?.token),
+        }
     }
 }
 

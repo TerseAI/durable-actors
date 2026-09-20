@@ -5,7 +5,10 @@
     "scripts": {
         "build": "pnpm --dir sdk build && node scripts/build-runtime.mjs",
         "build:observer": "pnpm --dir sdk build:observer",
+        "start": "node sdk/dist/cli.js start",
+        "start:cloud": "node scripts/tunnel.mjs --start",
         "dev": "cargo run --release",
+        "tunnel": "node scripts/tunnel.mjs",
         "format": "cargo fmt --all && pnpm --dir sdk format && prettier --write \"scripts/*.mjs\" \"tests/scripts/*.mjs\" && pnpm --dir packages/observer-ui format",
         "format:check": "cargo fmt --all -- --check && pnpm --dir sdk format:check && prettier --check \"scripts/*.mjs\" \"tests/scripts/*.mjs\" && pnpm --dir packages/observer-ui format:check",
         "release:prepare": "node scripts/release.mjs prepare",
