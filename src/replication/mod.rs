@@ -1,7 +1,8 @@
 pub(crate) mod access;
-mod archive;
 mod process;
 mod server;
+mod spare;
+pub(crate) use spare::ReplicaAssignment;
 mod store;
 mod stream;
 mod transport;
@@ -13,25 +14,42 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 pub use access::{ReplicaAccess, ReplicaGrant};
-pub use archive::{archive_pending, start_archiver};
 pub use process::serve_replica_host;
 pub use server::replica_routes;
-pub use store::{FileReplicaStore, PendingSnapshot, ReplicaStore};
+pub use store::{FileReplicaStore, ReplicaStore};
 pub use stream::{ReplicaStream, SessionHead, SnapshotRef, StreamHead};
 pub use transport::ReplicatedStateTransport;
 
 pub const MAX_REPLICAS: usize = 8;
-pub const DEFAULT_SPOOL_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_REPLICA_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[async_trait::async_trait]
 pub trait ReplicaProvisioner: Send + Sync {
     fn replica_regions(&self) -> Vec<String>;
 
-    async fn ensure(
-        &self,
-        actor: &crate::actor::ActorKey,
-        region: &str,
-    ) -> Result<Vec<ReplicaTarget>>;
+    async fn ensure(&self, scope: &ReplicaScope) -> Result<Vec<ReplicaTarget>>;
+
+    async fn repair(&self, scope: &ReplicaScope, _failed: &[String]) -> Result<Vec<ReplicaTarget>> {
+        self.ensure(scope).await
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaScope {
+    pub actor: crate::actor::ActorKey,
+    pub host: crate::host::HostId,
+    pub session: String,
+    pub region: String,
+}
+
+impl ReplicaScope {
+    pub fn identity(&self) -> String {
+        format!(
+            "{}/",
+            crate::storage_paths::session(&self.host, &self.session)
+        )
+    }
 }
 
 pub fn replica_regions(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Vec<String>> {
@@ -52,7 +70,6 @@ pub fn replica_regions(get: &mut impl FnMut(&str) -> Option<String>) -> Result<V
 #[serde(rename_all = "camelCase")]
 pub struct ReplicationTicket {
     pub replicas: Vec<ReplicaTarget>,
-    pub archive_url: String,
 }
 
 impl ReplicationTicket {
@@ -64,10 +81,6 @@ impl ReplicationTicket {
         ensure!(
             hosts.len() == count && urls.len() == count,
             "replica hosts must be distinct"
-        );
-        ensure!(
-            !self.archive_url.is_empty(),
-            "replica archive capability is missing"
         );
         Ok(())
     }
@@ -93,7 +106,7 @@ impl ReplicaProvisioner for ReplicaSet {
             .collect()
     }
 
-    async fn ensure(&self, _: &crate::actor::ActorKey, _: &str) -> Result<Vec<ReplicaTarget>> {
+    async fn ensure(&self, _: &ReplicaScope) -> Result<Vec<ReplicaTarget>> {
         Ok(self.0.clone())
     }
 }

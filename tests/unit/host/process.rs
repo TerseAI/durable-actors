@@ -30,7 +30,7 @@ async fn host_publishes_complete_metadata_before_dependencies_are_ready() -> Res
         "https://host.example.com".into(),
     );
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-    let (_, route, _) = bind_host(&config, Instant::now(), &mut None, &mut None).await?;
+    let (_, route, _) = bind_host_listener(&config, None).await?;
     let metadata: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
     assert_eq!(
         metadata,
@@ -61,11 +61,7 @@ async fn metadata_publication_failure_prevents_host_readiness() -> Result<()> {
     );
     values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-    assert!(
-        bind_host(&config, Instant::now(), &mut None, &mut None)
-            .await
-            .is_err()
-    );
+    assert!(bind_host_listener(&config, None).await.is_err());
     Ok(())
 }
 
@@ -84,60 +80,6 @@ fn host_metadata_requires_a_valid_region() {
     }
 }
 
-#[tokio::test]
-async fn host_connections_start_without_waiting_for_each_other() -> Result<()> {
-    let barrier = tokio::sync::Barrier::new(3);
-    let connect = || async {
-        barrier.wait().await;
-        Ok(())
-    };
-    tokio::time::timeout(
-        Duration::from_millis(100),
-        connect_host_dependencies(connect(), connect(), connect()),
-    )
-    .await
-    .context("host dependencies ran sequentially")??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn public_route_can_arrive_after_the_host_process_starts() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("route");
-    let mut values = values();
-    values.insert(
-        "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE".into(),
-        path.display().to_string(),
-    );
-    let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-    assert_eq!(config.host_bind, "0.0.0.0:7101".parse()?);
-    let publish = async {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        tokio::fs::write(path, "https://host.example.com").await?;
-        anyhow::Ok(())
-    };
-    let (route, ()) = tokio::try_join!(advertised_route(&config, config.host_bind), publish)?;
-    assert_eq!(route, "https://host.example.com");
-    Ok(())
-}
-
-#[test]
-fn public_route_file_cannot_be_combined_with_other_route_settings() {
-    {
-        let conflict = "DURABLE_OBJECT_HOST_ROUTE";
-        let mut values = values();
-        values.insert(
-            "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE".into(),
-            "/tmp/input-route".into(),
-        );
-        values.insert(conflict.into(), "https://host.example.com".into());
-        assert!(
-            ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err(),
-            "{conflict}"
-        );
-    }
-}
-
 #[test]
 fn startup_timings_begin_with_only_configuration_loaded() {
     let values = values();
@@ -145,7 +87,6 @@ fn startup_timings_begin_with_only_configuration_loaded() {
     let timings = HostStartupTimings::new(&config);
 
     assert!(timings.configuration_loaded_at_ms <= timings.elapsed_ms());
-    assert!(timings.control_plane_client_ready_at_ms.is_none());
     assert!(timings.javascript_spawned_at_ms.is_none());
     assert!(timings.executor_notified_at_ms.is_none());
 }
@@ -189,7 +130,7 @@ fn values() -> HashMap<String, String> {
             "DURABLE_OBJECT_RUNTIME_CONFIG".into(),
             serde_json::json!({
                 "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
-                "region":"north-america-east", "replicaSecret":"secret", "replicas":[],
+                "region":"north-america-east", "replicaSecret":"secret", "replicaRegions":[],
                 "token":null
             })
             .to_string(),

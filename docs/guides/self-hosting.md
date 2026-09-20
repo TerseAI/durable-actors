@@ -5,17 +5,44 @@ After the [local tutorial](../../examples/chat/README.md), use this guide to dep
 Recommended setup:
 
 - One always-on control plane near your database and hosts.
-- Managed PostgreSQL with backups for deployments and public contracts.
-- One GCS bucket for ownership, host leases, and snapshots.
+- Managed PostgreSQL with backups for deployments, public contracts, and exclusive sandbox claims.
+- One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions that include `little-actors build`. The container includes the Rust runtime and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
 Create `control-plane.env` using [hosted server setup](../reference/configuration.md), then configure the [client connection](../reference/configuration.md) for your deployment terminal and backend. The configuration page contains all credentials, storage settings, and defaults used by this guide.
 
-## 2. Run the control plane
+## 2. Publish the generic runtime image
+
+Build and publish this repository's runtime image once per runtime version. It contains Rust, Bun, and the matching SDK. Import that image into Modal; customer code is published separately. Use the same SDK version in the actor source project:
+
+```sh
+npm install --save-exact little-actors@YOUR_VERSION
+python3 -m venv .venv
+.venv/bin/python -m pip install modal
+```
+
+Create `build_image.py`:
+
+```python
+import modal
+
+image = modal.Image.from_registry(
+    "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION",
+    add_python="3.12",
+)
+app = modal.App.lookup("little-actors-runtime-images", create_if_missing=True)
+with modal.enable_output():
+    image.build(app)
+print(image.object_id)
+```
+
+Run `.venv/bin/python build_image.py` and set the printed `im-...` ID as the shared runtime image in `control-plane.env` using the [configuration table](../reference/configuration.md). Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
+
+## 3. Run the control plane
 
 Use the prebuilt runtime container:
 
@@ -39,78 +66,37 @@ curl --fail --silent --show-error https://objects.example.com/.well-known/jwks.j
 
 Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
 
-## 3. Package your actor code
+## 4. Package and deploy customer code
 
-In the chat project from the local tutorial, pin the SDK to the runtime version:
-
-```sh
-npm install --save-exact little-actors@YOUR_VERSION
-```
-
-Create a `Dockerfile` in your chat project:
-
-```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION AS runtime
-
-FROM node:22-bookworm
-COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-COPY src ./src
-COPY tsconfig.json ./
-RUN npx little-actors build
-```
-
-The image combines the runtime, Node.js, and the compiled actor artifact. The build embeds schemas in `dist/actors.mjs`, so host startup does not run the TypeScript compiler.
-
-Build and push an amd64 image to a registry you control:
-
-```sh
-docker buildx build --platform linux/amd64 \
-    --tag YOUR_REGISTRY/chat-example:chat-v1 --push .
-```
-
-Configure [Modal image-build credentials](../reference/configuration.md), then import the image with Modal's Python API. This cloud-only step can run in CI:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install modal
-```
-
-Create `build_image.py`:
+Publish a customer build image containing the source project, its TypeScript configuration, and installed dependencies. Base it on the same runtime version so Bun and the compiler are available. For example, extend `build_image.py` after building the shared image:
 
 ```python
-import modal
-
-image = modal.Image.from_registry(
-    "YOUR_REGISTRY/chat-example:chat-v1",
-    add_python="3.12",
-)
-app = modal.App.lookup("chat-example-images", create_if_missing=True)
+customer = image.add_local_dir(
+    ".", "/customer", copy=True,
+    ignore=["node_modules", ".git", ".venv", ".env*", "*.env", ".little-actors"],
+).run_commands("cd /customer && bun install")
 with modal.enable_output():
-    image.build(app)
-print(image.object_id)
+    customer.build(app)
+print(customer.object_id)
 ```
 
-Then run:
+Register that customer image with one call:
 
 ```sh
-.venv/bin/python build_image.py
+npx little-actors deploy --image im-YOUR_CUSTOMER_IMAGE_ID
 ```
 
-Keep the printed `im-...` ID. Private registries require a [Modal registry secret](https://modal.com/docs/guide/existing-images).
+The control plane creates a temporary builder from the customer image, checks its actor contract, bundles code and JavaScript dependencies, and publishes a permanent Modal directory snapshot. It registers the snapshot and contract against the shared runtime image before returning success, then terminates the builder. Unchanged source metadata reuses the current compiled code, including when secrets change. The deployment terminal does not need source files or Modal credentials to make this API call.
 
-## 4. Register the deployment
+The shared SDK remains external to the internal bundle. Native add-ons and additional filesystem assets require separate packaging support. Customer-image system packages and environment variables do not transfer into generic actor sandboxes; use the deployment's secret references for runtime secrets.
 
-From the actor project used to build the image, register it and publish its public API automatically. Use the image ID printed in step 3:
+Spare sandboxes initialize Rust, Bun, the SDK worker, and IPC before admission. On assignment, the provider mounts the immutable code snapshot while Rust restores committed state. Routing begins after Bun has loaded the code and hydrated the actor. A sandbox belongs to that actor for its entire lifetime; subsequent calls reuse it. A crash or sandbox expiration starts a fresh activation from committed state, using the existing bucket and replication machinery.
 
-```sh
-npx little-actors deploy \
-    --image im-YOUR_IMAGE_ID \
-    --working-directory /app \
-    --actor-entrypoint dist/actors.mjs
-```
+Configure spare capacity, regions, lifetimes, and resource limits using the [configuration table](../reference/configuration.md).
+
+Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses; see [replica lifecycle](replication.md#repair-and-lifecycle). Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
+
+Old code snapshots remain immutable deployment artifacts; retiring hosts does not delete snapshots. Snapshot retention is managed separately from actor lifecycle; deployment replacement and deletion currently retain these artifacts.
 
 ## 5. Connect your web app
 

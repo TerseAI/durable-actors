@@ -129,6 +129,8 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
         import {{ RemoteActorClient }} from {};
         const client = new RemoteActorClient();
         const before = Number(process.argv[2]);
+        const concurrent = await Promise.all(Array.from({{ length: 4 }}, () => new RemoteActorClient().invoke('Counter', 'one', 'read', [])));
+        assert.deepEqual(concurrent, [before, before, before, before]);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before);
         assert.equal(await client.invoke('Counter', 'one', 'increment', []), before + 1);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);

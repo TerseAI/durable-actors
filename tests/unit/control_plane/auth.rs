@@ -8,6 +8,20 @@ use serde_json::json;
 use super::*;
 
 #[test]
+fn rejects_tokens_without_actor_scope() -> Result<()> {
+    let (verifier, key_pair) = verifier_and_key_pair()?;
+    let mut claims = valid_claims(unix_seconds()?);
+    claims.as_object_mut().unwrap().remove("actor");
+    let token = token(
+        &key_pair,
+        json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),
+        claims,
+    )?;
+    assert!(verifier.verify(&token).is_err());
+    Ok(())
+}
+
+#[test]
 fn verifies_a_signed_actor_token() -> Result<()> {
     let (verifier, key_pair) = verifier_and_key_pair()?;
     let now = unix_seconds()?;
@@ -200,6 +214,7 @@ fn public_key_set(key_pair: &Ed25519KeyPair) -> Result<String> {
 
 fn valid_claims(now: i64) -> serde_json::Value {
     json!({
+        "actor": {"actor_type": "Counter", "actor_id": "one"},
         "iss": "durable-object-control-plane",
         "aud": "durable-object-authority",
         "sub": "host.v3.00000000-0000-4000-8000-000000000001",

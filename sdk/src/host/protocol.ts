@@ -50,10 +50,18 @@ const evictCommandSchema = z.object({
     actor: actorIdentitySchema
 })
 
+const hydrateCommandSchema = z.object({
+    type: z.literal("hydrate"),
+    actor: actorIdentitySchema,
+    state: jsonValueSchema.nullable().optional(),
+    resident_only: z.boolean().optional()
+})
+
 const executorCommandSchema = z.discriminatedUnion("type", [
     invokeCommandSchema,
     websocketEventCommandSchema,
-    evictCommandSchema
+    evictCommandSchema,
+    hydrateCommandSchema
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
@@ -76,12 +84,18 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
     })
 ])
 
+type HydrateCommand = z.infer<typeof hydrateCommandSchema>
 type InvokeCommand = z.infer<typeof invokeCommandSchema>
 type EvictCommand = z.infer<typeof evictCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
-    InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "state_required" }
+    | InvokedReply
+    | WebSocketHandledReply
+    | FailedReply
+    | EvictedReply
+    | { readonly type: "hydrated" }
+    | { readonly type: "state_required" }
 type ActorSessionClientMessage =
     | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }
     | AttachMessage
@@ -130,7 +144,8 @@ interface ActorWorkerData {
 }
 
 type ActorWorkerRequest =
-    | { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand }
+    | { readonly type: "load"; readonly data: ActorWorkerData }
+    | { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand | HydrateCommand }
     | { readonly type: "socket_effects_published"; readonly error?: string }
     | {
           readonly type: "socket_connections"
@@ -138,6 +153,7 @@ type ActorWorkerRequest =
           readonly error?: string
       }
 type ActorWorkerMessage =
+    | { readonly type: "warm" }
     | { readonly type: "ready"; readonly actorTypes: readonly string[] }
     | ActorExecutorReply
     | { readonly type: "socket_effects"; readonly effects: readonly SocketEffect[] }
@@ -155,5 +171,6 @@ export type {
     ActorWorkerRequest,
     EvictCommand,
     InvokeCommand,
+    HydrateCommand,
     WebSocketEventCommand
 }

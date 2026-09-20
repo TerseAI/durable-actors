@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use tokio::{net::TcpListener, process::Command};
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info};
 
 use crate::{
@@ -19,7 +19,6 @@ use crate::{
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
     grpc::ActorHostGrpcService,
     host_leases::MAX_HOST_LEASE_DURATION_MS,
-    state_transport::GrpcStateTransport,
 };
 
 use super::{ActorHost, HostEndpoint, HostLeaseMaintainer, LeaseRenewalTask};
@@ -31,6 +30,9 @@ const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
+    pub(super) actor: Option<crate::actor::ActorKey>,
+    new_actor: bool,
+    ready_file: Option<PathBuf>,
     pub control_plane_url: String,
     pub host_token: String,
     pub jwt_public_keys: String,
@@ -40,7 +42,6 @@ pub struct ActorHostConfig {
     pub executor_socket: PathBuf,
     pub host_bind: SocketAddr,
     pub host_route: Option<String>,
-    pub public_route_file: Option<PathBuf>,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub socket_jwt_audience: String,
@@ -51,6 +52,17 @@ pub struct ActorHostConfig {
     metadata: Option<HostMetadataFile>,
     startup_started_at: Instant,
     configuration_loaded_at_ms: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct HostReadiness {
+    pub host_id: super::HostId,
+    pub session_id: String,
+    pub route: String,
+    pub canonical_region: String,
+    pub owner_epoch: u64,
+    pub lease: crate::host_leases::HostLease,
 }
 
 struct HostMetadataFile {
@@ -68,8 +80,17 @@ pub async fn serve_actor_host<F>(config: ActorHostConfig, shutdown: F) -> Result
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    serve_assigned_host(config, None, shutdown).await
+}
+
+pub(super) async fn serve_assigned_host(
+    config: ActorHostConfig,
+    mut warm: Option<super::spare::WarmHost>,
+    shutdown: impl Future<Output = ()> + Send,
+) -> Result<()> {
+    let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
     let mut timings = HostStartupTimings::new(&config);
-    let prepared = match prepare_actor_host(&config, &mut timings).await {
+    let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
         Ok(prepared) => prepared,
         Err(error) => {
             log_startup(&config, &timings, "failed", Some(&error));
@@ -87,7 +108,8 @@ where
         renewal,
         sockets,
         control_plane,
-        archive,
+        credentials: _credentials,
+        storage,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
@@ -100,12 +122,41 @@ where
         sockets.clone(),
     )
     .into_service();
-    if let Err(error) = executor_connection
-        .mark_ready(Some(sockets.clone()), Some(sockets.clone()))
-        .await
-    {
-        log_startup(&config, &timings, "failed", Some(&error));
-        return Err(error);
+    let initialized = async {
+        let (verifier, owner_epoch) =
+            initialize_executor(&config, &executor_connection, &host, &sockets).await?;
+        let ready = HostReadiness {
+            host_id: config.host_id.clone(),
+            session_id: config.session_id.clone(),
+            route: route.clone(),
+            canonical_region: config.runtime_config.region.clone(),
+            owner_epoch,
+            lease: storage.current_lease()?,
+        };
+        if let Some(path) = &config.ready_file {
+            let temporary = path.with_extension("tmp");
+            tokio::fs::write(&temporary, serde_json::to_vec(&ready)?).await?;
+            tokio::fs::rename(temporary, path).await?;
+        }
+        anyhow::Ok((verifier, ready))
+    }
+    .await;
+    let (socket_verifier, ready) = match initialized {
+        Ok(ready) => ready,
+        Err(error) => {
+            log_startup(&config, &timings, "failed", Some(&error));
+            let _ = renewal.shutdown().await;
+            let _ = lease.unregister().await;
+            return Err(error);
+        }
+    };
+    lease.observe(
+        executor_connection.executor(),
+        sockets.registry.clone(),
+        host.queues(),
+    );
+    if let Some(readiness) = readiness {
+        let _ = readiness.send(ready);
     }
     timings.executor_notified_at_ms = Some(timings.elapsed_ms());
     log_startup(&config, &timings, "ready", None);
@@ -115,11 +166,7 @@ where
     let socket_routes =
         crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
             registry: sockets.registry.clone(),
-            verifier: crate::control_plane::socket_ticket::SocketTicketVerifier::new(
-                &config.jwt_public_keys,
-                config.jwt_issuer.clone(),
-                config.socket_jwt_audience.clone(),
-            )?,
+            verifier: socket_verifier,
             dispatcher: Arc::new(
                 super::sockets::HostSocketDispatcher::new(
                     host.clone(),
@@ -153,7 +200,6 @@ where
     .await;
     socket_stop.cancel();
     stop_host_tasks(&host, &stop, server, executor_task).await;
-    archive.cancel();
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
@@ -163,8 +209,32 @@ where
     unregister_result
 }
 
+async fn initialize_executor(
+    config: &ActorHostConfig,
+    connection: &ActorExecutorConnection,
+    host: &ActorHost,
+    sockets: &Arc<super::sockets::HostSockets>,
+) -> Result<(
+    crate::control_plane::socket_ticket::SocketTicketVerifier,
+    u64,
+)> {
+    let verifier = crate::control_plane::socket_ticket::SocketTicketVerifier::new(
+        &config.jwt_public_keys,
+        config.jwt_issuer.clone(),
+        config.socket_jwt_audience.clone(),
+    )?;
+    connection
+        .mark_ready(Some(sockets.clone()), Some(sockets.clone()))
+        .await?;
+    let owner_epoch = match &config.actor {
+        Some(actor) => host.activate_actor(actor.clone()).await?.owner_epoch,
+        None => 0,
+    };
+    Ok((verifier, owner_epoch))
+}
+
 impl ActorHostConfig {
-    fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
+    pub(super) fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let startup_started_at = Instant::now();
         let control_plane_url = required(&mut get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?;
         let host_token = required(&mut get, "DURABLE_OBJECT_HOST_TOKEN")?;
@@ -184,15 +254,10 @@ impl ActorHostConfig {
             tonic::transport::Endpoint::from_shared(route.clone())
                 .context("DURABLE_OBJECT_HOST_ROUTE must be a valid HTTP or HTTPS URI")?;
         }
-        let public_route_file = get("DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE").map(PathBuf::from);
         let metadata = HostMetadataFile::from_lookup(&mut get)?;
-        ensure!(
-            public_route_file.is_none() || host_route.is_none(),
-            "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE cannot be combined with other host route settings"
-        );
         let host_bind = get("DURABLE_OBJECT_HOST_BIND")
             .unwrap_or_else(|| {
-                if host_route.is_some() || public_route_file.is_some() {
+                if host_route.is_some() {
                     "0.0.0.0:7101"
                 } else {
                     "127.0.0.1:0"
@@ -230,7 +295,19 @@ impl ActorHostConfig {
             &get("DURABLE_OBJECT_RUNTIME_CONFIG").context("host storage configuration missing")?,
         )
         .context("parse host runtime configuration")?;
+        let actor: Option<crate::actor::ActorKey> = get("DURABLE_OBJECT_ACTOR")
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?;
+        if let Some(actor) = &actor {
+            actor.validate()?;
+        }
         Ok(Self {
+            new_actor: get("DURABLE_OBJECT_ACTOR_IS_NEW")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(false),
+            actor,
+            ready_file: get("DURABLE_OBJECT_HOST_READY_FILE").map(PathBuf::from),
             runtime_config,
             control_plane_url,
             host_token,
@@ -240,7 +317,6 @@ impl ActorHostConfig {
             executor_socket,
             host_bind,
             host_route,
-            public_route_file,
             jwt_issuer,
             invocation_jwt_audience,
             socket_jwt_audience: get("DURABLE_OBJECT_SOCKET_JWT_AUDIENCE")
@@ -275,7 +351,8 @@ impl HostMetadataFile {
 }
 
 struct PreparedActorHost {
-    archive: CancellationToken,
+    storage: Arc<super::storage::HostStorage>,
+    credentials: DropGuard,
     sockets: Arc<super::sockets::HostSockets>,
     control_plane: Arc<ControlPlaneClient>,
     invocation_auth: ActorJwtVerifier,
@@ -291,91 +368,90 @@ struct PreparedActorHost {
 async fn prepare_actor_host(
     config: &ActorHostConfig,
     timings: &mut HostStartupTimings,
+    warm: Option<super::spare::WarmHost>,
 ) -> Result<PreparedActorHost> {
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let started_at = timings.started_at;
-    let (control_plane, (listener, route, endpoint), (executor_connection, javascript)) =
-        connect_host_dependencies(
-            timed_connection(
-                started_at,
-                &mut timings.control_plane_client_ready_at_ms,
-                ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
-            ),
-            bind_host(
-                config,
-                started_at,
-                &mut timings.listener_bound_at_ms,
-                &mut timings.route_resolved_at_ms,
-            ),
-            timed_connection(
-                started_at,
-                &mut timings.executor_attached_at_ms,
-                connect_executor(
-                    &config.executor_socket,
-                    started_at,
-                    &mut timings.javascript_spawned_at_ms,
-                ),
-            ),
-        )
-        .await?;
+    let (warm_listener, warm_executor) = match warm {
+        Some(warm) => (
+            Some(warm.listener),
+            Some((
+                warm.executor,
+                warm.javascript,
+                warm.entrypoint,
+                warm.actor_idle_timeout_ms,
+            )),
+        ),
+        None => (None, None),
+    };
+    let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
+        ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
+        bind_host_listener(config, warm_listener),
+    )?;
     let control_plane = Arc::new(control_plane);
-    let local = Arc::new(
-        crate::replication::FileReplicaStore::open(
-            std::env::temp_dir()
-                .join(format!("little-actors-{}", config.host_id))
-                .join("snapshots"),
-            crate::replication::DEFAULT_SPOOL_BYTES,
-        )
-        .await?,
+    let scope = crate::replication::ReplicaScope {
+        actor: config.actor.clone().context("actor identity missing")?,
+        host: config.host_id.clone(),
+        session: config.session_id.clone(),
+        region: config.runtime_config.region.clone(),
+    };
+    let stop = CancellationToken::new();
+    let credentials = stop.clone().drop_guard();
+    let initial = super::replication::InitialReplication::start(
+        control_plane.clone(),
+        scope.clone(),
+        !config.runtime_config.replica_regions.is_empty(),
+        stop.clone(),
     );
-    let archive = crate::replication::start_archiver(local.clone());
-    let storage = Arc::new(
-        super::storage::HostStorage::new(
-            config.runtime_config.clone(),
-            config.host_id.clone(),
-            config.session_id.clone(),
-            config.control_plane_url.clone(),
-            control_plane.clone(),
-            archive.child_token(),
-        )
-        .await?,
-    );
+    let storage_ready = prepare_storage(config, &endpoint, control_plane.clone(), stop);
+    let executor_ready = async {
+        if let Some((executor, javascript, entrypoint, idle)) = warm_executor {
+            let connection =
+                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint, idle))
+                    .await??;
+            Ok((connection, javascript))
+        } else {
+            connect_executor(
+                &config.executor_socket,
+                timings.started_at,
+                &mut timings.javascript_spawned_at_ms,
+            )
+            .await
+        }
+    };
+    let (storage, executor) = tokio::join!(storage_ready, executor_ready);
+    let (storage, lease, renewal) = storage?;
+    let (executor_connection, javascript) = match executor {
+        Ok(executor) => executor,
+        Err(error) => {
+            renewal.shutdown().await?;
+            lease.unregister().await?;
+            return Err(error);
+        }
+    };
     let sockets = Arc::new(super::sockets::HostSockets::new(storage.clone()));
     let host = Arc::new(
         ActorHost::new(
-            endpoint.clone(),
+            endpoint,
             executor_connection.executor(),
             storage.clone(),
-            Arc::new(crate::replication::ReplicatedStateTransport::new(
-                storage.runtime.clone(),
-                Arc::new(GrpcStateTransport::new()),
-                local,
-            )),
+            super::replication::ActorReplication::start(
+                storage.clone(),
+                scope,
+                storage.stop.clone(),
+                initial,
+            ),
             sockets.clone(),
         )
         .with_traces(crate::request_traces::TraceSender::start(
             control_plane.clone(),
-            archive.child_token(),
+            storage.stop.child_token(),
         )),
     );
-    let lease = Arc::new(
-        HostLeaseMaintainer::new(
-            endpoint,
-            config.session_id.clone(),
-            storage,
-            Arc::new(SystemClock),
-            config.lease_duration,
-            config.renew_every,
-        )?
-        .with_executor(executor_connection.executor())
-        .with_sockets(sockets.registry.clone())
-        .with_queues(host.queues()),
-    );
-    let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
-        archive,
+        storage,
+        credentials,
         sockets,
         control_plane,
         invocation_auth,
@@ -389,6 +465,61 @@ async fn prepare_actor_host(
     })
 }
 
+async fn prepare_storage(
+    config: &ActorHostConfig,
+    endpoint: &HostEndpoint,
+    control_plane: Arc<ControlPlaneClient>,
+    stop: CancellationToken,
+) -> Result<(
+    Arc<super::storage::HostStorage>,
+    Arc<HostLeaseMaintainer>,
+    LeaseRenewalTask,
+)> {
+    let storage = Arc::new(
+        super::storage::HostStorage::new(
+            config.runtime_config.clone(),
+            config.host_id.clone(),
+            config.session_id.clone(),
+            config.control_plane_url.clone(),
+            control_plane,
+            stop,
+        )
+        .await?
+        .with_actor(config.actor.clone(), config.new_actor),
+    );
+    let lease = Arc::new(HostLeaseMaintainer::new(
+        endpoint.clone(),
+        config.session_id.clone(),
+        storage.clone(),
+        Arc::new(SystemClock),
+        config.lease_duration,
+        config.renew_every,
+    )?);
+    let renewal = lease.clone().start().await?;
+    Ok((storage, lease, renewal))
+}
+
+async fn bind_host_listener(
+    config: &ActorHostConfig,
+    listener: Option<TcpListener>,
+) -> Result<(TcpListener, String, HostEndpoint)> {
+    let listener = match listener {
+        Some(listener) => listener,
+        None => TcpListener::bind(config.host_bind).await?,
+    };
+    let bound = listener.local_addr()?;
+    let route = config
+        .host_route
+        .clone()
+        .unwrap_or_else(|| format!("http://{bound}"));
+    write_host_metadata(config, &route).await?;
+    let endpoint = HostEndpoint {
+        id: config.host_id.clone(),
+        route: route.clone(),
+    };
+    Ok((listener, route, endpoint))
+}
+
 fn invocation_auth(config: &ActorHostConfig) -> Result<ActorJwtVerifier> {
     ActorJwtVerifier::for_scope(
         &config.jwt_public_keys,
@@ -397,44 +528,6 @@ fn invocation_auth(config: &ActorHostConfig) -> Result<ActorJwtVerifier> {
         ActorTokenPurpose::Invocation,
         config.jwt_max_lifetime,
     )
-}
-
-async fn connect_host_dependencies<C, L, E>(
-    control_plane: impl Future<Output = Result<C>>,
-    listener: impl Future<Output = Result<L>>,
-    executor: impl Future<Output = Result<E>>,
-) -> Result<(C, L, E)> {
-    tokio::try_join!(control_plane, listener, executor)
-}
-
-async fn timed_connection<T>(
-    started_at: Instant,
-    milestone: &mut Option<f64>,
-    operation: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    let result = operation.await?;
-    *milestone = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
-    Ok(result)
-}
-
-async fn bind_host(
-    config: &ActorHostConfig,
-    started_at: Instant,
-    listener_bound_at_ms: &mut Option<f64>,
-    route_resolved_at_ms: &mut Option<f64>,
-) -> Result<(TcpListener, String, HostEndpoint)> {
-    let listener = TcpListener::bind(config.host_bind)
-        .await
-        .with_context(|| format!("bind actor host at {}", config.host_bind))?;
-    *listener_bound_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
-    let route = advertised_route(config, listener.local_addr()?).await?;
-    write_host_metadata(config, &route).await?;
-    *route_resolved_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
-    let endpoint = HostEndpoint {
-        id: config.host_id.clone(),
-        route: route.clone(),
-    };
-    Ok((listener, route, endpoint))
 }
 
 async fn write_host_metadata(config: &ActorHostConfig, route: &str) -> Result<()> {
@@ -462,10 +555,6 @@ struct HostStartupTimings {
     started_at: Instant,
     configuration_loaded_at_ms: f64,
     authentication_ready_at_ms: Option<f64>,
-    control_plane_client_ready_at_ms: Option<f64>,
-    listener_bound_at_ms: Option<f64>,
-    route_resolved_at_ms: Option<f64>,
-    executor_attached_at_ms: Option<f64>,
     javascript_spawned_at_ms: Option<f64>,
     lease_registered_at_ms: Option<f64>,
     executor_notified_at_ms: Option<f64>,
@@ -477,10 +566,6 @@ impl HostStartupTimings {
             started_at: config.startup_started_at,
             configuration_loaded_at_ms: config.configuration_loaded_at_ms,
             authentication_ready_at_ms: None,
-            control_plane_client_ready_at_ms: None,
-            listener_bound_at_ms: None,
-            route_resolved_at_ms: None,
-            executor_attached_at_ms: None,
             javascript_spawned_at_ms: None,
             lease_registered_at_ms: None,
             executor_notified_at_ms: None,
@@ -505,10 +590,6 @@ fn log_startup(
         started_at_ms = 0,
         configuration_loaded_at_ms = timings.configuration_loaded_at_ms,
         authentication_ready_at_ms = timings.authentication_ready_at_ms,
-        control_plane_client_ready_at_ms = timings.control_plane_client_ready_at_ms,
-        listener_bound_at_ms = timings.listener_bound_at_ms,
-        route_resolved_at_ms = timings.route_resolved_at_ms,
-        executor_attached_at_ms = timings.executor_attached_at_ms,
         javascript_spawned_at_ms = timings.javascript_spawned_at_ms,
         lease_registered_at_ms = timings.lease_registered_at_ms,
         executor_notified_at_ms = timings.executor_notified_at_ms,
@@ -519,46 +600,13 @@ fn log_startup(
     );
 }
 
-async fn advertised_route(config: &ActorHostConfig, bound: SocketAddr) -> Result<String> {
-    if let Some(route) = &config.host_route {
-        return Ok(route.clone());
-    }
-    if let Some(path) = &config.public_route_file {
-        return tokio::time::timeout(Duration::from_secs(60), read_public_route(path))
-            .await
-            .context("public host route was not published within 60 seconds")?;
-    }
-    Ok(format!("http://{bound}"))
-}
-
-async fn read_public_route(path: &std::path::Path) -> Result<String> {
-    loop {
-        match tokio::fs::read_to_string(path).await {
-            Ok(route) if !route.trim().is_empty() => {
-                let route = route.trim().to_owned();
-                let endpoint = tonic::transport::Endpoint::from_shared(route.clone())
-                    .context("public host route file must contain a valid HTTPS URI")?;
-                ensure!(
-                    endpoint.uri().scheme_str() == Some("https") && endpoint.uri().host().is_some(),
-                    "public host route must use HTTPS"
-                );
-                return Ok(route);
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("read public host route"),
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 async fn connect_executor(
     socket: &std::path::Path,
     started_at: Instant,
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(socket).await?;
-    let javascript = spawn_javascript_process()?;
+    let javascript = spawn_javascript_process(false, &socket.display().to_string())?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -624,12 +672,18 @@ async fn stop_host_tasks(
     .await;
 }
 
-fn spawn_javascript_process() -> Result<tokio::process::Child> {
-    Command::new("node")
+pub(super) fn spawn_javascript_process(
+    generic: bool,
+    socket: &str,
+) -> Result<tokio::process::Child> {
+    Command::new("bun")
         .args([
             "--eval",
-            "import(process.env.DURABLE_OBJECT_SDK_HOST ?? \"little-actors/host\").then(module => module.runDurableObjectHost())",
+            "import(process.env.DURABLE_OBJECT_SDK_HOST ?? \"little-actors/host\").then(module => module[process.env.DURABLE_OBJECT_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runDurableObjectHost\"]())",
         ])
+        .env("DURABLE_OBJECT_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
+        .env("DURABLE_OBJECT_EXECUTOR_SOCKET", socket)
+        .env_remove("DURABLE_OBJECT_SPARE_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

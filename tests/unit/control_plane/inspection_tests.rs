@@ -10,7 +10,7 @@ use crate::{
     actor::ActorKey,
     bucket::{Bucket, RuntimeStorage, testing::RuntimeFixture},
     host::HostId,
-    host_leases::{HostLeaseRegistry, HostLeaseRequest},
+    host_leases::HostLeaseRequest,
     placement::ObjectPlacementStore,
     state_log::StateSnapshot,
     state_transport::SnapshotWriter,
@@ -77,9 +77,8 @@ async fn inspection_reads_persisted_state_without_a_deployment_or_live_host() ->
         .save(&actor, 1, json!({"internal": {"password": "saved"}}))
         .await?;
     fixture
-        .runtime
-        .leases
-        .unregister(&fixture.host, "session")
+        .store
+        .release_activation(&actor, &fixture.host, &actor.actor_id)
         .await?;
     let before = fixture.store.get(&actor.storage_key()).await?;
 
@@ -113,6 +112,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             &uuid::Uuid::new_v4().to_string(),
             "r1",
             "north-america-east",
+            &fixture.actor("one"),
         )?
         .token;
     for credential in ["", "wrong", &token] {
@@ -168,10 +168,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
         StatusCode::NOT_FOUND
     );
     let actor = fixture.actor("empty");
-    fixture
-        .store
-        .claim_actor(&actor, None, &fixture.host, "north-america-east")
-        .await?;
+    fixture.activate(&actor).await?;
     let response: Value = fixture
         .get("/v1/actors/Room.with.dots/empty?include=state")
         .await?
@@ -289,15 +286,6 @@ impl Fixture {
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
-        runtime
-            .leases
-            .register(&HostLeaseRequest {
-                id: host.clone(),
-                session_id: "session".into(),
-                route: "http://localhost:7101".into(),
-                duration_ms: 60_000,
-            })
-            .await?;
         Ok(Self {
             traces,
             changes,
@@ -319,13 +307,27 @@ impl Fixture {
         }
     }
 
-    async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {
+    async fn activate(&self, actor: &ActorKey) -> Result<crate::bucket::LoadedActor> {
         self.store
-            .claim_actor(actor, None, &self.host, "north-america-east")
-            .await?;
+            .register_activation(
+                actor,
+                &HostLeaseRequest {
+                    id: self.host.clone(),
+                    session_id: actor.actor_id.clone(),
+                    route: "http://localhost:7101".into(),
+                    duration_ms: 60_000,
+                },
+                "north-america-east",
+                true,
+            )
+            .await
+    }
+
+    async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {
+        let placement = self.activate(actor).await?.placement;
         let ticket = self
             .store
-            .prepare_write("north-america-east", actor, version)
+            .prepare_actor_write(actor, &placement.lease, placement.owner_epoch, version)
             .await?;
         let snapshot =
             StateSnapshot::new(version, 1, format!("request-{version}"), state, Value::Null)?;
@@ -358,9 +360,15 @@ impl Drop for Fixture {
 async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> Result<()> {
     let fixture = Fixture::start().await?;
     let actor = fixture.actor("unsaved");
+    let request = HostLeaseRequest {
+        id: fixture.host.clone(),
+        session_id: "session".into(),
+        route: "http://localhost:7101".into(),
+        duration_ms: 60_000,
+    };
     fixture
         .store
-        .claim_actor(&actor, None, &fixture.host, "north-america-east")
+        .register_activation(&actor, &request, "north-america-east", true)
         .await?;
     let mut stream = fixture
         .get("/v1/observe/events")
@@ -369,12 +377,6 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     let first = stream_inventory(&mut stream).await?;
     assert!(first.get("namespaceId").is_none());
     assert_eq!(first["actors"][0]["unknown"], 1);
-    let request = HostLeaseRequest {
-        id: fixture.host.clone(),
-        session_id: "session".into(),
-        route: "http://localhost:7101".into(),
-        duration_ms: 60_000,
-    };
     let queues = vec![crate::host_leases::ActorQueueInventory {
         actor: actor.clone(),
         waiting: vec![crate::host_leases::WaitingOperation {
@@ -391,9 +393,16 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         }],
     }];
     fixture
-        .runtime
-        .leases
-        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets, Some(&queues))
+        .store
+        .renew_activation(
+            &actor,
+            &request,
+            crate::host_leases::ActivationInventory {
+                resident: Some(true),
+                connections: sockets[0].connections.clone(),
+                waiting: Some(queues[0].waiting.clone()),
+            },
+        )
         .await?;
     fixture.changes.send_replace(());
     let connected = stream_inventory(&mut stream).await?;
@@ -408,9 +417,16 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
     );
     sockets[0].connections[0].metadata = json!({"userId":"grace"});
     fixture
-        .runtime
-        .leases
-        .register_with_inventory(&request, Some(&[actor.clone()]), &sockets, Some(&queues))
+        .store
+        .renew_activation(
+            &actor,
+            &request,
+            crate::host_leases::ActivationInventory {
+                resident: Some(true),
+                connections: sockets[0].connections.clone(),
+                waiting: Some(queues[0].waiting.clone()),
+            },
+        )
         .await?;
     fixture.changes.send_replace(());
     let updated = stream_inventory(&mut stream).await?;
@@ -419,9 +435,8 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         "grace"
     );
     fixture
-        .runtime
-        .leases
-        .unregister(&fixture.host, "session")
+        .store
+        .release_activation(&actor, &fixture.host, "session")
         .await?;
     fixture.changes.send_replace(());
     let expired = stream_inventory(&mut stream).await?;
@@ -435,11 +450,13 @@ async fn inventory_stream_reports_host_sockets_and_fences_expired_sessions() -> 
         session_id: "replacement".into(),
         ..request
     };
-    fixture
-        .runtime
-        .leases
-        .register_with_inventory(&replacement, Some(&[actor]), &sockets, Some(&queues))
-        .await?;
+    assert!(
+        fixture
+            .store
+            .renew_activation(&actor, &replacement, Default::default())
+            .await
+            .is_err()
+    );
     let inventory: Value = fixture
         .get("/v1/observe/actors")
         .await?
@@ -486,10 +503,12 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                source: None,
                 code_revision: "revision".into(),
+                code_snapshot: Some("im-code".into()),
                 image_ref: "test-image".into(),
-                working_directory: "/workspace".into(),
-                actor_entrypoint: None,
+                working_directory: "/customer".into(),
+                actor_entrypoint: Some("actors.mjs".into()),
                 secret_refs: vec![],
             },
             Some(&contract),

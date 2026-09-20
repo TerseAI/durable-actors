@@ -14,10 +14,9 @@ import type { ActorSchemas } from "../actor/socketValidation.js"
 import { ActorDefinitionError, ActorProtocolError, ActorSerializationError, errorMessage } from "../errors.js"
 import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
-import { validateContract } from "../wire/validation.js"
 
 import { failedReply } from "./protocol.js"
-import type { ActorExecutorReply, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
+import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
@@ -35,8 +34,12 @@ class ActorRuntime {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
     }
 
-    async handle(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
+    async handle(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): Promise<ActorExecutorReply> {
         try {
+            if (command.type === "hydrate") {
+                const prepared = this.prepare(command)
+                return prepared instanceof Actor ? { type: "hydrated" } : prepared
+            }
             return await (command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command))
         } catch (error) {
             this.reset()
@@ -74,7 +77,6 @@ class ActorRuntime {
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             const state = snapshotActorState(instance, this.definition.state)
-            validateContract(publicState(state, this.definition.state), "State", this.schemas.contract)
             const effects = [...operation.effects, ...stateUpdates(before, state, this.definition.state)]
             return {
                 type: "invoked",
@@ -112,7 +114,6 @@ class ActorRuntime {
                 this.schemas
             )
             const state = snapshotActorState(instance, this.definition.state)
-            validateContract(publicState(state, this.definition.state), "State", this.schemas.contract)
             const effects = [
                 ...operation.effects,
                 ...stateUpdates(
@@ -133,7 +134,7 @@ class ActorRuntime {
         }
     }
 
-    private prepare(command: InvokeCommand | WebSocketEventCommand): AnyActor | ActorExecutorReply {
+    private prepare(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): AnyActor | ActorExecutorReply {
         const identity = command.actor
         if (identity.actor_type !== this.definition.actorType) {
             return failedReply(

@@ -131,21 +131,21 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
         clock: clock.clone(),
     });
     let (changed, _) = watch::channel(());
-    let manager = Arc::new(
-        HostLeaseMaintainer::new(
-            HostEndpoint {
-                id: HostId::new("events"),
-                route: "http://host".into(),
-            },
-            "session".into(),
-            store.clone(),
-            clock,
-            Duration::from_secs(30),
-            Duration::from_secs(10),
-        )?
-        .with_executor(Arc::new(Executor(changed.clone()))),
-    );
-    let renewal = manager.start().await?;
+    let manager = Arc::new(HostLeaseMaintainer::new(
+        HostEndpoint {
+            id: HostId::new("events"),
+            route: "http://host".into(),
+        },
+        "session".into(),
+        store.clone(),
+        clock,
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )?);
+    let renewal = manager.clone().start().await?;
+    manager
+        .observation
+        .send_modify(|sources| sources.executor = Some(Arc::new(Executor(changed.clone()))));
     changed.send_replace(());
     tokio::time::timeout(Duration::from_millis(500), wait_for_calls(&store, 2)).await??;
     renewal.shutdown().await?;
@@ -182,22 +182,21 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
     }
     let (sender, mut reports) = watch::channel(None);
     let queues = super::super::queues::ActorQueues::new();
-    let renewal = Arc::new(
-        HostLeaseMaintainer::new(
-            HostEndpoint {
-                id: HostId::new("queued"),
-                route: "http://host".into(),
-            },
-            "session".into(),
-            Arc::new(Store(sender)),
-            Arc::new(SystemClock),
-            Duration::from_secs(30),
-            Duration::from_secs(10),
-        )?
-        .with_queues(queues.clone()),
-    )
-    .start()
-    .await?;
+    let manager = Arc::new(HostLeaseMaintainer::new(
+        HostEndpoint {
+            id: HostId::new("queued"),
+            route: "http://host".into(),
+        },
+        "session".into(),
+        Arc::new(Store(sender)),
+        Arc::new(SystemClock),
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )?);
+    let renewal = manager.clone().start().await?;
+    manager
+        .observation
+        .send_modify(|sources| sources.queues = Some(queues.clone()));
     let waiting = queues.enqueue(
         &crate::actor::ActorKey {
             actor_type: "Room".into(),

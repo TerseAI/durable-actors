@@ -13,26 +13,15 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use super::{ReplicaStream, SessionHead, StreamHead};
-use crate::clock::{Clock, SystemClock};
 
 #[async_trait]
 pub trait ReplicaStore: Send + Sync {
     async fn initialize_session(&self, session: &str) -> Result<()>;
-    async fn append(&self, stream: &ReplicaStream, archive_url: &str, bytes: &[u8]) -> Result<()>;
+    async fn append(&self, stream: &ReplicaStream, bytes: &[u8]) -> Result<()>;
     async fn stream_head(&self, stream: &ReplicaStream) -> Result<StreamHead>;
     async fn seal_session(&self, session: &str) -> Result<SessionHead>;
-    async fn put(&self, object: &str, archive_url: &str, bytes: &[u8]) -> Result<()>;
+    async fn put(&self, object: &str, bytes: &[u8]) -> Result<()>;
     async fn read(&self, object: &str) -> Result<Option<Vec<u8>>>;
-    async fn pending(&self, limit: u32) -> Result<Vec<PendingSnapshot>>;
-    async fn archived(&self, object: &str) -> Result<()>;
-    async fn attempted(&self, object: &str) -> Result<()>;
-}
-
-pub struct PendingSnapshot {
-    pub object: String,
-    pub archive_url: String,
-    pub bytes: Vec<u8>,
-    pub created_at_ms: i64,
 }
 
 pub struct FileReplicaStore {
@@ -43,7 +32,6 @@ struct StoreState {
     directory: PathBuf,
     capacity: u64,
     used: u64,
-    attempts: u64,
     snapshots: HashMap<String, Metadata>,
     streams: HashMap<String, StreamHead>,
     sessions: HashMap<String, SessionHead>,
@@ -53,16 +41,12 @@ struct StoreState {
 #[derive(Serialize, Deserialize)]
 struct Metadata {
     object: String,
-    archive_url: String,
-    created_at_ms: i64,
     size: u64,
-    #[serde(skip)]
-    last_attempt: u64,
 }
 
 impl FileReplicaStore {
     pub async fn open(directory: PathBuf, capacity: u64) -> Result<Self> {
-        ensure!(capacity > 0, "replica spool capacity must be positive");
+        ensure!(capacity > 0, "replica storage capacity must be positive");
         let state =
             tokio::task::spawn_blocking(move || StoreState::open(directory, capacity)).await??;
         Ok(Self {
@@ -99,12 +83,10 @@ impl ReplicaStore for FileReplicaStore {
         .await
     }
 
-    async fn append(&self, stream: &ReplicaStream, archive_url: &str, bytes: &[u8]) -> Result<()> {
+    async fn append(&self, stream: &ReplicaStream, bytes: &[u8]) -> Result<()> {
         let stream = stream.clone();
         let bytes = bytes.to_vec();
-        let archive_url = archive_url.to_owned();
-        self.run(move |state| state.append(&stream, archive_url, &bytes))
-            .await
+        self.run(move |state| state.append(&stream, &bytes)).await
     }
 
     async fn stream_head(&self, stream: &ReplicaStream) -> Result<StreamHead> {
@@ -138,13 +120,10 @@ impl ReplicaStore for FileReplicaStore {
         .await
     }
 
-    async fn put(&self, object: &str, archive_url: &str, bytes: &[u8]) -> Result<()> {
+    async fn put(&self, object: &str, bytes: &[u8]) -> Result<()> {
         let metadata = Metadata {
             object: object.into(),
-            archive_url: archive_url.into(),
-            created_at_ms: i64::try_from(SystemClock.now_ms()?)?,
             size: u64::try_from(bytes.len())?,
-            last_attempt: 0,
         };
         let bytes = bytes.to_vec();
         self.run(move |state| state.put(metadata, &bytes)).await
@@ -158,27 +137,6 @@ impl ReplicaStore for FileReplicaStore {
                 .get(&object)
                 .map(|metadata| read_blob(&state.path(&object), metadata.size))
                 .transpose()
-        })
-        .await
-    }
-
-    async fn pending(&self, limit: u32) -> Result<Vec<PendingSnapshot>> {
-        self.run(move |state| state.pending(limit)).await
-    }
-
-    async fn archived(&self, object: &str) -> Result<()> {
-        let object = object.to_owned();
-        self.run(move |state| state.archived(&object)).await
-    }
-
-    async fn attempted(&self, object: &str) -> Result<()> {
-        let object = object.to_owned();
-        self.run(move |state| {
-            state.attempts += 1;
-            if let Some(metadata) = state.snapshots.get_mut(&object) {
-                metadata.last_attempt = state.attempts;
-            }
-            Ok(())
         })
         .await
     }
@@ -198,7 +156,6 @@ impl StoreState {
             directory,
             capacity,
             used: 0,
-            attempts: 0,
             snapshots: HashMap::new(),
             streams: HashMap::new(),
             sessions: HashMap::new(),
@@ -262,6 +219,9 @@ impl StoreState {
                 .context("replica size overflow")?;
             self.snapshots.insert(metadata.object.clone(), metadata);
         }
+        for head in self.streams.values().cloned().collect::<Vec<_>>() {
+            self.prune_stream(&head)?;
+        }
         Ok(())
     }
 
@@ -278,7 +238,7 @@ impl StoreState {
             .used
             .checked_add(metadata.size)
             .context("replica size overflow")?;
-        ensure!(used <= self.capacity, "replica spool is full");
+        ensure!(used <= self.capacity, "replica storage is full");
         let mut temporary = tempfile::Builder::new()
             .prefix(".pending-")
             .tempfile_in(&self.directory)?;
@@ -304,7 +264,7 @@ impl StoreState {
         })
     }
 
-    fn append(&mut self, stream: &ReplicaStream, archive_url: String, bytes: &[u8]) -> Result<()> {
+    fn append(&mut self, stream: &ReplicaStream, bytes: &[u8]) -> Result<()> {
         let mut head = self.head(stream)?;
         let session = self.session(&stream.session);
         ensure!(
@@ -319,22 +279,21 @@ impl StoreState {
             );
             if snapshot.state_version == latest.state_version {
                 ensure!(snapshot == *latest, "conflicting immutable snapshot");
-                return File::open(&self.directory)?.sync_all().map_err(Into::into);
+                File::open(&self.directory)?.sync_all()?;
+                return self.prune_stream(&head);
             }
         }
         // Full snapshots include intervening writes that used the bucket fallback.
         self.put(
             Metadata {
                 object: snapshot.object.clone(),
-                archive_url,
-                created_at_ms: i64::try_from(SystemClock.now_ms()?)?,
                 size: bytes.len() as u64,
-                last_attempt: 0,
             },
             bytes,
         )?;
         head.latest = Some(snapshot);
-        self.save_head(head)
+        self.save_head(head.clone())?;
+        self.prune_stream(&head)
     }
 
     fn session(&self, session: &str) -> SessionHead {
@@ -373,34 +332,23 @@ impl StoreState {
         Ok(())
     }
 
-    fn pending(&self, limit: u32) -> Result<Vec<PendingSnapshot>> {
-        let mut pending: Vec<_> = self.snapshots.values().collect();
-        pending.sort_unstable_by_key(|metadata| {
-            (
-                metadata.last_attempt,
-                metadata.created_at_ms,
-                &metadata.object,
-            )
-        });
-        pending
-            .into_iter()
-            .take(limit as usize)
-            .map(|metadata| {
-                Ok(PendingSnapshot {
-                    object: metadata.object.clone(),
-                    archive_url: metadata.archive_url.clone(),
-                    bytes: read_blob(&self.path(&metadata.object), metadata.size)?,
-                    created_at_ms: metadata.created_at_ms,
-                })
-            })
-            .collect()
-    }
-
-    fn archived(&mut self, object: &str) -> Result<()> {
-        if let Some(metadata) = self.snapshots.get(object) {
-            fs::remove_file(self.path(object))?;
+    fn prune_stream(&mut self, head: &StreamHead) -> Result<()> {
+        let Some(latest) = &head.latest else {
+            return Ok(());
+        };
+        let obsolete: Vec<_> = self
+            .snapshots
+            .keys()
+            .filter(|object| object.starts_with(&head.stream.prefix) && **object != latest.object)
+            .cloned()
+            .collect();
+        if obsolete.is_empty() {
+            return Ok(());
+        }
+        for object in obsolete {
+            fs::remove_file(self.path(&object))?;
+            let metadata = self.snapshots.remove(&object).unwrap();
             self.used -= metadata.size;
-            self.snapshots.remove(object);
         }
         File::open(&self.directory)?.sync_all()?;
         Ok(())

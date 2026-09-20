@@ -112,6 +112,12 @@ impl ActorRuntime {
             };
             self.cached_state = Some(cached);
         }
+        self.executor
+            .hydrate(
+                actor.clone(),
+                self.cached_state.as_ref().and_then(CachedActorState::state),
+            )
+            .await?;
         self.storage.ensure_authority()?;
         self.activation = Some(activation.clone());
         Ok(activation)

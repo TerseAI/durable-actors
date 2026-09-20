@@ -45,9 +45,18 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
         let registry = PostgresAdminRegistry::from_database(database.clone());
         let mut deployment = spec("image-1");
         deployment.secret_refs = vec!["project-secrets".into()];
+        deployment.source = Some(DeploymentSource {
+            image_ref: "im-source".into(),
+            working_directory: "/project".into(),
+            actor_entrypoint: Some("src/actors.ts".into()),
+        });
 
         assert!(registry.register_test_deployment(&deployment).await?);
         assert_eq!(registry.launch_spec().await?, Some(deployment.clone()));
+        assert!(!registry.register_test_deployment(&deployment).await?);
+        deployment.source.as_mut().unwrap().image_ref = "im-updated".into();
+        assert!(registry.register_test_deployment(&deployment).await?);
+        assert_eq!(registry.launch_spec().await?, Some(deployment));
         registry.remove_deployment().await?;
         assert_eq!(registry.launch_spec().await?, None);
         registry.remove_deployment().await?;
@@ -58,6 +67,8 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        source: None,
+        code_snapshot: None,
         code_revision: "revision-1".into(),
         image_ref: image.into(),
         working_directory: "/workspace".into(),

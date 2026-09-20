@@ -23,7 +23,6 @@ pub struct ReplicaGrant {
     pub object: String,
     pub region: String,
     pub host_id: String,
-    pub archive_url: String,
     pub expires_at_ms: u64,
 }
 

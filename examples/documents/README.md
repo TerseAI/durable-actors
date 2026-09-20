@@ -1,5 +1,7 @@
 # Shared documents
 
+Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+
 A small Tiptap editor with Yjs for concurrent edits and durable actors for saved documents.
 
 ## Run it

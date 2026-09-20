@@ -30,6 +30,7 @@ impl ActorTokenPurpose {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActorPrincipal {
+    pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub session_id: String,
     pub region: String,
@@ -56,6 +57,7 @@ pub(crate) struct ActorJwtVerifier {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    actor: crate::actor::ActorKey,
     sub: String,
     #[serde(rename = "processId")]
     host_id: String,
@@ -215,7 +217,9 @@ impl ActorJwtVerifier {
             claims.iat <= now.saturating_add(skew_seconds),
             "actor token was issued in the future"
         );
+        claims.actor.validate()?;
         let principal = ActorPrincipal {
+            actor: claims.actor,
             host_id: HostId::new(claims.host_id),
             session_id: claims.session_id,
             region: claims.region,

@@ -173,7 +173,9 @@ impl ActorJwtIssuer {
         session_id: &str,
         code_revision: &str,
         region: &str,
+        actor: &ActorKey,
     ) -> Result<IssuedActorToken> {
+        actor.validate()?;
         let now_ms = unix_millis()?;
         let expires_at_ms =
             now_ms.saturating_add(duration_millis(self.max_lifetime.min(HOST_TOKEN_TTL))?);
@@ -193,6 +195,7 @@ impl ActorJwtIssuer {
             nbf: now_ms / 1000,
             exp: expires_at_ms / 1000,
             invocation: None,
+            actor: actor.clone(),
         })
     }
 
@@ -227,6 +230,7 @@ impl ActorJwtIssuer {
             iat: now,
             nbf: now,
             exp: expires_at,
+            actor: actor.clone(),
             invocation: Some(ActorInvocationCapability {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
@@ -252,6 +256,7 @@ impl ActorJwtIssuer {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    actor: ActorKey,
     iss: String,
     aud: Vec<String>,
     sub: String,

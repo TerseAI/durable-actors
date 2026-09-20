@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 )
 
 const maximumCommandBytes = 1024 * 1024
+const maximumContractBytes = 4 * 1024 * 1024
+const maximumResponseBytes = maximumContractBytes + 1024*1024
 
 type apiFactory func() (modalAPI, func(), error)
 type command struct {
@@ -31,7 +34,7 @@ func runCommand(ctx context.Context, input io.Reader, output io.Writer, factory 
 	if err != nil {
 		return err
 	}
-	if len(document) >= maximumCommandBytes {
+	if len(document) >= maximumResponseBytes {
 		return fmt.Errorf("provider response is too large")
 	}
 	_, err = output.Write(append(document, '\n'))
@@ -50,38 +53,40 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 		return nil, err
 	}
 	defer closeClient()
-	p := &provider{api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
+	p := &provider{assigner: httpSpareAssigner{client: &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
 	switch cmd.Operation {
+	case "create_spare":
+		var request spareRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.createSpare(ctx, request)
+	case "retire_spare":
+		var request spareHandle
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return struct{}{}, p.retireSpare(ctx, request)
+	case "build_code":
+		var request buildCodeRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.buildCode(ctx, request)
 	case "socket_credentials":
 		var request socketRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
 			return nil, err
 		}
 		return p.socketCredentials(ctx, request)
-	case "ensure_replica":
-		var request replicaRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.ensureReplica(ctx, request)
 	case "ensure_host":
 		var request ensureRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
 			return nil, err
 		}
 		return p.ensureHost(ctx, request)
-	case "warm_image":
-		var request imageRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.warmImage(ctx, request)
 	default:
-		var request terminateRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.terminateHosts(ctx, request)
+		return nil, fmt.Errorf("unsupported sandbox operation")
 	}
 }
 
@@ -98,7 +103,7 @@ func readCommand(input io.Reader) (command, error) {
 		return cmd, err
 	}
 	switch cmd.Operation {
-	case "ensure_host", "ensure_replica", "warm_image", "terminate_hosts", "socket_credentials":
+	case "ensure_host", "socket_credentials", "create_spare", "retire_spare", "build_code":
 		return cmd, nil
 	default:
 		return cmd, fmt.Errorf("unsupported sandbox operation")

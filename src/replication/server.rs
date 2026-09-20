@@ -7,26 +7,41 @@ use crate::{
     state_log::StateSnapshot,
 };
 use axum::{Router, http::StatusCode, routing::get};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tonic::{Request, Response, Status};
 
 #[derive(Clone)]
 struct ReplicaServer {
     store: Arc<dyn ReplicaStore>,
-    access: ReplicaAccess,
-    host_id: String,
+    binding: Arc<OnceLock<ReplicaBinding>>,
+}
+
+pub(super) struct ReplicaBinding {
+    pub access: ReplicaAccess,
+    pub host_id: String,
+    pub scope: super::ReplicaScope,
 }
 
 pub fn replica_routes(
     store: Arc<dyn ReplicaStore>,
     access: ReplicaAccess,
     host_id: String,
+    scope: super::ReplicaScope,
 ) -> Router {
-    let server = ReplicaServer {
-        store,
+    let binding = Arc::new(OnceLock::new());
+    let _ = binding.set(ReplicaBinding {
         access,
         host_id,
-    };
+        scope,
+    });
+    routes(store, binding)
+}
+
+pub(super) fn routes(
+    store: Arc<dyn ReplicaStore>,
+    binding: Arc<OnceLock<ReplicaBinding>>,
+) -> Router {
+    let server = ReplicaServer { store, binding };
     tonic::service::Routes::from(Router::new().route("/health", get(|| async { StatusCode::OK })))
         .add_service(
             proto::snapshot_service_server::SnapshotServiceServer::new(server.clone())
@@ -61,30 +76,17 @@ impl proto::snapshot_service_server::SnapshotService for ReplicaServer {
         &self,
         request: Request<proto::SnapshotData>,
     ) -> Result<Response<proto::SnapshotWriteReply>, Status> {
-        let grant = self.authorize(&request, &["PUT", "APPEND"])?;
-        if grant.archive_url.is_empty() {
-            return Err(Status::permission_denied("archive capability is required"));
-        }
+        let grant = self.authorize(&request, &["APPEND"])?;
         let bytes = request.into_inner().data;
         StateSnapshot::decode(&bytes).map_err(|_| Status::invalid_argument("invalid snapshot"))?;
-        if grant.operation == "APPEND" {
-            let stream = grant
-                .stream
-                .as_ref()
-                .ok_or_else(|| Status::permission_denied("stream authority is required"))?;
-            self.store
-                .append(stream, &grant.archive_url, &bytes)
-                .await
-                .map_err(unavailable)?;
-        } else {
-            if grant.stream.is_some() {
-                return Err(Status::permission_denied("object authority is required"));
-            }
-            self.store
-                .put(&grant.object, &grant.archive_url, &bytes)
-                .await
-                .map_err(unavailable)?;
-        }
+        let stream = grant
+            .stream
+            .as_ref()
+            .ok_or_else(|| Status::permission_denied("stream authority is required"))?;
+        self.store
+            .append(stream, &bytes)
+            .await
+            .map_err(unavailable)?;
         Ok(Response::new(proto::SnapshotWriteReply {
             already_exists: false,
         }))
@@ -146,13 +148,35 @@ impl ReplicaServer {
         request: &Request<T>,
         operations: &[&str],
     ) -> Result<ReplicaGrant, Status> {
-        let grant = self
+        let binding = self
+            .binding
+            .get()
+            .ok_or_else(|| Status::permission_denied("replica is not assigned"))?;
+        let grant = binding
             .access
             .verify_any(token(request)?, operations)
             .map_err(|_| Status::permission_denied("replica capability rejected"))?;
-        if grant.host_id != self.host_id {
+        if grant.host_id != binding.host_id {
             return Err(Status::permission_denied(
                 "capability belongs to another replica",
+            ));
+        }
+        let scope = &binding.scope;
+        let allowed = if matches!(
+            grant.operation.as_str(),
+            "INITIALIZE_SESSION" | "SEAL_SESSION"
+        ) {
+            grant.object == scope.identity()
+        } else {
+            let prefix = crate::storage_paths::snapshots(&scope.actor).map_err(unavailable)?;
+            grant.object.starts_with(&prefix)
+                && grant.stream.as_ref().is_none_or(|stream| {
+                    stream.session == scope.identity() && stream.prefix.starts_with(&prefix)
+                })
+        };
+        if !allowed {
+            return Err(Status::permission_denied(
+                "replica belongs to another actor activation",
             ));
         }
         Ok(grant)

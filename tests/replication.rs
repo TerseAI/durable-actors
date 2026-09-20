@@ -45,15 +45,13 @@ impl SnapshotWriter for Storage {
 }
 
 #[tokio::test]
-async fn both_replicas_and_a_local_disk_copy_can_finish_before_the_bucket() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let local = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 1024).await?);
+async fn all_remote_replicas_can_commit_without_actor_disk_or_bucket() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
         second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local.clone());
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone());
     let ticket = ticket();
     let mut write = Box::pin(transport.write_snapshot(&ticket, b"snapshot".to_vec()));
     assert!(
@@ -66,20 +64,17 @@ async fn both_replicas_and_a_local_disk_copy_can_finish_before_the_bucket() -> R
         tokio::time::timeout(Duration::from_secs(1), write).await??,
         StateWrite::Replicated
     );
-    assert_eq!(local.read("snapshot").await?, Some(b"snapshot".to_vec()));
     Ok(())
 }
 
 #[tokio::test]
 async fn bucket_can_commit_while_a_replica_is_unavailable() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let local = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 1024).await?);
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(1),
         second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage, local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
     assert_eq!(
         transport
             .write_snapshot(&ticket(), b"snapshot".to_vec())
@@ -90,22 +85,41 @@ async fn bucket_can_commit_while_a_replica_is_unavailable() -> Result<()> {
 }
 
 #[tokio::test]
+async fn failed_replica_is_reported_for_repair_even_when_gcs_commits_first() -> Result<()> {
+    let storage = Arc::new(Storage {
+        bucket: Semaphore::new(1),
+        second_finished: Semaphore::new(0),
+        second: Semaphore::new(0),
+    });
+    let (failures, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone())
+        .with_failure_reports(failures);
+    assert_eq!(
+        transport
+            .write_snapshot(&ticket(), b"snapshot".to_vec())
+            .await?,
+        StateWrite::Written
+    );
+    storage.second.close();
+    let failed = tokio::time::timeout(Duration::from_millis(100), reports.recv()).await?;
+    assert_eq!(
+        failed.as_deref(),
+        Some(ticket().replication.unwrap().replicas[1].host_id.as_str())
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn replica_snapshot_survives_reopening_and_rejects_conflicting_bytes() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("snapshots");
     let store = FileReplicaStore::open(path.clone(), 1024).await?;
-    store.put("snapshot", "archive", b"first").await?;
-    store.put("snapshot", "archive", b"first").await?;
-    assert!(
-        store
-            .put("snapshot", "archive", b"different")
-            .await
-            .is_err()
-    );
+    store.put("snapshot", b"first").await?;
+    store.put("snapshot", b"first").await?;
+    assert!(store.put("snapshot", b"different").await.is_err());
     drop(store);
     let reopened = FileReplicaStore::open(path, 1024).await?;
     assert_eq!(reopened.read("snapshot").await?, Some(b"first".to_vec()));
-    assert_eq!(reopened.pending(10).await?.len(), 1);
     Ok(())
 }
 
@@ -118,25 +132,14 @@ async fn replica_blobs_use_a_directory_and_restore_capacity_after_restart() -> R
             .await
             .is_err()
     );
-    store.put("../snapshot", "archive", b"first").await?;
+    store.put("../snapshot", b"first").await?;
     assert_eq!(store.read("../snapshot").await?, Some(b"first".to_vec()));
-    assert!(store.put("second", "archive", b"x").await.is_err());
+    assert!(store.put("second", b"x").await.is_err());
     drop(store);
 
     let reopened = FileReplicaStore::open(directory.path().to_owned(), 5).await?;
-    let pending = reopened.pending(10).await?;
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].object, "../snapshot");
-    assert_eq!(pending[0].archive_url, "archive");
-    assert_eq!(pending[0].bytes, b"first");
-    assert!(reopened.put("second", "archive", b"x").await.is_err());
-    reopened.archived("../snapshot").await?;
-    reopened.put("second", "archive", b"other").await?;
-    drop(reopened);
-
-    let reopened = FileReplicaStore::open(directory.path().to_owned(), 5).await?;
-    assert!(reopened.read("../snapshot").await?.is_none());
-    assert_eq!(reopened.read("second").await?, Some(b"other".to_vec()));
+    assert_eq!(reopened.read("../snapshot").await?, Some(b"first".to_vec()));
+    assert!(reopened.put("second", b"x").await.is_err());
     Ok(())
 }
 
@@ -144,23 +147,16 @@ async fn replica_blobs_use_a_directory_and_restore_capacity_after_restart() -> R
 async fn concurrent_blob_writes_cannot_exceed_capacity_or_replace_a_snapshot() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let store = Arc::new(FileReplicaStore::open(directory.path().to_owned(), 5).await?);
-    let (first, second) = tokio::join!(
-        store.put("first", "archive", b"first"),
-        store.put("second", "archive", b"other"),
-    );
+    let (first, second) =
+        tokio::join!(store.put("first", b"first"), store.put("second", b"other"),);
     assert_ne!(first.is_ok(), second.is_ok());
-    let pending = store.pending(10).await?;
-    assert_eq!(pending.len(), 1);
-    assert!(
-        store
-            .put(&pending[0].object, "archive", b"wrong")
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        store.read(&pending[0].object).await?,
-        Some(pending[0].bytes.clone())
-    );
+    let (object, bytes) = if first.is_ok() {
+        ("first", b"first")
+    } else {
+        ("second", b"other")
+    };
+    assert!(store.put(object, b"wrong").await.is_err());
+    assert_eq!(store.read(object).await?, Some(bytes.to_vec()));
     Ok(())
 }
 
@@ -169,7 +165,7 @@ async fn replica_restart_ignores_unpublished_writes_and_rejects_truncated_blobs(
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().to_owned(), 1024).await?;
     let bytes = b"{\n  \"count\": 1\n}\n";
-    store.put("snapshot", "archive", bytes).await?;
+    store.put("snapshot", bytes).await?;
     drop(store);
 
     let blob = std::fs::read_dir(directory.path())?
@@ -188,7 +184,6 @@ async fn replica_restart_ignores_unpublished_writes_and_rejects_truncated_blobs(
 
     let reopened = FileReplicaStore::open(directory.path().to_owned(), 1024).await?;
     assert_eq!(reopened.read("snapshot").await?, Some(bytes.to_vec()));
-    assert_eq!(reopened.pending(10).await?.len(), 1);
     assert!(!directory.path().join(".pending-interrupted").exists());
     drop(reopened);
     std::fs::write(blob, &stored[..stored.len() - 1])?;
@@ -201,38 +196,13 @@ async fn replica_restart_ignores_unpublished_writes_and_rejects_truncated_blobs(
 }
 
 #[tokio::test]
-async fn archive_retries_do_not_starve_unattempted_blobs() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let store = FileReplicaStore::open(directory.path().to_owned(), 1024).await?;
-    for index in 0..6 {
-        store
-            .put(&index.to_string(), "archive", b"snapshot")
-            .await?;
-    }
-    let attempted = store.pending(4).await?;
-    for snapshot in &attempted {
-        store.attempted(&snapshot.object).await?;
-    }
-    let next = store.pending(2).await?;
-    assert_eq!(next.len(), 2);
-    assert!(next.iter().all(|snapshot| {
-        attempted
-            .iter()
-            .all(|previous| previous.object != snapshot.object)
-    }));
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_duplicate_host_cannot_satisfy_two_replica_acknowledgments() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let local = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 1024).await?);
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
         second_finished: Semaphore::new(0),
         second: Semaphore::new(1),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage, local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
     let mut invalid = ticket();
     invalid.replication.as_mut().unwrap().replicas[1].host_id = "one".into();
     assert!(
@@ -245,24 +215,23 @@ async fn a_duplicate_host_cannot_satisfy_two_replica_acknowledgments() -> Result
 }
 
 #[tokio::test]
-async fn a_full_local_spool_does_not_count_as_a_durable_primary() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let local = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 1).await?);
+async fn a_partial_replica_set_cannot_commit_when_the_bucket_fails() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
+        second: Semaphore::new(0),
         second_finished: Semaphore::new(0),
-        second: Semaphore::new(1),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local);
-    let ticket = ticket();
-    let mut write = Box::pin(transport.write_snapshot(&ticket, b"snapshot".to_vec()));
+    storage.bucket.close();
+    storage.second.close();
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
     assert!(
-        tokio::time::timeout(Duration::from_millis(30), &mut write)
-            .await
-            .is_err()
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            transport.write_snapshot(&ticket(), b"snapshot".to_vec())
+        )
+        .await?
+        .is_err()
     );
-    storage.bucket.add_permits(1);
-    assert_eq!(write.await?, StateWrite::Written);
     Ok(())
 }
 
@@ -279,7 +248,6 @@ fn ticket() -> WritePlan {
         expires_at_ms: i64::MAX,
         replication: Some(
             serde_json::from_value(serde_json::json!({
-                "archiveUrl": "archive",
                 "replicas": [
                     { "hostId": "one", "url": "first" },
                     { "hostId": "two", "url": "second" }
@@ -301,7 +269,21 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
     let access = ReplicaAccess::new("test-installation-key", Arc::new(SystemClock));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let router = replica_routes(store.clone(), access.clone(), "node-a".into());
+    let scope = little_actors::replication::ReplicaScope {
+        actor: little_actors::actor::ActorKey {
+            actor_type: "Counter".into(),
+            actor_id: "one".into(),
+        },
+        host: little_actors::host::HostId::new("primary"),
+        session: "session".into(),
+        region: "us-east".into(),
+    };
+    let router = replica_routes(
+        store.clone(),
+        access.clone(),
+        "node-a".into(),
+        scope.clone(),
+    );
     let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -310,15 +292,24 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             })
             .await
     });
-    let object =
-        "little-actors/v2/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
+    let object = little_actors::storage::snapshot_object_name(
+        &scope.actor,
+        1,
+        "00000000000000000000000000000001",
+    )?;
+    store.initialize_session(&scope.identity()).await?;
+    let stream = little_actors::replication::ReplicaStream {
+        session: scope.identity(),
+        prefix: object.strip_suffix("1.json").unwrap().into(),
+        owner_epoch: 1,
+        base_version: 0,
+    };
     let grant = ReplicaGrant {
-        stream: None,
-        operation: "PUT".into(),
-        object: object.into(),
+        stream: Some(stream.clone()),
+        operation: "APPEND".into(),
+        object: stream.prefix.clone(),
         region: "us-east".into(),
         host_id: "node-a".into(),
-        archive_url: "https://archive.test".into(),
         expires_at_ms: u64::MAX,
     };
     let bytes = little_actors::state_log::StateSnapshot::new(
@@ -339,6 +330,8 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         &origin,
         &ReplicaGrant {
             operation: "GET".into(),
+            object: object.clone(),
+            stream: None,
             ..grant.clone()
         },
     )?;
@@ -347,10 +340,54 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         &origin,
         &ReplicaGrant {
             host_id: "node-b".into(),
+            ..grant.clone()
+        },
+    )?;
+    let wrong_activation = access.url(
+        &origin,
+        &ReplicaGrant {
+            stream: Some(little_actors::replication::ReplicaStream {
+                session: format!("{}other/", scope.identity()),
+                ..stream
+            }),
+            ..grant.clone()
+        },
+    )?;
+    let wrong_actor = access.url(
+        &origin,
+        &ReplicaGrant {
+            operation: "GET".into(),
+            stream: None,
+            object: little_actors::storage::snapshot_object_name(
+                &little_actors::actor::ActorKey {
+                    actor_type: "Counter".into(),
+                    actor_id: "other".into(),
+                },
+                1,
+                "00000000000000000000000000000001",
+            )?,
+            ..grant.clone()
+        },
+    )?;
+    let obsolete_put = access.url(
+        &origin,
+        &ReplicaGrant {
+            operation: "PUT".into(),
+            stream: None,
+            object: object.clone(),
             ..grant
         },
     )?;
     for error in [
+        transport
+            .write(&wrong_activation, bytes.clone())
+            .await
+            .unwrap_err(),
+        transport.read(&wrong_actor).await.unwrap_err(),
+        transport
+            .write(&obsolete_put, bytes.clone())
+            .await
+            .unwrap_err(),
         transport
             .write(&wrong_node, bytes.clone())
             .await
@@ -368,7 +405,7 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
     assert_eq!(
         FileReplicaStore::open(directory.path().join("snapshots"), 4096)
             .await?
-            .read(object)
+            .read(&object)
             .await?,
         Some(bytes)
     );
@@ -377,14 +414,12 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
 
 #[tokio::test]
 async fn replica_uploads_continue_after_object_storage_wins() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let local = Arc::new(FileReplicaStore::open(directory.path().join("snapshots"), 1024).await?);
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(1),
         second: Semaphore::new(0),
         second_finished: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone(), local);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone());
     assert_eq!(
         transport
             .write_snapshot(&ticket(), b"snapshot".to_vec())

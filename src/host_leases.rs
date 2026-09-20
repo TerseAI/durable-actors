@@ -32,19 +32,11 @@ impl HostLeaseRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostLeaseStatus {
-    pub lease: Option<HostLease>,
-    #[serde(rename = "registry_now_ms")]
-    pub store_now_ms: u64,
-}
-
-impl HostLeaseStatus {
-    pub fn is_active(&self) -> bool {
-        self.lease
-            .as_ref()
-            .is_some_and(|lease| lease.expires_at_ms > self.store_now_ms)
-    }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ActivationInventory {
+    pub resident: Option<bool>,
+    pub connections: Vec<crate::actor::ActorSocketConnection>,
+    pub waiting: Option<Vec<WaitingOperation>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,30 +80,3 @@ pub trait HostLeaseRegistry: Send + Sync {
 
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()>;
 }
-
-#[async_trait]
-pub trait HostLeaseStore: HostLeaseRegistry {
-    async fn inventory_status(
-        &self,
-        id: &HostId,
-    ) -> Result<(
-        HostLeaseStatus,
-        Option<Vec<ActorKey>>,
-        Vec<ActorSocketInventory>,
-        Option<Vec<ActorQueueInventory>>,
-    )> {
-        let (status, residents) = self.residency_status(id).await?;
-        Ok((status, residents, vec![], None))
-    }
-    async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus>;
-    async fn residency_status(
-        &self,
-        id: &HostId,
-    ) -> Result<(HostLeaseStatus, Option<Vec<ActorKey>>)> {
-        Ok((self.lease_status(id).await?, None))
-    }
-}
-
-#[cfg(test)]
-#[path = "../tests/unit/host_leases.rs"]
-mod tests;

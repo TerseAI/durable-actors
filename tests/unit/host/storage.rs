@@ -1,5 +1,8 @@
 use super::*;
-use crate::{bucket::BucketObject, state_log::StateSnapshot, state_transport::SnapshotWriter};
+use crate::{
+    bucket::BucketObject, replication::ReplicaSet, state_log::StateSnapshot,
+    state_transport::SnapshotWriter,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -51,24 +54,30 @@ impl Bucket for MemoryBucket {
 #[tokio::test]
 async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
     let bucket = Arc::new(MemoryBucket::default());
-    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), Arc::new(SystemClock)));
     let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
     let runtime = Arc::new(RuntimeStorage::new(
         bucket.clone(),
-        leases.clone(),
         Arc::new(ReplicaSet(vec![])),
         Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         "http://control-plane-unavailable.invalid".into(),
+        std::sync::Arc::new(crate::clock::SystemClock),
     )?);
     let host = HostId::new("host.v3.revision.host");
     let storage = HostStorage {
-        observer: None,
+        observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
+        stop: CancellationToken::new(),
         runtime,
-        leases,
+        transport: crate::state_transport::GrpcStateTransport::new(),
         host: host.clone(),
         session: "session".into(),
         region: "us-east".into(),
+        actor: Some(ActorKey {
+            actor_type: "Counter".into(),
+            actor_id: "one".into(),
+        }),
+        new_actor: true,
+        activation: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),
     };
@@ -90,7 +99,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
     assert_eq!(activation.state_version, 0);
     assert_eq!(
         bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-        1
+        0
     );
     let snapshot = StateSnapshot::new(
         1,
@@ -103,7 +112,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
     let ticket = storage.prepare_state_write(&actor, &host, 1, 0).await?;
     assert_eq!(
         bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        0,
         "the first write uses locally established ownership"
     );
     storage

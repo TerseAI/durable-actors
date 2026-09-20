@@ -1,4 +1,47 @@
 use super::*;
+
+#[tokio::test]
+async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -> Result<()> {
+    let root = tempfile::tempdir_in("/tmp")?;
+    let path = root.path().join("executor.sock");
+    let listener = ActorExecutorListener::bind(&path).await?;
+    let peer = tokio::spawn(async move {
+        let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":16})).await?;
+        let load = read_json_line(&mut socket).await?;
+        assert_eq!(load["entrypoint"], "/customer/actors.mjs");
+        write_json_line(
+            &mut socket,
+            &json!({"type":"attach","protocol":16,"actor_types":["counter"]}),
+        )
+        .await?;
+        assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
+        let hydrate = read_json_line(&mut socket).await?;
+        assert_eq!(hydrate["command"]["type"], "hydrate");
+        assert_eq!(hydrate["command"]["state"]["count"], 41);
+        write_json_line(
+            &mut socket,
+            &json!({"type":"reply","message_id":hydrate["message_id"],"reply":{"type":"hydrated"}}),
+        )
+        .await?;
+        anyhow::Ok(())
+    });
+    let warm = listener.accept_warm().await?;
+    let connection = warm.load("/customer/actors.mjs", 60_000).await?;
+    connection.mark_ready(None, None).await?;
+    connection
+        .executor()
+        .hydrate(
+            ActorKey {
+                actor_type: "counter".into(),
+                actor_id: "one".into(),
+            },
+            Some(Arc::new(json!({"count":41}))),
+        )
+        .await?;
+    peer.await??;
+    Ok(())
+}
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::{

@@ -10,6 +10,7 @@ use crate::{actor_state::ActorStorageKey, host::HostId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectPlacement {
+    pub lease: crate::host_leases::HostLease,
     pub object: ActorStorageKey,
     pub owner: HostId,
     pub owner_epoch: u64,
@@ -19,24 +20,10 @@ pub struct ObjectPlacement {
     pub last_request_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PlacementClaim {
-    Acquired(ObjectPlacement),
-    Current(ObjectPlacement),
-}
-
 #[async_trait]
 pub trait ObjectPlacementStore: Send + Sync {
     async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         self.get(object).await
-    }
-
-    async fn matches_lease(
-        &self,
-        _placement: &ObjectPlacement,
-        _lease: &crate::host_leases::HostLease,
-    ) -> Result<bool> {
-        Ok(true)
     }
 
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;

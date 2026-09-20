@@ -24,10 +24,10 @@ async function buildActor(entrypoint: string, outfile: string, options: Compiler
         outfile,
         tsconfig: options.configFile,
         bundle: true,
-        packages: "external",
+        external: ["little-actors", "little-actors/*"],
         platform: "node",
         format: "esm",
-        target: "node20",
+        target: "esnext",
         keepNames: true,
         write: false,
         logLevel: "silent"

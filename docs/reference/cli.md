@@ -72,18 +72,16 @@ Checks TypeScript and bundles actor code with its generated schemas into `dist/a
 ## Deploy actors
 
 ```sh
-npx little-actors deploy --image im-chat --working-directory /app --actor-entrypoint dist/actors.mjs
+npx little-actors deploy src/actors.ts --image im-customer-build
 ```
 
-Registers a built image plus the public API contract extracted from the TypeScript source
+Sends one deployment request containing the customer build image and source entrypoint. The control plane compiles and publishes the code internally; the deployment terminal needs only the control-plane URL and API key. See [image packaging](../guides/self-hosting.md#4-package-and-deploy-customer-code).
 
-- `--image <ref>` — Provider image to register.
+- `[entrypoint]` — Source file inside the build image, default `src/durable-objects.ts`.
+- `--image <ref>` — Published customer build image ID.
+- `--working-directory <path>` — Project directory inside that image; default `/customer`.
 - `--revision <id>` — Optional revision name. Defaults to a new generated ID for each deploy.
-- `--working-directory <path>` — Absolute project path inside the image.
-- `--actor-entrypoint <path>` — Entrypoint inside the image. Use `dist/actors.mjs` for the build artifact; this is also the default.
-- `--config <file>` — TypeScript configuration for extraction.
-- `--secret <name>` — Provider secret reference. Repeatable.
-- `--warm-region <region>` — Background image warmup.
+- `--secret <name>` — Modal secret reference. Repeatable; uses an on-demand generic sandbox.
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ## Generate a client and proxy
