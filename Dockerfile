@@ -30,6 +30,7 @@ COPY sdk/src ./sdk/src
 COPY sdk/tsconfig*.json ./sdk/
 COPY proto ./proto
 RUN pnpm --dir packages/observer-ui build \
+    && pnpm --dir sdk generate:proto \
     && pnpm --dir sdk exec tsc -p tsconfig.build.json \
     && cp proto/durable_object.proto sdk/dist/generated/durable_object.proto
 
