@@ -1,14 +1,24 @@
 use super::*;
 
 #[test]
-fn deployment_registration_accepts_a_background_warm_region() {
-    let request: RegisterDeploymentRequest = serde_json::from_value(serde_json::json!({
+fn deployment_accepts_the_customer_image_and_source_entrypoint_without_a_snapshot() {
+    let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
         "codeRevision": "revision-1",
-        "imageRef": "im-actor",
-        "workingDirectory": "/workspace",
-        "warmRegion": "north-america-west"
-    }))
-    .unwrap();
+        "imageRef": "im-customer",
+        "workingDirectory": "/project",
+        "actorEntrypoint": "src/actors.ts",
+        "secretRefs": ["project-secrets"]
+    }));
+    assert!(request.is_ok());
+}
 
-    assert_eq!(request.warm_region.as_deref(), Some("north-america-west"));
+#[test]
+fn deployment_registration_rejects_the_removed_image_warmup_option() {
+    let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
+        "codeRevision": "revision-1",
+        "imageRef": "im-runtime",
+        "workingDirectory": "/customer",
+        "warmRegion": "north-america-west"
+    }));
+    assert!(request.is_err());
 }

@@ -1,26 +1,24 @@
 use super::*;
-use crate::{
-    bucket::{BucketHostLeases, FileBucket},
-    clock::SystemClock,
-    host::HostId,
-};
+use crate::{bucket::testing::RuntimeFixture, host::HostId};
 
 #[tokio::test]
 async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let project = directory.path().to_path_buf();
-    let leases = Arc::new(BucketHostLeases::new(
-        Arc::new(FileBucket::new(project.join("objects"))?),
-        Arc::new(SystemClock),
-    ));
+    let fixture = RuntimeFixture::new()?;
     let provider = LocalSandboxProvider::new(
         project.join("unused-executable"),
         project.clone(),
-        leases,
+        fixture.runtime,
         None,
     );
     provider.shutdown().await;
     let request = EnsureHostRequest {
+        actor_is_new: true,
+        actor: None,
+        code_snapshot: None,
+        spare: None,
+        resources: Default::default(),
         runtime_config: None,
 
         code_revision: "local".into(),

@@ -9,7 +9,6 @@ fn replica_capabilities_bind_operation_expiry_and_stream() -> Result<()> {
         object: "little-actors/v3/snapshots/aa/test/1.json".into(),
         region: "us-east".into(),
         host_id: "replica".into(),
-        archive_url: String::new(),
         expires_at_ms: u64::MAX,
     };
     let url = access.url("http://replica", &grant)?;

@@ -1,66 +1,47 @@
-use std::{env, future::Future, path::PathBuf, sync::Arc, time::Duration};
-
-use anyhow::{Context, Result};
-use tokio::{fs, net::TcpListener};
-
-use crate::clock::SystemClock;
-
-use super::{DEFAULT_SPOOL_BYTES, FileReplicaStore, ReplicaAccess, replica_routes, start_archiver};
+use super::{DEFAULT_REPLICA_BYTES, FileReplicaStore};
+use anyhow::{Context, Result, ensure};
+use std::{
+    env,
+    future::{Future, IntoFuture},
+    path::PathBuf,
+    sync::Arc,
+};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
-    let host_id = env::var("DURABLE_OBJECT_HOST_ID").context("replica host ID is required")?;
-    let secret = env::var("DURABLE_OBJECT_REPLICA_SECRET").context("replica secret is required")?;
+    let token = env::var("DURABLE_OBJECT_SPARE_TOKEN").context("replica spare token missing")?;
+    ensure!(token.len() >= 32, "replica spare token is too short");
     let path = env::var("DURABLE_OBJECT_REPLICA_DATA")
         .unwrap_or_else(|_| "/tmp/durable-object-replica".into());
-    let store = Arc::new(FileReplicaStore::open(PathBuf::from(path), DEFAULT_SPOOL_BYTES).await?);
+    let store = Arc::new(FileReplicaStore::open(PathBuf::from(path), DEFAULT_REPLICA_BYTES).await?);
     let listener = TcpListener::bind(
-        env::var("DURABLE_OBJECT_HOST_BIND").unwrap_or_else(|_| "127.0.0.1:7101".into()),
+        env::var("DURABLE_OBJECT_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:7101".into()),
     )
     .await?;
-    let route = advertised_route(&listener).await?;
-    let archive = start_archiver(store.clone());
-    let router = replica_routes(
-        store,
-        ReplicaAccess::new(&secret, Arc::new(SystemClock)),
-        host_id.clone(),
+    let control = TcpListener::bind(
+        env::var("DURABLE_OBJECT_SPARE_BIND").unwrap_or_else(|_| "0.0.0.0:7102".into()),
+    )
+    .await?;
+    let (storage_routes, assignment_routes) = super::spare::routers(store, token);
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let storage = axum::serve(listener, storage_routes)
+        .with_graceful_shutdown(stop.clone().cancelled_owned())
+        .into_future();
+    let assignment = axum::serve(control, assignment_routes)
+        .with_graceful_shutdown(stop.cancelled_owned())
+        .into_future();
+    let ready = env::var("DURABLE_OBJECT_SPARE_READY_FILE")
+        .unwrap_or_else(|_| "/tmp/durable-object-spare-ready".into());
+    tokio::fs::write(ready, b"ready\n").await?;
+    tracing::info!(
+        event = "replica_spare_ready",
+        "generic replica listener ready"
     );
-    publish_ready(&host_id, &route).await?;
-    tracing::info!(event = "replica_ready", %host_id, %route);
-    let result = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await;
-    archive.cancel();
-    result.context("serve replica storage")
-}
-
-async fn advertised_route(listener: &TcpListener) -> Result<String> {
-    let Ok(path) = env::var("DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE") else {
-        return Ok(format!("http://{}", listener.local_addr()?));
-    };
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if let Ok(route) = fs::read_to_string(&path).await
-                && !route.trim().is_empty()
-            {
-                return route.trim().to_owned();
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("wait for replica public route")
-}
-
-async fn publish_ready(host_id: &str, route: &str) -> Result<()> {
-    if let Ok(path) = env::var("DURABLE_OBJECT_HOST_METADATA_FILE") {
-        let temporary = format!("{path}.tmp");
-        fs::write(&temporary, serde_json::to_vec(&serde_json::json!({
-            "hostId": host_id, "route": route, "canonicalRegion": env::var("DURABLE_OBJECT_REGION")?,
-        }))?).await?;
-        fs::rename(temporary, path).await?;
+    tokio::select! {
+        result = storage => result.context("serve replica storage"),
+        result = assignment => result.context("serve replica assignment"),
+        () = shutdown => Ok(()),
     }
-    if let Ok(path) = env::var("DURABLE_OBJECT_HOST_READY_FILE") {
-        fs::write(path, b"ready").await?;
-    }
-    Ok(())
 }

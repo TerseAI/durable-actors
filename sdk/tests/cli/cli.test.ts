@@ -307,7 +307,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
     assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
-    assert.deepEqual(JSON.parse(stdout).slice(0, 15), [
+    assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
         "--project-id",
         "default",
@@ -319,6 +319,8 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "actors.ts",
         "--storage",
         "gcs",
+        "--sdk-host",
+        path.resolve(path.dirname(cli), "host.js"),
         "--api-key",
         "dev-key",
         "--data-dir",

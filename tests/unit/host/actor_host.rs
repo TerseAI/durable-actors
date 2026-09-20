@@ -381,48 +381,7 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 }
 
 #[tokio::test]
-async fn waiting_inventory_excludes_running_work_and_clears_after_completion_or_drain() -> Result<()>
-{
-    for draining in [false, true] {
-        let (host, mut started, release) = controlled_host();
-        let mut activity = host.activity();
-        let caller = host.clone();
-        let first = tokio::spawn(async move { invoke(&caller, "first").await });
-        started.recv().await.unwrap();
-        assert!(host.queues().inventory().is_empty());
-        let caller = host.clone();
-        let second = tokio::spawn(async move { invoke(&caller, "second").await });
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            activity.wait_for(|count| *count == 2),
-        )
-        .await??;
-        let queues = host.queues().inventory();
-        assert_eq!(queues.len(), 1);
-        assert_eq!(queues[0].actor.actor_id, "counter-1");
-        assert_eq!(queues[0].waiting[0].operation, "increment");
-        if draining {
-            assert!(host.drain(Duration::from_millis(10)).await.is_err());
-        }
-        release.add_permits(1);
-        first.await??;
-        assert_eq!(
-            second.await??,
-            if draining {
-                ActorExecutionResult::HostUnavailable
-            } else {
-                completed(2)
-            }
-        );
-        host.drain(Duration::from_secs(1)).await?;
-        assert!(host.queues().inventory().is_empty());
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_rejects_queued_work()
--> Result<()> {
+async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Result<()> {
     let (host, mut started, release) = controlled_host();
     let mut activity = host.activity();
     let caller = host.clone();
@@ -459,7 +418,7 @@ async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_reje
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), other).await??,
-        completed(1)
+        ActorExecutionResult::Reroute
     );
     assert!(host.drain(Duration::from_millis(30)).await.is_err());
     assert_eq!(
@@ -820,6 +779,47 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
     );
     assert!(invoke(&host, "request-1").await.is_err());
     assert!(state.writes.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_results_are_withheld_if_the_lease_expires_during_persistence() -> Result<()> {
+    for replicated in [false, true] {
+        let (commit_started, mut committing) = mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let authority = Arc::new(FakeAuthority::default());
+        let state = Arc::new(FakeStateTransport {
+            replicated,
+            paused_commit: Some((commit_started, release.clone())),
+            ..Default::default()
+        });
+        let host = Arc::new(ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            Arc::new(IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            }),
+            authority.clone(),
+            state.clone(),
+            Arc::new(EmptySocketPublisher),
+        ));
+        let caller = host.clone();
+        let result = tokio::spawn(async move { invoke(&caller, "first").await });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), committing.recv()).await?,
+            Some(())
+        );
+        authority.fenced.store(true, Ordering::SeqCst);
+        release.add_permits(1);
+        let error = tokio::time::timeout(Duration::from_secs(2), result)
+            .await??
+            .unwrap_err();
+        assert!(error.to_string().contains("host lease expired"));
+        assert_eq!(state.writes.lock().unwrap().len(), 1);
+        host.drain(Duration::from_secs(1)).await?;
+    }
     Ok(())
 }
 

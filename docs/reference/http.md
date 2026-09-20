@@ -23,13 +23,13 @@ Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. 
 
 | Operation                      | Method and path                                      | Credential                    |
 | ------------------------------ | ---------------------------------------------------- | ----------------------------- |
-| Register or replace deployment | `PUT /v1/deployment`                                 | API key                       |
-| Read deployment                | `GET /v1/deployment`                                 | API key                       |
-| Read public actor contract     | `GET /v1/deployment/contract`                        | API key                       |
-| Remove deployment              | `DELETE /v1/deployment`                              | API key                       |
+| Register or replace deployment | `PUT /v1/projects/{projectId}/deployment`                                 | API key                       |
+| Read deployment                | `GET /v1/projects/{projectId}/deployment`                                 | API key                       |
+| Read public actor contract     | `GET /v1/projects/{projectId}/deployment/contract`                        | API key                       |
+| Remove deployment              | `DELETE /v1/projects/{projectId}/deployment`                              | API key                       |
 | List saved actors              | `GET /v1/actors`                                     | API key                       |
-| Inspect actor metadata         | `GET /v1/actors/{actorName}/{actorId}`               | API key                       |
-| Inspect committed state        | `GET /v1/actors/{actorName}/{actorId}?include=state` | API key                       |
+| Inspect actor metadata         | `GET /v1/projects/{projectId}/actors/{actorName}/{actorId}`               | API key                       |
+| Inspect committed state        | `GET /v1/projects/{projectId}/actors/{actorName}/{actorId}?include=state` | API key                       |
 | Prepare a connection           | `POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect`      | API key                       |
 | Read public signing keys       | `GET /.well-known/jwks.json`                         | None                          |
 | Check control-plane health     | `GET /healthz`                                       | None                          |
@@ -43,30 +43,32 @@ Path parameters `actorName` and `actorId` follow the [actor identity limits](api
 
 All three operations require the API key and manage the installation's active deployment.
 
-### PUT /v1/deployment
+### PUT /v1/projects/{projectId}/deployment
 
-Registers actor code for your application. There is one active deployment. The JSON request replaces the complete deployment specification.
+Builds and registers actor code from a published customer image in one request. There is one active deployment. The JSON request replaces the complete source specification.
 
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-your-actor-image",
-    "workingDirectory": "/workspace",
-    "actorEntrypoint": "dist/actors.mjs",
-    "secretRefs": [],
-    "warmRegion": "north-america-east"
+    "imageRef": "im-customer-build",
+    "workingDirectory": "/customer",
+    "actorEntrypoint": "src/actors.ts",
+    "secretRefs": []
 }
 ```
 
 **JSON parameters**
 
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
-- `imageRef` (`string`, required) — Provider image reference containing the actor project, 1–255 bytes. Registration does not upload or build the image.
-- `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
-- `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
-- `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
-- `warmRegion` (`string | null`, default `null`) — Supported execution region in which to request background image warmup. It is not retained in the deployment record.
-- `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with the code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
+- `imageRef` (`string`, required) — Published Modal customer build image ID (`im-...`). The image contains the project source, installed dependencies, Bun, and the matching SDK at `/opt/little-actors/sdk`. Base it on the matching runtime image; this endpoint does not build Docker images.
+- `workingDirectory` (`string`, required) — Absolute project directory inside the build image, at most 1024 bytes.
+- `actorEntrypoint` (`string | null`, default `null`) — Source entrypoint inside that image, at most 1024 bytes; defaults to `src/durable-objects.ts` relative to the project directory.
+- `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`. Secrets are attached to actor sandboxes, not the temporary compiler sandbox.
+- `contract` (`object | null`, default `null`) — Optional public actor contract, up to 4 MiB. Hosted deployments generate it from the source automatically; a supplied contract must match. Different contract content for the active revision returns `409`. Local deployments can supply their compiled contract directly.
+
+The control plane starts a temporary sandbox from the customer image, compiles the code and public contract, publishes a permanent directory snapshot, and registers the result against the configured shared runtime image. The internal bundle and snapshot are not API parameters. Build failures leave the current deployment running. The builder is terminated after success or failure.
+
+Repeating the current image, project directory, and entrypoint reuses its compiled snapshot and contract when the shared runtime image is unchanged. Secret updates and revision-label changes do not rebuild that code.
 
 **Response:** `200 OK` with JSON:
 
@@ -78,17 +80,15 @@ An identical deployment returns `{"changed":false}`. Changing the specification 
 
 Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
 
-**Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
+**Errors:** `400` for an invalid specification, contract, or failed build, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
 
-Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
-
-### GET /v1/deployment/contract
+### GET /v1/projects/{projectId}/deployment/contract
 
 Returns the active deployment's public actor contract. Requires the API key. No actor host needs to be running.
 
 ```text
-GET /v1/deployment/contract
-GET /v1/deployment/contract?revision=chat-v1
+GET /v1/projects/{projectId}/deployment/contract
+GET /v1/projects/{projectId}/deployment/contract?revision=chat-v1
 ```
 
 Omit `revision` to get the latest deployment's contract. The optional `revision` query checks that this revision is active and returns `404` otherwise. Only the active contract is stored; historical contracts are discarded on replacement or deletion. Unknown query parameters are rejected.
@@ -105,31 +105,31 @@ Omit `revision` to get the latest deployment's contract. The optional `revision`
 
 The example represents an empty actor API; a missing contract returns `404` with error code `not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
 
-`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
+`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the published code snapshot. Registration validates the contract format and local type references; it does not introspect the code snapshot to verify its API.
 
 **Errors:** `400` for an invalid revision or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
-### GET /v1/deployment
+### GET /v1/projects/{projectId}/deployment
 
 Reads the active deployment.
 
-**Response:** `200 OK` with the stored specification, including its code revision:
+**Response:** `200 OK` with the original customer image and source paths, including its code revision. Internal runtime image and snapshot IDs are not returned, so this response can be sent back to `PUT /v1/projects/{projectId}/deployment` when changing secrets:
 
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-your-actor-image",
-    "workingDirectory": "/workspace",
-    "actorEntrypoint": "dist/actors.mjs",
+    "imageRef": "im-customer-build",
+    "workingDirectory": "/customer",
+    "actorEntrypoint": "src/actors.ts",
     "secretRefs": []
 }
 ```
 
-If no deployment exists, the response is `404` with error code `not_found`. The record omits `warmRegion`.
+If no deployment exists, the response is `404` with error code `not_found`.
 
 **Errors:** `401` for a rejected admin credential; `500` if the deployment cannot be read.
 
-### DELETE /v1/deployment
+### DELETE /v1/projects/{projectId}/deployment
 
 Stops the deployment's cloud hosts and removes the active deployment registration.
 
@@ -171,7 +171,7 @@ Optional query parameters:
 
 Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
 
-### GET /v1/actors/{actorName}/{actorId}
+### GET /v1/projects/{projectId}/actors/{actorName}/{actorId}
 
 **Response:** `200 OK` with the same actor metadata fields as listing. Add `?include=state` to include `state`, containing all committed persisted fields, including internal fields. The `state` field is omitted by default. An existing placement without committed state has `stateVersion: 0` and `lastRequestId: null`; requesting state returns `state: null`.
 
@@ -218,9 +218,8 @@ Internal operations use authenticated gRPC over HTTP/2. They have no public JSON
 | -------------------------- | ------------------------------------------------------------------ | ------------------------------------ |
 | `ActorHostService`         | `Activate`, `Invoke`, `HandleSocket`, `PublishSocketEffects`       | Runtime and backend SDK              |
 | `ActorControlPlaneService` | `Execute`: host registration, storage access and write preparation | Actor hosts                          |
-| `SnapshotService`          | `Read`, `Write`                                                    | Hosts, replicas and archival workers |
+| `SnapshotService`          | `Read`, `Write`                                                    | Actor hosts and recovery runtime     |
 | `ReplicaService`           | `Initialize`, `Head`, `Seal`                                       | Ownership and recovery runtime       |
-| `ArchiveService`           | `Prepare`                                                          | Replica archival workers             |
 
 Socket effects go directly to the owning host and are checked against its actor, host session and ownership epoch. Snapshot and replica calls carry signed, operation-scoped capabilities in gRPC metadata. Storage capability addresses use `grpc://` or `grpcs://`; the runtime resolves them to HTTP/2 connections. Public health checks, JWKS and application callbacks remain HTTP.
 

@@ -1,14 +1,14 @@
 {
     "Replace": {
+        "assignment_test.go": "tests/assignment_test.go",
+        "tests/assignment_test.go": "",
         "command_test.go": "tests/command_test.go",
         "tests/command_test.go": "",
         "modal_test.go": "tests/modal_test.go",
         "tests/modal_test.go": "",
         "provider_test.go": "tests/provider_test.go",
         "tests/provider_test.go": "",
-        "replica_test.go": "tests/replica_test.go",
-        "tests/replica_test.go": "",
-        "secrets_integration_test.go": "tests/secrets_integration_test.go",
-        "tests/secrets_integration_test.go": ""
+        "spare_test.go": "tests/spare_test.go",
+        "tests/spare_test.go": ""
     }
 }

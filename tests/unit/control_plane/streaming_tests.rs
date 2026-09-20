@@ -8,7 +8,7 @@ use crate::{
     host_leases::{HostLeaseRegistry, HostLeaseRequest},
 };
 use futures_util::{SinkExt, StreamExt};
-use std::process::Stdio;
+use std::{process::Stdio, time::Duration};
 use tokio::{net::TcpListener, task::JoinSet};
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
@@ -239,9 +239,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
     let (mut socket, _) =
         tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
     receive(&mut socket).await?;
-    socket
-        .send(Message::Text(r#"{"type":"invalid"}"#.into()))
-        .await?;
+    socket.send(Message::Text("{".into())).await?;
     let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
         .await?
         .context("close")??;
@@ -552,6 +550,8 @@ impl Stack {
             actor_id: "counter-1".into(),
         };
         let spec = HostLaunchSpec {
+            source: None,
+            code_snapshot: None,
             project_id: "default".into(),
             code_revision: "revision".into(),
             image_ref: "test-image".into(),
@@ -564,7 +564,6 @@ impl Stack {
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
         let runtime = crate::bucket::testing::RuntimeFixture::new()?;
-        let leases = runtime.leases.clone();
         let registry = Arc::new(LocalAdminRegistry::default());
         registry.register_test_deployment(&spec).await?;
         let auth = ActorJwtVerifier::for_scope(
@@ -575,7 +574,6 @@ impl Stack {
             Duration::from_secs(60),
         )?;
         let service = ControlPlaneService::new(
-            leases.clone(),
             runtime.runtime.clone(),
             auth,
             registry.clone(),
@@ -595,6 +593,7 @@ impl Stack {
                 "00000000-0000-4000-8000-000000000001",
                 &revision,
                 "us-east",
+                &actor,
             )?
             .token;
         let publisher = Arc::new(ControlPlaneClient::connect(control_plane, token.clone()).await?);
@@ -606,7 +605,7 @@ impl Stack {
                     },
                     region: "us-east".into(),
                     replica_secret: runtime.access.secret().to_owned(),
-                    replicas: vec![],
+                    replica_regions: vec![],
                     token: None,
                 },
                 host_id.clone(),
@@ -615,7 +614,8 @@ impl Stack {
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
             )
-            .await?,
+            .await?
+            .with_actor(Some(actor.clone()), true),
         );
         storage
             .register(&HostLeaseRequest {
@@ -836,7 +836,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
             serde_json::to_string(&format!("file://{}", sdk.join("host.js").display()))?
         ),
     )?;
-    let child = tokio::process::Command::new("node")
+    let child = tokio::process::Command::new("bun")
         .arg(bootstrap)
         .env("DURABLE_OBJECT_ENTRYPOINT", entrypoint)
         .env("DURABLE_OBJECT_EXECUTOR_SOCKET", socket)
@@ -862,6 +862,18 @@ struct SocketTestProvisioner;
 
 #[async_trait]
 impl HostProvisioner for SocketTestProvisioner {
+    async fn prepare_deployment(
+        &self,
+        source: &HostLaunchSpec,
+        _previous: Option<&HostLaunchSpec>,
+        _region: &str,
+    ) -> Result<(
+        HostLaunchSpec,
+        Option<crate::control_plane::contracts::PublicActorContract>,
+    )> {
+        Ok((source.clone(), None))
+    }
+
     async fn socket_credentials(
         &self,
         _spec: &HostLaunchSpec,
@@ -873,11 +885,14 @@ impl HostProvisioner for SocketTestProvisioner {
             token: String::new(),
         })
     }
-    async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
+    async fn ensure_actor_host(
+        &self,
+        _spec: &HostLaunchSpec,
+        _region: &str,
+        _actor: &ActorKey,
+        _new_actor: bool,
+    ) -> Result<(HostLease, u64)> {
         anyhow::bail!("fixture host must be active")
-    }
-    async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
-        anyhow::bail!("unused")
     }
     async fn terminate_hosts(
         &self,

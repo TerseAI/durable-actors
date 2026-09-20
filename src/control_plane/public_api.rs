@@ -172,19 +172,30 @@ async fn get_deployment(
     State(state): State<PublicApiState>,
     path: Path<ProjectPath>,
     headers: HeaderMap,
-) -> Result<Json<HostLaunchSpec>, ApiError> {
+) -> Result<Json<RegisterDeploymentRequest>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
-    Ok(Json(
-        state
-            .admin
-            .current_deployment(&project)
-            .await
-            .map_err(ApiError::internal)?
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found")
-            })?,
-    ))
+    let spec = state
+        .admin
+        .current_deployment(&project)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found"))?;
+    let source = spec
+        .source
+        .unwrap_or_else(|| super::admin::DeploymentSource {
+            image_ref: spec.image_ref,
+            working_directory: spec.working_directory,
+            actor_entrypoint: spec.actor_entrypoint,
+        });
+    Ok(Json(RegisterDeploymentRequest {
+        code_revision: spec.code_revision,
+        contract: None,
+        image_ref: source.image_ref,
+        working_directory: source.working_directory,
+        actor_entrypoint: source.actor_entrypoint,
+        secret_refs: spec.secret_refs,
+    }))
 }
 
 async fn delete_deployment(
@@ -217,6 +228,8 @@ async fn register_deployment(
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
         project_id: project_id(path)?,
+        source: None,
+        code_snapshot: None,
         code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
@@ -225,7 +238,7 @@ async fn register_deployment(
     };
     let changed = state
         .invocations
-        .register_deployment(&state.admin, &spec, contract.as_ref())
+        .deploy_source(&state.admin, &spec, contract.as_ref())
         .await
         .map_err(|error| {
             if error.is::<ContractRevisionConflict>() {
@@ -234,9 +247,6 @@ async fn register_deployment(
                 ApiError::bad_request(error)
             }
         })?;
-    if let Some(region) = request.warm_region {
-        state.invocations.warm_deployment_image(spec, region);
-    }
     Ok(Json(DeploymentReply { changed }))
 }
 
@@ -385,11 +395,11 @@ fn authorization(headers: &HeaderMap) -> Result<&str, ApiError> {
         .map_err(|_| ApiError::unauthorized("bearer credential is invalid"))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
     code_revision: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     image_ref: String,
     working_directory: String,
@@ -397,8 +407,6 @@ struct RegisterDeploymentRequest {
     actor_entrypoint: Option<String>,
     #[serde(default)]
     secret_refs: Vec<String>,
-    #[serde(default)]
-    warm_region: Option<String>,
 }
 
 #[derive(Serialize)]

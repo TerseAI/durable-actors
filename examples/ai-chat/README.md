@@ -1,5 +1,7 @@
 # AI chat with durable history
 
+Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+
 Vercel AI SDK streams replies; a durable actor stores the conversation.
 
 ## Run it

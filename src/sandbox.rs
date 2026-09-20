@@ -11,15 +11,92 @@ use crate::host::HostId;
 
 mod command_process;
 mod local;
+pub(crate) mod pool;
 
 pub(crate) use local::LocalSandboxProvider;
 
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_PROVIDER_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_PROVIDER_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceLimits {
+    pub cpu_millis: u32,
+    pub memory_mib: u32,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            cpu_millis: 1000,
+            memory_mib: 1024,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpareHandle {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub control_route: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub control_token: String,
+    pub name: String,
+    pub resource_id: String,
+    pub route: String,
+    pub canonical_region: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpareKind {
+    Actor,
+    Replica,
+}
+
+impl SpareKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Actor => "actor",
+            Self::Replica => "replica",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSpareRequest {
+    pub kind: SpareKind,
+    pub name: String,
+    pub image_ref: String,
+    pub canonical_region: String,
+    pub resources: ResourceLimits,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildCodeRequest {
+    pub image_ref: String,
+    pub working_directory: String,
+    pub actor_entrypoint: String,
+    pub canonical_region: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltActorCode {
+    pub code_snapshot: String,
+    pub contract: serde_json::Value,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
+    pub actor_is_new: bool,
+    pub actor: Option<crate::actor::ActorKey>,
+    pub code_snapshot: Option<String>,
+    pub spare: Option<SpareHandle>,
+    pub resources: ResourceLimits,
     pub runtime_config: Option<String>,
 
     pub code_revision: String,
@@ -40,21 +117,12 @@ pub struct EnsureHostRequest {
     pub host_idle_timeout_ms: u64,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EnsureReplicaRequest {
-    pub installation_id: String,
-    pub slot: usize,
-    pub canonical_region: String,
-    pub image_ref: String,
-    pub host_id: String,
-    pub secret: String,
-    pub control_plane_url: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
+    pub lease: Option<crate::host_leases::HostLease>,
+    #[serde(default)]
+    pub owner_epoch: u64,
     pub host_id: HostId,
     pub route: String,
     pub canonical_region: String,
@@ -71,11 +139,9 @@ pub struct ActorHostProvisioning {
     pub input_parsed_at_ms: Option<u64>,
     pub sdk_loaded_at_ms: Option<u64>,
     pub resources_resolved_at_ms: Option<u64>,
-    pub existing_host_checked_at_ms: Option<u64>,
     pub sandbox_scheduled_at_ms: Option<u64>,
     pub host_ready_observed_at_ms: Option<u64>,
     pub route_read_at_ms: Option<u64>,
-    pub metadata_written_at_ms: Option<u64>,
     pub completed_at_ms: u64,
     #[serde(default)]
     pub command_spawned_at_ms: Option<u64>,
@@ -85,22 +151,6 @@ pub struct ActorHostProvisioning {
     pub process_completed_at_ms: Option<u64>,
     #[serde(default)]
     pub response_decoded_at_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WarmImageRequest {
-    pub code_revision: String,
-    pub canonical_region: String,
-    pub image_ref: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageWarmup {
-    pub provider: String,
-    pub resource_id: String,
-    pub total_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -120,7 +170,7 @@ pub struct HostTermination {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SocketCredentialsRequest {
-    pub code_revision: String,
+    pub resource_id: Option<String>,
     pub canonical_region: String,
     pub host_id: HostId,
     pub session_id: String,
@@ -135,12 +185,22 @@ pub struct SocketCredentials {
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode>;
+    async fn wait_ready(&self, _host: &HostId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn create_spare(&self, _request: &CreateSpareRequest) -> Result<SpareHandle> {
+        anyhow::bail!("provider does not support generic spares")
+    }
+    async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
+        anyhow::bail!("provider does not support generic spares")
+    }
     async fn socket_credentials(
         &self,
         request: &SocketCredentialsRequest,
     ) -> Result<SocketCredentials>;
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
-    async fn warm_image(&self, request: &WarmImageRequest) -> Result<ImageWarmup>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;
 }
 
@@ -160,27 +220,6 @@ pub struct CommandSandboxProvider {
 }
 
 impl CommandSandboxProvider {
-    pub(crate) async fn ensure_replica(
-        &self,
-        request: &EnsureReplicaRequest,
-    ) -> Result<ActorHostHandle> {
-        let handle: ActorHostHandle = self.execute("ensure_replica", request).await?;
-        ensure!(
-            handle.canonical_region == request.canonical_region,
-            "replica provider returned the wrong region"
-        );
-        ensure!(
-            !handle.host_id.as_str().is_empty(),
-            "replica provider returned no host identity"
-        );
-        let route = reqwest::Url::parse(&handle.route)?;
-        ensure!(
-            route.scheme() == "https" && route.host_str().is_some(),
-            "replica route must be HTTPS"
-        );
-        Ok(handle)
-    }
-
     pub fn new(
         provider_name: String,
         command: String,
@@ -207,6 +246,18 @@ impl CommandSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for CommandSandboxProvider {
+    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
+        self.execute("build_code", request).await
+    }
+    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+        self.execute("create_spare", request).await
+    }
+
+    async fn retire_spare(&self, request: &SpareHandle) -> Result<()> {
+        self.execute::<_, serde_json::Value>("retire_spare", request)
+            .await?;
+        Ok(())
+    }
     async fn socket_credentials(
         &self,
         request: &SocketCredentialsRequest,
@@ -236,12 +287,9 @@ impl SandboxProvider for CommandSandboxProvider {
         Ok(response)
     }
 
-    async fn warm_image(&self, request: &WarmImageRequest) -> Result<ImageWarmup> {
-        self.execute("warm_image", request).await
-    }
-
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination> {
-        self.execute("terminate_hosts", request).await
+        let _ = request;
+        anyhow::bail!("cloud hosts must be retired through the spare registry")
     }
 }
 

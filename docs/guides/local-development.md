@@ -4,6 +4,8 @@ Run actors locally using the published npm package. For a complete sample applic
 
 ## Install the package
 
+Install Node.js 20+ and Bun 1.4.2+ on your PATH. The CLI uses Node; Rust starts Bun to execute each actor in a separate process.
+
 ```sh
 npm install little-actors
 ```
@@ -60,7 +62,7 @@ NGROK_DOMAIN=your-domain.ngrok.app
 
 Omit `NGROK_DOMAIN` to let ngrok choose the URL. The domain may also include `https://`. The helper also accepts `NGROK_AUTHTOKEN` and `NGROK_URL` as fallbacks, or an authtoken already saved in your ngrok configuration. It loads `.env` from the current directory; exported shell variables take precedence. It does not need an ngrok API key.
 
-Configure the [self-hosting settings](../reference/configuration.md) in `.env`: `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`, both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, the API key, JWT signing key, PostgreSQL URL, GCS bucket, and Google credentials. Build once, then start both processes from the repository root:
+Configure the [self-hosting settings](../reference/configuration.md) in `.env`: `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`, the shared runtime image ID, both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, the API key, JWT signing key, PostgreSQL URL, GCS bucket, and Google credentials. Build once, then start both processes from the repository root:
 
 ```sh
 pnpm run build
@@ -80,7 +82,7 @@ You can still run `pnpm run tunnel` and `pnpm run start` separately. In that cas
 
 If you change `DURABLE_OBJECT_CONTROL_PLANE_BIND`, the tunnel forwards to that address and port instead; wildcard addresses use loopback. `start` runs the hosted control plane locally and provisions actors on Modal. `little-actors dev` always uses local actor processes, even when Modal credentials are set.
 
-Follow the [self-hosting guide](self-hosting.md#3-package-your-actor-code) to package and register your Modal actor image. Use the printed public URL and the same API key in your deployment and application backend terminals. If the tunnel URL changes, restart the control plane and replace existing Modal hosts so they receive the new callback address.
+Follow the [self-hosting guide](self-hosting.md#4-package-and-deploy-customer-code) to package and register your Modal actor image. Use the printed public URL and the same API key in your deployment and application backend terminals. If the tunnel URL changes, restart the control plane and replace existing Modal hosts so they receive the new callback address.
 
 ## Troubleshooting
 

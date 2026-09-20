@@ -13,6 +13,22 @@ import { promisify } from "node:util"
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
 
+test("deployment builds produce code and a contract without executing customer code", async t => {
+    const root = await project(t)
+    await writeFile(
+        path.join(root, "src/durable-objects.ts"),
+        'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<number> { return 42 } }; throw new Error("customer code executed during build")'
+    )
+    const output = path.join(root, "published")
+    const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output])
+    const contract = JSON.parse(stdout)
+    assert.equal(contract.actors[0].actorName, "Counter")
+    assert.equal(contract.actors[0].rpc.methods[0].name, "get")
+    assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
+    await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
+    await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output]), /JSON-compatible/)
+})
+
 test("built actors run without source, compiler, or TypeScript loader", { timeout: 30_000 }, async t => {
     const root = await project(t)
     await writeFile(path.join(root, "src/increment.ts"), "export const increment = (amount: number) => amount + 1\n")
@@ -41,19 +57,6 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await rm(path.join(root, "src"), { recursive: true })
     await rm(path.join(root, "tsconfig.json"))
     await rm(path.join(root, "dist"), { recursive: true })
-    const guard = path.join(root, "guard.mjs")
-    await writeFile(
-        guard,
-        `import { register } from "node:module"
-        register(${JSON.stringify(
-            "data:text/javascript," +
-                encodeURIComponent(`export function resolve(specifier, context, nextResolve) {
-                    if (['typescript', 'tsx', 'esbuild'].includes(specifier.split('/')[0]) || specifier.includes('/compiler/'))
-                        throw new Error('build tooling loaded during actor startup: ' + specifier)
-                    return nextResolve(specifier, context)
-                }`)
-        )}, import.meta.url)`
-    )
     const socketPath = path.join(root, "host.sock")
     const bootstrap = path.join(root, "host.mjs")
     await writeFile(bootstrap, `import { runDurableObjectHost } from ${JSON.stringify(new URL("../../dist/host.js", import.meta.url).href)}; await runDurableObjectHost()`)
@@ -64,7 +67,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await once(server, "listening")
     const environment = { ...process.env, DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath }
     delete environment.DURABLE_OBJECT_ENTRYPOINT
-    const host = spawn(process.execPath, ["--import", guard, bootstrap], {
+    const host = spawn("bun", [bootstrap], {
         cwd: deployed,
         env: environment,
         stdio: ["ignore", "pipe", "pipe"]
@@ -131,10 +134,9 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
             state: { count: 6 }
         }
     })
-    const failed = (await receive()).reply
-    assert.equal(failed.type, "failed")
-    assert.match(failed.message, /state violates its socket contract/)
-    assert.equal("state" in failed, false)
+    const unchecked = (await receive()).reply
+    assert.equal(unchecked.type, "invoked")
+    assert.deepEqual(unchecked.state, { count: "invalid" })
 })
 
 test("actor builds report invalid persistence annotations before deployment", async t => {

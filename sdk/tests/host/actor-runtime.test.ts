@@ -101,6 +101,30 @@ const chatDefinition = registerActorClass(ChatRoom, {
 })
 const rejectingDefinition = registerActorClass(RejectingRoom, { actorName: "RejectingRoom", fields: [] })
 
+test("invocation does not enforce deployment JSON schemas at runtime", async () => {
+    const runtime = new ActorRuntime({
+        ...counterDefinition,
+        state: {
+            ...counterDefinition.state,
+            contract: {
+                version: 1,
+                actorName: "Counter",
+                emittable: [],
+                schema: { definitions: { Metadata: {}, Incoming: {}, Outgoing: {}, State: { type: "string" } } }
+            }
+        }
+    })
+    const reply = await runtime.handle({
+        type: "invoke",
+        request_id: "no-runtime-schema",
+        actor: actorIdentity,
+        method: "increment",
+        args: [1],
+        state: null
+    })
+    assert.equal(reply.type, "invoked")
+})
+
 test("ephemeral caches survive resident calls and reset after failure or reconstruction", async () => {
     class CachingCounter extends Actor {
         @Persisted count = 0

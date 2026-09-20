@@ -34,6 +34,11 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
         &uuid::Uuid::new_v4().to_string(),
         "r1",
         "us-east",
+        &ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
     )?;
     assert!(issuer.verify_socket(&host.token).is_err());
     Ok(())
@@ -56,7 +61,17 @@ fn host_tokens_round_trip_with_a_bounded_lifetime() -> Result<()> {
     let issuer = socket_issuer()?;
     let before = unix_millis()?;
     let host = HostId::new("host.v3.r1.one");
-    let issued = issuer.issue_host(&host, &uuid::Uuid::new_v4().to_string(), "r1", "us-east")?;
+    let issued = issuer.issue_host(
+        &host,
+        &uuid::Uuid::new_v4().to_string(),
+        "r1",
+        "us-east",
+        &ActorKey {
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
+    )?;
     let verifier = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
         "issuer",

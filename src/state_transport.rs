@@ -25,18 +25,27 @@ pub trait SnapshotWriter: Send + Sync {
 }
 
 #[derive(Clone, Default)]
-pub struct GrpcStateTransport;
+pub struct GrpcStateTransport {
+    channels: crate::grpc::transport::Channels,
+}
 
 impl GrpcStateTransport {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub(crate) async fn capability(
+        &self,
+        url: &str,
+    ) -> Result<(tonic::transport::Channel, String)> {
+        self.channels.capability(url).await
     }
 }
 
 #[async_trait]
 impl StateTransport for GrpcStateTransport {
     async fn read(&self, signed_url: &str) -> Result<Bytes> {
-        let (channel, token) = crate::grpc::transport::capability(signed_url)?;
+        let (channel, token) = self.capability(signed_url).await?;
         let response = storage_client(channel)
             .read(crate::grpc::transport::request(
                 crate::grpc::proto::Empty {},
@@ -47,7 +56,7 @@ impl StateTransport for GrpcStateTransport {
     }
 
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        let (channel, token) = crate::grpc::transport::capability(signed_url)?;
+        let (channel, token) = self.capability(signed_url).await?;
         let response = storage_client(channel)
             .write(crate::grpc::transport::request(
                 crate::grpc::proto::SnapshotData { data: bytes },

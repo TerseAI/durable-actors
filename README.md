@@ -18,6 +18,8 @@ See the sample apps:
 
 ## Run locally
 
+Install Node.js 20+ for the CLI and Bun 1.4.2+ for actor execution. Each actor runs in its own Bun/Rust process pair locally and its own Modal sandbox when hosted.
+
 ```sh
 npx little-actors dev
 ```

@@ -32,7 +32,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     };
     let state = local_storage(&options, relative, "http://localhost:7100").await?;
     let config: crate::bucket::access::HostStorageConfig =
-        serde_json::from_str(&state.access.bootstrap("default", &state.region).await?)?;
+        serde_json::from_str(&state.access.bootstrap(&state.region).await?)?;
     let BucketLocation::File {
         directory: configured,
     } = config.bucket

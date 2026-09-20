@@ -126,7 +126,20 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     const publication = {
         codeRevision: "release-1",
         contractHash: `sha256:${"a".repeat(64)}`,
-        contract: undefined
+        contract: JSON.parse(
+            (
+                await run(
+                    "bun",
+                    [
+                        path.join(sdk, "dist/compiler/deployment-build.js"),
+                        author,
+                        "src/durable-objects.ts",
+                        path.join(author, "build")
+                    ],
+                    { env }
+                )
+            ).stdout
+        )
     }
     const server = createServer(async (request, response) => {
         assert.equal(request.headers.authorization, "Bearer contract-key")
@@ -135,7 +148,6 @@ test("deploy publishes the inferred API directly and a separate consumer generat
             const chunks: Buffer[] = []
             for await (const chunk of request) chunks.push(Buffer.from(chunk))
             deployment = JSON.parse(Buffer.concat(chunks).toString())
-            publication.contract = deployment.contract
             response.end(JSON.stringify({ changed: true }))
             return
         }
@@ -151,34 +163,18 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     const beforeDeploy = await readdir(author)
     const deployed = await run(
         process.execPath,
-        [
-            cli,
-            "deploy",
-            "--url",
-            origin,
-            "--image",
-            "im-chat",
-            "--revision",
-            "release-1",
-            "--working-directory",
-            "/app",
-            "--secret",
-            "chat-secrets",
-            "--warm-region",
-            "us-east"
-        ],
+        [cli, "deploy", "--url", origin, "--image", "im-chat", "--revision", "release-1", "--secret", "chat-secrets"],
         { cwd: author, env }
     )
     assert.match(deployed.stdout, /release-1/)
     assert.deepEqual(await readdir(author), beforeDeploy)
-    const { contract, ...specification } = deployment
-    assert.deepEqual(specification, {
+    const { contract } = publication
+    assert.deepEqual(deployment, {
         codeRevision: "release-1",
         imageRef: "im-chat",
-        workingDirectory: "/app",
-        actorEntrypoint: "dist/actors.mjs",
-        secretRefs: ["chat-secrets"],
-        warmRegion: "us-east"
+        workingDirectory: "/customer",
+        actorEntrypoint: "src/durable-objects.ts",
+        secretRefs: ["chat-secrets"]
     })
     assert.equal(contract.version, 1)
     assert.equal(contract.actors[0].actorName, "ChatRoom")

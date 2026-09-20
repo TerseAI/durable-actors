@@ -1,7 +1,6 @@
 use crate::request_traces::{RequestKind, RequestOutcome, RequestSpan, TraceSender};
 use std::{
     borrow::Cow,
-    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -215,7 +214,8 @@ struct HostDispatcher {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
-    actors: HashMap<ActorStorageKey, ActorMailbox>,
+    mailbox: Option<ActorMailbox>,
+    identity: Option<ActorStorageKey>,
     tasks: JoinSet<()>,
     accepting: watch::Sender<bool>,
     activity: watch::Sender<usize>,
@@ -241,7 +241,8 @@ impl HostDispatcher {
             storage,
             state,
             publisher,
-            actors: HashMap::new(),
+            mailbox: None,
+            identity: None,
             tasks: JoinSet::new(),
             accepting: watch::channel(true).0,
             activity,
@@ -278,10 +279,19 @@ impl HostDispatcher {
             return;
         }
         let object = request.operation.actor().storage_key();
-        if !self.actors.contains_key(&object) {
+        if self
+            .identity
+            .as_ref()
+            .is_some_and(|identity| *identity != object)
+        {
+            request.finish(&self.endpoint, Ok(ActorExecutionResult::Reroute));
+            return;
+        }
+        self.identity.get_or_insert_with(|| object.clone());
+        if self.mailbox.is_none() {
             self.start_actor(object.clone(), completed.clone());
         }
-        let mailbox = self.actors.get_mut(&object).expect("actor mailbox created");
+        let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
         if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
             request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
             return;
@@ -343,21 +353,16 @@ impl HostDispatcher {
             completed,
             self.accepting.subscribe(),
         ));
-        self.actors.insert(
-            object,
-            ActorMailbox {
-                sender,
-                admitted: 0,
-                task_id: task.id(),
-            },
-        );
+        self.mailbox = Some(ActorMailbox {
+            sender,
+            admitted: 0,
+            task_id: task.id(),
+        });
     }
 
     fn complete(&mut self, completion: ActorCompletion) {
-        let mailbox = self
-            .actors
-            .get_mut(&completion.object)
-            .expect("completed actor mailbox");
+        debug_assert_eq!(self.identity.as_ref(), Some(&completion.object));
+        let mailbox = self.mailbox.as_mut().expect("completed actor mailbox");
         // A stopped task's remaining admissions may already have been released.
         if mailbox.admitted > 0 {
             mailbox.admitted -= 1;
@@ -376,9 +381,9 @@ impl HostDispatcher {
             }
         };
         if let Some(mailbox) = self
-            .actors
-            .values_mut()
-            .find(|mailbox| mailbox.task_id == id)
+            .mailbox
+            .as_mut()
+            .filter(|mailbox| mailbox.task_id == id)
         {
             self.active -= mailbox.admitted;
             mailbox.admitted = 0;

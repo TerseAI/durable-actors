@@ -50,3 +50,16 @@ test("CI and release exercise direct host sockets with the built SDK", () => {
         assert.match(rustJob, /pnpm --dir sdk build[\s\S]*cargo test --locked -- --ignored/)
     }
 })
+
+test("runtime image generates protobuf sources before compiling the SDK", () => {
+    const dockerfile = read("Dockerfile")
+    assert.match(dockerfile, /pnpm --dir sdk generate:proto[\s\S]*pnpm --dir sdk exec tsc/)
+})
+
+test("release jobs that pack the SDK install Bun for the package checks", () => {
+    const workflow = read(".github/workflows/release.yml")
+    for (const job of ["native", "npm"]) {
+        const body = workflow.split(`    ${job}:\n`)[1].split(/\n    [a-z-]+:\n/)[0]
+        assert.match(body, /oven-sh\/setup-bun@v2[\s\S]*bun-version: "1\.4\.2"/)
+    }
+})

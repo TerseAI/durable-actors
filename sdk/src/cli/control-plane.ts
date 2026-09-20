@@ -25,7 +25,7 @@ class ControlPlaneClient {
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
-        return this.requestJson("PUT", `${this.projectPath()}/deployment`, deployment)
+        return this.requestJson("PUT", `${this.projectPath()}/deployment`, deployment, 150_000)
     }
 
     getContract(revision?: string): Promise<unknown> {

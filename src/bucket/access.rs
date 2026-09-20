@@ -7,9 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    actor::ActorKey,
     clock::{Clock, SystemClock},
-    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaTarget},
+    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaScope, ReplicaTarget},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -18,7 +17,7 @@ pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
     pub region: String,
     pub replica_secret: String,
-    pub replicas: Vec<ReplicaTarget>,
+    pub replica_regions: Vec<String>,
     pub token: Option<StorageToken>,
 }
 
@@ -51,6 +50,8 @@ pub(crate) struct RuntimeAccess {
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
     tokens: moka::future::Cache<(), StorageToken>,
+    storage: Arc<super::RuntimeStorage>,
+    initial: moka::future::Cache<String, super::ReplicaMembership>,
 }
 
 impl RuntimeAccess {
@@ -58,6 +59,7 @@ impl RuntimeAccess {
         location: BucketLocation,
         fleet: Arc<dyn ReplicaProvisioner>,
         replicas: ReplicaAccess,
+        storage: Arc<super::RuntimeStorage>,
     ) -> Result<Self> {
         Ok(Self {
             credentials: match &location {
@@ -70,6 +72,11 @@ impl RuntimeAccess {
             location,
             fleet,
             replicas,
+            storage,
+            initial: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(Duration::from_secs(300))
+                .build(),
             tokens: moka::future::Cache::builder()
                 .max_capacity(1)
                 .time_to_live(Duration::from_secs(300))
@@ -77,24 +84,46 @@ impl RuntimeAccess {
         })
     }
 
-    pub async fn bootstrap(&self, project_id: &str, region: &str) -> Result<String> {
-        let actor = ActorKey {
-            project_id: project_id.into(),
-            actor_name: "bootstrap".into(),
-            actor_id: "bootstrap".into(),
-        };
-        let (token, replicas) = tokio::try_join!(self.issue(), self.fleet.ensure(&actor, region))?;
-        ensure!(
-            replicas.len() == self.fleet.replica_regions().len(),
-            "incomplete replica set"
-        );
+    pub async fn bootstrap(&self, region: &str) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
             bucket: self.location.clone(),
             region: region.into(),
             replica_secret: self.replicas.secret().to_owned(),
-            replicas,
-            token,
+            replica_regions: self.fleet.replica_regions(),
+            token: self.issue().await?,
         })?)
+    }
+
+    pub fn prewarm(self: &Arc<Self>, scope: ReplicaScope) {
+        if self.fleet.replica_regions().is_empty() {
+            return;
+        }
+        let access = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = access.initial_replicas(&scope).await {
+                tracing::warn!(%error, actor = %scope.actor.storage_key(), "actor replica provisioning failed");
+            }
+        });
+    }
+
+    pub async fn initial_replicas(&self, scope: &ReplicaScope) -> Result<super::ReplicaMembership> {
+        self.initial
+            .try_get_with(scope.identity(), async {
+                let replicas = self.fleet.ensure(scope).await?;
+                self.storage
+                    .register_initial_replicas(scope, replicas)
+                    .await
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("initial replica registration failed: {error:#}"))
+    }
+
+    pub async fn replicas(
+        &self,
+        scope: &ReplicaScope,
+        failed: &[String],
+    ) -> Result<Vec<ReplicaTarget>> {
+        self.fleet.repair(scope, failed).await
     }
 
     pub async fn issue(&self) -> Result<Option<StorageToken>> {

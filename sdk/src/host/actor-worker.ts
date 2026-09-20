@@ -15,48 +15,62 @@ import type { ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest } from "./
 const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
 
-const data = workerData as ActorWorkerData
+let assigned = false
 let publishing: { resolve: () => void; reject: (error: Error) => void } | undefined
 let loadingConnections:
     { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void } | undefined
-try {
-    const actorNames = await loadActorEntrypoint(data.moduleUrl, data.schemas)
-    let runtime: ActorRuntime | undefined
-
-    port.on("message", (message: ActorWorkerRequest) => {
-        if (message.type === "socket_connections") {
-            const pending = loadingConnections
-            loadingConnections = undefined
-            if (message.error === undefined) pending?.resolve(message.connections)
-            else pending?.reject(new Error(message.error))
-            return
-        }
-        if (message.type === "socket_effects_published") {
-            const pending = publishing
-            publishing = undefined
-            if (message.error === undefined) pending?.resolve()
-            else pending?.reject(new Error(message.error))
-            return
-        }
-        const definition = findActorDefinition(message.command.actor.actor_name)
-        if (definition === undefined) {
-            post(
-                failedReply(
-                    "actor_name_not_found",
-                    `actor entrypoint ${data.moduleUrl} does not export ${message.command.actor.actor_name}`
-                )
-            )
-            return
-        }
-        runtime ??= new ActorRuntime(definition, publish, getConnections)
-        void runtime.handle(message.command).then(
-            reply => post(reply),
-            error => post(failedReply("actor_worker_failed", errorMessage(error)))
-        )
+if (workerData !== undefined && workerData !== null) void initialize(workerData as ActorWorkerData)
+else {
+    post({ type: "warm" })
+    port.once("message", (message: ActorWorkerRequest) => {
+        if (message.type !== "load") throw new Error("generic executor requires a code assignment")
+        void initialize(message.data)
     })
-    post({ type: "ready", actorNames })
-} catch (error) {
-    post(failedReply("actor_worker_failed", errorMessage(error)))
+}
+
+async function initialize(data: ActorWorkerData): Promise<void> {
+    try {
+        if (assigned) throw new Error("customer code already assigned")
+        assigned = true
+        const actorNames = await loadActorEntrypoint(data.moduleUrl, data.schemas)
+        let runtime: ActorRuntime | undefined
+
+        port!.on("message", (message: ActorWorkerRequest) => {
+            if (message.type === "load") throw new Error("customer code already assigned")
+            if (message.type === "socket_connections") {
+                const pending = loadingConnections
+                loadingConnections = undefined
+                if (message.error === undefined) pending?.resolve(message.connections)
+                else pending?.reject(new Error(message.error))
+                return
+            }
+            if (message.type === "socket_effects_published") {
+                const pending = publishing
+                publishing = undefined
+                if (message.error === undefined) pending?.resolve()
+                else pending?.reject(new Error(message.error))
+                return
+            }
+            const definition = findActorDefinition(message.command.actor.actor_name)
+            if (definition === undefined) {
+                post(
+                    failedReply(
+                        "actor_name_not_found",
+                        `actor entrypoint ${data.moduleUrl} does not export ${message.command.actor.actor_name}`
+                    )
+                )
+                return
+            }
+            runtime ??= new ActorRuntime(definition, publish, getConnections)
+            void runtime.handle(message.command).then(
+                reply => post(reply),
+                error => post(failedReply("actor_worker_failed", errorMessage(error)))
+            )
+        })
+        post({ type: "ready", actorNames })
+    } catch (error) {
+        post(failedReply("actor_worker_failed", errorMessage(error)))
+    }
 }
 
 function post(message: ActorWorkerMessage): void {
@@ -89,12 +103,7 @@ async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSch
 
 async function loadTypeScript(moduleUrl: string): Promise<Record<string, unknown>> {
     requireTypeScriptSource(fileURLToPath(moduleUrl))
-    const unregister = (await import("tsx/esm/api")).register()
-    try {
-        return (await import(moduleUrl)) as Record<string, unknown>
-    } finally {
-        await unregister()
-    }
+    return await import(moduleUrl)
 }
 
 function registerActors(actorModule: Record<string, unknown>, schemas: readonly ActorSchema[]): string[] {

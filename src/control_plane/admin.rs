@@ -15,18 +15,45 @@ use super::contracts::{PublicActorContract, PublishedContract, check_contract_ha
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchSpec {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DeploymentSource>,
     pub code_revision: String,
     pub image_ref: String,
+    #[serde(default)]
+    pub code_snapshot: Option<String>,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeploymentSource {
+    pub image_ref: String,
+    pub working_directory: String,
+    pub actor_entrypoint: Option<String>,
+}
+
+impl From<&HostLaunchSpec> for DeploymentSource {
+    fn from(spec: &HostLaunchSpec) -> Self {
+        Self {
+            image_ref: spec.image_ref.clone(),
+            working_directory: spec.working_directory.clone(),
+            actor_entrypoint: spec.actor_entrypoint.clone(),
+        }
+    }
+}
+
 impl HostLaunchSpec {
     pub(crate) fn host_revision(&self) -> String {
-        let identity =
-            serde_json::to_vec(&(&self.project_id, &self.code_revision, &self.secret_refs))
-                .expect("host identity is serializable");
+        let identity = serde_json::to_vec(&(
+            &self.project_id,
+            &self.code_revision,
+            &self.secret_refs,
+            &self.image_ref,
+            &self.code_snapshot,
+        ))
+        .expect("host identity is serializable");
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &identity);
         format!("cfg.{}", URL_SAFE_NO_PAD.encode(digest.as_ref()))
     }
@@ -34,6 +61,27 @@ impl HostLaunchSpec {
     pub(crate) fn validate(&self) -> Result<()> {
         validate_component("project ID", &self.project_id, 64)?;
         validate_component("code revision", &self.code_revision, 128)?;
+        if let Some(snapshot) = &self.code_snapshot {
+            ensure!(
+                snapshot.starts_with("im-") && snapshot.len() <= 255,
+                "invalid Modal code snapshot"
+            );
+            ensure!(
+                self.working_directory == "/customer",
+                "snapshot deployments must use /customer"
+            );
+            let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
+            ensure!(
+                entrypoint.ends_with(".mjs")
+                    && !std::path::Path::new(entrypoint)
+                        .components()
+                        .any(|part| matches!(
+                            part,
+                            std::path::Component::ParentDir | std::path::Component::RootDir
+                        )),
+                "snapshot entrypoint must be a relative compiled module path"
+            );
+        }
         ensure!(
             !self.image_ref.is_empty() && self.image_ref.len() <= 255,
             "sandbox image reference must contain between 1 and 255 bytes"
@@ -76,6 +124,7 @@ pub(crate) trait AdminRegistry: Send + Sync {
         revision: Option<&str>,
     ) -> Result<Option<PublishedContract>>;
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>>;
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>>;
     async fn remove_deployment(&self, project_id: &str) -> Result<()>;
 }
 
@@ -278,6 +327,16 @@ impl AdminRegistry for LocalAdminRegistry {
             .cloned())
     }
 
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
+            .values()
+            .filter_map(|state| state.deployment.clone())
+            .collect())
+    }
+
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {
         Ok(self
             .state
@@ -321,27 +380,29 @@ impl AdminRegistry for PostgresAdminRegistry {
         let changed = transaction
             .execute(
                 "INSERT INTO durable_object_deployment \
-                   (project_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs) \
-                 VALUES ($6, $1, $2, $3, $4, $5) \
+                   (project_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json) \
+                 VALUES ($8, $1, $2, $3, $4, $5, $6, $7) \
                  ON CONFLICT (project_id) DO UPDATE SET \
                    code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
-                   secret_refs = EXCLUDED.secret_refs, \
+                   secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, \
                    updated_at = clock_timestamp() \
                  WHERE (durable_object_deployment.code_revision, \
                         durable_object_deployment.image_ref, \
                         durable_object_deployment.working_directory, \
                         durable_object_deployment.actor_entrypoint, \
-                        durable_object_deployment.secret_refs) \
+                        durable_object_deployment.secret_refs, durable_object_deployment.code_snapshot, durable_object_deployment.source_json) \
                        IS DISTINCT FROM \
                        (EXCLUDED.code_revision, EXCLUDED.image_ref, \
-                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs)",
+                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json)",
                 &[
                     &spec.code_revision,
                     &spec.image_ref,
                     &spec.working_directory,
                     &spec.actor_entrypoint,
                     &spec.secret_refs,
+                    &spec.code_snapshot,
+                    &spec.source.as_ref().map(serde_json::to_string).transpose()?,
                     &spec.project_id,
                 ],
             )
@@ -398,25 +459,43 @@ impl AdminRegistry for PostgresAdminRegistry {
         .transpose()
     }
 
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
+        self.database.connection().await?.query(
+            "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_object_deployment",
+            &[],
+        ).await.context("load PostgreSQL host launch specs")?
+            .iter().map(launch_spec_from_row).collect()
+    }
+
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {
-        Ok(self
+        self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs \
+                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id \
                  FROM durable_object_deployment WHERE project_id = $1",
                 &[&project_id],
             )
             .await
             .context("load PostgreSQL host launch spec")?
-            .map(|row| HostLaunchSpec {
-                project_id: project_id.into(),
-                code_revision: row.get(0),
-                image_ref: row.get(1),
-                working_directory: row.get(2),
-                actor_entrypoint: row.get(3),
-                secret_refs: row.get(4),
-            }))
+            .as_ref().map(launch_spec_from_row)
+            .transpose()
     }
+}
+
+fn launch_spec_from_row(row: &tokio_postgres::Row) -> Result<HostLaunchSpec> {
+    Ok(HostLaunchSpec {
+        project_id: row.get(7),
+        source: row
+            .get::<_, Option<&str>>(6)
+            .map(serde_json::from_str)
+            .transpose()?,
+        code_snapshot: row.get(5),
+        code_revision: row.get(0),
+        image_ref: row.get(1),
+        working_directory: row.get(2),
+        actor_entrypoint: row.get(3),
+        secret_refs: row.get(4),
+    })
 }
 
 pub(crate) fn validate_component(name: &str, value: &str, maximum: usize) -> Result<()> {

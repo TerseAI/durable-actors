@@ -91,16 +91,8 @@ service ReplicaService {
   rpc Head(Empty) returns (ReplicaStreamHead);
   rpc Seal(Empty) returns (ReplicaSessionHead);
 }
-service ArchiveService {
-  rpc Prepare(ArchiveRequest) returns (ArchiveReply);
-}
 message SnapshotData { bytes data = 1; }
 message SnapshotWriteReply { bool already_exists = 1; }
-message ArchiveRequest { string object = 1; }
-message ArchiveReply {
-  string write_url = 1;
-  string read_url = 2;
-}
 message ReplicaStreamIdentity {
   string session = 1;
   string prefix = 2;

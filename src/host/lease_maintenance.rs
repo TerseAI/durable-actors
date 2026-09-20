@@ -15,15 +15,20 @@ use super::HostEndpoint;
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct HostLeaseMaintainer {
-    sockets: Option<crate::sockets::SocketRegistry>,
-    queues: Option<super::queues::ActorQueues>,
-    executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
+    observation: watch::Sender<HostObservation>,
     endpoint: HostEndpoint,
     session_id: String,
     store: Arc<dyn HostLeaseRegistry>,
     clock: Arc<dyn Clock>,
     lease_duration_ms: u64,
     renew_every: Duration,
+}
+
+#[derive(Clone, Default)]
+struct HostObservation {
+    sockets: Option<crate::sockets::SocketRegistry>,
+    queues: Option<super::queues::ActorQueues>,
+    executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
 }
 
 impl HostLeaseMaintainer {
@@ -51,9 +56,7 @@ impl HostLeaseMaintainer {
         ensure!(!session_id.is_empty(), "host session ID must not be empty");
 
         Ok(Self {
-            sockets: None,
-            queues: None,
-            executor: None,
+            observation: watch::channel(HostObservation::default()).0,
             endpoint,
             session_id,
             store,
@@ -63,31 +66,31 @@ impl HostLeaseMaintainer {
         })
     }
 
-    pub(crate) fn with_executor(mut self, executor: Arc<dyn crate::actor::ActorExecutor>) -> Self {
-        self.executor = Some(executor);
-        self
-    }
-
-    pub(crate) fn with_sockets(mut self, sockets: crate::sockets::SocketRegistry) -> Self {
-        self.sockets = Some(sockets);
-        self
-    }
-
-    pub(crate) fn with_queues(mut self, queues: super::queues::ActorQueues) -> Self {
-        self.queues = Some(queues);
-        self
+    pub(crate) fn observe(
+        &self,
+        executor: Arc<dyn crate::actor::ActorExecutor>,
+        sockets: crate::sockets::SocketRegistry,
+        queues: super::queues::ActorQueues,
+    ) {
+        self.observation.send_replace(HostObservation {
+            executor: Some(executor),
+            sockets: Some(sockets),
+            queues: Some(queues),
+        });
     }
 
     pub(crate) async fn start(self: Arc<Self>) -> Result<LeaseRenewalTask> {
-        let changes = self
+        let observation_changes = self.observation.subscribe();
+        let observation = self.observation.borrow().clone();
+        let changes = observation
             .executor
             .as_ref()
             .and_then(|executor| executor.residency_changes());
-        let socket_changes = self
+        let socket_changes = observation
             .sockets
             .as_ref()
             .map(|sockets| sockets.inventory_changes());
-        let queue_changes = self.queues.as_ref().map(|queues| queues.changes());
+        let queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
         let initial = self.renew_once_with_deadline().await?;
         info!(
             host_id = %initial.lease.id,
@@ -106,6 +109,7 @@ impl HostLeaseMaintainer {
             changes,
             socket_changes,
             queue_changes,
+            observation_changes,
         ));
 
         Ok(LeaseRenewalTask {
@@ -131,6 +135,7 @@ impl HostLeaseMaintainer {
         mut changes: Option<watch::Receiver<()>>,
         mut socket_changes: Option<watch::Receiver<()>>,
         mut queue_changes: Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
+        mut observation_changes: watch::Receiver<HostObservation>,
     ) {
         loop {
             if !self
@@ -141,11 +146,22 @@ impl HostLeaseMaintainer {
                     &mut changes,
                     &mut socket_changes,
                     &mut queue_changes,
+                    &mut observation_changes,
                 )
                 .await
             {
                 return;
             }
+            let observation = self.observation.borrow().clone();
+            changes = observation
+                .executor
+                .as_ref()
+                .and_then(|executor| executor.residency_changes());
+            socket_changes = observation
+                .sockets
+                .as_ref()
+                .map(|sockets| sockets.inventory_changes());
+            queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
             let Some(deadline) = self
                 .renew_before_deadline(local_deadline, &shutdown, &lease_lost)
                 .await
@@ -164,10 +180,12 @@ impl HostLeaseMaintainer {
         changes: &mut Option<watch::Receiver<()>>,
         socket_changes: &mut Option<watch::Receiver<()>>,
         queue_changes: &mut Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
+        observation_changes: &mut watch::Receiver<HostObservation>,
     ) -> bool {
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => false,
+            _ = observation_changes.changed() => true,
             _ = tokio::time::sleep_until(local_deadline) => {
                 warn!(
                     host_id = %self.endpoint.id,
@@ -236,15 +254,16 @@ impl HostLeaseMaintainer {
             duration_ms: self.lease_duration_ms,
         };
 
-        let residents = self
+        let observation = self.observation.borrow().clone();
+        let residents = observation
             .executor
             .as_ref()
             .and_then(|executor| executor.resident_actors());
-        let sockets = match &self.sockets {
+        let sockets = match &observation.sockets {
             Some(sockets) => sockets.inventory().await,
             None => vec![],
         };
-        let queues = self.queues.as_ref().map(|queues| queues.inventory());
+        let queues = observation.queues.as_ref().map(|queues| queues.inventory());
         let lease = self
             .store
             .register_with_inventory(&request, residents.as_deref(), &sockets, queues.as_deref())
@@ -296,6 +315,13 @@ pub(crate) struct LeaseRenewalTask {
     lease_lost: watch::Receiver<bool>,
 }
 
+impl Drop for LeaseRenewalTask {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.task.abort();
+    }
+}
+
 impl LeaseRenewalTask {
     pub(crate) fn lease_lost(&self) -> watch::Receiver<bool> {
         self.lease_lost.clone()
@@ -307,7 +333,7 @@ impl LeaseRenewalTask {
             Ok(result) => result?,
             Err(_) => {
                 self.task.abort();
-                let _ = self.task.await;
+                let _ = (&mut self.task).await;
                 anyhow::bail!(
                     "host lease renewal did not stop within {}ms",
                     LEASE_RENEWAL_SHUTDOWN_TIMEOUT.as_millis()
