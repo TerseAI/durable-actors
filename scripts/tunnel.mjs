@@ -87,6 +87,7 @@ export class NgrokTunnel {
         const domain = this.environment.NGROK_DOMAIN
         const url = domain ? (domain.includes("://") ? domain : `https://${domain}`) : this.environment.NGROK_URL
         if (url) args.push("--url", httpsOrigin(url))
+        if (this.environment.NGROK_CONFIG) args.push("--config", this.environment.NGROK_CONFIG)
         return args
     }
 

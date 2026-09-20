@@ -41,6 +41,17 @@ pnpm run start:cloud
 Keep this domain separate from the Terse backend's tunnel. Other ngrok accounts should reserve their own domain and substitute it above. The command waits for the tunnel, then starts the control plane; Ctrl+C stops both.
 
 
+To keep the Terse backend's ngrok API on port 4040, give this tunnel its own local config. Create `.little-actors/ngrok.yml` (already gitignored):
+
+```yaml
+version: 3
+agent:
+  web_addr: 127.0.0.1:4041
+```
+
+Add `NGROK_CONFIG=.little-actors/ngrok.yml` to the root `.env`, along with `NGROK_AUTH_TOKEN` for authentication. This config replaces ngrok's default config for this process only. Restart `pnpm run start:cloud` to apply it; the public endpoint and control-plane port stay the same. Leave `NGROK_CONFIG` unset to use ngrok's default config.
+
+
 ## Define an Actor
 
 ```ts
