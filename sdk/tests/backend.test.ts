@@ -59,7 +59,7 @@ test("backend stubs use the existing client lazily within the current invocation
 
 test("backend stubs reject invalid identities and unsafe method names before dispatch", () => {
     assert.throws(() => createActorStub("Room", "bad/id", []), /actor ID/)
-    assert.throws(() => createActorStub("bad/type", "one", []), /actor type/)
+    assert.throws(() => createActorStub("bad/type", "one", []), /actor name/)
     assert.throws(() => createActorStub("Room", "one", [{ name: "then", result: "value" }]), /reserved/)
 })
 

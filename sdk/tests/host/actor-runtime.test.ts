@@ -79,23 +79,24 @@ export class RejectingRoom extends Actor {
 }
 
 const actorIdentity = {
-    actor_type: "Counter",
+    project_id: "default",
+    actor_name: "Counter",
     actor_id: "counter-1"
 }
 
 const forwarderIdentity = {
     ...actorIdentity,
-    actor_type: "Forwarder",
+    actor_name: "Forwarder",
     actor_id: "forwarder-1"
 }
 
 const counterDefinition = registerActorClass(Counter, {
-    actorType: "Counter",
+    actorName: "Counter",
     fields: [{ name: "count", persistence: Persistence.Persisted }]
 })
 const forwarderDefinition = registerActorClass(Forwarder)
 const chatDefinition = registerActorClass(ChatRoom, {
-    actorType: "ChatRoom",
+    actorName: "ChatRoom",
     fields: [{ name: "events", persistence: Persistence.Persisted, visibility: "private" }]
 })
 const rejectingDefinition = registerActorClass(RejectingRoom)
@@ -117,7 +118,7 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
         }
     }
     const definition = registerActorClass(CachingCounter, {
-        actorType: "CachingCounter",
+        actorName: "CachingCounter",
         fields: [
             { name: "count", persistence: Persistence.Persisted },
             { name: "cache", persistence: Persistence.Ephemeral }
@@ -127,7 +128,7 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
     const command = {
         type: "invoke" as const,
         request_id: "cache",
-        actor: { ...actorIdentity, actor_type: "CachingCounter" },
+        actor: { ...actorIdentity, actor_name: "CachingCounter" },
         method: "increment",
         args: [],
         state: null
@@ -165,7 +166,7 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
     const runtime = new ActorRuntime(registerActorClass(RecoveryFailure))
     const command = {
         type: "invoke" as const,
-        actor: { actor_type: "RecoveryFailure", actor_id: "one" },
+        actor: { project_id: "default", actor_name: "RecoveryFailure", actor_id: "one" },
         request_id: "failed-recovery",
         method: "fail",
         args: [],
@@ -207,7 +208,7 @@ test("streams actor output before execution finishes without replaying it in the
         .handle({
             type: "invoke",
             request_id: "stream-1",
-            actor: { ...actorIdentity, actor_type: "StreamingActor" },
+            actor: { ...actorIdentity, actor_name: "StreamingActor" },
             method: "stream",
             args: [],
             state: null
@@ -243,7 +244,7 @@ test("rejecting a connection never publishes live socket effects", async () => {
     const reply = await runtime.handle({
         type: "websocket_event",
         request_id: "connect-1",
-        actor: { ...actorIdentity, actor_type: "RejectingRoom" },
+        actor: { ...actorIdentity, actor_name: "RejectingRoom" },
         state: null,
         connections: [],
         event: { type: "connect", connection: { id: "socket-1", metadata: {}, tags: [] } }
@@ -262,7 +263,7 @@ test("batches pending stream output in order and surfaces publish failures", asy
     const command = {
         type: "invoke" as const,
         request_id: "burst",
-        actor: { ...actorIdentity, actor_type: "BurstActor" },
+        actor: { ...actorIdentity, actor_name: "BurstActor" },
         method: "stream",
         args: [],
         state: null
@@ -316,7 +317,7 @@ test("a resident actor rejects another type or ID without changing its state", a
     }
     assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 1, state: { count: 1 } })
     for (const actor of [
-        { ...actorIdentity, actor_type: "OtherCounter" },
+        { ...actorIdentity, actor_name: "OtherCounter" },
         { ...actorIdentity, actor_id: "other" }
     ]) {
         const reply = await runtime.handle({ ...command, actor })
@@ -324,7 +325,7 @@ test("a resident actor rejects another type or ID without changing its state", a
         if (reply.type === "failed")
             assert.equal(
                 reply.code,
-                actor.actor_type === actorIdentity.actor_type ? "actor_identity_mismatch" : "actor_type_not_found"
+                actor.actor_name === actorIdentity.actor_name ? "actor_identity_mismatch" : "actor_name_not_found"
             )
     }
     assert.deepEqual(await runtime.handle(command), { type: "invoked", result: 2, state: { count: 2 } })
@@ -420,7 +421,7 @@ test("Actor.get returns a typed forwarding reference", async () => {
             assert.deepEqual(calls, [
                 {
                     requestId: "fixed-request",
-                    actorType: "Counter",
+                    actorName: "Counter",
                     actorId: "counter-1",
                     method: "increment",
                     args: [3]
@@ -455,7 +456,7 @@ test("Actor.get connects with typed metadata", async () => {
     assert.deepEqual(calls, [
         {
             requestId: "fixed-request",
-            actorType: "ChatRoom",
+            actorName: "ChatRoom",
             actorId: "room-1",
             metadata: { userId: "user-1", connectedAt: 1 }
         }
@@ -491,7 +492,7 @@ test("sends durable actor properties when a connection has no onConnect hook", a
 
 test("does not expose actor properties to a rejected connection", async () => {
     const runtime = new ActorRuntime(rejectingDefinition)
-    const actor = { ...actorIdentity, actor_type: "RejectingRoom", actor_id: "room-1" }
+    const actor = { ...actorIdentity, actor_name: "RejectingRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
     assert.deepEqual(
@@ -513,7 +514,7 @@ test("does not expose actor properties to a rejected connection", async () => {
 
 test("runs the full socket lifecycle and exposes live actor connections", async () => {
     const runtime = new ActorRuntime(chatDefinition)
-    const actor = { ...actorIdentity, actor_type: "ChatRoom", actor_id: "room-1" }
+    const actor = { ...actorIdentity, actor_name: "ChatRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: { userId: "user-1", connectedAt: 1 }, tags: [] }
 
     assert.deepEqual(

@@ -56,28 +56,28 @@ function registerActorClass<Instance extends AnyActor>(
     actorClass: ActorClass<Instance>,
     state?: ActorSchema
 ): ActorDefinition {
-    const actorType = actorName(actorClass)
-    const existing = actorDefinitions.get(actorType)
+    const actorName = actorClassName(actorClass)
+    const existing = actorDefinitions.get(actorName)
     if (existing !== undefined) {
-        if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor type ${actorType}`)
+        if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor name ${actorName}`)
         if (state !== undefined) existing.state = state
         return existing
     }
 
-    validateActorClass(actorClass, actorType)
+    validateActorClass(actorClass, actorName)
     const definition = {
-        actorType: validateActorComponent("actor type", actorType),
+        actorName: validateActorComponent("actor name", actorName),
         actorClass,
-        state: state ?? { actorType, fields: [] },
+        state: state ?? { actorName, fields: [] },
         schemas: actorClass.schemas ?? {},
-        methods: new Set(discoverMethods(actorClass, actorType))
+        methods: new Set(discoverMethods(actorClass, actorName))
     }
-    actorDefinitions.set(actorType, definition)
+    actorDefinitions.set(actorName, definition)
     return definition
 }
 
-function findActorDefinition(actorType: string): ActorDefinition | undefined {
-    return actorDefinitions.get(actorType)
+function findActorDefinition(actorName: string): ActorDefinition | undefined {
+    return actorDefinitions.get(actorName)
 }
 
 function getActorReference<TActorClass extends ActorClass>(
@@ -112,7 +112,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
             const actor = metadataFor(this)
             const attachment = socketMetadata(metadata, definition.schemas)
             return actorClient().then(client =>
-                client.connect(definition.actorType, actor.actorId, attachment, definition.schemas)
+                client.connect(definition.actorName, actor.actorId, attachment, definition.schemas)
             )
         }
     })
@@ -124,7 +124,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
         value: function broadcastActorMessage(this: Actor, message: ActorSocketMessage): Promise<void> {
             const actor = metadataFor(this)
             const outgoing = outgoingMessage(message, definition.schemas)
-            return actorClient().then(client => client.broadcast(definition.actorType, actor.actorId, outgoing))
+            return actorClient().then(client => client.broadcast(definition.actorName, actor.actorId, outgoing))
         }
     })
 
@@ -135,7 +135,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
             writable: false,
             value: function forwardActorMethod(this: Actor, ...args: unknown[]): Promise<unknown> {
                 const metadata = metadataFor(this)
-                return actorClient().then(client => client.invoke(definition.actorType, metadata.actorId, method, args))
+                return actorClient().then(client => client.invoke(definition.actorName, metadata.actorId, method, args))
             }
         })
     })
@@ -150,21 +150,21 @@ function metadataFor(instance: AnyActor): ActorMetadata {
     return metadata
 }
 
-function discoverMethods(actorClass: ActorClass, actorType: string): string[] {
+function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
     if (Object.getOwnPropertySymbols(actorClass.prototype).length > 0)
-        throw new ActorDefinitionError(`actor class ${actorType} cannot define symbol methods`)
+        throw new ActorDefinitionError(`actor class ${actorName} cannot define symbol methods`)
 
     return Object.entries(Object.getOwnPropertyDescriptors(actorClass.prototype)).flatMap(([name, descriptor]) => {
         if (name === "constructor") return []
         if (descriptor.get !== undefined || descriptor.set !== undefined)
-            throw new ActorDefinitionError(`actor class ${actorType} cannot define accessor ${name}`)
+            throw new ActorDefinitionError(`actor class ${actorName} cannot define accessor ${name}`)
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
-        if (name === "then") throw new ActorDefinitionError(`actor class ${actorType} cannot define method then`)
+        if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
         if (name === "connect" || name === "broadcast")
-            throw new ActorDefinitionError(`actor class ${actorType} cannot define reserved method ${name}`)
+            throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
-            throw new ActorDefinitionError(`actor method ${actorType}.${name} must be async`)
+            throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)
         if (lifecycleMethods.has(name)) return []
         return [name]
     })
@@ -172,20 +172,20 @@ function discoverMethods(actorClass: ActorClass, actorType: string): string[] {
 
 const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect"])
 
-function validateActorClass(actorClass: ActorClass, actorType: string): void {
+function validateActorClass(actorClass: ActorClass, actorName: string): void {
     if (Object.getPrototypeOf(actorClass.prototype) !== Actor.prototype)
-        throw new ActorDefinitionError(`actor class ${actorType} must extend Actor directly`)
+        throw new ActorDefinitionError(`actor class ${actorName} must extend Actor directly`)
     if (actorClass.length !== 0)
-        throw new ActorDefinitionError(`actor class ${actorType} cannot require constructor arguments`)
+        throw new ActorDefinitionError(`actor class ${actorName} cannot require constructor arguments`)
 }
 
-function actorName(actorClass: ActorClass): string {
+function actorClassName(actorClass: ActorClass): string {
     if (actorClass.name.length === 0) throw new ActorDefinitionError("actor classes must be named")
     return actorClass.name
 }
 
 interface ActorDefinition {
-    readonly actorType: string
+    readonly actorName: string
     readonly actorClass: ActorClass
     state: ActorSchema
     readonly schemas: ActorSchemas

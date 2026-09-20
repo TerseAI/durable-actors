@@ -38,7 +38,7 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
         assert!(PublicActorContract::new(invalid).is_err());
     }
     for (pointer, replacement) in [
-        ("/actors/0/actorType", json!("different")),
+        ("/actors/0/actorName", json!("different")),
         ("/actors/0/rpc/methods/0/name", json!("then")),
         ("/actors/0/rpc/methods/0/result/kind", json!("anything")),
         (
@@ -72,7 +72,7 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
 }
 
 #[test]
-fn actor_types_must_be_typescript_identifiers() -> Result<()> {
+fn actor_names_must_be_typescript_identifiers() -> Result<()> {
     let valid: Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
@@ -95,8 +95,8 @@ fn actor_types_must_be_typescript_identifiers() -> Result<()> {
         "defer",
     ] {
         let mut document = valid.clone();
-        document["actors"][0]["actorType"] = json!(name);
-        document["actors"][0]["socket"]["actorType"] = json!(name);
+        document["actors"][0]["actorName"] = json!(name);
+        document["actors"][0]["socket"]["actorName"] = json!(name);
         let error = PublicActorContract::new(document).unwrap_err();
         assert!(
             error.to_string().contains("TypeScript identifier"),
@@ -113,8 +113,8 @@ fn actor_types_must_be_typescript_identifiers() -> Result<()> {
         "asyncActor",
     ] {
         let mut document = valid.clone();
-        document["actors"][0]["actorType"] = json!(name);
-        document["actors"][0]["socket"]["actorType"] = json!(name);
+        document["actors"][0]["actorName"] = json!(name);
+        document["actors"][0]["socket"]["actorName"] = json!(name);
         PublicActorContract::new(document)?;
     }
     Ok(())
@@ -172,7 +172,11 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
         let reopened =
             PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
         assert_eq!(
-            reopened.deployment_contract(None).await?.unwrap().contract,
+            reopened
+                .deployment_contract("default", None)
+                .await?
+                .unwrap()
+                .contract,
             *contract.document()
         );
         Ok(())
@@ -186,7 +190,12 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     let full = PublicActorContract::new(serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?)?;
-    assert!(registry.deployment_contract(None).await?.is_none());
+    assert!(
+        registry
+            .deployment_contract("default", None)
+            .await?
+            .is_none()
+    );
     assert!(
         registry
             .register_deployment(&deployment, Some(&empty))
@@ -197,7 +206,10 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .register_deployment(&deployment, Some(&empty))
             .await?
     );
-    let first = registry.deployment_contract(None).await?.unwrap();
+    let first = registry
+        .deployment_contract("default", None)
+        .await?
+        .unwrap();
     assert_eq!(first.code_revision, "revision-1");
     assert_eq!(first.contract_hash, empty.hash());
     assert_eq!(first.contract, *empty.document());
@@ -209,10 +221,13 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(registry.launch_spec().await?, Some(deployment.clone()));
+    assert_eq!(
+        registry.launch_spec("default").await?,
+        Some(deployment.clone())
+    );
     assert!(!registry.register_deployment(&deployment, None).await?);
     assert_eq!(
-        registry.deployment_contract(None).await?,
+        registry.deployment_contract("default", None).await?,
         Some(first.clone())
     );
     deployment.code_revision = "revision-2".into();
@@ -222,32 +237,50 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .await?
     );
     assert_eq!(
-        registry.deployment_contract(None).await?.unwrap().contract,
+        registry
+            .deployment_contract("default", None)
+            .await?
+            .unwrap()
+            .contract,
         *full.document()
     );
     assert_eq!(
-        registry.deployment_contract(Some("revision-1")).await?,
+        registry
+            .deployment_contract("default", Some("revision-1"))
+            .await?,
         None
     );
     assert!(
         registry
-            .deployment_contract(Some("revision-1"))
+            .deployment_contract("default", Some("revision-1"))
             .await?
             .is_none()
     );
     deployment.code_revision = "revision-3".into();
     registry.register_deployment(&deployment, None).await?;
-    assert!(registry.deployment_contract(None).await?.is_none());
+    assert!(
+        registry
+            .deployment_contract("default", None)
+            .await?
+            .is_none()
+    );
     deployment.code_revision = "revision-1".into();
     registry.register_deployment(&deployment, None).await?;
-    assert_eq!(registry.deployment_contract(None).await?, None);
+    assert_eq!(registry.deployment_contract("default", None).await?, None);
     registry
         .register_deployment(&deployment, Some(&full))
         .await?;
-    registry.remove_deployment().await?;
-    assert!(registry.deployment_contract(None).await?.is_none());
+    registry.remove_deployment("default").await?;
+    assert!(
+        registry
+            .deployment_contract("default", None)
+            .await?
+            .is_none()
+    );
     assert_eq!(
-        registry.deployment_contract(Some("revision-1")).await?,
+        registry
+            .deployment_contract("default", Some("revision-1"))
+            .await?,
         None
     );
     deployment.code_revision = "race".into();
@@ -258,7 +291,11 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     assert_ne!(left.is_ok(), right.is_ok());
     let winner = if left.is_ok() { empty } else { full };
     assert_eq!(
-        registry.deployment_contract(None).await?.unwrap().contract,
+        registry
+            .deployment_contract("default", None)
+            .await?
+            .unwrap()
+            .contract,
         *winner.document()
     );
     Ok(())
@@ -266,6 +303,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
 
 fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
+        project_id: "default".into(),
         code_revision: "revision-1".into(),
         image_ref: "image".into(),
         working_directory: "/app".into(),

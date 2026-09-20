@@ -12,6 +12,7 @@ test("API-key clients invoke, connect, and broadcast", async () => {
     const requests: string[] = []
     const client = new RemoteActorClient(undefined, {
         environment: {
+            DURABLE_OBJECT_PROJECT_ID: "default",
             DURABLE_OBJECT_API_KEY: "backend-key",
             DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
         },
@@ -49,8 +50,8 @@ test("API-key clients invoke, connect, and broadcast", async () => {
     await client.connect("Counter", "one", {})
     await client.broadcast("Counter", "one", "updated")
     assert.deepEqual(requests, [
-        "https://control.example.com/v1/actors/Counter/one/connect",
-        "https://control.example.com/v1/actors/Counter/one/connect"
+        "https://control.example.com/v1/projects/default/actors/Counter/one/connect",
+        "https://control.example.com/v1/projects/default/actors/Counter/one/connect"
     ])
 })
 
@@ -61,7 +62,7 @@ test("target expiry uses real time even when workflow Date.now is frozen", async
     Date.now = () => 1
     try {
         const client = new RemoteActorClient(
-            { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
+            { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
             {
                 telemetry: () => {},
                 fetch: async () =>
@@ -94,7 +95,7 @@ test("refreshes a rejected actor ticket once using the same invocation ID", asyn
     let calls = 0
     let rejectAll = false
     const client = new RemoteActorClient(
-        { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
+        { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
         {
             telemetry: () => {},
             requestId: () => "same-request",
@@ -133,7 +134,7 @@ test("does not retry ambiguous host failures or actor-method authentication erro
     for (const ambiguous of [true, false]) {
         let calls = 0
         const client = new RemoteActorClient(
-            { apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
+            { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example.com" },
             {
                 telemetry: () => {},
                 fetch: async () =>
@@ -171,7 +172,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
     const server = createServer(async (request, response) => {
         resolutions += 1
         assert.equal(request.method, "POST")
-        assert.equal(request.url, "/v1/actors/Counter/counter-1/connect")
+        assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/connect")
         assert.equal(request.headers.authorization, "Bearer backend-key")
         assert.equal(request.headers["x-request-id"], "00000000-0000-4000-8000-000000000000")
         json(response, 200, {
@@ -185,6 +186,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
     const port = await listen(server)
     const client = new RemoteActorClient(
         {
+            projectId: "default",
             apiKey: "backend-key",
             controlPlaneUrl: `http://127.0.0.1:${port}`
         },
@@ -210,7 +212,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
             {
                 event: "actor_client_invocation",
                 request_id: "00000000-0000-4000-8000-000000000000",
-                actor_type: "Counter",
+                actor_name: "Counter",
                 actor_id: "counter-1",
                 method: "increment",
                 started_at_ms: 0,
@@ -225,7 +227,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
             {
                 event: "actor_client_invocation",
                 request_id: "00000000-0000-4000-8000-000000000000",
-                actor_type: "Counter",
+                actor_name: "Counter",
                 actor_id: "counter-1",
                 method: "increment",
                 started_at_ms: 0,
@@ -247,8 +249,9 @@ test("remote actor client resolves once and invokes the actor host directly", as
                 expiresAtMs: 4_000_000_000_000
             },
             invocation: {
+                projectId: "default",
                 requestId: "00000000-0000-4000-8000-000000000000",
-                actorType: "Counter",
+                actorName: "Counter",
                 actorId: "counter-1",
                 method: "increment",
                 args: [2]
@@ -264,13 +267,17 @@ test("resolves a fresh host socket grant before connecting", async () => {
     const connection = fakeConnection()
     const client = new RemoteActorClient(
         {
+            projectId: "default",
             apiKey: "backend-key",
             controlPlaneUrl: "https://control.example.com"
         },
         {
             requestId: () => "connection-request",
             fetch: async (url, init) => {
-                assert.equal(String(url), "https://control.example.com/v1/actors/ChatRoom/room-1/connect")
+                assert.equal(
+                    String(url),
+                    "https://control.example.com/v1/projects/default/actors/ChatRoom/room-1/connect"
+                )
                 assert.equal(JSON.parse(init!.body as string).backend, true)
                 return Response.json({
                     websocketUrl: "wss://host.modal.test/v1/socket?key=host-ticket",
@@ -297,11 +304,11 @@ test("delivers returned effects to the same host and does not repeat a committed
     let deliveries = 0
     let reject = false
     const client = new RemoteActorClient(
-        { apiKey: "key", controlPlaneUrl: "https://control.example" },
+        { projectId: "default", apiKey: "key", controlPlaneUrl: "https://control.example" },
         {
             telemetry: () => {},
             fetch: async url => {
-                assert.equal(String(url), "https://control.example/v1/actors/Room/one/connect")
+                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/one/connect")
                 return Response.json({
                     route: "https://host.example",
                     token: "ticket",
@@ -354,6 +361,7 @@ test("does not retry a control-plane transport failure", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
+        projectId: "default",
         apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
@@ -376,6 +384,7 @@ test("requires the direct actor target endpoint", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
+        projectId: "default",
         apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
@@ -384,7 +393,7 @@ test("requires the direct actor target endpoint", async () => {
             client.invoke("Counter", "counter-1", "increment", [2]),
             error => error instanceof ActorInvocationError && error.code === "not_found"
         )
-        assert.deepEqual(calls, ["/v1/actors/Counter/counter-1/connect"])
+        assert.deepEqual(calls, ["/v1/projects/default/actors/Counter/counter-1/connect"])
     } finally {
         await close(server)
     }
@@ -402,6 +411,7 @@ test("preserves a structured actor failure from HTTP", async () => {
     })
     const port = await listen(server)
     const client = new RemoteActorClient({
+        projectId: "default",
         apiKey: "backend-key",
         controlPlaneUrl: `http://127.0.0.1:${port}`
     })
@@ -464,11 +474,11 @@ function tickingClock(): () => number {
 test("broadcasts use the owning host gRPC connection without HTTP delivery", async () => {
     let published = false
     const client = new RemoteActorClient(
-        { apiKey: "backend-key", controlPlaneUrl: "https://control.example" },
+        { projectId: "default", apiKey: "backend-key", controlPlaneUrl: "https://control.example" },
         {
             telemetry: () => {},
             fetch: async (url, options) => {
-                assert.equal(String(url), "https://control.example/v1/actors/Room/lobby/connect")
+                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/lobby/connect")
                 assert.equal(JSON.parse(String(options?.body)).transport, "grpc")
                 return Response.json({
                     transport: "grpc",
@@ -507,4 +517,46 @@ test("broadcasts use the owning host gRPC connection without HTTP delivery", asy
     )
     await client.broadcast("Room", "lobby", "hello")
     assert.equal(published, true)
+})
+
+test("project clients retain project identity across resolution, RPC, and broadcast", async () => {
+    const requests: string[] = []
+    const invoked: string[] = []
+    const published: string[] = []
+    for (const projectId of ["team-a", "team-b"]) {
+        const client = new RemoteActorClient(
+            { projectId, apiKey: "key", controlPlaneUrl: "https://control.example" },
+            {
+                telemetry: () => {},
+                fetch: async url => {
+                    requests.push(String(url))
+                    return Response.json({
+                        route: "https://host.example",
+                        token: "ticket",
+                        ownerEpoch: 1,
+                        expiresAtMs: 4_000_000_000_000
+                    })
+                },
+                actorHost: {
+                    async invoke(_target, invocation) {
+                        invoked.push(invocation.projectId!)
+                        return { type: "completed", result: projectId, effects: [] }
+                    },
+                    async publish(_target, actor) {
+                        published.push(actor.projectId!)
+                    }
+                }
+            }
+        )
+        assert.equal(await client.invoke("Counter", "same", "increment", []), projectId)
+        await client.broadcast("Counter", "same", "updated")
+    }
+    assert.deepEqual(
+        requests,
+        ["team-a", "team-b"].map(
+            project => `https://control.example/v1/projects/${project}/actors/Counter/same/connect`
+        )
+    )
+    assert.deepEqual(invoked, ["team-a", "team-b"])
+    assert.deepEqual(published, ["team-a", "team-b"])
 })

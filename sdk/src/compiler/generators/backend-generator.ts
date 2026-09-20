@@ -13,16 +13,16 @@ async function backendSource(
     wireNames: ReadonlyMap<string, readonly string[]>
 ): Promise<string> {
     const sources = []
-    for (const { actorType } of contracts) {
-        const actor = actors.find(actor => actor.actorType === actorType)
+    for (const { actorName } of contracts) {
+        const actor = actors.find(actor => actor.actorName === actorName)
         sources.push(
             actor
-                ? await actorSource(actor, wireNames.get(actorType) ?? [])
-                : { declarations: "", descriptor: actorDescriptor(actorType) }
+                ? await actorSource(actor, wireNames.get(actorName) ?? [])
+                : { declarations: "", descriptor: actorDescriptor(actorName) }
         )
     }
-    const exampleType = contracts[0]?.actorType
-    const exampleActor = actors[0]?.actorType
+    const exampleType = contracts[0]?.actorName
+    const exampleActor = actors[0]?.actorName
     return `${usageComment("Types for actor state and methods.", exampleType && `type State = actors.${exampleType}.State`)}
 export declare namespace actors {
 ${sources.map(source => source.declarations).join("\n")}
@@ -39,39 +39,39 @@ async function actorSource(actor: ActorApi, wireNames: readonly string[]) {
     const { declarations, types, stubName, methodsName } = await rpcDeclarations(actor.rpc, wireNames)
     const methods = actor.rpc.methods.map((method, index) => methodDeclaration(method, index, types)).join("\n")
     const descriptors = actor.rpc.methods.map(method => ({ name: method.name, result: method.result.kind }))
-    const stub = `actors.${actor.actorType}.${stubName}`
+    const stub = `actors.${actor.actorName}.${stubName}`
     return {
-        declarations: `export namespace ${actor.actorType} {
+        declarations: `export namespace ${actor.actorName} {
 ${declarations}
 export interface ${stubName} {
 ${methods}
 }
-${methodTypes(actor.actorType, actor.rpc.methods, stubName, methodsName)}
+${methodTypes(actor.actorName, actor.rpc.methods, stubName, methodsName)}
 }`,
         descriptor: actorDescriptor(
-            actor.actorType,
+            actor.actorName,
             `get(actorId: string, transport?: import("little-actors/backend").ActorRpcTransport): ${stub} {
-        return $createActorStub<${stub}>(${JSON.stringify(actor.actorType)}, actorId, ${JSON.stringify(descriptors)}, transport)
+        return $createActorStub<${stub}>(${JSON.stringify(actor.actorName)}, actorId, ${JSON.stringify(descriptors)}, transport)
     }`
         )
     }
 }
 
-function actorDescriptor(actorType: string, rpc?: string): string {
-    return `[${JSON.stringify(actorType)}]: {
+function actorDescriptor(actorName: string, rpc?: string): string {
+    return `[${JSON.stringify(actorName)}]: {
     ${rpc ? `${rpc},` : ""}
-    ${usageComment("Allow a frontend connection after your backend checks the user's access.", `const grant = await actors.${actorType}.prepareWebsocket({ actorId: "actor-id", metadata })`)}
+    ${usageComment("Allow a frontend connection after your backend checks the user's access.", `const grant = await actors.${actorName}.prepareWebsocket({ actorId: "actor-id", metadata })`)}
     prepareWebsocket(
-        authorization: Omit<actors.${actorType}.Authorization, "actorType">,
+        authorization: Omit<actors.${actorName}.Authorization, "actorName">,
         options: import("little-actors/proxy").SocketProxyOptions = {},
         dependencies: import("little-actors/proxy").SocketProxyDependencies = {}
     ): Promise<import("little-actors/proxy").SocketGrant> {
-        return new ActorProxy(options, dependencies).handle({ ...authorization, actorType: ${JSON.stringify(actorType)} })
+        return new ActorProxy(options, dependencies).handle({ ...authorization, actorName: ${JSON.stringify(actorName)} })
     }
 }`
 }
 
-function methodTypes(actorType: string, methods: readonly RpcMethod[], stubName: string, methodsName: string): string {
+function methodTypes(actorName: string, methods: readonly RpcMethod[], stubName: string, methodsName: string): string {
     const entries = methods.map(
         ({ name }) => `[${JSON.stringify(name)}]: {
     Args: Parameters<${stubName}[${JSON.stringify(name)}]>
@@ -90,7 +90,7 @@ function methodTypes(actorType: string, methods: readonly RpcMethod[], stubName:
 ${entries.join("\n")}
 }
 export interface Methods extends ${methodsName} {}
-${usageComment("Types for a method's arguments and return value.", methods[0] && `type Args = actors.${actorType}.Methods[${JSON.stringify(methods[0].name)}]["Args"]\ntype Result = actors.${actorType}.Methods[${JSON.stringify(methods[0].name)}]["Result"]`)}
+${usageComment("Types for a method's arguments and return value.", methods[0] && `type Args = actors.${actorName}.Methods[${JSON.stringify(methods[0].name)}]["Args"]\ntype Result = actors.${actorName}.Methods[${JSON.stringify(methods[0].name)}]["Result"]`)}
 export namespace Methods {
 ${namespaces.join("\n")}
 }`

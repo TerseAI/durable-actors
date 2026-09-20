@@ -30,18 +30,35 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .route("/.well-known/jwks.json", get(jwks))
         .route("/healthz", get(|| async { "ok" }))
         .route(
-            "/v1/deployment",
+            "/v1/projects/{project_id}/deployment",
             put(register_deployment)
                 .get(get_deployment)
                 .delete(delete_deployment),
         )
         .route(
-            "/v1/actors/{actor_type}/{actor_id}/connect",
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/connect",
             post(connect_actor),
         )
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(contracts)
+}
+
+pub(super) fn local_router(
+    invocations: ControlPlaneService,
+    admin: AdminService,
+    project_id: String,
+) -> Router {
+    let state = PublicApiState {
+        invocations: invocations.clone(),
+        admin: admin.clone(),
+    };
+    router(invocations, admin).merge(Router::new().route(
+        "/v1/actors/{actor_name}/{actor_id}/connect",
+        post(move |Path((actor_name, actor_id)): Path<(String, String)>, headers: HeaderMap, request: Result<Json<ConnectRequest>, JsonRejection>| {
+            connect_actor(State(state.clone()), Path(ActorPath { project_id: project_id.clone(), actor_name, actor_id }), headers, request)
+        }),
+    ).layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES)))
 }
 
 async fn connect_actor(
@@ -160,13 +177,15 @@ fn socket_authorization_lifetime() -> i64 {
 
 async fn get_deployment(
     State(state): State<PublicApiState>,
+    path: Path<ProjectPath>,
     headers: HeaderMap,
 ) -> Result<Json<HostLaunchSpec>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
+    let project = project_id(path)?;
     Ok(Json(
         state
             .admin
-            .current_deployment()
+            .current_deployment(&project)
             .await
             .map_err(ApiError::internal)?
             .ok_or_else(|| {
@@ -177,12 +196,14 @@ async fn get_deployment(
 
 async fn delete_deployment(
     State(state): State<PublicApiState>,
+    path: Path<ProjectPath>,
     headers: HeaderMap,
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
+    let project = project_id(path)?;
     let changed = state
         .invocations
-        .delete_deployment(&state.admin)
+        .delete_deployment(&state.admin, &project)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(DeploymentReply { changed }))
@@ -190,6 +211,7 @@ async fn delete_deployment(
 
 async fn register_deployment(
     State(state): State<PublicApiState>,
+    path: Path<ProjectPath>,
     headers: HeaderMap,
     request: Result<Json<RegisterDeploymentRequest>, JsonRejection>,
 ) -> Result<Json<DeploymentReply>, ApiError> {
@@ -201,6 +223,7 @@ async fn register_deployment(
         .transpose()
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
+        project_id: project_id(path)?,
         code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
@@ -274,7 +297,7 @@ async fn resolve_actor_target(
         Ok(_) => info!(
             event = "actor_target_resolution",
             request_id,
-            actor_type = %actor.actor_type,
+            actor_name = %actor.actor_name,
             actor_id = %actor.actor_id,
             started_at_ms = 0,
             request_validated_at_ms = timings.request_validated_at_ms,
@@ -294,7 +317,7 @@ async fn resolve_actor_target(
         Err(error) => warn!(
             event = "actor_target_resolution",
             request_id,
-            actor_type = %actor.actor_type,
+            actor_name = %actor.actor_name,
             actor_id = %actor.actor_id,
             started_at_ms = 0,
             request_validated_at_ms = timings.request_validated_at_ms,
@@ -325,17 +348,32 @@ struct TargetRequest {
 
 #[derive(Deserialize)]
 pub(super) struct ActorPath {
-    actor_type: String,
+    project_id: String,
+    actor_name: String,
     actor_id: String,
 }
 
 impl ActorPath {
     pub(super) fn into_actor(self) -> ActorKey {
         ActorKey {
-            actor_type: self.actor_type,
+            project_id: self.project_id,
+            actor_name: self.actor_name,
             actor_id: self.actor_id,
         }
     }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ProjectPath {
+    project_id: String,
+}
+
+pub(super) fn project_id(path: Path<ProjectPath>) -> Result<String, ApiError> {
+    let Path(ProjectPath {
+        project_id: project,
+    }) = path;
+    super::admin::validate_component("project ID", &project, 64).map_err(ApiError::bad_request)?;
+    Ok(project)
 }
 
 pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {

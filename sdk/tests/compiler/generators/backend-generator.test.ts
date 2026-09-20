@@ -50,7 +50,7 @@ test("formats generated sections and provides concise usage examples", async t =
     )
     assert.match(
         code,
-        /Allow a frontend connection after your backend checks the user's access[\s\S]*?await ActorProxy.handle\(\{ actorType: "Room", actorId: "actor-id", metadata \}\)[\s\S]*?\*\/\nexport class ActorProxy/
+        /Allow a frontend connection after your backend checks the user's access[\s\S]*?await ActorProxy.handle\(\{ actorName: "Room", actorId: "actor-id", metadata \}\)[\s\S]*?\*\/\nexport class ActorProxy/
     )
     await checkUsageExamples(root, code)
 })

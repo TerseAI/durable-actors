@@ -7,7 +7,8 @@ use crate::{
 #[test]
 fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "counter-1".into(),
     };
     let host_id = HostId::new("host.v3.revision-1.host-1");
@@ -38,6 +39,18 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
     );
 
     assert!(validate_host_request(&principal, &host_id, &actor, 3).is_ok());
+    assert!(
+        validate_host_request(
+            &principal,
+            &host_id,
+            &ActorKey {
+                project_id: "another-project".into(),
+                ..actor.clone()
+            },
+            3
+        )
+        .is_err()
+    );
     assert!(validate_host_request(&principal, &host_id, &actor, 4).is_err());
     assert!(
         validate_host_request(

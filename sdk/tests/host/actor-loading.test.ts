@@ -66,7 +66,7 @@ test("rejects an incompatible built actor artifact", async () => {
     try {
         const entrypoint = path.join(root, "actors.mjs")
         await writeFile(entrypoint, "export const version = 999; export const actors = {}; export const schemas = []")
-        await assert.rejects(loadActorTypes(pathToFileURL(entrypoint).href), /rebuild with little-actors build/)
+        await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href), /rebuild with little-actors build/)
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -90,8 +90,8 @@ test("loads only actors from an entrypoint with mixed exports", async () => {
             export class MixedRoom extends Actor {}
             export class MixedCounter extends Actor {}`
         )
-        const schemas = ["MixedCounter", "MixedRoom"].map(actorType => ({ actorType, fields: [] }))
-        assert.deepEqual(await loadActorTypes(pathToFileURL(entrypoint).href, schemas), ["MixedCounter", "MixedRoom"])
+        const schemas = ["MixedCounter", "MixedRoom"].map(actorName => ({ actorName, fields: [] }))
+        assert.deepEqual(await loadActorNames(pathToFileURL(entrypoint).href, schemas), ["MixedCounter", "MixedRoom"])
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -114,7 +114,7 @@ test("rejects invalid actor exports while ignoring unrelated exports", async () 
                 export const helper = 1
                 ${declaration}`
             )
-            await assert.rejects(loadActorTypes(pathToFileURL(entrypoint).href, []), error => {
+            await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href, []), error => {
                 assert.ok(error instanceof ActorDefinitionError)
                 assert.match(error.message, message)
                 return true
@@ -125,7 +125,7 @@ test("rejects invalid actor exports while ignoring unrelated exports", async () 
     }
 })
 
-async function loadActorTypes(moduleUrl: string, schemas?: readonly ActorSchema[]): Promise<readonly string[]> {
+async function loadActorNames(moduleUrl: string, schemas?: readonly ActorSchema[]): Promise<readonly string[]> {
     const worker = new Worker(new URL("../../src/host/actor-worker.js", import.meta.url), {
         workerData: { moduleUrl, schemas }
     })
@@ -135,7 +135,7 @@ async function loadActorTypes(moduleUrl: string, schemas?: readonly ActorSchema[
         ]
         if (message.type === "failed") throw new ActorDefinitionError(message.message)
         assert.equal(message.type, "ready")
-        return message.actorTypes
+        return message.actorNames
     } finally {
         await worker.terminate()
     }

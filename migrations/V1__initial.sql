@@ -1,5 +1,5 @@
 CREATE TABLE durable_object_deployment (
-    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    project_id TEXT PRIMARY KEY,
     code_revision TEXT NOT NULL,
     image_ref TEXT NOT NULL,
     working_directory TEXT NOT NULL,

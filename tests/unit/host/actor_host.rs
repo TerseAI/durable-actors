@@ -340,7 +340,8 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
                         ActorSocketInvocation {
                             request_id: "first".into(),
                             actor: ActorKey {
-                                actor_type: "Counter".into(),
+                                project_id: "default".into(),
+                                actor_name: "Counter".into(),
                                 actor_id: "counter-1".into(),
                             },
                             event: crate::actor::ActorSocketEvent::Message {
@@ -447,7 +448,8 @@ async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_reje
         ActorInvocation {
             request_id: "other".into(),
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "other".into(),
             },
             method: "increment".into(),
@@ -477,8 +479,8 @@ async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_reje
 
 #[async_trait]
 impl ActorExecutor for IncrementingExecutor {
-    fn supports(&self, actor_type: &str) -> bool {
-        actor_type == "Counter"
+    fn supports(&self, actor_name: &str) -> bool {
+        actor_name == "Counter"
     }
 
     async fn invoke(
@@ -523,7 +525,7 @@ impl ActorExecutor for IncrementingExecutor {
 
 #[async_trait]
 impl ActorExecutor for ExhaustedExecutor {
-    fn supports(&self, _actor_type: &str) -> bool {
+    fn supports(&self, _actor_name: &str) -> bool {
         true
     }
 
@@ -541,7 +543,7 @@ impl ActorExecutor for ExhaustedExecutor {
 
 #[async_trait]
 impl ActorExecutor for InvalidEffectsExecutor {
-    fn supports(&self, _actor_type: &str) -> bool {
+    fn supports(&self, _actor_name: &str) -> bool {
         true
     }
 
@@ -568,7 +570,8 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         ..Default::default()
     });
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let host = ActorHost::new(
@@ -613,7 +616,8 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
     });
     let transport = Arc::new(FakeStateTransport::default());
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "restored".into(),
     };
     let host = ActorHost::new(
@@ -1077,7 +1081,8 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
     let authority = Arc::new(FakeAuthority::default());
     let state = Arc::new(FakeStateTransport::default());
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "counter-1".into(),
     };
     let connection = crate::actor::ActorSocketConnection {
@@ -1135,7 +1140,8 @@ async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResu
         ActorInvocation {
             request_id: request_id.into(),
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "counter-1".into(),
             },
             method: "increment".into(),

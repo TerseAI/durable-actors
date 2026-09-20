@@ -15,7 +15,7 @@ interface ActorConnection {
 }
 
 interface ActorInventory {
-    actors: { actorType: string; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
+    actors: { actorName: string; live: number; dormant: number; unknown: number; instances: ActorInstance[] }[]
 }
 
 interface ObserverClient {
@@ -138,7 +138,7 @@ function isInventory(value: unknown): value is ActorInventory {
     return value.actors.every(
         row =>
             row &&
-            typeof row.actorType === "string" &&
+            typeof row.actorName === "string" &&
             [row.live, row.dormant, row.unknown].every(count => Number.isSafeInteger(count) && count >= 0) &&
             Array.isArray(row.instances) &&
             row.instances.every(isActorInstance)
@@ -176,7 +176,7 @@ export interface RequestTrace {
     requestId: string
     hostId: string
     sessionId: string
-    actorType: string
+    actorName: string
     actorId: string
     kind: "method" | "websocket"
     operation: string
@@ -236,7 +236,7 @@ export function isTrace(value: unknown): value is RequestTrace {
     if (!value || typeof value !== "object") return false
     const trace = value as RequestTrace
     return (
-        [trace.requestId, trace.hostId, trace.sessionId, trace.actorType, trace.actorId, trace.operation].every(value => typeof value === "string") &&
+        [trace.requestId, trace.hostId, trace.sessionId, trace.actorName, trace.actorId, trace.operation].every(value => typeof value === "string") &&
         (trace.eventId === undefined || (typeof trace.eventId === "string" && trace.eventId.length > 0)) &&
         nonnegativeInteger(trace.sequence) &&
         nonnegativeInteger(trace.startedAtMs) &&

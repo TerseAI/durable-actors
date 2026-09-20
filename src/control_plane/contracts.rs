@@ -98,14 +98,14 @@ impl ContractDocument {
         );
         let mut names = HashSet::new();
         for actor in &self.actors {
-            validate_actor_type(&actor.actor_type)?;
+            validate_actor_name(&actor.actor_name)?;
             ensure!(
-                names.insert(&actor.actor_type),
-                "duplicate actor type {}",
-                actor.actor_type
+                names.insert(&actor.actor_name),
+                "duplicate actor name {}",
+                actor.actor_name
             );
             ensure!(
-                actor.socket.version == 1 && actor.socket.actor_type == actor.actor_type,
+                actor.socket.version == 1 && actor.socket.actor_name == actor.actor_name,
                 "actor and socket contract must match"
             );
             validate_schema(&actor.socket.schema)?;
@@ -134,7 +134,7 @@ impl ContractDocument {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActorApi {
-    actor_type: String,
+    actor_name: String,
     socket: SocketContract,
     rpc: RpcContract,
 }
@@ -143,7 +143,7 @@ struct ActorApi {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SocketContract {
     version: u32,
-    actor_type: String,
+    actor_name: String,
     schema: Value,
     emittable: Vec<String>,
 }
@@ -250,8 +250,8 @@ impl TypeReference {
     }
 }
 
-fn validate_actor_type(name: &str) -> Result<()> {
-    validate_component("actor type", name, 255)?;
+fn validate_actor_name(name: &str) -> Result<()> {
+    validate_component("actor name", name, 255)?;
     ensure!(
         name.bytes()
             .enumerate()

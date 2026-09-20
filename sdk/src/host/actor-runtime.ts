@@ -51,14 +51,14 @@ class ActorRuntime {
         if (!this.definition.methods.has(command.method)) {
             return failedReply(
                 "method_not_found",
-                `actor method ${this.definition.actorType}.${command.method} was not found`
+                `actor method ${this.definition.actorName}.${command.method} was not found`
             )
         }
         const method: unknown = Reflect.get(instance, command.method)
         if (typeof method !== "function") {
             return failedReply(
                 "method_not_callable",
-                `actor method ${this.definition.actorType}.${command.method} is not callable`
+                `actor method ${this.definition.actorName}.${command.method} is not callable`
             )
         }
 
@@ -104,7 +104,7 @@ class ActorRuntime {
                     if (method === undefined) return
                     if (typeof method !== "function")
                         throw new ActorProtocolError(
-                            `actor lifecycle hook ${this.definition.actorType}.${methodName} is not callable`
+                            `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
                         )
                     await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
                 },
@@ -135,10 +135,10 @@ class ActorRuntime {
 
     private prepare(command: InvokeCommand | WebSocketEventCommand): AnyActor | ActorExecutorReply {
         const identity = command.actor
-        if (identity.actor_type !== this.definition.actorType) {
+        if (identity.actor_name !== this.definition.actorName) {
             return failedReply(
-                "actor_type_not_found",
-                `actor type ${identity.actor_type} is not loaded in this customer process`
+                "actor_name_not_found",
+                `actor name ${identity.actor_name} is not loaded in this customer process`
             )
         }
         if (this.identity !== undefined && actorKey(this.identity) !== actorKey(identity)) {
@@ -296,11 +296,11 @@ function validateActorState(instance: object, schema: ActorSchema): void {
     for (const key of Reflect.ownKeys(instance)) {
         if (typeof key !== "string" || !fields.has(key))
             throw new ActorDefinitionError(
-                `actor field ${schema.actorType}.${String(key)} must declare @Persisted or @Ephemeral`
+                `actor field ${schema.actorName}.${String(key)} must declare @Persisted or @Ephemeral`
             )
         const descriptor = Object.getOwnPropertyDescriptor(instance, key)!
         if (!("value" in descriptor))
-            throw new ActorDefinitionError(`actor field ${schema.actorType}.${key} must be a data property`)
+            throw new ActorDefinitionError(`actor field ${schema.actorName}.${key} must be a data property`)
     }
 }
 

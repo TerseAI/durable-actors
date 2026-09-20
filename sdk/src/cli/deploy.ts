@@ -1,4 +1,4 @@
-import { Command } from "commander"
+import { Command, Option } from "commander"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 
@@ -24,6 +24,7 @@ function registerDeployCommand(program: Command): void {
         .option("--actor-entrypoint <path>", "actor file inside the image (defaults to dist/actors.mjs)")
         .option("--config <file>", "local TypeScript configuration file")
         .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
+        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option(
             "--secret <name>",

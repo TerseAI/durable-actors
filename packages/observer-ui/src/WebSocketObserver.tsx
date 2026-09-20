@@ -11,9 +11,9 @@ export function WebSocketObserver({ client }: { client: ObserverClient }) {
     const { inventory, failed, retry } = useInventory(client)
     const [query, setQuery] = useState("")
     const sockets =
-        inventory?.actors.flatMap(actor => actor.instances.flatMap(instance => instance.connections.map(connection => ({ ...connection, actorType: actor.actorType, actorId: instance.actorId })))) ??
+        inventory?.actors.flatMap(actor => actor.instances.flatMap(instance => instance.connections.map(connection => ({ ...connection, actorName: actor.actorName, actorId: instance.actorId })))) ??
         []
-    const visible = sockets.filter(socket => `${socket.id} ${socket.actorType} ${socket.actorId}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+    const visible = sockets.filter(socket => `${socket.id} ${socket.actorName} ${socket.actorId}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
     return (
         <section className="la-observer overview" aria-label="WebSocket observer">
             <div className="overview-heading">
@@ -47,9 +47,9 @@ export function WebSocketObserver({ client }: { client: ObserverClient }) {
                         </thead>
                         <tbody>
                             {visible.map(socket => (
-                                <tr key={JSON.stringify([socket.actorType, socket.actorId, socket.id])}>
+                                <tr key={JSON.stringify([socket.actorName, socket.actorId, socket.id])}>
                                     <td>{socket.id}</td>
-                                    <td>{socket.actorType}</td>
+                                    <td>{socket.actorName}</td>
                                     <td>{socket.actorId}</td>
                                     <td>
                                         <details>

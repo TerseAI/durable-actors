@@ -10,7 +10,7 @@ import { inventorySummary, queueP95, requestSummary, tracesInWindow } from "./ov
 
 interface OverviewProps {
     client: ObserverClient
-    onSelectActor: (actorType: string) => void
+    onSelectActor: (actorName: string) => void
 }
 
 export function Overview({ client, onSelectActor }: OverviewProps) {
@@ -144,7 +144,7 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
     const [residency, setResidency] = useState("all")
     const actors =
         inventory?.actors
-            .filter(actor => actor.actorType.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (residency === "all" || actor[residency as "live" | "dormant" | "unknown"] > 0))
+            .filter(actor => actor.actorName.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (residency === "all" || actor[residency as "live" | "dormant" | "unknown"] > 0))
             .sort((a, b) => Number(b.live > 0) - Number(a.live > 0)) ?? []
     return (
         <section aria-label="Actor classes">
@@ -195,7 +195,7 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
                         </thead>
                         <tbody>
                             {actors.map(actor => (
-                                <ClassRow key={actor.actorType} actor={actor} records={records?.filter(record => record.actorType === actor.actorType)} onSelectActor={onSelectActor} />
+                                <ClassRow key={actor.actorName} actor={actor} records={records?.filter(record => record.actorName === actor.actorName)} onSelectActor={onSelectActor} />
                             ))}
                         </tbody>
                     </table>
@@ -225,10 +225,10 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
 function ClassRow({ actor, records, onSelectActor }: { actor: ActorInventory["actors"][number]; records?: RequestTrace[]; onSelectActor: OverviewProps["onSelectActor"] }) {
     const metrics = records ? requestSummary(records) : undefined
     return (
-        <tr className="la-clickable-row" onClick={() => onSelectActor(actor.actorType)}>
+        <tr className="la-clickable-row" onClick={() => onSelectActor(actor.actorName)}>
             <td>
-                <Button variant="ghost" type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorType}`}>
-                    <span title={actor.actorType}>{actor.actorType}</span>
+                <Button variant="ghost" type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorName}`}>
+                    <span title={actor.actorName}>{actor.actorName}</span>
                 </Button>
             </td>
             <td>{number(actor.live + actor.dormant + actor.unknown)}</td>

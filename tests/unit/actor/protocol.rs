@@ -1,35 +1,77 @@
 use super::*;
 
 #[test]
-fn actor_identity_requires_only_type_and_id() {
-    let key: ActorKey = serde_json::from_value(serde_json::json!({
-        "actor_type": "Counter", "actor_id": "one"
-    }))
-    .expect("single deployment actor identity");
-    key.validate().expect("valid identity");
-    assert_eq!(key.storage_key().as_str(), "object.v3.Counter:one");
+fn actor_identity_uses_actor_name_on_the_wire() {
+    let wire = serde_json::json!({
+        "project_id": "my-app", "actor_name": "Counter", "actor_id": "one"
+    });
+    let key: ActorKey = serde_json::from_value(wire.clone()).expect("actor_name identity");
+    key.validate().expect("valid actor identity");
+    assert_eq!(serde_json::to_value(key).unwrap(), wire);
+}
+
+#[test]
+fn actor_identity_requires_project_id() {
+    assert!(
+        serde_json::from_value::<ActorKey>(serde_json::json!({
+            "actor_name": "Counter", "actor_id": "one"
+        }))
+        .is_err()
+    );
+    let key = ActorKey {
+        project_id: String::new(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    assert!(key.validate().is_err());
 }
 
 #[test]
 fn maps_an_actor_to_one_safe_object_id() {
     let key = ActorKey {
-        actor_type: "counter".into(),
+        project_id: "default".into(),
+        actor_name: "counter".into(),
         actor_id: "customer.123".into(),
     };
 
     key.validate().expect("actor key");
-    assert_eq!(key.storage_key().as_str(), "object.v3.counter:customer.123");
+    assert_eq!(
+        key.storage_key().as_str(),
+        "object.v4.default:counter:customer.123"
+    );
 }
 
 #[test]
 fn rejects_components_that_can_reshape_storage_paths() {
     let mut key = ActorKey {
-        actor_type: "counter".into(),
+        project_id: "default".into(),
+        actor_name: "counter".into(),
         actor_id: "../other".into(),
     };
     assert!(key.validate().is_err());
 
     key.actor_id = "valid".into();
-    key.actor_type = "counter/type".into();
+    key.actor_name = "counter/type".into();
     assert!(key.validate().is_err());
+}
+
+#[test]
+fn project_identity_separates_same_named_actors() {
+    let actor = |project: &str| -> ActorKey {
+        serde_json::from_value(serde_json::json!({
+            "project_id": project, "actor_name": "Counter", "actor_id": "shared"
+        }))
+        .unwrap()
+    };
+    let first = actor("team-a");
+    let second = actor("team-b");
+    assert_ne!(first.storage_key(), second.storage_key());
+    assert_ne!(
+        crate::storage_paths::snapshots(&first).unwrap(),
+        crate::storage_paths::snapshots(&second).unwrap()
+    );
+    assert_eq!(
+        crate::storage_paths::actor_from_key(&first.storage_key()).unwrap(),
+        first
+    );
 }

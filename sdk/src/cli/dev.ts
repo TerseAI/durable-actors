@@ -13,6 +13,7 @@ import { ControlPlaneClient } from "./control-plane.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
+    projectId: string
     apiKey?: string
     port: number
     project: string
@@ -26,6 +27,9 @@ function registerDevCommand(program: Command): void {
     program
         .command("dev")
         .description("Start local actors with persistent file storage")
+        .addOption(
+            new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID").makeOptionMandatory()
+        )
         .option("--no-watch", "Disable automatic actor reload when source files change")
         .addOption(
             new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
@@ -93,7 +97,9 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
     )
     const connection = runtimeConnection(runtime.readiness!, runtime.exited)
     const settings = connection.then(value =>
-        configuredSettings(z.object({ controlPlaneUrl: z.string(), apiKey: z.string() }).parse(value))
+        configuredSettings(
+            z.object({ projectId: z.string(), controlPlaneUrl: z.string(), apiKey: z.string() }).parse(value)
+        )
     )
     const client = settings.then(settings => new ControlPlaneClient(settings, fetch))
     void client.catch(() => {})
@@ -142,6 +148,8 @@ async function compileContract(project: string, entrypoint: string) {
 function devArguments(options: DevOptions): string[] {
     const args = [
         "dev",
+        "--project-id",
+        options.projectId,
         "--project",
         options.project,
         "--port",

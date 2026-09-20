@@ -29,13 +29,13 @@ class TestActorClient implements ActorClientTransport {
             (() => Promise.reject(new ActorProtocolError("socket broadcasts are not configured for this test")))
     }
 
-    async invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
+    async invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
         const requestId = validateActorComponent("request ID", this.requestId())
         const serializedArgs = cloneJson(args, "actor arguments")
         if (!Array.isArray(serializedArgs)) throw new ActorProtocolError("actor arguments must be a JSON array")
         const request: ActorInvocationRequest = {
             requestId,
-            actorType: validateActorComponent("actor type", actorType),
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId),
             method: validateActorComponent("actor method", method),
             args: serializedArgs
@@ -43,20 +43,20 @@ class TestActorClient implements ActorClientTransport {
         return this.invokeTest(request)
     }
 
-    async connect(actorType: string, actorId: string, metadata: unknown): Promise<ActorConnection> {
+    async connect(actorName: string, actorId: string, metadata: unknown): Promise<ActorConnection> {
         const request: ActorConnectionRequest = {
             requestId: validateActorComponent("request ID", this.requestId()),
-            actorType: validateActorComponent("actor type", actorType),
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId),
             metadata: cloneJson(metadata, "socket metadata")
         }
         return this.connectTest(request)
     }
 
-    async broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void> {
+    async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
         return this.broadcastTest({
             requestId: validateActorComponent("request ID", this.requestId()),
-            actorType: validateActorComponent("actor type", actorType),
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId),
             message: socketMessage(message)
         })
@@ -65,7 +65,7 @@ class TestActorClient implements ActorClientTransport {
 
 interface ActorInvocationRequest {
     readonly requestId: string
-    readonly actorType: string
+    readonly actorName: string
     readonly actorId: string
     readonly method: string
     readonly args: readonly JsonValue[]
@@ -84,14 +84,14 @@ type ActorTestBroadcaster = (request: ActorBroadcastRequest) => Promise<void>
 
 interface ActorConnectionRequest {
     readonly requestId: string
-    readonly actorType: string
+    readonly actorName: string
     readonly actorId: string
     readonly metadata: JsonValue
 }
 
 interface ActorBroadcastRequest {
     readonly requestId: string
-    readonly actorType: string
+    readonly actorName: string
     readonly actorId: string
     readonly message: SocketMessage
 }

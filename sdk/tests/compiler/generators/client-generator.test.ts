@@ -42,8 +42,8 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         actors.Counter.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 })
         // @ts-expect-error unknown actor
         actors.Missing.prepareWebsocket({ actorId: "one", metadata: {} })
-        // @ts-expect-error actor type is selected by the helper
-        actors.Room.prepareWebsocket({ actorType: "Counter", actorId: "one", metadata: { userId: "alice" } })
+        // @ts-expect-error actor name is selected by the helper
+        actors.Room.prepareWebsocket({ actorName: "Counter", actorId: "one", metadata: { userId: "alice" } })
         // @ts-expect-error metadata belongs to another actor
         actors.Room.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         // @ts-expect-error required metadata is missing
@@ -52,22 +52,22 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         actors.Room.prepareWebsocket({ actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
         // @ts-expect-error metadata literals are preserved
         actors.Counter.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "admin" } })
-        ActorProxy.handle({ actorType: "Room", actorId: "lobby", metadata: { userId: "alice" } })
-        ActorProxy.handle({ actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        ActorProxy.handle({ actorName: "Room", actorId: "lobby", metadata: { userId: "alice" } })
+        ActorProxy.handle({ actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         const proxy = new ActorProxy({ controlPlaneUrl: "https://actors.example.com", apiKey: "secret" })
-        proxy.handle({ actorType: "Room", actorId: "lobby", metadata: { userId: "alice", profile: { displayName: "Alice" } } })
+        proxy.handle({ actorName: "Room", actorId: "lobby", metadata: { userId: "alice", profile: { displayName: "Alice" } } })
         // @ts-expect-error unknown actor
-        ActorProxy.handle({ actorType: "Missing", actorId: "one", metadata: {} })
+        ActorProxy.handle({ actorName: "Missing", actorId: "one", metadata: {} })
         // @ts-expect-error metadata belongs to another actor
-        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         // @ts-expect-error required metadata is missing
-        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: {} })
+        ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: {} })
         // @ts-expect-error nested metadata is typed
-        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
+        ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
         // @ts-expect-error metadata literals are preserved
-        proxy.handle({ actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } })
+        proxy.handle({ actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } })
         function authorize(value: ActorAuthorization) {
-            if (value.actorType === "Room") value.metadata.userId.toUpperCase()
+            if (value.actorName === "Room") value.metadata.userId.toUpperCase()
             else value.metadata.tenantId.toFixed()
         }
 `
@@ -98,8 +98,8 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     const options = { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
     const proxy = new ActorProxy(options, { fetch })
     for (const authorization of [
-        { actorType: "Room", actorId: "one", metadata: { userId: "alice" } },
-        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "editor" } }
+        { actorName: "Room", actorId: "one", metadata: { userId: "alice" } },
+        { actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "editor" } }
     ])
         assert.equal((await proxy.handle(authorization)).transport, "websocket")
     assert.deepEqual(
@@ -108,17 +108,17 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     )
     assert.match(requests[1]!.url, /actors\/Counter\/one\/connect$/)
     for (const authorization of [
-        { actorType: "Room", actorId: "one", metadata: {} },
-        { actorType: "Room", actorId: "one", metadata: { userId: 1 } },
-        { actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } },
-        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } }
+        { actorName: "Room", actorId: "one", metadata: {} },
+        { actorName: "Room", actorId: "one", metadata: { userId: 1 } },
+        { actorName: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } },
+        { actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } }
     ])
         assert.equal((await proxy.handle(authorization)).transport, "websocket")
     for (const authorization of [
-        { actorType: "Missing", actorId: "one", metadata: {} },
-        { actorType: "toString", actorId: "one", metadata: {} }
+        { actorName: "Missing", actorId: "one", metadata: {} },
+        { actorName: "toString", actorId: "one", metadata: {} }
     ])
-        await assert.rejects(proxy.handle(authorization), /metadata|actor type/i)
+        await assert.rejects(proxy.handle(authorization), /metadata|actor name/i)
     assert.equal(requests.length, 6, "unknown actors must fail before issuing a ticket")
     const originalFetch = globalThis.fetch
     globalThis.fetch = fetch
@@ -180,7 +180,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         /HTTP 403/
     )
     assert.equal(
-        (await ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { userId: "alice" } })).transport,
+        (await ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: { userId: "alice" } })).transport,
         "websocket"
     )
 })
@@ -193,7 +193,7 @@ test("generates backend contracts for actors without outgoing application messag
             [
                 {
                     version: 1,
-                    actorType: "Counter",
+                    actorName: "Counter",
                     emittable: [],
                     schema: {
                         definitions: {
@@ -239,9 +239,9 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             "State"
         ]
         await generateClient(
-            names.map(actorType => ({
+            names.map(actorName => ({
                 version: 1,
-                actorType,
+                actorName,
                 emittable: [],
                 schema: {
                     definitions: {
@@ -292,7 +292,7 @@ test("regenerates typed descriptors without stale validators or server imports",
             [
                 {
                     version: 1,
-                    actorType: "Room",
+                    actorName: "Room",
                     emittable: ["count"],
                     schema: {
                         definitions: {
@@ -359,9 +359,9 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
     await generateClient(
-        ["Counter", "Room"].map(actorType => ({
+        ["Counter", "Room"].map(actorName => ({
             version: 1 as const,
-            actorType,
+            actorName,
             emittable: ["count"],
             schema: {
                 definitions: {
@@ -384,7 +384,7 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     for (const type of ["Metadata", "Incoming", "Outgoing", "State"])
         assert.ok(source.includes(`export interface ${type} {`))
     assert.match(source, /count: number/)
-    assert.doesNotMatch(source, /ActorTypes|FieldCount/)
+    assert.doesNotMatch(source, /ActorNames|FieldCount/)
     assert.doesNotMatch(source, /ActorConnection|createClient|export const clients/)
     assert.match(source, /metadata: Metadata/)
     const consumer = path.join(directory, "consumer.ts")
@@ -403,11 +403,11 @@ test("each actor module exposes complete unprefixed contract types", async t => 
         const incoming: Incoming = { by: 1 }
         const outgoing: Outgoing = { count: 1 }
         const state: State = outgoing
-        const authorization: Authorization = { actorType: "Room", actorId: "lobby", metadata: other }
+        const authorization: Authorization = { actorName: "Room", actorId: "lobby", metadata: other }
         // @ts-expect-error invalid metadata
         const invalid: Metadata = { userId: 1 }
         // @ts-expect-error wrong actor identity
-        const wrong: Authorization = { actorType: "Counter", actorId: "one", metadata }
+        const wrong: Authorization = { actorName: "Counter", actorId: "one", metadata }
     `
     )
     checkTypes(consumer)
@@ -421,7 +421,7 @@ test("readable contract types preserve recursive metadata and helper-name collis
         [
             {
                 version: 1,
-                actorType: "Room",
+                actorName: "Room",
                 emittable: [],
                 schema: {
                     definitions: {
@@ -454,7 +454,7 @@ test("readable contract types preserve recursive metadata and helper-name collis
         type Outgoing = actors.Room.Outgoing
         type Authorization = actors.Room.Authorization
         const metadata: Metadata = { connection: { id: "a", parent: { id: "b" } } }
-        const authorization: Authorization = { actorType: "Room", actorId: "one", metadata }
+        const authorization: Authorization = { actorName: "Room", actorId: "one", metadata }
         const incoming: Incoming = null
         const outgoing: Outgoing = { anything: true }
         // @ts-expect-error recursive metadata keeps its required fields

@@ -18,7 +18,7 @@ async fn host_bootstrap_carries_replica_membership_without_a_separate_count() ->
         Arc::new(crate::replication::ReplicaSet(replicas.clone())),
         ReplicaAccess::new("secret", Arc::new(SystemClock)),
     )?;
-    let document = access.bootstrap("north-america-east").await?;
+    let document = access.bootstrap("default", "north-america-east").await?;
     let value: Value = serde_json::from_str(&document)?;
     assert!(value.get("replicaCount").is_none());
     let config: HostStorageConfig = serde_json::from_str(&document)?;
@@ -30,7 +30,12 @@ async fn host_bootstrap_carries_replica_membership_without_a_separate_count() ->
         Arc::new(PartialFleet(crate::replication::ReplicaSet(replicas))),
         ReplicaAccess::new("secret", Arc::new(SystemClock)),
     )?;
-    assert!(partial.bootstrap("north-america-east").await.is_err());
+    assert!(
+        partial
+            .bootstrap("default", "north-america-east")
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -61,7 +66,7 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
         rules[0]["availabilityCondition"]["expression"]
             .as_str()
             .unwrap()
-            .contains("little-actors/v2/owners/")
+            .contains("little-actors/v3/owners/")
     );
     assert_eq!(
         rules[1]["availablePermissions"],
@@ -74,7 +79,7 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
         rules[1]["availabilityCondition"]["expression"]
             .as_str()
             .unwrap()
-            .contains("little-actors/v2/snapshots/")
+            .contains("little-actors/v3/snapshots/")
     );
     Ok(())
 }

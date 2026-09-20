@@ -40,8 +40,8 @@ const fields = [
     { name: "internal", persistence: Persistence.Persisted, visibility: "protected" as const },
     { name: "status", persistence: Persistence.Persisted, emittable: true }
 ]
-const definition = registerActorClass(ObservableRoom, { actorType: "ObservableRoom", fields })
-const actor = { actor_type: "ObservableRoom", actor_id: "room" }
+const definition = registerActorClass(ObservableRoom, { actorName: "ObservableRoom", fields })
+const actor = { project_id: "default", actor_name: "ObservableRoom", actor_id: "room" }
 
 test("initial snapshots expose public persisted fields while still saving private state", async () => {
     const runtime = new ActorRuntime(definition)

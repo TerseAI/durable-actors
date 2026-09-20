@@ -140,4 +140,4 @@ See the [browser example](../../sdk/README.md#browser-clients) and [wire protoco
 
 Regional control planes share one active code deployment in PostgreSQL, one state bucket, and the same signing key and API key. Set `DURABLE_OBJECT_REGION` on each regional instance. The production deployment repository owns the load balancer, persistent actor-home directory, geographic selection, and forwarding setup requests with an assigned `homeRegion`.
 
-Each `(actor type, actor ID)` has its own state and permanent home. Customer proxies authenticate users and enforce access before requesting actor capabilities. WebSockets connect directly to the owning Modal host using the returned URL. Independent installations require separate databases, buckets, credentials, and Modal resources.
+Each `(actor name, actor ID)` has its own state and permanent home. Customer proxies authenticate users and enforce access before requesting actor capabilities. WebSockets connect directly to the owning Modal host using the returned URL. Independent installations require separate databases, buckets, credentials, and Modal resources.

@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { projectIdSchema } from "../actor/identity.js"
 import { ActorConfigurationError } from "../errors.js"
 
 function configuredSettings(options: unknown) {
@@ -9,6 +10,7 @@ function configuredSettings(options: unknown) {
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
     return {
         credential: result.data.apiKey,
+        projectId: result.data.projectId,
         homeRegion: result.data.homeRegion,
         controlPlaneUrl
     }
@@ -36,6 +38,7 @@ function validateOrigin(origin: string): string {
 }
 
 const clientOptionsSchema = z.strictObject({
+    projectId: projectIdSchema,
     apiKey: z.string().trim().min(1),
     homeRegion: z
         .string()

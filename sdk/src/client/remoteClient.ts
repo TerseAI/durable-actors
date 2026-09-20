@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks"
 import WebSocket from "ws"
 import { z } from "zod"
 
-import { validateActorComponent } from "../actor/identity.js"
+import { projectActorPath, validateActorComponent } from "../actor/identity.js"
 import { currentActorInvocation } from "../actor/invocationContext.js"
 import { socketMessage } from "../actor/socket.js"
 import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
@@ -47,7 +47,7 @@ class RemoteActorClient {
         this.settingsValue = options === undefined ? undefined : configuredSettings(options)
     }
 
-    async invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
+    async invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
         const requestId = validateActorComponent("request ID", this.requestId())
         const timeline = new LatencyTimeline(this.monotonicNow)
         let outcome = "failed"
@@ -55,7 +55,7 @@ class RemoteActorClient {
             if (currentActorInvocation() !== undefined) {
                 throw new ActorInvocationError("actor_error", requestId, "actor-to-actor calls are not available")
             }
-            const invocation = this.invocation(requestId, actorType, actorId, method, args)
+            const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
             const target = await this.target(invocation, timeline)
             timeline.mark("target_resolved")
@@ -66,7 +66,7 @@ class RemoteActorClient {
             this.telemetry({
                 event: "actor_client_invocation",
                 request_id: requestId,
-                actor_type: actorType,
+                actor_name: actorName,
                 actor_id: actorId,
                 method,
                 ...timeline.finish(),
@@ -76,7 +76,7 @@ class RemoteActorClient {
     }
 
     async connect(
-        actorType: string,
+        actorName: string,
         actorId: string,
         metadata: unknown,
         schemas: ActorSchemas = {}
@@ -89,12 +89,13 @@ class RemoteActorClient {
                 "actor-to-actor socket connections are not available"
             )
         const actor = {
-            actorType: validateActorComponent("actor type", actorType),
+            projectId: this.settings.projectId,
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId)
         }
         const attachment = socketMetadata(metadata, schemas)
         const response = await this.fetchRequest(
-            `${this.settings.controlPlaneUrl}${actorPath(actor.actorType, actor.actorId)}/connect`,
+            `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/connect`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.settings.credential}`, "content-type": "application/json" },
@@ -117,7 +118,7 @@ class RemoteActorClient {
         return this.connectWebSocket(grant.websocketUrl, attachment, schemas)
     }
 
-    async broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void> {
+    async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
         const requestId = validateActorComponent("request ID", this.requestId())
         if (currentActorInvocation() !== undefined)
             throw new ActorInvocationError(
@@ -127,7 +128,8 @@ class RemoteActorClient {
             )
         const actor = {
             requestId,
-            actorType: validateActorComponent("actor type", actorType),
+            projectId: this.settings.projectId,
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId)
         }
         const target = await this.target(actor, new LatencyTimeline(this.monotonicNow))
@@ -155,7 +157,7 @@ class RemoteActorClient {
             }
             if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
             if (reply.type === "unauthenticated" && !retryReroute) {
-                this.targets.delete(actorKey(invocation.actorType, invocation.actorId))
+                this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
                 throw new ActorInvocationError(
                     "unauthenticated",
                     invocation.requestId,
@@ -168,12 +170,12 @@ class RemoteActorClient {
                     invocation.requestId,
                     "actor ownership changed repeatedly before execution"
                 )
-            this.targets.delete(actorKey(invocation.actorType, invocation.actorId))
+            this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
             const rerouted = await this.target(invocation, timeline)
             return this.direct(rerouted, invocation, false, timeline)
         } catch (error) {
             if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
-            this.targets.delete(actorKey(invocation.actorType, invocation.actorId))
+            this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
                 "outcome_unknown",
@@ -201,7 +203,7 @@ class RemoteActorClient {
         try {
             await this.actorHost.publish(target, actor, effects)
         } catch (error) {
-            this.targets.delete(actorKey(actor.actorType, actor.actorId))
+            this.targets.delete(actorKey(actor.actorName, actor.actorId))
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
                 "outcome_unknown",
@@ -212,7 +214,7 @@ class RemoteActorClient {
     }
 
     private async target(invocation: ActorAddress, timeline: LatencyTimeline): Promise<ActorHostTarget> {
-        const key = actorKey(invocation.actorType, invocation.actorId)
+        const key = actorKey(invocation.actorName, invocation.actorId)
         const current = this.targets.get(key)
         timeline.mark("target_cache_checked")
         if (current) {
@@ -231,7 +233,7 @@ class RemoteActorClient {
     private async resolveTarget(invocation: ActorAddress): Promise<ActorHostTarget> {
         let response: Response
         try {
-            response = await this.fetchRequest(targetUrl(this.settings, invocation.actorType, invocation.actorId), {
+            response = await this.fetchRequest(targetUrl(this.settings, invocation.actorName, invocation.actorId), {
                 method: "POST",
                 headers: {
                     accept: "application/json",
@@ -278,14 +280,15 @@ class RemoteActorClient {
 
     private invocation(
         requestId: string,
-        actorType: string,
+        actorName: string,
         actorId: string,
         method: string,
         args: readonly unknown[]
     ): DirectActorInvocation {
         return {
             requestId,
-            actorType: validateActorComponent("actor type", actorType),
+            projectId: this.settings.projectId,
+            actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId),
             method: validateActorComponent("actor method", method),
             args: this.jsonArguments(args)
@@ -296,6 +299,7 @@ class RemoteActorClient {
         if (this.settingsValue !== undefined) return this.settingsValue
         this.settingsValue = configuredSettings({
             apiKey: this.environment.DURABLE_OBJECT_API_KEY,
+            projectId: this.environment.DURABLE_OBJECT_PROJECT_ID,
             homeRegion: this.environment.DURABLE_OBJECT_HOME_REGION,
             controlPlaneUrl: this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100"
         })
@@ -309,14 +313,10 @@ class RemoteActorClient {
     }
 }
 
-function targetUrl(settings: RemoteActorSettings, actorType: string, actorId: string): string {
-    const actor = validateActorComponent("actor type", actorType)
+function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: string): string {
+    const actor = validateActorComponent("actor name", actorName)
     const id = validateActorComponent("actor ID", actorId)
-    return `${settings.controlPlaneUrl}${actorPath(actor, id)}/connect`
-}
-
-function actorPath(actorType: string, actorId: string): string {
-    return `/v1/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}`
+    return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/connect`
 }
 
 function openWebSocket(url: string, metadata: JsonValue, schemas: ActorSchemas): Promise<ActorConnection> {
@@ -347,8 +347,8 @@ function openWebSocket(url: string, metadata: JsonValue, schemas: ActorSchemas):
     })
 }
 
-function actorKey(actorType: string, actorId: string): string {
-    return `${actorType}\u001f${actorId}`
+function actorKey(actorName: string, actorId: string): string {
+    return `${actorName}\u001f${actorId}`
 }
 
 async function responseDocument(response: Response): Promise<unknown> {
@@ -361,15 +361,17 @@ async function responseDocument(response: Response): Promise<unknown> {
     }
 }
 
-type ActorAddress = Pick<DirectActorInvocation, "requestId" | "actorType" | "actorId">
+type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 
 interface RemoteActorSettings {
+    readonly projectId: string
     readonly credential: string
     readonly homeRegion?: string
     readonly controlPlaneUrl: string
 }
 
 interface DurableObjectsClientOptions {
+    readonly projectId: string
     readonly apiKey: string
     readonly homeRegion?: string
     readonly controlPlaneUrl: string

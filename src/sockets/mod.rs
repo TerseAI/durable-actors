@@ -64,7 +64,7 @@ impl SocketRegistry {
             }
         }
         inventory.sort_by(|a, b| {
-            (&a.actor.actor_type, &a.actor.actor_id).cmp(&(&b.actor.actor_type, &b.actor.actor_id))
+            (&a.actor.actor_name, &a.actor.actor_id).cmp(&(&b.actor.actor_name, &b.actor.actor_id))
         });
         inventory
     }

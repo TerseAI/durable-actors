@@ -22,7 +22,7 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
     const server = createServer(socket => {
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
-            assert.deepEqual(JSON.parse(line).actor_types, ["SessionCounter"])
+            assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
             socket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
             socket.end()
         })
@@ -143,7 +143,7 @@ test("the actor session carries only owned execution commands", async t => {
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
             protocol: 16,
-            actor_types: ["SessionCounter"]
+            actor_names: ["SessionCounter"]
         })
         customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
         await startup
@@ -156,7 +156,8 @@ test("the actor session carries only owned execution commands", async t => {
                     type: "invoke",
                     request_id: "request-1",
                     actor: {
-                        actor_type: "SessionCounter",
+                        project_id: "default",
+                        actor_name: "SessionCounter",
                         actor_id: "counter-1"
                     },
                     method: "increment",
@@ -178,7 +179,7 @@ test("the actor session carries only owned execution commands", async t => {
                 command: {
                     type: "invoke",
                     request_id: "stream",
-                    actor: { actor_type: "SessionCounter", actor_id: "counter-1" },
+                    actor: { project_id: "default", actor_name: "SessionCounter", actor_id: "counter-1" },
                     method: "stream",
                     args: [],
                     state: { count: 4 }
@@ -305,7 +306,8 @@ test("a failed session connection cleans up the speculative Worker", async () =>
 
 function actorIdentity(): Record<string, string> {
     return {
-        actor_type: "SessionCounter",
+        project_id: "default",
+        actor_name: "SessionCounter",
         actor_id: "counter-1"
     }
 }
@@ -327,7 +329,7 @@ async function removeSocket(socketPath: string): Promise<void> {
 
 test("reports resident instances when the Rust host advertises support", { timeout: 5_000 }, async () => {
     const root = await mkdtemp("/tmp/actor-residency-")
-    const actor = { actor_type: "SessionCounter", actor_id: "one" }
+    const actor = { project_id: "default", actor_name: "SessionCounter", actor_id: "one" }
     let received: unknown
     const server = createServer(socket => {
         const lines = createInterface({ input: socket })

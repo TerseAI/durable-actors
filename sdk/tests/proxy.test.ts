@@ -23,7 +23,7 @@ test("socket setup accepts an explicit home region and validates its timeout", a
         }
     )
     const grant = await proxy.handle({
-        actorType: "Room",
+        actorName: "Room",
         actorId: "room",
         metadata: {},
         homeRegion: "north-america-west"
@@ -55,7 +55,7 @@ test("proxy issues socket authorization using only server-selected target and me
         }
     )
     const grant = await proxy.handle({
-        actorType: "Room",
+        actorName: "Room",
         actorId: "lobby",
         metadata: { userId: "trusted" }
     })
@@ -85,7 +85,7 @@ test("proxy requires JSON metadata and a backend API key", async () => {
         }
     )
     await assert.rejects(
-        proxy.handle({ actorType: "Room", actorId: "lobby", metadata: { invalid: () => undefined } }),
+        proxy.handle({ actorName: "Room", actorId: "lobby", metadata: { invalid: () => undefined } }),
         /JSON/
     )
     assert.throws(

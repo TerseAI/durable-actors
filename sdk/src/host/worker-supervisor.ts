@@ -42,7 +42,7 @@ class ActorWorkerSupervisor {
     private speculativeWorker: ActorWorkerHandle | undefined
     private speculativeTimer: NodeJS.Timeout | undefined
     private closed = false
-    private actorTypes: readonly string[] | undefined
+    private actorNames: readonly string[] | undefined
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
@@ -57,15 +57,15 @@ class ActorWorkerSupervisor {
 
     async ready(): Promise<readonly string[]> {
         if (this.closed) throw new Error("actor supervisor is closed")
-        if (this.actorTypes !== undefined) return this.actorTypes
+        if (this.actorNames !== undefined) return this.actorNames
         const worker = this.speculativeWorker ?? this.preload()
         if (this.speculativeTimer !== undefined) clearTimeout(this.speculativeTimer)
-        this.actorTypes = await worker.ready()
+        this.actorNames = await worker.ready()
         if (this.speculativeWorker === worker) {
             this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
             this.speculativeTimer.unref()
         }
-        return this.actorTypes
+        return this.actorNames
     }
 
     async handle(
@@ -78,7 +78,7 @@ class ActorWorkerSupervisor {
             case "invoke":
             case "websocket_event":
                 try {
-                    if (this.actorTypes === undefined) await this.ready()
+                    if (this.actorNames === undefined) await this.ready()
                     return await this.execute(command, publish, connections)
                 } catch (error) {
                     return failedReply("actor_worker_failed", errorMessage(error))
@@ -136,11 +136,11 @@ class ActorWorkerSupervisor {
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
-        if (!this.actorTypes?.includes(command.actor.actor_type)) {
+        if (!this.actorNames?.includes(command.actor.actor_name)) {
             return Promise.resolve(
                 failedReply(
-                    "actor_type_not_found",
-                    `actor type ${command.actor.actor_type} is not loaded in this customer process`
+                    "actor_name_not_found",
+                    `actor name ${command.actor.actor_name} is not loaded in this customer process`
                 )
             )
         }
@@ -287,7 +287,7 @@ class ResidentActorWorker {
 class ActorWorker implements ActorWorkerHandle {
     private readonly worker: Worker
     private readonly readyPromise: Promise<readonly string[]>
-    private readyResolve: ((actorTypes: readonly string[]) => void) | undefined
+    private readyResolve: ((actorNames: readonly string[]) => void) | undefined
     private readyReject: ((error: Error) => void) | undefined
     private replyResolve: ((reply: ActorExecutorReply) => void) | undefined
     private replyReject: ((error: Error) => void) | undefined
@@ -364,7 +364,7 @@ class ActorWorker implements ActorWorkerHandle {
         if (message.type === "ready") {
             if (this.lifecycleState !== "starting") return
             this.lifecycleState = "ready"
-            this.readyResolve?.(message.actorTypes)
+            this.readyResolve?.(message.actorNames)
             this.readyResolve = undefined
             this.readyReject = undefined
             this.onStateChange()

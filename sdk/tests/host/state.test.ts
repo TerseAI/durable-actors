@@ -6,7 +6,7 @@ import { ActorDefinitionError, ActorSerializationError } from "../../src/errors.
 import { hydrateActorState, snapshotActorState } from "../../src/host/actor-runtime.js"
 
 const schema = {
-    actorType: "Counter",
+    actorName: "Counter",
     fields: [
         { name: "count", persistence: Persistence.Persisted },
         { name: "nested", persistence: Persistence.Persisted },

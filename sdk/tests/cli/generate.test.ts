@@ -12,7 +12,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
-const env = { ...process.env, DURABLE_OBJECT_API_KEY: "contract-key" }
+const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "default", DURABLE_OBJECT_API_KEY: "contract-key" }
 
 test("generate uses environment settings and explicit flags without reading discovery files", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-local-"))
@@ -38,12 +38,14 @@ test("generate uses environment settings and explicit flags without reading disc
     await writeFile(
         path.join(directory, ".little-actors/runtime.json"),
         JSON.stringify({
+            projectId: "default",
             controlPlaneUrl: origin,
             apiKey: "local-key"
         })
     )
     const localEnv = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
         DURABLE_OBJECT_API_KEY: "local-key"
     }
@@ -60,7 +62,7 @@ test("generate uses environment settings and explicit flags without reading disc
             DURABLE_OBJECT_API_KEY: "wrong"
         }
     })
-    assert.deepEqual(requests, Array(2).fill("/v1/deployment/contract"))
+    assert.deepEqual(requests, Array(2).fill("/v1/projects/default/deployment/contract"))
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--url"], {
             cwd: directory,
@@ -129,7 +131,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     const server = createServer(async (request, response) => {
         assert.equal(request.headers.authorization, "Bearer contract-key")
         if (request.method === "PUT") {
-            assert.equal(request.url, "/v1/deployment")
+            assert.equal(request.url, "/v1/projects/default/deployment")
             const chunks: Buffer[] = []
             for await (const chunk of request) chunks.push(Buffer.from(chunk))
             deployment = JSON.parse(Buffer.concat(chunks).toString())
@@ -179,14 +181,14 @@ test("deploy publishes the inferred API directly and a separate consumer generat
         warmRegion: "us-east"
     })
     assert.equal(contract.version, 1)
-    assert.equal(contract.actors[0].actorType, "ChatRoom")
+    assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
     await rm(author, { recursive: true })
     const result = await run(process.execPath, [cli, "generate", "--url", origin, "--revision", "release-1"], {
         cwd: directory,
         env
     })
-    assert.deepEqual(requests, ["/v1/deployment/contract?revision=release-1"])
+    assert.deepEqual(requests, ["/v1/projects/default/deployment/contract?revision=release-1"])
     for (const [file, content] of expected)
         assert.equal(await readFile(path.join(directory, "generated", file), "utf8"), content)
     assert.deepEqual(await readdir(path.join(directory, "generated")), files)
@@ -196,7 +198,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
         cwd: directory,
         env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
     })
-    assert.equal(requests[1], "/v1/deployment/contract")
+    assert.equal(requests[1], "/v1/projects/default/deployment/contract")
 })
 
 test("generate rejects remote errors and invalid inputs before changing output", async t => {

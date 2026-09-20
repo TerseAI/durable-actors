@@ -11,7 +11,8 @@ import { prepareActorEntrypoint } from "../../src/host/actor-host.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 
 const actorIdentity = {
-    actor_type: "SessionCounter",
+    project_id: "default",
+    actor_name: "SessionCounter",
     actor_id: "counter-1"
 }
 
@@ -453,7 +454,7 @@ async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
     )
 }
 
-async function createTypeScriptConsumer(actorType = "SessionCounter", preamble = ""): Promise<string> {
+async function createTypeScriptConsumer(actorName = "SessionCounter", preamble = ""): Promise<string> {
     const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-worker-"))
     const source = path.join(root, "src")
     await mkdir(source)
@@ -465,7 +466,7 @@ async function createTypeScriptConsumer(actorType = "SessionCounter", preamble =
 import { threadId } from "node:worker_threads"
 ${preamble}
 
-export class ${actorType} extends Actor<{ userId: string }, { text: string }> {
+export class ${actorName} extends Actor<{ userId: string }, { text: string }> {
     @Persisted count = 0
     @Ephemeral cache = new Map<string, number>()
 
@@ -502,11 +503,11 @@ export class ${actorType} extends Actor<{ userId: string }, { text: string }> {
     return root
 }
 
-function invokeCommand(actorId: string, actorType: string) {
+function invokeCommand(actorId: string, actorName: string) {
     return {
         type: "invoke" as const,
         request_id: `request-${actorId}`,
-        actor: { ...actorIdentity, actor_type: actorType, actor_id: actorId },
+        actor: { ...actorIdentity, actor_name: actorName, actor_id: actorId },
         method: "increment",
         args: [],
         state: null

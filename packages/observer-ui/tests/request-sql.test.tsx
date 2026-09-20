@@ -7,18 +7,18 @@ import { historyPage, historyQuery } from "../src/request-sql.js"
 
 function database() {
     const db = new DatabaseSync(":memory:")
-    db.exec(`CREATE TABLE request_events (sequence INTEGER PRIMARY KEY, started_at_ms INTEGER, actor_type TEXT, actor_id TEXT, outcome TEXT, event TEXT);
+    db.exec(`CREATE TABLE request_events (sequence INTEGER PRIMARY KEY, started_at_ms INTEGER, actor_name TEXT, actor_id TEXT, outcome TEXT, event TEXT);
         CREATE TABLE request_history (generation TEXT, watermark INTEGER, pruned INTEGER, total INTEGER);
         INSERT INTO request_history VALUES ('one', 0, 0, 0);`)
     return db
 }
-function append(db: DatabaseSync, sequence: number, actorId = "lobby", actorType = "Room") {
+function append(db: DatabaseSync, sequence: number, actorId = "lobby", actorName = "Room") {
     const event = {
         eventId: `event-${sequence}`,
         requestId: `request-${sequence}`,
         hostId: "host",
         sessionId: "session",
-        actorType,
+        actorName,
         actorId,
         kind: "method",
         operation: "post",
@@ -28,7 +28,7 @@ function append(db: DatabaseSync, sequence: number, actorId = "lobby", actorType
         queueWaitMs: 10,
         outcome: "completed"
     }
-    db.prepare("INSERT INTO request_events VALUES (?, ?, ?, ?, ?, ?)").run(sequence, 1000, actorType, actorId, "completed", JSON.stringify(event))
+    db.prepare("INSERT INTO request_events VALUES (?, ?, ?, ?, ?, ?)").run(sequence, 1000, actorName, actorId, "completed", JSON.stringify(event))
     db.prepare("UPDATE request_history SET watermark = ?, total = total + 1").run(sequence)
 }
 function execute(db: DatabaseSync, query: ObserverQuery): ObserverQueryResult {
@@ -77,7 +77,7 @@ test("instance SQL separates identical IDs in different actor classes", () => {
         append(db, 1, "shared", "Room")
         append(db, 2, "shared", "Counter")
         append(db, 3, "elsewhere", "Room")
-        const result = historyPage(execute(db, historyQuery({ actorType: "Room", actorId: "shared" })))
+        const result = historyPage(execute(db, historyQuery({ actorName: "Room", actorId: "shared" })))
         assert.deepEqual(
             result.records.map(record => record.sequence),
             [1]

@@ -145,7 +145,7 @@ test("observer keeps the local UI available if browser launching fails", async t
 
 test("observer proxies actor inventory and hides upstream failures", async t => {
     let fail = false
-    const inventory = { actors: [{ actorType: "Room", live: 1, dormant: 2, unknown: 0 }] }
+    const inventory = { actors: [{ actorName: "Room", live: 1, dormant: 2, unknown: 0 }] }
     const observer = new Observer(
         {
             checkConnection: async () => {},

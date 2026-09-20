@@ -5,10 +5,10 @@ import { actors } from "../generated/index.js"
 
 const app = express()
 
-app.post("/api/socket/:actorType/:actorId", async (request, response) => {
-    const { actorType, actorId } = request.params
-    if (actorType !== "Workspace" && actorType !== "Document") return response.sendStatus(404)
-    response.set("Cache-Control", "no-store").json(await actors[actorType].prepareWebsocket({ actorId, metadata: null }))
+app.post("/api/socket/:actorName/:actorId", async (request, response) => {
+    const { actorName, actorId } = request.params
+    if (actorName !== "Workspace" && actorName !== "Document") return response.sendStatus(404)
+    response.set("Cache-Control", "no-store").json(await actors[actorName].prepareWebsocket({ actorId, metadata: null }))
 })
 
 const vite = await createServer({

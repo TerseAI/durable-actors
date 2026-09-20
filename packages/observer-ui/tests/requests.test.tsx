@@ -35,7 +35,7 @@ const page: RequestTracePage = {
             requestId: "request-one",
             hostId: "host-one",
             sessionId: "session-one",
-            actorType: "Room",
+            actorName: "Room",
             actorId: "lobby",
             kind: "method",
             operation: "post",
@@ -208,7 +208,7 @@ test("instance requests filter both class and ID in live and saved history", asy
                 ...page,
                 records: [
                     page.records[0]!,
-                    { ...page.records[0]!, sequence: 2, actorType: "Counter", operation: "wrong class" },
+                    { ...page.records[0]!, sequence: 2, actorName: "Counter", operation: "wrong class" },
                     { ...page.records[0]!, sequence: 3, actorId: "other", operation: "wrong instance" }
                 ]
             })
@@ -219,13 +219,13 @@ test("instance requests filter both class and ID in live and saved history", asy
             return sqlRows()
         }
     }
-    const view = render(<RequestObserver client={client} actor={{ actorType: "Room", actorId: "lobby" }} />)
+    const view = render(<RequestObserver client={client} actor={{ actorName: "Room", actorId: "lobby" }} />)
     await view.findByText("post")
     assert.equal(view.queryByText("wrong class"), null)
     assert.equal(view.queryByText("wrong instance"), null)
     fireEvent.click(view.getByRole("button", { name: "History" }))
     await view.findByRole("table", { name: "Saved requests" })
-    assert.match(queries[0]!.sql, /actor_type = \?/u)
+    assert.match(queries[0]!.sql, /actor_name = \?/u)
     assert.match(queries[0]!.sql, /actor_id = \?/u)
     assert.deepEqual(queries[0]!.params, ["Room", "lobby"])
     assert.equal(view.queryByLabelText("Actor ID"), null)

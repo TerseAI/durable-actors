@@ -6,7 +6,7 @@ fn replica_capabilities_bind_operation_expiry_and_stream() -> Result<()> {
     let grant = ReplicaGrant {
         stream: None,
         operation: "GET".into(),
-        object: "little-actors/v2/snapshots/aa/test/1.json".into(),
+        object: "little-actors/v3/snapshots/aa/test/1.json".into(),
         region: "us-east".into(),
         host_id: "replica".into(),
         archive_url: String::new(),
@@ -33,7 +33,7 @@ fn replica_capabilities_bind_operation_expiry_and_stream() -> Result<()> {
         ReplicaGrant {
             stream: Some(super::super::ReplicaStream {
                 prefix: "another-object".into(),
-                session: "little-actors/v2/hosts/host/sessions/one/".into(),
+                session: "little-actors/v3/hosts/host/sessions/one/".into(),
                 owner_epoch: 1,
                 base_version: 0,
             }),

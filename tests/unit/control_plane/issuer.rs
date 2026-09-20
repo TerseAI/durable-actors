@@ -10,7 +10,8 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
     let now = 1_700_000_000_000;
     let grant = || SocketGrant {
         actor: ActorKey {
-            actor_type: "Room".into(),
+            project_id: "default".into(),
+            actor_name: "Room".into(),
             actor_id: "lobby".into(),
         },
         region: "us-east".into(),
@@ -83,7 +84,8 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         Duration::from_secs(60),
     )?;
     let actor = crate::actor::ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "counter-1".into(),
     };
     let host_id = HostId::new("host.v3.revision-1.host-1");

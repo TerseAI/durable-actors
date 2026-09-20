@@ -39,6 +39,8 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
+    #[arg(long, env = "DURABLE_OBJECT_PROJECT_ID")]
+    pub project_id: String,
     #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
     pub api_key: Option<String>,
     #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
@@ -78,6 +80,7 @@ pub async fn serve_local(
     options: DevOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    super::admin::validate_component("project ID", &options.project_id, 64)?;
     let project = options
         .project
         .canonicalize()
@@ -121,7 +124,14 @@ pub async fn serve_local(
         .then(|| save_generated_api_key(&directory, &api_key))
         .transpose()?;
     let server = LocalServer::start(listener, routes, provider);
-    let ready = notify_launcher(&origin, &api_key, &storage.region, options.ready_fd);
+    println!("export DURABLE_OBJECT_PROJECT_ID={}", options.project_id);
+    let ready = notify_launcher(
+        &origin,
+        &api_key,
+        &storage.region,
+        &options.project_id,
+        options.ready_fd,
+    );
     if ready.is_ok() {
         if let Some(key_file) = key_file {
             let path = key_file.to_string_lossy().replace('\'', "'\\''");
@@ -310,6 +320,7 @@ async fn local_routes(
         Duration::from_secs(86_400),
     )?;
     let spec = HostLaunchSpec {
+        project_id: options.project_id.clone(),
         code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
@@ -351,9 +362,10 @@ async fn local_routes(
         service.changes.clone(),
     )
     .with_traces(service.traces.clone());
-    let public = public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin))
-        .merge(storage.runtime.clone().router());
+    let public =
+        public_api::local_router(service.clone(), admin.clone(), options.project_id.clone())
+            .merge(super::inspection::router(inspector, admin))
+            .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 
@@ -375,11 +387,17 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     )
 }
 
-fn notify_launcher(origin: &str, api_key: &str, region: &str, ready_fd: Option<i32>) -> Result<()> {
+fn notify_launcher(
+    origin: &str,
+    api_key: &str,
+    region: &str,
+    project_id: &str,
+    ready_fd: Option<i32>,
+) -> Result<()> {
     if let Some(fd) = ready_fd {
         // The launcher transfers ownership of this inherited readiness descriptor.
         let mut ready = unsafe { File::from_raw_fd(fd) };
-        let connection = serde_json::json!({ "pid": std::process::id(), "controlPlaneUrl": origin, "apiKey": api_key, "storageRegion": region });
+        let connection = serde_json::json!({ "projectId": project_id, "pid": std::process::id(), "controlPlaneUrl": origin, "apiKey": api_key, "storageRegion": region });
         serde_json::to_writer(&mut ready, &connection)?;
         ready.flush()?;
     }

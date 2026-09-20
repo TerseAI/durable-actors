@@ -77,9 +77,10 @@ impl RuntimeAccess {
         })
     }
 
-    pub async fn bootstrap(&self, region: &str) -> Result<String> {
+    pub async fn bootstrap(&self, project_id: &str, region: &str) -> Result<String> {
         let actor = ActorKey {
-            actor_type: "bootstrap".into(),
+            project_id: project_id.into(),
+            actor_name: "bootstrap".into(),
             actor_id: "bootstrap".into(),
         };
         let (token, replicas) = tokio::try_join!(self.issue(), self.fleet.ensure(&actor, region))?;

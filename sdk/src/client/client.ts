@@ -4,9 +4,9 @@ import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
 
 interface ActorClientTransport {
-    invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
-    connect(actorType: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
-    broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void>
+    invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    connect(actorName: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
+    broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void>
 }
 
 const scopedClients = new AsyncLocalStorage<ActorClientTransport>()

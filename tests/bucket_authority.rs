@@ -121,7 +121,8 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let PlacementClaim::Acquired(first) = runtime
@@ -228,7 +229,8 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
     let PlacementClaim::Acquired(placement) = runtime
@@ -435,7 +437,8 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         "http://control".into(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "race".into(),
     };
     let (first, second) = tokio::join!(
@@ -501,7 +504,8 @@ async fn grpc_replication_archival_and_takeover_run_without_postgres() -> Result
     });
     leases.register(&request("old")).await?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "http".into(),
     };
     let PlacementClaim::Acquired(first) = runtime
@@ -599,6 +603,15 @@ async fn grpc_replication_archival_and_takeover_run_without_postgres() -> Result
 
 #[tokio::test]
 async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership() -> Result<()> {
+    exercise_session_recovery(false).await
+}
+
+#[tokio::test]
+async fn same_named_actors_in_different_projects_recover_independent_state() -> Result<()> {
+    exercise_session_recovery(true).await
+}
+
+async fn exercise_session_recovery(separate_projects: bool) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let bucket = Arc::new(MemoryBucket::default());
     let clock = Arc::new(TestClock(AtomicU64::new(1000)));
@@ -642,11 +655,21 @@ async fn recovery_is_shared_by_the_session_and_retries_before_changing_ownership
     };
     let old = runtime()?;
     let first = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "first".into(),
     };
     let second = ActorKey {
-        actor_id: "second".into(),
+        project_id: if separate_projects {
+            "another-project".into()
+        } else {
+            first.project_id.clone()
+        },
+        actor_id: if separate_projects {
+            first.actor_id.clone()
+        } else {
+            "second".into()
+        },
         ..first.clone()
     };
     let mut placements = Vec::new();
@@ -781,7 +804,8 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         "http://control".into(),
     )?);
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "delayed".into(),
     };
     let PlacementClaim::Acquired(first) = runtime

@@ -8,7 +8,8 @@ async fn inventory_notifies_on_activation_metadata_and_disconnect() -> anyhow::R
     let registry = SocketRegistry::default();
     let mut changes = registry.inventory_changes();
     let actor = ActorKey {
-        actor_type: "Room".into(),
+        project_id: "default".into(),
+        actor_name: "Room".into(),
         actor_id: "one".into(),
     };
     let (sender, _receiver) = socket_channel();
@@ -81,7 +82,8 @@ async fn slow_consumers_close_without_blocking_actor_output() {
 async fn broadcast_matches_all_or_any_tags_and_preserves_exclusions() {
     let registry = SocketRegistry::default();
     let actor = ActorKey {
-        actor_type: "Files".into(),
+        project_id: "default".into(),
+        actor_name: "Files".into(),
         actor_id: "files".into(),
     };
     let mut receivers = Vec::new();
@@ -219,7 +221,8 @@ fn rejects_socket_effects_that_bypass_sdk_invariants() {
 async fn registry_retains_metadata_tags_and_outbound_messages() {
     let registry = SocketRegistry::default();
     let actor = ActorKey {
-        actor_type: "ChatRoom".into(),
+        project_id: "default".into(),
+        actor_name: "ChatRoom".into(),
         actor_id: "room-1".into(),
     };
     let (outbound, mut messages) = socket_channel();

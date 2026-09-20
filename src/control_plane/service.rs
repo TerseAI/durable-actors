@@ -107,8 +107,11 @@ impl ControlPlaneService {
         self.region.as_deref().unwrap_or(FALLBACK_REGION)
     }
 
-    pub(super) async fn runtime_deployment(&self) -> Result<Option<HostLaunchSpec>> {
-        self.registry.launch_spec().await
+    pub(super) async fn runtime_deployment(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<HostLaunchSpec>> {
+        self.registry.launch_spec(project_id).await
     }
 
     pub(super) async fn register_deployment(
@@ -117,7 +120,7 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
         contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
-        let previous = admin.current_deployment().await?;
+        let previous = admin.current_deployment(&spec.project_id).await?;
         spec.validate()?;
         admin.validate_contract_registration(spec, contract).await?;
         if let Some(previous) = previous
@@ -130,12 +133,16 @@ impl ControlPlaneService {
         Ok(changed)
     }
 
-    pub(super) async fn delete_deployment(&self, admin: &AdminService) -> Result<bool> {
-        let Some(previous) = admin.current_deployment().await? else {
+    pub(super) async fn delete_deployment(
+        &self,
+        admin: &AdminService,
+        project_id: &str,
+    ) -> Result<bool> {
+        let Some(previous) = admin.current_deployment(project_id).await? else {
             return Ok(false);
         };
         self.terminate_deployment_hosts(&previous).await?;
-        admin.remove_deployment().await?;
+        admin.remove_deployment(project_id).await?;
         self.changes.send_replace(());
         Ok(true)
     }
@@ -288,7 +295,7 @@ impl ControlPlaneService {
         }
         info!(
             event = "actor_socket_message_committed",
-            actor_type = %actor.actor_type,
+            actor_name = %actor.actor_name,
             actor_id = %actor.actor_id,
             connection_id,
             message_kind = match message {
@@ -501,7 +508,7 @@ impl ControlPlaneService {
             None => select_target_region(None, storage_region)?,
         };
         let spec = self
-            .runtime_deployment()
+            .runtime_deployment(&actor.project_id)
             .await?
             .context("project has no registered actor code")?;
         if let Some(timings) = timings.as_deref_mut() {
@@ -747,7 +754,7 @@ impl HostProvisioner for SandboxHostProvisioner {
         let started_at = Instant::now();
         let mut request = self.request(spec, region)?;
         if let Some(access) = &self.runtime_access {
-            request.runtime_config = Some(access.bootstrap(region).await?);
+            request.runtime_config = Some(access.bootstrap(&spec.project_id, region).await?);
         }
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,

@@ -100,7 +100,7 @@ test("connections validate both message directions while accepting the initial s
 
 test("connection metadata is validated before opening a transport", async () => {
     const client = new RemoteActorClient(
-        { apiKey: "key", controlPlaneUrl: "https://example.com" },
+        { projectId: "default", apiKey: "key", controlPlaneUrl: "https://example.com" },
         { connectWebSocket: async () => assert.fail("invalid metadata opened a socket") }
     )
     await assert.rejects(
@@ -129,6 +129,7 @@ async function connect(
     assert.ok(address && typeof address !== "string")
     const client = new RemoteActorClient(
         {
+            projectId: "default",
             apiKey: "key",
             controlPlaneUrl: `http://127.0.0.1:${address.port}`
         },

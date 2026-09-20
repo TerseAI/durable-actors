@@ -776,9 +776,9 @@ impl ActorInventoryReader for RuntimeStorage {
             }
             let (status, residents, sockets, queues) = &hosts[&record.owner];
             let row = actors
-                .entry(record.actor.actor_type.clone())
+                .entry(record.actor.actor_name.clone())
                 .or_insert_with(|| ActorInventory {
-                    actor_type: record.actor.actor_type.clone(),
+                    actor_name: record.actor.actor_name.clone(),
                     ..Default::default()
                 });
             let instance = actor_instance_overview(

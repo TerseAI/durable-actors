@@ -24,7 +24,7 @@ function validateContract(
     const validate = compiled.get(kind)!
     if (!validate(value))
         throw new ActorValidationError(
-            `${contract.actorType} ${kind.toLowerCase()} violates its socket contract: ${JSON.stringify(validate.errors)}`
+            `${contract.actorName} ${kind.toLowerCase()} violates its socket contract: ${JSON.stringify(validate.errors)}`
         )
 }
 

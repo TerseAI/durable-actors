@@ -154,7 +154,7 @@ export async function POST(request: Request) {
 
 `prepareWebsocket` returns `{ websocketUrl, key }`. The URL already includes the signed key and can be passed directly to `new WebSocket()`. The key grants socket access to one actor; it cannot invoke backend RPC methods or issue other keys. Metadata comes from your backend and is validated by the actor host.
 
-The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorType, actorId, metadata })` remains available for dynamic actor selection.
+The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorName, actorId, metadata })` remains available for dynamic actor selection.
 
 The frontend fetches your application endpoint and opens the returned URL:
 

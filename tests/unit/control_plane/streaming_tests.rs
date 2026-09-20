@@ -466,7 +466,7 @@ impl Stack {
     async fn grant(&self, metadata: serde_json::Value, lifetime: u64) -> Result<serde_json::Value> {
         reqwest::Client::new()
             .post(format!(
-                "{}/v1/actors/Counter/counter-1/connect",
+                "{}/v1/projects/default/actors/Counter/counter-1/connect",
                 self.gateway
             ))
             .bearer_auth("test-api-key")
@@ -489,7 +489,8 @@ impl Stack {
         let mut tasks = JoinSet::new();
         let issuer = test_issuer()?;
         let actor = ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "counter-1".into(),
         };
         let host_id = HostId::new("host.v3.revision.session");
@@ -500,6 +501,7 @@ impl Stack {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                project_id: "default".into(),
                 code_revision: "revision".into(),
                 image_ref: "test-image".into(),
                 working_directory: "/app".into(),
@@ -664,7 +666,7 @@ impl Stack {
     async fn connect(&self) -> Result<Socket> {
         let grant: serde_json::Value = reqwest::Client::new()
             .post(format!(
-                "{}/v1/actors/Counter/counter-1/connect",
+                "{}/v1/projects/default/actors/Counter/counter-1/connect",
                 self.gateway
             ))
             .bearer_auth("test-api-key")
@@ -868,7 +870,7 @@ async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> R
     let http = reqwest::Client::new();
     let target: serde_json::Value = http
         .post(format!(
-            "{}/v1/actors/Counter/counter-1/connect",
+            "{}/v1/projects/default/actors/Counter/counter-1/connect",
             stack.gateway
         ))
         .bearer_auth("test-api-key")
@@ -909,7 +911,8 @@ async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> R
         PublishSocketEffectsRequest {
             actor: Some(
                 crate::actor::ActorKey {
-                    actor_type: "Counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "Counter".into(),
                     actor_id: "another".into(),
                 }
                 .into(),
@@ -928,7 +931,7 @@ async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> R
     }
     assert_eq!(
         http.post(format!(
-            "{}/v1/actors/Counter/counter-1/socket-effects",
+            "{}/v1/projects/default/actors/Counter/counter-1/socket-effects",
             stack.gateway
         ))
         .bearer_auth("test-api-key")

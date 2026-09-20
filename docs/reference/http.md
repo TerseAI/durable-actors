@@ -28,16 +28,16 @@ Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. 
 | Read public actor contract     | `GET /v1/deployment/contract`                        | API key                       |
 | Remove deployment              | `DELETE /v1/deployment`                              | API key                       |
 | List saved actors              | `GET /v1/actors`                                     | API key                       |
-| Inspect actor metadata         | `GET /v1/actors/{actorType}/{actorId}`               | API key                       |
-| Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}?include=state` | API key                       |
-| Prepare a connection           | `POST /v1/actors/{actorType}/{actorId}/connect`      | API key                       |
+| Inspect actor metadata         | `GET /v1/actors/{actorName}/{actorId}`               | API key                       |
+| Inspect committed state        | `GET /v1/actors/{actorName}/{actorId}?include=state` | API key                       |
+| Prepare a connection           | `POST /v1/actors/{actorName}/{actorId}/connect`      | API key                       |
 | Read public signing keys       | `GET /.well-known/jwks.json`                         | None                          |
 | Check control-plane health     | `GET /healthz`                                       | None                          |
 | Connect from an app            | `GET /v1/socket` on the actor host                   | Signed URL; WebSocket upgrade |
 
 Call actor methods and send application broadcasts through the [TypeScript SDK](api.md). Management JSON request bodies are limited to 16 MiB; larger bodies receive `413`.
 
-Path parameters `actorType` and `actorId` follow the [actor identity limits](api.md#identity).
+Path parameters `actorName` and `actorId` follow the [actor identity limits](api.md#identity).
 
 ## Deployments
 
@@ -158,7 +158,7 @@ Optional query parameters:
 {
     "actors": [
         {
-            "actorType": "ChatRoom",
+            "actorName": "ChatRoom",
             "actorId": "lobby",
             "homeRegion": "north-america-east",
             "stateVersion": 3,
@@ -171,7 +171,7 @@ Optional query parameters:
 
 Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
 
-### GET /v1/actors/{actorType}/{actorId}
+### GET /v1/actors/{actorName}/{actorId}
 
 **Response:** `200 OK` with the same actor metadata fields as listing. Add `?include=state` to include `state`, containing all committed persisted fields, including internal fields. The `state` field is omitted by default. An existing placement without committed state has `stateVersion: 0` and `lastRequestId: null`; requesting state returns `state: null`.
 
@@ -185,7 +185,7 @@ The deployment router chooses and persists the nearest enabled region for a new 
 
 A control plane configured with `DURABLE_OBJECT_REGION` requires an explicit assignment matching its region. An existing actor keeps its persisted home: a conflicting assignment returns `409`. A failed provisioning attempt does not move it elsewhere. An unpinned local runtime may omit the assignment and defaults to `north-america-central` for new actors.
 
-### POST /v1/actors/{actorType}/{actorId}/connect
+### POST /v1/actors/{actorName}/{actorId}/connect
 
 Requires the API key. Select `transport: "grpc"` or `transport: "websocket"`. Unknown fields and fields belonging to the other transport are rejected. Setup can provision and activate an actor host.
 
@@ -241,7 +241,7 @@ The SDK requests `/connect` with `transport: "websocket"` and `backend: true` an
 Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
-POST /v1/actors/{actorType}/{actorId}/connect
+POST /v1/actors/{actorName}/{actorId}/connect
 Authorization: Bearer <api-key>
 Content-Type: application/json
 ```
@@ -309,7 +309,7 @@ After successful actor handling, the callback receives:
 ```json
 {
     "eventId": "<event-id>",
-    "actorType": "ChatRoom",
+    "actorName": "ChatRoom",
     "actorId": "lobby",
     "triggerId": "chat",
     "connectionId": "<connection-id>",
@@ -320,7 +320,7 @@ After successful actor handling, the callback receives:
 **Request fields** (all present)
 
 - `eventId` (`string`) — Unique event ID.
-- `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
+- `actorName` (`string`), `actorId` (`string`) — Actor that handled the message.
 - `triggerId` (`string | null`) — External route's trigger ID, or `null` for a backend connection.
 - `connectionId` (`string`) — Connection that sent the message.
 - `message` (`object`) — The transport envelope `{"type":"text","data":"<JSON text>"}`. Parse `message.data` to read the application value. The transport also defines a binary envelope, but the TypeScript actor runtime rejects binary application messages.

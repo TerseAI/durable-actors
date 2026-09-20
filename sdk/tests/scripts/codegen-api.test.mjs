@@ -12,7 +12,7 @@ test("public codegen returns the same typed artifacts as file generation", async
     const contracts = [
         {
             version: 1,
-            actorType: "Room",
+            actorName: "Room",
             emittable: [],
             schema: {
                 definitions: {
@@ -52,10 +52,10 @@ test("public contract generation writes one backend module for actors and ActorP
         version: 1,
         actors: [
             {
-                actorType: "Room",
+                actorName: "Room",
                 socket: {
                     version: 1,
-                    actorType: "Room",
+                    actorName: "Room",
                     emittable: [],
                     schema: {
                         definitions: {

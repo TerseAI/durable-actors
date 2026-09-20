@@ -2,7 +2,7 @@ use crate::{actor::ActorKey, actor_state::ActorStorageKey, host::HostId};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
-pub const ROOT: &str = "little-actors/v2/";
+pub const ROOT: &str = "little-actors/v3/";
 
 pub fn snapshots(actor: &ActorKey) -> Result<String> {
     actor.validate()?;
@@ -29,12 +29,13 @@ pub fn actor_from_snapshot(object: &str) -> Result<ActorKey> {
         .split('/')
         .collect();
     ensure!(
-        parts.len() == 6 && parts[0] == "snapshots",
+        parts.len() == 7 && parts[0] == "snapshots",
         "invalid snapshot path"
     );
     let actor = ActorKey {
-        actor_type: decode(parts[2])?,
-        actor_id: decode(parts[3])?,
+        project_id: decode(parts[2])?,
+        actor_name: decode(parts[3])?,
+        actor_id: decode(parts[4])?,
     };
     actor.validate()?;
     ensure!(
@@ -47,14 +48,15 @@ pub fn actor_from_snapshot(object: &str) -> Result<ActorKey> {
 pub fn actor_from_key(key: &ActorStorageKey) -> Result<ActorKey> {
     let parts: Vec<_> = key
         .as_str()
-        .strip_prefix("object.v3.")
+        .strip_prefix("object.v4.")
         .context("invalid actor key")?
         .split(':')
         .collect();
-    ensure!(parts.len() == 2, "invalid actor identity");
+    ensure!(parts.len() == 3, "invalid actor identity");
     let actor = ActorKey {
-        actor_type: parts[0].into(),
-        actor_id: parts[1].into(),
+        project_id: parts[0].into(),
+        actor_name: parts[1].into(),
+        actor_id: parts[2].into(),
     };
     actor.validate()?;
     Ok(actor)
@@ -66,9 +68,10 @@ fn actor_path(actor: &ActorKey) -> String {
         actor.storage_key().as_str().as_bytes(),
     );
     format!(
-        "{:02x}/{}/{}",
+        "{:02x}/{}/{}/{}",
         hash.as_ref()[0],
-        component(&actor.actor_type),
+        component(&actor.project_id),
+        component(&actor.actor_name),
         component(&actor.actor_id)
     )
 }

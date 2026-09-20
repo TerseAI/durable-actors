@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::{actor::ActorSocketEffect, actor_state::ActorStorageKey};
 
-const MAX_ACTOR_TYPE_BYTES: usize = 48;
+const MAX_ACTOR_NAME_BYTES: usize = 48;
 const MAX_ACTOR_ID_BYTES: usize = 128;
 const MAX_METHOD_BYTES: usize = 128;
 
@@ -12,20 +12,25 @@ const MAX_METHOD_BYTES: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActorKey {
-    pub actor_type: String,
+    pub project_id: String,
+    pub actor_name: String,
     pub actor_id: String,
 }
 
 impl ActorKey {
     pub fn validate(&self) -> Result<()> {
-        validate_component("actor type", &self.actor_type, MAX_ACTOR_TYPE_BYTES)?;
+        validate_component("project ID", &self.project_id, 64)?;
+        validate_component("actor name", &self.actor_name, MAX_ACTOR_NAME_BYTES)?;
         validate_component("actor ID", &self.actor_id, MAX_ACTOR_ID_BYTES)?;
         self.storage_key().validate()
     }
 
     /// Stable, readable identity used for coordination records.
     pub fn storage_key(&self) -> ActorStorageKey {
-        ActorStorageKey::new(format!("object.v3.{}:{}", self.actor_type, self.actor_id))
+        ActorStorageKey::new(format!(
+            "object.v4.{}:{}:{}",
+            self.project_id, self.actor_name, self.actor_id
+        ))
     }
 }
 

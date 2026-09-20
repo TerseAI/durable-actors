@@ -8,10 +8,10 @@ async fn sql_supports_bound_filters_and_aggregations() -> Result<()> {
     store
         .append(&[super::tests::event("one"), super::tests::event("two")])
         .await?;
-    let result = store.query(&SqlQuery { sql: "SELECT actor_type, COUNT(*) AS total FROM request_events WHERE actor_id = ? GROUP BY actor_type".into(), params: vec![json!("one")] }).await?;
+    let result = store.query(&SqlQuery { sql: "SELECT actor_name, COUNT(*) AS total FROM request_events WHERE actor_id = ? GROUP BY actor_name".into(), params: vec![json!("one")] }).await?;
     assert_eq!(
         result.rows,
-        vec![json!({"actor_type":"Counter", "total":2})]
+        vec![json!({"actor_name":"Counter", "total":2})]
     );
     let result = store
         .query(&SqlQuery {
@@ -121,13 +121,13 @@ async fn existing_version_two_history_gains_sql_views_without_losing_events() ->
     let restored = SqliteTracePersistence::new(path);
     let result = restored
         .query(&SqlQuery {
-            sql: "SELECT event_id, actor_type FROM request_events".into(),
+            sql: "SELECT event_id, actor_name FROM request_events".into(),
             params: vec![],
         })
         .await?;
     assert_eq!(
         result.rows,
-        vec![json!({"event_id":"saved","actor_type":"Counter"})]
+        vec![json!({"event_id":"saved","actor_name":"Counter"})]
     );
     Ok(())
 }

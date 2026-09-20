@@ -14,7 +14,7 @@ afterEach(cleanup)
 const inventory = {
     actors: [
         {
-            actorType: "Room",
+            actorName: "Room",
             live: 2,
             dormant: 1,
             unknown: 1,
@@ -32,7 +32,7 @@ const inventory = {
                 { actorId: "waiting", status: "unknown" as const, connections: [{ id: "socket-d", metadata: { userId: "linus" } }] }
             ]
         },
-        { actorType: "Counter", live: 0, dormant: 0, unknown: 0, instances: [] }
+        { actorName: "Counter", live: 0, dormant: 0, unknown: 0, instances: [] }
     ]
 }
 
@@ -92,7 +92,7 @@ test("opening an actor replaces the inventory with a dedicated page and returns 
     assert.equal(document.activeElement, view.getByRole("heading", { name: "Actors", level: 1 }))
 })
 
-test("a deployed actor type with no instances has an instructive instance empty state", async () => {
+test("a deployed actor name with no instances has an instructive instance empty state", async () => {
     const client = { checkConnection: async () => {}, listActors: async () => inventory }
     const view = render(<ActorObserver client={client} />)
     fireEvent.click(await view.findByRole("button", { name: "Counter" }))
@@ -164,10 +164,10 @@ test("the inventory adapter uses the configured backend and validates counts", a
     assert.deepEqual(await client.listActors(controller.signal), inventory)
     for (const value of [
         {},
-        { ...inventory, actors: [{ actorType: "Room", live: -1, dormant: 0, unknown: 0, instances: [] }] },
-        { ...inventory, actors: [{ actorType: "Room", live: 1.5, dormant: 0, unknown: 0, instances: [] }] },
-        { ...inventory, actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "missing", connections: [] }] }] },
-        { ...inventory, actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "live", connections: [{ id: 1, metadata: {} }] }] }] }
+        { ...inventory, actors: [{ actorName: "Room", live: -1, dormant: 0, unknown: 0, instances: [] }] },
+        { ...inventory, actors: [{ actorName: "Room", live: 1.5, dormant: 0, unknown: 0, instances: [] }] },
+        { ...inventory, actors: [{ actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "missing", connections: [] }] }] },
+        { ...inventory, actors: [{ actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "one", status: "live", connections: [{ id: 1, metadata: {} }] }] }] }
     ]) {
         await assert.rejects(new HttpObserverClient("/api/observe", async () => Response.json(value)).listActors())
     }
@@ -341,7 +341,7 @@ test("an initial actor opens its page with class-specific totals and handles rem
             await new Promise<void>(() => {})
         }
     }
-    const view = render(<ActorObserver client={client} initialActorType="Counter" />)
+    const view = render(<ActorObserver client={client} initialActorName="Counter" />)
     await view.findByRole("heading", { name: "Counter", level: 1 })
     assert.equal(view.getByLabelText("Total instances").textContent, "0")
     assert.equal(view.queryByRole("table", { name: "Actor instance counts" }), null)
@@ -369,7 +369,7 @@ test("live actors and instances come first and the entire row opens inspection",
 
 test("instance queues show operation bubbles and update while inspecting an instance", async () => {
     const waiting = ["sendMessage", "save", "sendMessage", "close"].map((operation, i) => ({ id: String(i), operation }))
-    const current = { actors: [{ actorType: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live" as const, connections: [], waiting }] }] }
+    const current = { actors: [{ actorName: "Room", live: 1, dormant: 0, unknown: 0, instances: [{ actorId: "general", status: "live" as const, connections: [], waiting }] }] }
     let update: (inventory: typeof current) => void = () => {}
     const client = {
         checkConnection: async () => {},
@@ -380,7 +380,7 @@ test("instance queues show operation bubbles and update while inspecting an inst
             await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
         }
     }
-    const view = render(<ActorObserver client={client} initialActorType="Room" />)
+    const view = render(<ActorObserver client={client} initialActorName="Room" />)
     await view.findByRole("button", { name: "general" })
     assert.ok(view.getByRole("columnheader", { name: "Waiting" }))
     assert.equal(view.getAllByText("sendMessage").length, 2)

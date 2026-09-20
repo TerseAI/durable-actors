@@ -72,21 +72,24 @@ impl ReplicaProvisioner for ModalReplicaFleet {
 
     async fn ensure(&self, actor: &ActorKey, region: &str) -> Result<Vec<ReplicaTarget>> {
         self.cache
-            .try_get_with(region.into(), self.provision(actor))
+            .try_get_with(
+                format!("{}:{region}", actor.project_id),
+                self.provision(actor),
+            )
             .await
             .map_err(|error| anyhow::anyhow!("replica fleet unavailable: {error}"))
     }
 }
 
 impl ModalReplicaFleet {
-    async fn provision(&self, _actor: &ActorKey) -> Result<Vec<ReplicaTarget>> {
+    async fn provision(&self, actor: &ActorKey) -> Result<Vec<ReplicaTarget>> {
         if self.replica_regions.is_empty() {
             return Ok(Vec::new());
         }
         let destinations = self.replica_regions.clone();
         let spec = self
             .registry
-            .launch_spec()
+            .launch_spec(&actor.project_id)
             .await?
             .context("no actor image is registered")?;
         let mut pending = JoinSet::new();

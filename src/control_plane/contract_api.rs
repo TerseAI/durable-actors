@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -9,17 +9,21 @@ use serde::Deserialize;
 
 use super::{
     admin::{AdminService, validate_component},
-    public_api::{ApiError, authorized_admin},
+    public_api::{ApiError, ProjectPath, authorized_admin, project_id},
 };
 
 pub(super) fn router(admin: AdminService) -> Router {
     Router::new()
-        .route("/v1/deployment/contract", get(get_contract))
+        .route(
+            "/v1/projects/{project_id}/deployment/contract",
+            get(get_contract),
+        )
         .with_state(admin)
 }
 
 async fn get_contract(
     State(admin): State<AdminService>,
+    path: Path<ProjectPath>,
     query: Result<Query<ContractQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -29,7 +33,7 @@ async fn get_contract(
         validate_component("code revision", revision, 128).map_err(ApiError::bad_request)?;
     }
     let contract = admin
-        .deployment_contract(query.revision.as_deref())
+        .deployment_contract(&project_id(path)?, query.revision.as_deref())
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| {

@@ -35,6 +35,7 @@ test("actor calls read environment settings lazily without a setup function", ()
             for (const key of ["DURABLE_OBJECT_API_KEY", "DURABLE_OBJECT_HOME_REGION", "DURABLE_OBJECT_CONTROL_PLANE_URL"]) delete process.env[key];
             const { Actor, ActorInvocationError } = await import(${JSON.stringify(entrypoint)});
             Object.assign(process.env, {
+                DURABLE_OBJECT_PROJECT_ID: "default",
                 DURABLE_OBJECT_API_KEY: "backend-key",
                 DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
             });
@@ -49,8 +50,8 @@ test("actor calls read environment settings lazily without a setup function", ()
             await assert.rejects(counter.increment(), error => error instanceof ActorInvocationError && error.code === "unauthenticated");
             await assert.rejects(counter.broadcast("hello"), error => error instanceof ActorInvocationError && error.code === "unauthenticated");
             assert.deepEqual(requests, [
-                "https://control.example.com/v1/actors/Counter/one/connect",
-                "https://control.example.com/v1/actors/Counter/one/connect"
+                "https://control.example.com/v1/projects/default/actors/Counter/one/connect",
+                "https://control.example.com/v1/projects/default/actors/Counter/one/connect"
             ]);
         `
         ])

@@ -16,7 +16,7 @@ async function generateClient(
     for (const [file, contents] of artifacts) await writeFile(path.join(directory, file), contents)
     for (const file of ["frontend.ts", "backend.ts", "proxy.ts", "socket.ts", "rpc.ts"])
         await rm(path.join(directory, file), { force: true })
-    for (const { actorType } of contracts)
+    for (const { actorName } of contracts)
         for (const suffix of [
             "actor.ts",
             "frontend.ts",
@@ -29,7 +29,7 @@ async function generateClient(
             "proxy-validators.js",
             "proxy-validators.d.ts"
         ])
-            await rm(path.join(directory, `${actorType}.${suffix}`), { force: true })
+            await rm(path.join(directory, `${actorName}.${suffix}`), { force: true })
 }
 
 export { generateClient }

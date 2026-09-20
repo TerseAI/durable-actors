@@ -27,7 +27,7 @@ test("actor references broadcast without invoking a customer actor method", asyn
     assert.deepEqual(broadcasts, [
         {
             requestId: "request-1",
-            actorType: "ChatRoom",
+            actorName: "ChatRoom",
             actorId: "room-1",
             message: { type: "text", data: JSON.stringify({ text: "hello" }) }
         }

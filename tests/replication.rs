@@ -311,7 +311,7 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             .await
     });
     let object =
-        "little-actors/v2/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
+        "little-actors/v3/snapshots/01/0123456789abcdef0123456789abcdef/Counter/one/1.json";
     let grant = ReplicaGrant {
         stream: None,
         operation: "PUT".into(),

@@ -49,7 +49,8 @@ impl RuntimeStorage {
             return Ok(session);
         }
         let actor = ActorKey {
-            actor_type: "session".into(),
+            project_id: "internal-replication".into(),
+            actor_name: "session".into(),
             actor_id: "replication".into(),
         };
         let replicas = match tokio::time::timeout(

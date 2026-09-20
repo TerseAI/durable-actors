@@ -135,7 +135,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
         session_id: "session".into(),
         trace: RequestTrace {
             request_id: "same-request".into(),
-            actor_type: "Counter".into(),
+            actor_name: "Counter".into(),
             actor_id: "one".into(),
             kind: RequestKind::Method,
             operation: "increment".into(),

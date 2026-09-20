@@ -37,6 +37,8 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
             "--api-key",
             "test-key",
         ])
+        .arg("--project-id")
+        .arg("default")
         .arg("--project")
         .arg(project.path())
         .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
@@ -132,6 +134,31 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before);
         assert.equal(await client.invoke('Counter', 'one', 'increment', []), before + 1);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
+        const origin = process.env.DURABLE_OBJECT_CONTROL_PLANE_URL;
+        const apiKey = process.env.DURABLE_OBJECT_API_KEY;
+        const workingDirectory = (await import('node:url')).fileURLToPath(new URL('.', import.meta.url));
+        for (const [projectId, increment] of [['team-a', 1], ['team-b', 2]]) {{
+            const response = await fetch(`${{origin}}/v1/projects/${{projectId}}/deployment`, {{
+                method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
+                body: JSON.stringify({{ codeRevision: 'same-revision', imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+            }});
+            assert.equal(response.status, 200, await response.text());
+            const scoped = new RemoteActorClient({{ projectId, controlPlaneUrl: origin, apiKey }});
+            assert.equal(await scoped.invoke('Counter', 'one', 'read', []), before * increment);
+            for (let i = 0; i < increment; i++) await scoped.invoke('Counter', 'one', 'increment', []);
+            assert.equal(await scoped.invoke('Counter', 'one', 'read', []), (before + 1) * increment);
+        }}
+        assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
+        const response = await fetch(`${{origin}}/v1/actors/Counter/one/connect`, {{
+            method: 'POST', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
+            body: JSON.stringify({{ transport: 'websocket', metadata: null }})
+        }});
+        const grant = await response.json();
+        assert.equal(response.status, 200, JSON.stringify(grant));
+        const ticket = new URL(grant.websocketUrl).searchParams.get('key');
+        const claims = JSON.parse(Buffer.from(ticket.split('.')[1], 'base64url'));
+        assert.equal(claims.actor.project_id, 'default');
+
     "#,
             serde_json::to_string(&sdk.join("dist/client/remoteClient.js"))?
         ),
@@ -147,6 +174,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             .env("DURABLE_OBJECT_PORT", "0")
             .env("DURABLE_OBJECT_DATA_DIR", "state")
             .env("DURABLE_OBJECT_STORAGE", "local")
+            .env("DURABLE_OBJECT_PROJECT_ID", "default")
             .env("DURABLE_OBJECT_API_KEY", "local-test-key")
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
@@ -163,6 +191,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
                 .arg(&script)
                 .arg(before.to_string())
                 .env("DURABLE_OBJECT_CONTROL_PLANE_URL", origin)
+                .env("DURABLE_OBJECT_PROJECT_ID", "default")
                 .env("DURABLE_OBJECT_API_KEY", "local-test-key")
                 .env("DURABLE_OBJECT_TELEMETRY", "0")
                 .kill_on_drop(true)
@@ -182,7 +211,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
     assert!(
         shell_directory
             .path()
-            .join("state/objects/little-actors/v2")
+            .join("state/objects/little-actors/v3")
             .is_dir()
     );
     Ok(())

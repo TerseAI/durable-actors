@@ -42,7 +42,7 @@ test("public contracts survive JSON transport without actor source or dependency
     assert.deepEqual(JSON.parse(serialized), contract)
     assert.equal(contract.version, 1)
     const [actor] = contract.actors
-    assert.equal(actor.actorType, "Room")
+    assert.equal(actor.actorName, "Room")
     assert.deepEqual(
         actor.rpc.methods.map(method => method.name),
         ["clear", "send"]
@@ -113,7 +113,7 @@ test("extracts named re-exports and orders actors and methods deterministically"
     await writeFile(entrypoint, 'export { Alpha, Zebra } from "./actors.js"')
     assert.deepEqual(compiler.compileContract(entrypoint), first)
     assert.deepEqual(
-        first.actors.map(actor => actor.actorType),
+        first.actors.map(actor => actor.actorName),
         ["Alpha", "Zebra"]
     )
     assert.deepEqual(
