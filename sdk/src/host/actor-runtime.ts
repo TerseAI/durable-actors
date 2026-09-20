@@ -125,7 +125,7 @@ class ActorRuntime {
             return {
                 type: "websocket_handled",
                 state,
-                effects: socketEffects(command, publicState(state, this.definition.state), effects)
+                effects: socketEffects(command, state, effects, this.definition.state)
             }
         } catch (error) {
             this.createInstance(command.actor, before)
@@ -173,15 +173,20 @@ class ActorRuntime {
 function socketEffects(
     command: WebSocketEventCommand,
     state: JsonObject,
-    effects: readonly SocketEffect[]
+    effects: readonly SocketEffect[],
+    schema: ActorSchema
 ): readonly SocketEffect[] {
     if (command.event.type !== "connect" || connectionWasRejected(command.event.connection.id, effects)) return effects
+    const fields = emittableFields(schema)
+    if (fields.length === 0) return effects
     return [
         ...effects,
         {
             type: "state_snapshot",
             connection_id: command.event.connection.id,
-            state
+            state: Object.fromEntries(
+                fields.filter(field => Object.hasOwn(state, field.name)).map(field => [field.name, state[field.name]])
+            )
         }
     ]
 }
@@ -201,14 +206,10 @@ function publicState(state: JsonObject, schema: ActorSchema): JsonObject {
 }
 
 function stateUpdates(before: JsonObject, after: JsonObject, schema: ActorSchema, except?: string): SocketEffect[] {
-    const changed = schema.fields.filter(
+    const changed = emittableFields(schema).filter(
         field =>
-            field.emittable &&
-            !field.visibility &&
-            !field.private &&
-            field.persistence === Persistence.Persisted &&
-            (Object.hasOwn(before, field.name) !== Object.hasOwn(after, field.name) ||
-                !isDeepStrictEqual(before[field.name], after[field.name]))
+            Object.hasOwn(before, field.name) !== Object.hasOwn(after, field.name) ||
+            !isDeepStrictEqual(before[field.name], after[field.name])
     )
     if (changed.length === 0) return []
     return [
@@ -221,6 +222,12 @@ function stateUpdates(before: JsonObject, after: JsonObject, schema: ActorSchema
             ...(except === undefined ? {} : { except_connection_ids: [except] })
         }
     ]
+}
+
+function emittableFields(schema: ActorSchema) {
+    return schema.fields.filter(
+        field => field.emittable && !field.visibility && !field.private && field.persistence === Persistence.Persisted
+    )
 }
 
 function connectionWasRejected(connectionId: string, effects: readonly SocketEffect[]): boolean {

@@ -466,7 +466,7 @@ test("Actor.get connects with typed metadata", async () => {
     ])
 })
 
-test("sends durable actor properties when a connection has no onConnect hook", async () => {
+test("keeps persisted fields off the socket unless they are emittable", async () => {
     const runtime = new ActorRuntime(counterDefinition)
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
@@ -482,13 +482,7 @@ test("sends durable actor properties when a connection has no onConnect hook", a
         {
             type: "websocket_handled",
             state: { count: 0 },
-            effects: [
-                {
-                    type: "state_snapshot",
-                    connection_id: "connection-1",
-                    state: { count: 0 }
-                }
-            ]
+            effects: []
         }
     )
 })
@@ -539,11 +533,6 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
                     type: "send",
                     connection_id: "connection-1",
                     message: { type: "text", data: JSON.stringify({ text: "ready" }) }
-                },
-                {
-                    type: "state_snapshot",
-                    connection_id: "connection-1",
-                    state: {}
                 }
             ]
         }

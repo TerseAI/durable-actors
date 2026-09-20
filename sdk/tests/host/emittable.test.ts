@@ -43,7 +43,7 @@ const fields = [
 const definition = registerActorClass(ObservableRoom, { actorName: "ObservableRoom", fields })
 const actor = { project_id: "default", actor_name: "ObservableRoom", actor_id: "room" }
 
-test("initial snapshots expose public persisted fields while still saving private state", async () => {
+test("initial snapshots expose only emittable fields while still saving all persisted state", async () => {
     const runtime = new ActorRuntime(definition)
     const connection = { id: "connection", metadata: {}, tags: [] }
     const reply = await runtime.handle({
@@ -67,7 +67,7 @@ test("initial snapshots expose public persisted fields while still saving privat
         {
             type: "state_snapshot",
             connection_id: "connection",
-            state: { messages: [], title: "Room", status: "online" }
+            state: { messages: [], status: "online" }
         }
     ])
 })

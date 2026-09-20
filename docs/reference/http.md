@@ -30,7 +30,7 @@ Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. 
 | List saved actors              | `GET /v1/actors`                                     | API key                       |
 | Inspect actor metadata         | `GET /v1/actors/{actorName}/{actorId}`               | API key                       |
 | Inspect committed state        | `GET /v1/actors/{actorName}/{actorId}?include=state` | API key                       |
-| Prepare a connection           | `POST /v1/actors/{actorName}/{actorId}/connect`      | API key                       |
+| Prepare a connection           | `POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect`      | API key                       |
 | Read public signing keys       | `GET /.well-known/jwks.json`                         | None                          |
 | Check control-plane health     | `GET /healthz`                                       | None                          |
 | Connect from an app            | `GET /v1/socket` on the actor host                   | Signed URL; WebSocket upgrade |
@@ -185,7 +185,7 @@ The deployment router chooses and persists the nearest enabled region for a new 
 
 A control plane configured with `DURABLE_OBJECT_REGION` requires an explicit assignment matching its region. An existing actor keeps its persisted home: a conflicting assignment returns `409`. A failed provisioning attempt does not move it elsewhere. An unpinned local runtime may omit the assignment and defaults to `north-america-central` for new actors.
 
-### POST /v1/actors/{actorName}/{actorId}/connect
+### POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 
 Requires the API key. Select `transport: "grpc"` or `transport: "websocket"`. Unknown fields and fields belonging to the other transport are rejected. Setup can provision and activate an actor host.
 
@@ -232,16 +232,12 @@ Socket effects go directly to the owning host and are checked against its actor,
 
 ## Direct WebSocket connections
 
-### Backend connections
-
-The SDK requests `/connect` with `transport: "websocket"` and `backend: true` and opens the returned host URL. Within 10 seconds, it sends `{"type":"initialize","metadata":{}}`. Backend connections receive automatic persisted state updates. Initialization metadata is limited to 64 KiB. Application messages then travel as JSON text frames directly to the actor host.
-
-### External connections
+### Browser connections
 
 Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
-POST /v1/actors/{actorName}/{actorId}/connect
+POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 Authorization: Bearer <api-key>
 Content-Type: application/json
 ```
@@ -250,7 +246,7 @@ Content-Type: application/json
 { "transport": "websocket", "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Grants require the backend API key. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
+Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_OBJECT_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
 
 ```json
 {
@@ -262,7 +258,7 @@ Grants require the backend API key. Your application proxy authenticates the cus
 }
 ```
 
-The URL comes from the owning actor host's provider; local development returns a local host URL without a Modal token. Preserve the whole URL. Its signed key binds one actor to its host, session, and ownership epoch; it does not authorize backend RPCs or administration. Open the URL before `connectByMs` (normally within 60 seconds). `authorizedUntilMs` is the connection authorization deadline. Both are Unix timestamps in milliseconds. The URL and both tokens are credentials; omit them from access logs.
+The URL comes from the owning actor host's provider; local development returns a local host URL without a Modal token. Preserve the whole URL. Its signed key binds the project ID, actor name, and actor ID to the owning host, session, and ownership epoch; it does not authorize backend RPCs or administration. Open the URL before `connectByMs` (normally within 60 seconds). `authorizedUntilMs` is the connection authorization deadline. Both are Unix timestamps in milliseconds. The URL and both tokens are credentials; omit them from access logs.
 
 Pass the URL directly to a native WebSocket:
 
@@ -274,7 +270,7 @@ socket.onmessage = event => console.log(JSON.parse(event.data))
 
 The actor host verifies the key and host binding before upgrading. Missing, invalid, expired, or stale host-bound keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
 
-Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Actors send initial data explicitly from `onConnect`, and call `socket.send()` or `this.broadcast()` for subsequent messages. Signed browser connections do not receive automatic state snapshots or updates.
+Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Public `@Persisted @Emittable` fields synchronize automatically: a connection receives `{"type":"state","state":{"count":0},"version":1}`, then committed changes such as `{"type":"state_update","changes":{"count":1},"removed":[],"version":2}`. Apply `changes` and delete fields listed in `removed`. Private, protected, and non-emittable fields never enter these messages. Actors without emittable fields send no automatic state frames. Explicit messages from `socket.send()` and `this.broadcast()` share the connection; `state` and `state_update` are reserved message types.
 
 Authorization expires even while idle or running a handler; the host closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
 

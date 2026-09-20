@@ -5,10 +5,32 @@ import { SocketProxy } from "../src/proxy.js"
 
 const actors = { Room: {} }
 
+test("socket grants target the configured project as well as the actor", async () => {
+    for (const projectId of ["team-a", "team-b"]) {
+        const options = { projectId, controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
+        const proxy = new SocketProxy(actors, options, {
+            fetch: async url => {
+                assert.equal(
+                    String(url),
+                    `https://actors.example.com/v1/projects/${projectId}/actors/Room/shared/connect`
+                )
+                return Response.json({
+                    websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
+                    transport: "websocket",
+                    homeRegion: "us-east",
+                    connectByMs: 1000,
+                    authorizedUntilMs: 900000
+                })
+            }
+        })
+        await proxy.handle({ actorName: "Room", actorId: "shared", metadata: {} })
+    }
+})
+
 test("socket setup accepts an explicit home region and validates its timeout", async () => {
     const proxy = new SocketProxy(
         actors,
-        { apiKey: "secret", setupTimeoutMs: 180000 },
+        { projectId: "default", apiKey: "secret", setupTimeoutMs: 180000 },
         {
             fetch: async (_url, init) => {
                 assert.equal(JSON.parse(init!.body as string).homeRegion, "north-america-west")
@@ -29,14 +51,17 @@ test("socket setup accepts an explicit home region and validates its timeout", a
         homeRegion: "north-america-west"
     })
     assert.equal(new URL(grant.websocketUrl).searchParams.get("_modal_connect_token"), "modal")
-    assert.throws(() => new SocketProxy(actors, { apiKey: "secret", setupTimeoutMs: 0 }), /timeout/i)
+    assert.throws(
+        () => new SocketProxy(actors, { projectId: "default", apiKey: "secret", setupTimeoutMs: 0 }),
+        /timeout/i
+    )
 })
 
 test("proxy issues socket authorization using only server-selected target and metadata", async () => {
     const requests: { url: string; headers: Headers; body: unknown }[] = []
     const proxy = new SocketProxy(
         actors,
-        { controlPlaneUrl: "https://actors.example.com", apiKey: "backend-secret" },
+        { projectId: "default", controlPlaneUrl: "https://actors.example.com", apiKey: "backend-secret" },
         {
             fetch: async (url, init) => {
                 requests.push({
@@ -67,7 +92,7 @@ test("proxy issues socket authorization using only server-selected target and me
         authorizedUntilMs: 900000
     })
     assert.equal(requests[0]!.headers.get("authorization"), "Bearer backend-secret")
-    assert.equal(requests[0]!.url, "https://actors.example.com/v1/actors/Room/lobby/connect")
+    assert.equal(requests[0]!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/connect")
     assert.deepEqual(requests[0]!.body, {
         transport: "websocket",
         metadata: { userId: "trusted" },
@@ -79,7 +104,7 @@ test("proxy issues socket authorization using only server-selected target and me
 test("proxy requires JSON metadata and a backend API key", async () => {
     const proxy = new SocketProxy(
         actors,
-        { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" },
+        { projectId: "default", controlPlaneUrl: "https://actors.example.com", apiKey: "secret" },
         {
             fetch: async () => assert.fail("invalid request reached issuance")
         }
@@ -89,7 +114,12 @@ test("proxy requires JSON metadata and a backend API key", async () => {
         /JSON/
     )
     assert.throws(
-        () => new SocketProxy(actors, { controlPlaneUrl: "https://actors.example.com", apiKey: "" }),
+        () =>
+            new SocketProxy(actors, {
+                projectId: "default",
+                controlPlaneUrl: "https://actors.example.com",
+                apiKey: ""
+            }),
         /API key/
     )
 })

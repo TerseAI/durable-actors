@@ -376,13 +376,7 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
         {
             type: "websocket_handled",
             state: { count: 1 },
-            effects: [
-                {
-                    type: "state_snapshot",
-                    connection_id: "socket-1",
-                    state: { count: 1 }
-                }
-            ]
+            effects: []
         }
     )
     assert.deepEqual(runtime.activeActors(), [actorIdentity])

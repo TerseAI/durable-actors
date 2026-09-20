@@ -21,7 +21,7 @@ test(
                 assert.equal(binary, false)
                 const value: unknown = JSON.parse(data.toString())
                 received.push(value)
-                if (received.length > 1) socket.send(JSON.stringify(value))
+                socket.send(JSON.stringify(value))
             })
         })
         const removed = () => assert.fail("removed message listener ran")
@@ -39,7 +39,7 @@ test(
             connection.send(value)
             assert.deepEqual(await reply, value)
         }
-        assert.deepEqual(received[0], { type: "initialize", metadata: { userId: "user-1" } })
+        assert.equal(received.length, 6)
         assert.equal(connection.readyState, 1)
         const closed = new Promise(resolve =>
             connection.addEventListener("close", ({ type, code, reason, wasClean }) =>
@@ -57,11 +57,15 @@ test("connections close on malformed JSON and unsupported binary messages", { ti
         ["not JSON", 1007],
         [Buffer.from("{}"), 1003]
     ] as const) {
-        const connection = await connect(t, socket => socket.on("message", () => socket.send(payload)))
+        let peer!: WebSocket
+        const connection = await connect(t, socket => {
+            peer = socket
+        })
         let errors = 0
         connection.addEventListener("error", () => errors++)
-        const closed = await new Promise<{ code: number }>(resolve => connection.addEventListener("close", resolve))
-        assert.equal(closed.code, expectedCode)
+        const closed = new Promise<{ code: number }>(resolve => connection.addEventListener("close", resolve))
+        peer.send(payload)
+        assert.equal((await closed).code, expectedCode)
         assert.equal(errors, 1)
     }
 })
@@ -73,26 +77,24 @@ test("connections validate both message directions while accepting the initial s
         outgoing: z.object({ type: z.literal("posted"), text: z.string() })
     }
     const received: unknown[] = []
+    let peer!: WebSocket
     const connection = await connect(
         t,
         socket => {
+            peer = socket
             socket.on("message", data => {
                 const value = JSON.parse(data.toString()) as { type: string; text?: string }
                 received.push(value)
-                socket.send(
-                    JSON.stringify(
-                        value.type === "initialize"
-                            ? { type: "state", state: { history: [] } }
-                            : { type: "posted", text: 123 }
-                    )
-                )
+                socket.send(JSON.stringify({ type: "posted", text: 123 }))
             })
         },
         schemas
     )
-    assert.deepEqual(await nextMessage(connection), { type: "state", state: { history: [] } })
+    const initial = nextMessage(connection)
+    peer.send(JSON.stringify({ type: "state", state: { history: [] } }))
+    assert.deepEqual(await initial, { type: "state", state: { history: [] } })
     assert.throws(() => connection.send({ type: "post", text: 123 }), ActorValidationError)
-    assert.equal(received.length, 1)
+    assert.equal(received.length, 0)
     const closed = new Promise<{ code: number }>(resolve => connection.addEventListener("close", resolve))
     connection.send({ type: "post", text: "hello" })
     assert.equal((await closed).code, 1007)

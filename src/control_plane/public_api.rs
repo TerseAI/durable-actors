@@ -83,7 +83,6 @@ async fn connect_actor(
             home_region,
             metadata,
             authorization_lifetime_ms,
-            backend,
         } => {
             issue_socket_ticket(
                 State(state),
@@ -93,7 +92,6 @@ async fn connect_actor(
                     home_region,
                     metadata,
                     authorization_lifetime_ms,
-                    backend,
                 }),
             )
             .await
@@ -117,8 +115,6 @@ enum ConnectRequest {
             rename = "authorizationLifetimeMs"
         )]
         authorization_lifetime_ms: i64,
-        #[serde(default)]
-        backend: bool,
     },
 }
 
@@ -140,7 +136,6 @@ async fn issue_socket_ticket(
             .clone()
             .unwrap_or_else(|| state.invocations.default_region().into()),
         target: None,
-        backend: request.backend,
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
@@ -162,8 +157,6 @@ async fn issue_socket_ticket(
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IssueSocketTicketRequest {
-    #[serde(default)]
-    backend: bool,
     #[serde(default)]
     home_region: Option<String>,
     metadata: Value,

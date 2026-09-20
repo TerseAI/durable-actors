@@ -17,6 +17,39 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
+async fn browser_receives_only_emittable_state_after_commit_and_on_reconnect() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let grant = stack
+        .grant(serde_json::json!({"user":"one"}), 30_000)
+        .await?;
+    let url = grant["websocketUrl"].as_str().context("socket URL")?;
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
+    let initial = receive(&mut socket).await?;
+    assert_eq!(initial["type"], "state");
+    assert_eq!(initial["state"], serde_json::json!({"count":0}));
+    stack.invoke("change", vec![]).await?;
+    let update = receive(&mut socket).await?;
+    assert_eq!(update["type"], "state_update");
+    assert_eq!(update["changes"], serde_json::json!({"count":2}));
+    assert!(update["version"].as_u64() > initial["version"].as_u64());
+    assert!(stack.invoke("fail", vec![]).await.is_err());
+    stack.invoke("change", vec![]).await?;
+    assert_eq!(
+        receive(&mut socket).await?["changes"],
+        serde_json::json!({"count":4})
+    );
+    socket.close(None).await?;
+    let (mut reconnected, _) = tokio_tungstenite::connect_async(url).await?;
+    assert_eq!(
+        receive(&mut reconnected).await?["state"],
+        serde_json::json!({"count":4})
+    );
+    stack.child.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_isolated()
 -> Result<()> {
     #[derive(Default)]
@@ -67,6 +100,10 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
     );
     let (mut socket, response) = tokio_tungstenite::connect_async(url).await?;
     assert!(response.headers().get("sec-websocket-protocol").is_none());
+    assert_eq!(
+        receive(&mut socket).await?["state"],
+        serde_json::json!({"count":0})
+    );
     socket
         .send(Message::Text(r#"{"type":"start"}"#.into()))
         .await?;
@@ -127,9 +164,20 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
         );
     }
     let original = stack.issuer.verify_socket(&socket_key(&grant)?)?;
-    for mismatch in ["host", "session", "epoch", "unbound"] {
+    for mismatch in [
+        "project",
+        "actor",
+        "actor_name",
+        "host",
+        "session",
+        "epoch",
+        "unbound",
+    ] {
         let mut ticket = original.clone();
         match mismatch {
+            "project" => ticket.actor.project_id = "other-project".into(),
+            "actor" => ticket.actor.actor_id = "other-actor".into(),
+            "actor_name" => ticket.actor.actor_name = "OtherActor".into(),
             "host" => ticket.target.as_mut().unwrap().host_id = HostId::new("other-host"),
             "session" => ticket.target.as_mut().unwrap().session_id = "replacement-session".into(),
             "epoch" => ticket.target.as_mut().unwrap().owner_epoch += 1,
@@ -141,7 +189,6 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
                 actor: ticket.actor,
                 region: ticket.region,
                 target: ticket.target,
-                backend: false,
                 metadata: serde_json::json!({}),
                 authorization_lifetime_ms: 3_000,
             })?;
@@ -172,6 +219,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
         let grant = stack.grant(serde_json::json!({}), 1_000).await?;
         let (mut socket, _) =
             tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+        assert_eq!(receive(&mut socket).await?["type"], "state");
         if active {
             socket
                 .send(Message::Text(r#"{"type":"start"}"#.into()))
@@ -190,6 +238,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
     let grant = stack.grant(serde_json::json!({}), 3_000).await?;
     let (mut socket, _) =
         tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
+    receive(&mut socket).await?;
     socket
         .send(Message::Text(r#"{"type":"invalid"}"#.into()))
         .await?;
@@ -223,7 +272,7 @@ await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory 
     bundle:true,platform:'node',format:'esm',external:['little-actors/generated']}});
 const {{ actors }} = await import(directory + '/backend.mjs');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
-    {{controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
+    {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
 assert.equal(grant.transport, 'websocket');
 assert.equal(grant.key, undefined);
@@ -235,10 +284,12 @@ await new Promise((resolve, reject) => {{
     socket.onerror = reject;
     socket.onmessage = event => {{
         messages.push(JSON.parse(event.data));
-        if (messages.length === 2) resolve();
+        if (messages.length === 3) resolve();
     }};
 }});
-assert.deepEqual(messages, [{{delta:'first'}}, {{delta:'last'}}]);
+assert.equal(messages[0].type, 'state');
+assert.deepEqual(messages[0].state, {{count:0}});
+assert.deepEqual(messages.slice(1), [{{delta:'first'}}, {{delta:'last'}}]);
 socket.close();
 "#,
             compiler = serde_json::to_string(&format!(
@@ -388,7 +439,10 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
         .try_init();
     let mut stack = Stack::start().await?;
     let mut first = stack.connect().await?;
-    assert_eq!(receive(&mut first).await?["state"]["history"], "");
+    assert_eq!(
+        receive(&mut first).await?["state"],
+        serde_json::json!({"count":0})
+    );
     first
         .send(Message::Text(
             serde_json::json!({"type": "start"}).to_string().into(),
@@ -405,7 +459,11 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     tokio::time::sleep(Duration::from_secs(31)).await;
     std::fs::write(stack.directory.path().join("release"), "")?;
     assert_eq!(receive(&mut first).await?["delta"], "last");
-    assert_eq!(receive(&mut late).await?["state"]["history"], "firstlast");
+    assert_eq!(
+        receive(&mut late).await?["state"],
+        serde_json::json!({"count":0})
+    );
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "firstlast");
 
     let mut outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
@@ -493,22 +551,22 @@ impl Stack {
             actor_name: "Counter".into(),
             actor_id: "counter-1".into(),
         };
-        let host_id = HostId::new("host.v3.revision.session");
+        let spec = HostLaunchSpec {
+            project_id: "default".into(),
+            code_revision: "revision".into(),
+            image_ref: "test-image".into(),
+            working_directory: "/app".into(),
+            actor_entrypoint: None,
+            secret_refs: vec![],
+        };
+        let revision = spec.host_revision();
+        let host_id = HostId::new(format!("host.v3.{revision}.session"));
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
         let runtime = crate::bucket::testing::RuntimeFixture::new()?;
         let leases = runtime.leases.clone();
         let registry = Arc::new(LocalAdminRegistry::default());
-        registry
-            .register_test_deployment(&HostLaunchSpec {
-                project_id: "default".into(),
-                code_revision: "revision".into(),
-                image_ref: "test-image".into(),
-                working_directory: "/app".into(),
-                actor_entrypoint: None,
-                secret_refs: vec![],
-            })
-            .await?;
+        registry.register_test_deployment(&spec).await?;
         let auth = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",
@@ -535,7 +593,7 @@ impl Stack {
             .issue_host(
                 &host_id,
                 "00000000-0000-4000-8000-000000000001",
-                "revision",
+                &revision,
                 "us-east",
             )?
             .token;
@@ -664,26 +722,10 @@ impl Stack {
     }
 
     async fn connect(&self) -> Result<Socket> {
-        let grant: serde_json::Value = reqwest::Client::new()
-            .post(format!(
-                "{}/v1/projects/default/actors/Counter/counter-1/connect",
-                self.gateway
-            ))
-            .bearer_auth("test-api-key")
-            .json(&serde_json::json!({"transport":"websocket", "metadata":{},"backend":true}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let (mut socket, _) =
+        let grant = self.grant(serde_json::json!({}), 60_000).await?;
+        let (socket, _) =
             tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().context("socket URL")?)
                 .await?;
-        socket
-            .send(Message::Text(
-                r#"{"type":"initialize","metadata":{}}"#.into(),
-            ))
-            .await?;
         Ok(socket)
     }
 }

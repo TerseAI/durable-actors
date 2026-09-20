@@ -102,7 +102,6 @@ class RemoteActorClient {
                 body: JSON.stringify({
                     transport: "websocket",
                     metadata: attachment,
-                    backend: true,
                     homeRegion: this.settings.homeRegion
                 }),
                 signal: AbortSignal.timeout(180000)
@@ -115,7 +114,7 @@ class RemoteActorClient {
                 websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol))
             })
             .parse(await response.json())
-        return this.connectWebSocket(grant.websocketUrl, attachment, schemas)
+        return this.connectWebSocket(grant.websocketUrl, schemas)
     }
 
     async broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void> {
@@ -319,7 +318,7 @@ function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: st
     return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/connect`
 }
 
-function openWebSocket(url: string, metadata: JsonValue, schemas: ActorSchemas): Promise<ActorConnection> {
+function openWebSocket(url: string, schemas: ActorSchemas): Promise<ActorConnection> {
     const socket = new WebSocket(url)
     const connection = new SocketConnection(socket, schemas)
     return new Promise((resolve, reject) => {
@@ -327,14 +326,8 @@ function openWebSocket(url: string, metadata: JsonValue, schemas: ActorSchemas):
         socket.addEventListener(
             "open",
             () => {
-                try {
-                    socket.send(JSON.stringify({ type: "initialize", metadata }))
-                    opened = true
-                    resolve(connection)
-                } catch (error) {
-                    socket.close()
-                    reject(error)
-                }
+                opened = true
+                resolve(connection)
             },
             { once: true }
         )
@@ -388,7 +381,7 @@ interface RemoteActorClientDependencies {
     readonly connectWebSocket?: WebSocketConnector
 }
 
-type WebSocketConnector = (url: string, metadata: JsonValue, schemas: ActorSchemas) => Promise<ActorConnection>
+type WebSocketConnector = (url: string, schemas: ActorSchemas) => Promise<ActorConnection>
 
 const errorDocumentSchema = z.object({
     error: z.object({

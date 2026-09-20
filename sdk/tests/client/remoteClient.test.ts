@@ -278,14 +278,15 @@ test("resolves a fresh host socket grant before connecting", async () => {
                     String(url),
                     "https://control.example.com/v1/projects/default/actors/ChatRoom/room-1/connect"
                 )
-                assert.equal(JSON.parse(init!.body as string).backend, true)
+                assert.equal(JSON.parse(init!.body as string).backend, undefined)
+                assert.deepEqual(JSON.parse(init!.body as string).metadata, { userId: "user-1" })
                 return Response.json({
                     websocketUrl: "wss://host.modal.test/v1/socket?key=host-ticket",
                     key: "host-ticket"
                 })
             },
-            connectWebSocket: async (url, metadata) => {
-                requests.push({ url, metadata })
+            connectWebSocket: async url => {
+                requests.push({ url })
                 return connection
             }
         }
@@ -293,8 +294,7 @@ test("resolves a fresh host socket grant before connecting", async () => {
     assert.equal(await client.connect("ChatRoom", "room-1", { userId: "user-1" }), connection)
     assert.deepEqual(requests, [
         {
-            url: "wss://host.modal.test/v1/socket?key=host-ticket",
-            metadata: { userId: "user-1" }
+            url: "wss://host.modal.test/v1/socket?key=host-ticket"
         }
     ])
 })

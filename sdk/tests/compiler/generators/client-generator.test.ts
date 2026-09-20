@@ -95,7 +95,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
             authorizedUntilMs: 900000
         })
     }
-    const options = { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
+    const options = { projectId: "default", controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
     const proxy = new ActorProxy(options, { fetch })
     for (const authorization of [
         { actorName: "Room", actorId: "one", metadata: { userId: "alice" } },
@@ -125,9 +125,14 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     t.after(() => {
         globalThis.fetch = originalFetch
     })
-    const original = { url: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL, key: process.env.DURABLE_OBJECT_API_KEY }
+    const original = {
+        project: process.env.DURABLE_OBJECT_PROJECT_ID,
+        url: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL,
+        key: process.env.DURABLE_OBJECT_API_KEY
+    }
     t.after(() => {
         for (const [key, value] of Object.entries({
+            DURABLE_OBJECT_PROJECT_ID: original.project,
             DURABLE_OBJECT_CONTROL_PLANE_URL: original.url,
             DURABLE_OBJECT_API_KEY: original.key
         })) {
@@ -135,6 +140,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
             else process.env[key] = value
         }
     })
+    process.env.DURABLE_OBJECT_PROJECT_ID = options.projectId
     process.env.DURABLE_OBJECT_CONTROL_PLANE_URL = options.controlPlaneUrl
     process.env.DURABLE_OBJECT_API_KEY = options.apiKey
     assert.deepEqual(await actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } }), {
@@ -144,7 +150,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         connectByMs: 1000,
         authorizedUntilMs: 900000
     })
-    assert.equal(requests.at(-1)!.url, "https://actors.example.com/v1/actors/Room/lobby/connect")
+    assert.equal(requests.at(-1)!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/connect")
     const issued: { url: string; headers: Headers; body: unknown }[] = []
     await actors.Counter.prepareWebsocket(
         { actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 },
@@ -166,7 +172,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
             }
         }
     )
-    assert.equal(issued[0]!.url, "https://actors.example.com/v1/actors/Counter/one/connect")
+    assert.equal(issued[0]!.url, "https://actors.example.com/v1/projects/default/actors/Counter/one/connect")
     assert.equal(issued[0]!.headers.get("authorization"), "Bearer secret")
     assert.deepEqual(issued[0]!.body, {
         transport: "websocket",

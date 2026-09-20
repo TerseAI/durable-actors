@@ -16,7 +16,6 @@ fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
         },
         region: "us-east".into(),
         target: None,
-        backend: false,
         metadata: serde_json::json!({"userId":"alice"}),
         authorization_lifetime_ms: 900_000,
     };
