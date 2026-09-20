@@ -24,6 +24,23 @@ npx little-actors dev
 
 If it generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
 
+To test Modal hosts against a control plane on your laptop, use the repository's [`pnpm run start:cloud` command](docs/guides/local-development.md#test-modal-hosts-against-a-local-control-plane).
+
+The Terse development setup uses the dedicated control-plane endpoint `https://terse-little-actors.ngrok.app`. Set these values in the repository root `.env`, alongside the Modal, GCS, database, and authentication settings:
+
+```dotenv
+NGROK_DOMAIN=terse-little-actors.ngrok.app
+DURABLE_OBJECT_CONTROL_PLANE_URL=https://terse-little-actors.ngrok.app
+DURABLE_OBJECT_CONTROL_PLANE_BIND=127.0.0.1:7200
+```
+
+```sh
+pnpm run start:cloud
+```
+
+Keep this domain separate from the Terse backend's tunnel. Other ngrok accounts should reserve their own domain and substitute it above. The command waits for the tunnel, then starts the control plane; Ctrl+C stops both.
+
+
 ## Define an Actor
 
 ```ts

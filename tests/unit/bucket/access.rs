@@ -78,3 +78,18 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires GOOGLE_APPLICATION_CREDENTIALS and DURABLE_OBJECT_BUCKET"]
+async fn service_account_can_issue_downscoped_gcs_token() -> Result<()> {
+    let bucket = std::env::var("DURABLE_OBJECT_BUCKET")?;
+    let access = RuntimeAccess::new(
+        BucketLocation::Gcs { bucket },
+        Arc::new(crate::replication::ReplicaSet(Vec::new())),
+        ReplicaAccess::new("test-secret", Arc::new(SystemClock)),
+    )?;
+    let token = access.issue().await?.context("expected GCS token")?;
+    ensure!(!token.access_token.is_empty(), "empty GCS token");
+    ensure!(token.expires_at_ms > SystemClock.now_ms()? + 60_000);
+    Ok(())
+}
