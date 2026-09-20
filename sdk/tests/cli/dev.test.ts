@@ -72,6 +72,9 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         ["hello"]
     )
     assert.ok(result.args.includes(project))
+    const sdkHostIndex = result.args.indexOf("--sdk-host")
+    assert.notEqual(sdkHostIndex, -1, "dev must provide its host module for projects that depend on a wrapper SDK")
+    assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
     const failure = await run(process.execPath, args, {

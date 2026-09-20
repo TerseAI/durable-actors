@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
 import { configuredSettings } from "../client/clientSettings.js"
@@ -157,7 +158,9 @@ function devArguments(options: DevOptions): string[] {
         "--entrypoint",
         options.entrypoint,
         "--storage",
-        options.storage
+        options.storage,
+        "--sdk-host",
+        fileURLToPath(new URL("../host.js", import.meta.url))
     ]
     if (options.apiKey) args.push("--api-key", options.apiKey)
     if (options.dataDir) args.push("--data-dir", options.dataDir)
