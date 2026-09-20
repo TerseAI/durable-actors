@@ -78,17 +78,7 @@ The CLI checks the actor contract, bundles customer code and JavaScript dependen
 
 Spare sandboxes initialize Rust, Bun, the SDK worker, and IPC before admission. On assignment, the provider mounts the immutable code snapshot while Rust restores committed state. Routing begins after Bun has loaded the code and hydrated the actor. A sandbox belongs to that actor for its entire lifetime; subsequent calls reuse it. A crash or sandbox expiration starts a fresh activation from committed state, using the existing bucket and replication machinery.
 
-Set idle capacity on the control plane, for example:
-
-```sh
-DURABLE_OBJECT_SPARE_IDLE=5
-DURABLE_OBJECT_SPARE_REGIONS=north-america-east
-DURABLE_OBJECT_SPARE_TTL_SECONDS=600
-DURABLE_OBJECT_HOST_CPU_MILLIS=1000
-DURABLE_OBJECT_HOST_MEMORY_MIB=1024
-```
-
-The idle target defaults to five per role (actor or replica), generic runtime image, region, and resource configuration in this installation. Set it to zero for on-demand creation. Replica spares use `DURABLE_OBJECT_REPLICA_REGIONS` and 1 vCPU / 1 GiB limits. PostgreSQL coordinates claims across controllers; refill and retirement run asynchronously. Modal enforces CPU and memory caps per sandbox. Named Modal secrets require creation-time injection, so deployments using `--secret` bypass the actor spare pool.
+Configure spare capacity, regions, lifetimes, and resource limits using the [configuration table](../reference/configuration.md).
 
 Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses; see [replica lifecycle](replication.md#repair-and-lifecycle). Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
 

@@ -22,6 +22,11 @@
 | `DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS`   | `300000`                                           | Idle time before an unused cloud host may stop. Range: 1–86400000 milliseconds.                                                                                                                                         |
 | `DURABLE_OBJECT_HOST_STARTUP_MS`        | `10000`                                            | Positive integer timeout in milliseconds for TypeScript actor-host startup.                                                                                                                                             |
 | `DURABLE_OBJECT_SANDBOX_COMMAND`        | `little-actors-modal-go`                           | Provider executable. Override when supplying a custom runtime distribution.                                                                                                                                             |
+| `DURABLE_OBJECT_SPARE_IDLE` | `5` | Ready idle sandboxes per role (actor or replica), runtime image, region, and resource configuration; 0–32. Zero creates sandboxes on demand and retires idle spares; assigned replicas remain until safely replaced or recovered. Controllers sharing PostgreSQL must use the same pool settings. Named Modal secrets bypass the actor pool. |
+| `DURABLE_OBJECT_SPARE_REGIONS` | `north-america-east` | Comma-separated canonical regions for actor spares. Replica spares use `DURABLE_OBJECT_REPLICA_REGIONS`. |
+| `DURABLE_OBJECT_SPARE_TTL_SECONDS` | `600` | Maximum unassigned idle lifetime; 30–3600 seconds. |
+| `DURABLE_OBJECT_HOST_CPU_MILLIS` | `1000` | Actor sandbox CPU request and hard cap enforced by Modal; 100–64000 millicores. Replica sandboxes use 1000 millicores. |
+| `DURABLE_OBJECT_HOST_MEMORY_MIB` | `1024` | Actor sandbox memory request and hard cap enforced by Modal; 128–262144 MiB. Replica sandboxes use 1024 MiB. |
 | `DURABLE_OBJECT_SOCKET_EVENT_URL`       | Disabled                                           | HTTP(S) callback for successfully handled incoming WebSocket messages. See the [callback protocol](http.md#websocket-callbacks).                                                                                        |
 | `DURABLE_OBJECT_BINARY`                 | Downloaded runtime                                 | Existing native executable, bypassing runtime downloads. Relative paths resolve from the working directory.                                                                                                             |
 | `DURABLE_OBJECT_CACHE_DIR`              | `~/.cache/little-actors`                           | Downloaded runtime cache. Ignored when `DURABLE_OBJECT_BINARY` is set.                                                                                                                                                  |
@@ -36,19 +41,3 @@
 | `DURABLE_OBJECT_DATA_DIR`               | `<project>/.little-actors`                         | Persistent local state directory (`dev --data-dir`).                                                                                                                                                                    |
 | `DURABLE_OBJECT_REGION`                 | Unset                                              | Pins this control plane to a region. Setup requests must provide a matching `homeRegion`; assignment and geographic selection belong to the external router.                                                            |
 | `DURABLE_OBJECT_HOME_REGION`            | Unset                                              | Trusted backend assignment sent by the SDK in setup requests. Required when calling a regional control plane directly; omit when the deployment router supplies it.                                                     |
-
-## Generic spare pool
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DURABLE_OBJECT_SPARE_IDLE` | `5` | Ready idle sandboxes per role (actor or replica), runtime image, region, and resource configuration; 0–32. |
-| `DURABLE_OBJECT_SPARE_REGIONS` | `north-america-east` | Comma-separated canonical regions for actor spares. Replica spares use `DURABLE_OBJECT_REPLICA_REGIONS`. |
-| `DURABLE_OBJECT_SPARE_TTL_SECONDS` | `600` | Maximum unassigned idle lifetime; 30–3600 seconds. |
-| `DURABLE_OBJECT_HOST_CPU_MILLIS` | `1000` | Modal CPU request and hard cap; 100–64000 millicores. |
-| `DURABLE_OBJECT_HOST_MEMORY_MIB` | `1024` | Modal memory request and hard cap; 128–262144 MiB. |
-
-Actor spare admission waits for Rust, Bun, the SDK worker, and IPC readiness. After claim, the provider mounts code and sends a single authenticated assignment request in parallel. The reply includes the ownership epoch and lease only after committed state is restored and Bun is ready. New actors use one ownership read in the control plane and one conditional creation of the combined ownership and lease record in the host; readiness does not trigger another bucket read.
-
-Replica spare admission waits only for the Rust storage and assignment listeners. Replicas load no customer code or actor state before assignment. The control plane claims and assigns them in parallel with primary startup; the primary initializes and seeds them independently of writes. Until membership is published and catch-up completes, writes confirm through GCS. Replica resources are 1 vCPU / 1 GiB.
-
-The pools are shared across controllers using this installation's PostgreSQL database. Assigned sandboxes are never returned to the pool. Refilling and retirement run asynchronously, including cleanup of interrupted claims. A zero target retires idle spares and creates sandboxes on demand; assigned replicas remain until safely replaced or recovered. Actor deployments with named Modal secrets bypass the actor pool because secrets are attached at sandbox creation. Controllers sharing a pool should use the same pool configuration.
