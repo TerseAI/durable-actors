@@ -37,6 +37,7 @@ use super::{Bucket, ReplicaPeers, peers::grant, replace};
 mod activation;
 mod repair;
 mod session;
+mod startup;
 pub use repair::ReplicaMembership;
 
 #[cfg(test)]

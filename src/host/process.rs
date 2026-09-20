@@ -389,7 +389,21 @@ async fn prepare_actor_host(
         bind_host_listener(config, warm_listener),
     )?;
     let control_plane = Arc::new(control_plane);
-    let storage_ready = prepare_storage(config, &endpoint, control_plane.clone());
+    let scope = crate::replication::ReplicaScope {
+        actor: config.actor.clone().context("actor identity missing")?,
+        host: config.host_id.clone(),
+        session: config.session_id.clone(),
+        region: config.runtime_config.region.clone(),
+    };
+    let stop = CancellationToken::new();
+    let credentials = stop.clone().drop_guard();
+    let initial = super::replication::InitialReplication::start(
+        control_plane.clone(),
+        scope.clone(),
+        !config.runtime_config.replica_regions.is_empty(),
+        stop.clone(),
+    );
+    let storage_ready = prepare_storage(config, &endpoint, control_plane.clone(), stop);
     let executor_ready = async {
         if let Some((executor, javascript, entrypoint, idle)) = warm_executor {
             let connection =
@@ -406,7 +420,7 @@ async fn prepare_actor_host(
         }
     };
     let (storage, executor) = tokio::join!(storage_ready, executor_ready);
-    let (storage, lease, renewal, credentials) = storage?;
+    let (storage, lease, renewal) = storage?;
     let (executor_connection, javascript) = match executor {
         Ok(executor) => executor,
         Err(error) => {
@@ -423,13 +437,9 @@ async fn prepare_actor_host(
             storage.clone(),
             super::replication::ActorReplication::start(
                 storage.clone(),
-                crate::replication::ReplicaScope {
-                    actor: config.actor.clone().context("actor identity missing")?,
-                    host: config.host_id.clone(),
-                    session: config.session_id.clone(),
-                    region: config.runtime_config.region.clone(),
-                },
+                scope,
                 storage.stop.clone(),
+                initial,
             ),
             sockets.clone(),
         )
@@ -459,14 +469,12 @@ async fn prepare_storage(
     config: &ActorHostConfig,
     endpoint: &HostEndpoint,
     control_plane: Arc<ControlPlaneClient>,
+    stop: CancellationToken,
 ) -> Result<(
     Arc<super::storage::HostStorage>,
     Arc<HostLeaseMaintainer>,
     LeaseRenewalTask,
-    DropGuard,
 )> {
-    let stop = CancellationToken::new();
-    let credentials = stop.clone().drop_guard();
     let storage = Arc::new(
         super::storage::HostStorage::new(
             config.runtime_config.clone(),
@@ -488,7 +496,7 @@ async fn prepare_storage(
         config.renew_every,
     )?);
     let renewal = lease.clone().start().await?;
-    Ok((storage, lease, renewal, credentials))
+    Ok((storage, lease, renewal))
 }
 
 async fn bind_host_listener(

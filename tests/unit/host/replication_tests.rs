@@ -176,7 +176,7 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
         authority.clone(),
         fleet.clone(),
         Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access,
+        access.clone(),
         "http://control".into(),
         Arc::new(SystemClock),
     )?);
@@ -202,10 +202,29 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
             duration_ms: 60_000,
         })
         .await?;
+    let initial_source = Arc::new(crate::bucket::access::RuntimeAccess::new(
+        crate::bucket::access::BucketLocation::File {
+            directory: directory.path().join("bucket"),
+        },
+        Arc::new(crate::replication::ReplicaSet(vec![ReplicaTarget {
+            host_id: "crashed-initial".into(),
+            url: "http://127.0.0.1:1".into(),
+            region: "us-east".into(),
+        }])),
+        access,
+        runtime.clone(),
+    )?);
+    let initial = crate::host::replication::InitialReplication::start(
+        initial_source,
+        scope.clone(),
+        true,
+        stop.clone(),
+    );
     let writer = crate::host::replication::ActorReplication::start(
         storage.clone(),
         scope.clone(),
         stop.clone(),
+        initial,
     );
     let write = |version| {
         let (storage, writer, scope) = (storage.clone(), writer.clone(), scope.clone());
@@ -227,8 +246,17 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
             anyhow::Ok((plan, proof))
         }
     };
-    fleet.provisioning.wait().await?;
+    authority.publication.wait().await?;
+    authority.publication.release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime.local_replica_members(&scope).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    authority.first_membership.store(true, Ordering::SeqCst);
     assert_eq!(write(1).await?.1, StateWrite::Written);
+    fleet.provisioning.wait().await?;
     fleet.provisioning.release.add_permits(1);
     replica.seeding.wait().await?;
     assert_eq!(

@@ -164,6 +164,62 @@ struct SeedTransport {
     release: tokio::sync::Semaphore,
 }
 
+#[tokio::test]
+async fn initial_registration_is_create_only_and_reuses_published_members() -> Result<()> {
+    let f = Fixture::new().await?;
+    let mut scope = f.scope.clone();
+    scope.session = "not-yet-activated".into();
+    f.runtime
+        .register_initial_replicas(&scope, f.targets[..2].to_vec())
+        .await?;
+    let membership = f
+        .runtime
+        .register_initial_replicas(&scope, f.replacements())
+        .await?;
+    assert_eq!(f.runtime.replica_members(&scope).await?, f.targets[..2]);
+    assert!(
+        f.runtime.enable_replication(membership).is_err(),
+        "registration alone must not authorize a different activation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_tombstone_rejects_delayed_initial_registration() -> Result<()> {
+    let f = Fixture::new().await?;
+    let mut scope = f.scope.clone();
+    scope.session = "never-published".into();
+    f.runtime.retire_replication(&scope).await?;
+    assert!(
+        f.runtime
+            .register_initial_replicas(&scope, f.targets[..2].to_vec())
+            .await
+            .is_err()
+    );
+    assert!(f.runtime.replica_members(&scope).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn uncertain_initial_registration_requires_confirmation() -> Result<()> {
+    let f = Fixture::new().await?;
+    let mut scope = f.scope.clone();
+    scope.session = "uncertain-initial".into();
+    f.authority.lose_cas.store(true, Ordering::SeqCst);
+    assert!(
+        f.runtime
+            .register_initial_replicas(&scope, f.targets[..2].to_vec())
+            .await
+            .is_err()
+    );
+    assert!(f.runtime.local_replica_members(&scope).is_empty());
+    f.runtime
+        .register_initial_replicas(&scope, f.replacements())
+        .await?;
+    assert_eq!(f.runtime.replica_members(&scope).await?, f.targets[..2]);
+    Ok(())
+}
+
 #[async_trait]
 impl StateTransport for SeedTransport {
     async fn read(&self, _: &str) -> Result<Bytes> {

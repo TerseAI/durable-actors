@@ -4,9 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::{actor_runtime::ActorStorage, storage::HostStorage};
@@ -16,11 +16,15 @@ use crate::{
     storage::WritePlan,
 };
 
+mod startup;
+pub(crate) use startup::InitialReplication;
+
 pub(super) struct ActorReplication {
     storage: Arc<HostStorage>,
     writer: ReplicatedStateTransport,
     writing: Mutex<()>,
     latest: StdMutex<Option<(WritePlan, Vec<u8>)>>,
+    initial_ready: watch::Receiver<bool>,
 }
 
 impl ActorReplication {
@@ -28,8 +32,10 @@ impl ActorReplication {
         storage: Arc<HostStorage>,
         scope: ReplicaScope,
         stop: CancellationToken,
+        initial: InitialReplication,
     ) -> Arc<Self> {
         let (failures, reports) = mpsc::unbounded_channel();
+        let (ready, initial_ready) = watch::channel(false);
         let this = Arc::new(Self {
             writer: ReplicatedStateTransport::new(
                 storage.runtime.clone(),
@@ -39,18 +45,43 @@ impl ActorReplication {
             storage,
             writing: Mutex::new(()),
             latest: StdMutex::new(None),
+            initial_ready,
         });
         if this.storage.runtime.replication_enabled() {
             let supervisor = this.clone();
             tokio::spawn(async move {
-                tokio::select! { _ = stop.cancelled() => {}, _ = supervisor.maintain(scope, reports) => {} }
+                tokio::select! {
+                    _ = stop.cancelled() => {},
+                    result = supervisor.initialize_and_maintain(scope, initial, ready, reports) => {
+                        if let Err(error) = result {
+                            tracing::warn!(event = "initial_replication_failed", %error);
+                        }
+                    }
+                }
             });
         }
         this
     }
 
+    async fn initialize_and_maintain(
+        &self,
+        scope: ReplicaScope,
+        initial: InitialReplication,
+        ready: watch::Sender<bool>,
+        reports: mpsc::UnboundedReceiver<String>,
+    ) -> Result<()> {
+        let membership = initial.ready().await?;
+        self.storage.ensure_authority()?;
+        self.storage.runtime.enable_replication(membership)?;
+        ready.send_replace(true);
+        tracing::info!(event = "actor_replication_ready", actor = %scope.actor.storage_key());
+        self.maintain(scope, reports).await;
+        Ok(())
+    }
+
     async fn maintain(&self, scope: ReplicaScope, mut reports: mpsc::UnboundedReceiver<String>) {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
+        interval.tick().await;
         let mut first_seen = BTreeMap::new();
         loop {
             let mut failed = BTreeSet::new();
@@ -157,9 +188,31 @@ impl SnapshotWriter for ActorReplication {
     async fn write_snapshot(&self, plan: &WritePlan, bytes: Vec<u8>) -> Result<StateWrite> {
         let _writing = self.writing.lock().await;
         self.storage.ensure_authority()?;
+        let initializing = !*self.initial_ready.borrow();
         let plan = self.storage.runtime.current_write_plan(plan).await?;
-        let proof = self.writer.write_snapshot(&plan, bytes.clone()).await?;
+        let proof = if plan.replication.is_none()
+            && self.storage.runtime.replication_enabled()
+            && initializing
+        {
+            self.writer
+                .write_when_ready(&plan, bytes.clone(), self.initial_write_plan(&plan))
+                .await?
+        } else {
+            self.writer.write_snapshot(&plan, bytes.clone()).await?
+        };
         *self.latest.lock().unwrap() = Some((plan, bytes));
         Ok(proof)
+    }
+}
+
+impl ActorReplication {
+    async fn initial_write_plan(&self, plan: &WritePlan) -> Result<WritePlan> {
+        let mut ready = self.initial_ready.clone();
+        ready
+            .wait_for(|ready| *ready)
+            .await
+            .context("initial replication stopped")?;
+        self.storage.ensure_authority()?;
+        self.storage.runtime.current_write_plan(plan).await
     }
 }

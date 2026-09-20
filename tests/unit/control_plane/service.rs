@@ -1373,3 +1373,116 @@ pub(super) fn test_issuer() -> Result<ActorJwtIssuer> {
         Duration::from_secs(60),
     )
 }
+
+#[tokio::test]
+async fn initial_replica_registration_is_authenticated_and_does_not_require_an_active_primary()
+-> Result<()> {
+    use crate::{
+        bucket::{
+            FileBucket, GrpcReplicaPeers, RuntimeStorage,
+            access::{BucketLocation, RuntimeAccess},
+        },
+        clock::SystemClock,
+        replication::{ReplicaAccess, ReplicaScope, ReplicaSet, ReplicaTarget},
+    };
+    let directory = tempfile::tempdir()?;
+    let scope = ReplicaScope {
+        actor: ActorKey {
+            actor_type: "Counter".into(),
+            actor_id: "starting".into(),
+        },
+        host: HostId::new("host.v3.revision.primary"),
+        session: uuid::Uuid::new_v4().to_string(),
+        region: "us-east".into(),
+    };
+    let targets = vec![ReplicaTarget {
+        host_id: "assigned".into(),
+        url: "http://127.0.0.1:1".into(),
+        region: scope.region.clone(),
+    }];
+    let fleet = Arc::new(ReplicaSet(targets.clone()));
+    let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
+    let runtime = Arc::new(RuntimeStorage::new(
+        Arc::new(FileBucket::new(directory.path().into())?),
+        fleet.clone(),
+        Arc::new(GrpcReplicaPeers::new(access.clone())?),
+        access.clone(),
+        "http://control".into(),
+        Arc::new(SystemClock),
+    )?);
+    let initial = Arc::new(RuntimeAccess::new(
+        BucketLocation::File {
+            directory: directory.path().into(),
+        },
+        fleet,
+        access,
+        runtime.clone(),
+    )?);
+    let issuer = test_issuer()?;
+    let token = issuer.issue_host(
+        &scope.host,
+        &scope.session,
+        "revision",
+        &scope.region,
+        &scope.actor,
+    )?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let service = ControlPlaneService::new(
+        runtime.clone(),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    )
+    .with_runtime_access(initial.clone());
+    let request =
+        super::super::protocol::encode_command(ControlPlaneCommand::PrepareInitialReplicas)?;
+    assert_eq!(
+        service
+            .execute(Request::new(request))
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Unauthenticated
+    );
+    initial.prewarm(scope.clone());
+    let request = |command| -> Result<_> {
+        let mut request = Request::new(super::super::protocol::encode_command(command)?);
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {}", token.token).parse()?);
+        Ok(request)
+    };
+    let reply = service
+        .execute(request(ControlPlaneCommand::PrepareInitialReplicas)?)
+        .await?
+        .into_inner();
+    assert!(matches!(
+        super::super::protocol::decode_reply(reply)?,
+        ControlPlaneCommandReply::InitialReplicas { .. }
+    ));
+    assert_eq!(runtime.replica_members(&scope).await?, targets);
+    assert!(
+        runtime
+            .get_owner(&scope.actor.storage_key())
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        service
+            .execute(request(ControlPlaneCommand::EnsureReplicas {
+                failed: vec![]
+            })?)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    Ok(())
+}

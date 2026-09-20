@@ -1,9 +1,10 @@
 use super::*;
 use crate::state_transport::StateTransport;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReplicaMembership {
-    scope: ReplicaScope,
-    replicas: Vec<ReplicaTarget>,
+    pub(super) scope: ReplicaScope,
+    pub(super) replicas: Vec<ReplicaTarget>,
 }
 
 impl RuntimeStorage {

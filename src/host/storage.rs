@@ -25,6 +25,10 @@ use crate::{
     storage::WritePlan,
 };
 
+#[cfg(test)]
+#[path = "../../tests/unit/host/cold_write_tests.rs"]
+mod cold_write_tests;
+
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     pub transport: crate::state_transport::GrpcStateTransport,

@@ -266,14 +266,19 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         Arc::new(SystemClock),
     );
     let fleet = Arc::new(crate::replication::ReplicaSet::default());
-    let bootstrap = Arc::new(RuntimeAccess::new(location, fleet.clone(), access.clone())?);
     let runtime = Arc::new(RuntimeStorage::new(
         bucket,
-        fleet,
+        fleet.clone(),
         Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access,
+        access.clone(),
         origin.into(),
         std::sync::Arc::new(crate::clock::SystemClock),
+    )?);
+    let bootstrap = Arc::new(RuntimeAccess::new(
+        location,
+        fleet,
+        access,
+        runtime.clone(),
     )?);
     Ok(LocalState {
         traces: crate::request_traces::TraceStore::open(Arc::new(

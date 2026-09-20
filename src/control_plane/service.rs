@@ -402,6 +402,20 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::PrepareInitialReplicas => {
+                let membership = self
+                    .runtime_access
+                    .as_ref()
+                    .context("direct storage is not configured")?
+                    .initial_replicas(&crate::replication::ReplicaScope {
+                        actor: principal.actor.clone(),
+                        host: principal.host_id.clone(),
+                        session: principal.session_id.clone(),
+                        region: principal.region.clone(),
+                    })
+                    .await?;
+                Ok(ControlPlaneCommandReply::InitialReplicas { membership })
+            }
             ControlPlaneCommand::EnsureReplicas { failed } => {
                 self.require_active_host(principal).await?;
                 ensure!(

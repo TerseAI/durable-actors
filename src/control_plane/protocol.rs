@@ -7,6 +7,7 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
+    PrepareInitialReplicas,
     EnsureReplicas {
         failed: Vec<String>,
     },
@@ -24,6 +25,9 @@ pub(crate) enum ControlPlaneCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommandReply {
+    InitialReplicas {
+        membership: crate::bucket::ReplicaMembership,
+    },
     Replicas {
         targets: Vec<crate::replication::ReplicaTarget>,
     },

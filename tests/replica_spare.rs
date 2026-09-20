@@ -1,8 +1,10 @@
 use anyhow::{Result, ensure};
 use little_actors::{
     bucket::{GrpcReplicaPeers, ReplicaPeers},
-    clock::SystemClock,
-    replication::{ReplicaAccess, ReplicaScope, ReplicaTarget},
+    clock::{Clock, SystemClock},
+    replication::{ReplicaAccess, ReplicaGrant, ReplicaScope, ReplicaStream, ReplicaTarget},
+    state_log::StateSnapshot,
+    state_transport::{GrpcStateTransport, StateTransport},
 };
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
@@ -49,10 +51,11 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
     let url = format!("http://{control_address}/assign");
     let mut assignment = serde_json::json!({"hostId":"replica-one", "secret":"replica-signing-secret-with-32-bytes", "scope":{"actor":{"actor_type":"Counter","actor_id":"one"},"host":"primary","session":"session","region":"us-east"}});
     let scope: ReplicaScope = serde_json::from_value(assignment["scope"].clone())?;
-    let peers = GrpcReplicaPeers::new(ReplicaAccess::new(
+    let access = ReplicaAccess::new(
         assignment["secret"].as_str().unwrap(),
         Arc::new(SystemClock),
-    ))?;
+    );
+    let peers = GrpcReplicaPeers::new(access.clone())?;
     let target = ReplicaTarget {
         host_id: "replica-one".into(),
         region: scope.region.clone(),
@@ -75,7 +78,44 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
             reqwest::StatusCode::NO_CONTENT
         );
     }
-    peers.initialize(&target, &scope.identity()).await?;
+    let stream = ReplicaStream {
+        session: scope.identity(),
+        prefix: format!(
+            "{}1/",
+            little_actors::storage_paths::snapshots(&scope.actor)?
+        ),
+        owner_epoch: 1,
+        base_version: 0,
+    };
+    let append = access.url(
+        &target.url,
+        &ReplicaGrant {
+            stream: Some(stream.clone()),
+            operation: "APPEND".into(),
+            object: stream.prefix.clone(),
+            region: target.region.clone(),
+            host_id: target.host_id.clone(),
+            expires_at_ms: SystemClock.now_ms()? + 60_000,
+        },
+    )?;
+    let bytes = StateSnapshot::new(
+        1,
+        1,
+        "first".into(),
+        serde_json::json!({"count":1}),
+        serde_json::json!(1),
+    )?
+    .encode()?;
+    GrpcStateTransport::new().write(&append, bytes).await?;
+    assert_eq!(
+        peers
+            .head(&target, &stream)
+            .await?
+            .latest
+            .unwrap()
+            .state_version,
+        1
+    );
     assert!(peers.initialize(&target, "another-session").await.is_err());
     assignment["scope"]["actor"]["actor_id"] = "another".into();
     assert_eq!(

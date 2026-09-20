@@ -117,20 +117,21 @@ async fn control_plane_routes(
         database.clone(),
         stop.clone(),
     )?;
+    let storage = Arc::new(RuntimeStorage::new(
+        authority,
+        fleet.clone(),
+        Arc::new(GrpcReplicaPeers::new(access.clone())?),
+        access.clone(),
+        config.sandbox_provider.runtime.control_plane_url.clone(),
+        std::sync::Arc::new(crate::clock::SystemClock),
+    )?);
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
             bucket: config.storage.bucket.clone(),
         },
         fleet.clone(),
-        access.clone(),
-    )?);
-    let storage = Arc::new(RuntimeStorage::new(
-        authority,
-        fleet.clone(),
-        Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
-        config.sandbox_provider.runtime.control_plane_url.clone(),
-        std::sync::Arc::new(crate::clock::SystemClock),
+        storage.clone(),
     )?);
     let placements = storage.clone();
     fleet.start(storage.clone(), stop.clone());

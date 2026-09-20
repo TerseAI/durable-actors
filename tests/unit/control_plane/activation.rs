@@ -142,6 +142,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         },
         Arc::new(ReplicaSet::default()),
         access,
+        runtime.clone(),
     )?);
     let service = ControlPlaneService::new(runtime, auth.clone(), registry, issuer, provisioner)
         .with_runtime_access(runtime_access);

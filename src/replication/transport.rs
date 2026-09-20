@@ -1,6 +1,6 @@
-use std::{sync::Arc, time::Instant};
+use std::{future::Future, sync::Arc, time::Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
@@ -44,12 +44,59 @@ impl SnapshotWriter for ReplicatedStateTransport {
         };
         replication.validate()?;
         let started = Instant::now();
+        let replica_task =
+            self.start_replication(ticket.clone(), replication.clone(), bytes.clone(), started);
+        self.race(
+            ticket,
+            bytes,
+            async { replica_task.await.context("replication task failed")? },
+            started,
+        )
+        .await
+    }
+}
+
+impl ReplicatedStateTransport {
+    pub(crate) async fn write_when_ready(
+        &self,
+        ticket: &WritePlan,
+        bytes: Vec<u8>,
+        ready: impl Future<Output = Result<WritePlan>> + Send,
+    ) -> Result<StateWrite> {
+        let started = Instant::now();
+        let replica_bytes = bytes.clone();
+        let replicas = async {
+            let plan = ready.await?;
+            ensure!(
+                plan.stream == ticket.stream
+                    && plan.object_name == ticket.object_name
+                    && plan.state_version == ticket.state_version,
+                "initial replication changed the write"
+            );
+            let replication = plan
+                .replication
+                .clone()
+                .context("initial replicas unavailable")?;
+            replication.validate()?;
+            self.start_replication(plan, replication, replica_bytes, started)
+                .await
+                .context("replication task failed")?
+        };
+        self.race(ticket, bytes, replicas, started).await
+    }
+
+    async fn race(
+        &self,
+        ticket: &WritePlan,
+        bytes: Vec<u8>,
+        replicas: impl Future<Output = Result<StateWrite>> + Send,
+        started: Instant,
+    ) -> Result<StateWrite> {
         let bucket = self.bucket.clone();
         let plan = ticket.clone();
         let object = ticket.object_name.clone();
-        let bucket_bytes = bytes.clone();
         let bucket_task = tokio::spawn(async move {
-            let result = bucket.write_snapshot(&plan, bucket_bytes).await;
+            let result = bucket.write_snapshot(&plan, bytes).await;
             tracing::info!(event = "object_storage_upload", %object, uploaded = result.is_ok(),
                 upload_ms = started.elapsed().as_secs_f64() * 1000.0);
             result
@@ -59,9 +106,6 @@ impl SnapshotWriter for ReplicatedStateTransport {
                 .await
                 .context("object storage upload task failed")?
         };
-        let replica_task =
-            self.start_replication(ticket.clone(), replication.clone(), bytes, started);
-        let replicas = async { replica_task.await.context("replication task failed")? };
         tokio::pin!(bucket, replicas);
         let outcome = tokio::select! {
             result = &mut bucket => match result {
@@ -74,14 +118,12 @@ impl SnapshotWriter for ReplicatedStateTransport {
             },
         };
         tracing::info!(event = "actor_durability", object = %ticket.object_name,
-            durability = "replication", replica_count = replication.replicas.len(),
+            durability = "replication",
             proof = match &outcome { Ok(StateWrite::Replicated) => "replicas", Ok(_) => "object_storage", Err(_) => "failed" },
             persistence_ms = started.elapsed().as_secs_f64() * 1000.0);
         outcome
     }
-}
 
-impl ReplicatedStateTransport {
     fn start_replication(
         &self,
         ticket: WritePlan,

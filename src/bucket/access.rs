@@ -50,6 +50,8 @@ pub(crate) struct RuntimeAccess {
     fleet: Arc<dyn ReplicaProvisioner>,
     replicas: ReplicaAccess,
     tokens: moka::future::Cache<(), StorageToken>,
+    storage: Arc<super::RuntimeStorage>,
+    initial: moka::future::Cache<String, super::ReplicaMembership>,
 }
 
 impl RuntimeAccess {
@@ -57,6 +59,7 @@ impl RuntimeAccess {
         location: BucketLocation,
         fleet: Arc<dyn ReplicaProvisioner>,
         replicas: ReplicaAccess,
+        storage: Arc<super::RuntimeStorage>,
     ) -> Result<Self> {
         Ok(Self {
             credentials: match &location {
@@ -69,6 +72,11 @@ impl RuntimeAccess {
             location,
             fleet,
             replicas,
+            storage,
+            initial: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(Duration::from_secs(300))
+                .build(),
             tokens: moka::future::Cache::builder()
                 .max_capacity(1)
                 .time_to_live(Duration::from_secs(300))
@@ -86,13 +94,28 @@ impl RuntimeAccess {
         })?)
     }
 
-    pub fn prewarm(&self, scope: ReplicaScope) {
-        let fleet = self.fleet.clone();
+    pub fn prewarm(self: &Arc<Self>, scope: ReplicaScope) {
+        if self.fleet.replica_regions().is_empty() {
+            return;
+        }
+        let access = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = fleet.ensure(&scope).await {
+            if let Err(error) = access.initial_replicas(&scope).await {
                 tracing::warn!(%error, actor = %scope.actor.storage_key(), "actor replica provisioning failed");
             }
         });
+    }
+
+    pub async fn initial_replicas(&self, scope: &ReplicaScope) -> Result<super::ReplicaMembership> {
+        self.initial
+            .try_get_with(scope.identity(), async {
+                let replicas = self.fleet.ensure(scope).await?;
+                self.storage
+                    .register_initial_replicas(scope, replicas)
+                    .await
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("initial replica registration failed: {error:#}"))
     }
 
     pub async fn replicas(
