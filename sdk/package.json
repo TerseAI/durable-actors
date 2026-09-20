@@ -80,7 +80,7 @@
         "clean": "rm -rf dist .test-dist",
         "package:check": "node scripts/check-package.mjs && node --test scripts/codegen-api.test.mjs scripts/build-artifact.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
+        "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\""
     },
@@ -96,7 +96,6 @@
         "json-schema-to-typescript": "^16.0.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",
-        "tsx": "^4.0.0",
         "typescript": "~5.9.3",
         "typescript-json-schema": "^0.68.0",
         "ws": "^8.18.3",

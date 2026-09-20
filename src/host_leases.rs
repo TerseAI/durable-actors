@@ -32,63 +32,8 @@ impl HostLeaseRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostLeaseStatus {
-    pub lease: Option<HostLease>,
-    #[serde(rename = "registry_now_ms")]
-    pub store_now_ms: u64,
-}
-
-impl HostLeaseStatus {
-    pub fn is_active(&self) -> bool {
-        self.lease
-            .as_ref()
-            .is_some_and(|lease| lease.expires_at_ms > self.store_now_ms)
-    }
-}
-
 #[async_trait]
 pub trait HostLeaseRegistry: Send + Sync {
     async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease>;
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()>;
-}
-
-#[async_trait]
-pub trait HostLeaseStore: HostLeaseRegistry {
-    async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lease_status_uses_the_store_clock() {
-        let lease = HostLease {
-            id: HostId::new("node-a"),
-            session_id: "session-a".into(),
-            route: "node-a".into(),
-            expires_at_ms: 1_000,
-        };
-
-        let live = HostLeaseStatus {
-            lease: Some(lease.clone()),
-            store_now_ms: 999,
-        };
-        let expired = HostLeaseStatus {
-            lease: Some(lease),
-            store_now_ms: 1_000,
-        };
-        let absent = HostLeaseStatus {
-            lease: None,
-            store_now_ms: 0,
-        };
-
-        assert!(live.is_active());
-        assert!(!expired.is_active());
-        assert!(!absent.is_active());
-        let encoded = serde_json::to_value(live).expect("serialize lease status");
-        assert_eq!(encoded["registry_now_ms"], 999);
-        assert!(encoded.get("store_now_ms").is_none());
-    }
 }

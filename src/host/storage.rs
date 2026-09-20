@@ -15,22 +15,26 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        Bucket, BucketHostLeases, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
+        Bucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
         access::{HostStorageConfig, StorageToken},
     },
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
-    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest, HostLeaseStore},
-    replication::{ReplicaAccess, ReplicaSet},
+    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
+    replication::ReplicaAccess,
     storage::WritePlan,
 };
 
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
-    leases: Arc<dyn HostLeaseStore>,
+    pub transport: crate::state_transport::GrpcStateTransport,
+    pub(super) stop: CancellationToken,
     host: HostId,
     session: String,
     region: String,
+    actor: Option<ActorKey>,
+    new_actor: bool,
+    activation: Mutex<Option<ActorActivation>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
 }
@@ -44,7 +48,7 @@ impl HostStorage {
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
     ) -> Result<Self> {
-        let credentials = HostCredentials::new(config.token, client, stop);
+        let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let authority: Arc<dyn Bucket> = match config.bucket {
             crate::bucket::access::BucketLocation::Gcs { bucket } => {
                 Arc::new(GcsBucket::with_credentials(&bucket, credentials.into()).await?)
@@ -53,32 +57,58 @@ impl HostStorage {
                 Arc::new(crate::bucket::FileBucket::new(directory)?)
             }
         };
-        let leases = Arc::new(BucketHostLeases::new(
-            authority.clone(),
-            Arc::new(SystemClock),
-        ));
         let access = ReplicaAccess::new(&config.replica_secret, Arc::new(SystemClock));
+        let transport = crate::state_transport::GrpcStateTransport::new();
         let runtime = Arc::new(RuntimeStorage::new(
             authority,
-            leases.clone(),
-            Arc::new(ReplicaSet(config.replicas)),
-            Arc::new(GrpcReplicaPeers::new(access.clone())?),
+            Arc::new(super::replica_provisioner::HostReplicaProvisioner {
+                client,
+                regions: config.replica_regions,
+            }),
+            Arc::new(GrpcReplicaPeers::with_transport(
+                access.clone(),
+                transport.clone(),
+            )),
             access,
             origin,
+            std::sync::Arc::new(crate::clock::SystemClock),
         )?);
         Ok(Self {
+            stop,
             runtime,
-            leases,
+            transport,
             host,
             session,
             region: config.region,
+            actor: None,
+            new_actor: false,
+            activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         })
     }
 
+    pub(crate) fn with_actor(mut self, actor: Option<ActorKey>, new_actor: bool) -> Self {
+        self.actor = actor;
+        self.new_actor = new_actor;
+        self
+    }
+
+    pub(super) fn current_lease(&self) -> Result<HostLease> {
+        self.ensure_authority()?;
+        self.lease
+            .lock()
+            .unwrap()
+            .clone()
+            .context("activation lease missing")
+    }
+
     fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
         actor.validate()?;
+        ensure!(
+            self.actor.as_ref().is_none_or(|bound| bound == actor),
+            "actor identity mismatch"
+        );
         ensure!(*host == self.host, "host storage scope mismatch");
         self.ensure_authority()
     }
@@ -95,6 +125,9 @@ impl ActorStorage for HostStorage {
 
     async fn acquire_actor(&self, actor: &ActorKey, host: &HostId) -> Result<ActorActivation> {
         self.authorize(actor, host)?;
+        if let Some(activation) = self.activation.lock().unwrap().take() {
+            return Ok(activation);
+        }
         let lease = self
             .lease
             .lock()
@@ -171,22 +204,29 @@ impl HostLeaseRegistry for HostStorage {
         );
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
-        let lease = self.leases.register(request).await?;
+        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let first = self.lease.lock().unwrap().is_none();
+        let lease = if first {
+            let loaded = self
+                .runtime
+                .register_activation(actor, request, &self.region, self.new_actor)
+                .await?;
+            let lease = loaded.placement.lease;
+            *self.activation.lock().unwrap() = Some(ActorActivation {
+                owner_epoch: loaded.placement.owner_epoch,
+                state_version: loaded.placement.state_version,
+                state: loaded.state,
+            });
+            lease
+        } else {
+            self.runtime.renew_activation(actor, request).await?
+        };
         self.fence.lock().unwrap().confirm(
             started,
             Duration::from_millis(request.duration_ms),
             Instant::now(),
         )?;
-        let first = self.lease.lock().unwrap().replace(lease.clone()).is_none();
-        if first {
-            let (runtime, region, lease) =
-                (self.runtime.clone(), self.region.clone(), lease.clone());
-            tokio::spawn(async move {
-                if let Err(error) = runtime.prepare_session(&lease, &region).await {
-                    tracing::warn!(%error, "host replication session preparation failed");
-                }
-            });
-        }
+        self.lease.lock().unwrap().replace(lease.clone());
         Ok(lease)
     }
     async fn unregister(&self, host: &HostId, session: &str) -> Result<()> {
@@ -195,7 +235,13 @@ impl HostLeaseRegistry for HostStorage {
             "host lease scope mismatch"
         );
         self.fence.lock().unwrap().fenced = true;
-        self.leases.unregister(host, session).await
+        self.runtime
+            .release_activation(
+                self.actor.as_ref().context("host actor identity missing")?,
+                host,
+                session,
+            )
+            .await
     }
 }
 
@@ -277,9 +323,16 @@ impl CredentialsProvider for HostCredentials {
 }
 
 #[cfg(test)]
+#[path = "replication_tests.rs"]
+mod replication_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bucket::BucketObject, state_log::StateSnapshot, state_transport::SnapshotWriter};
+    use crate::{
+        bucket::BucketObject, replication::ReplicaSet, state_log::StateSnapshot,
+        state_transport::SnapshotWriter,
+    };
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -331,23 +384,29 @@ mod tests {
     #[tokio::test]
     async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Result<()> {
         let bucket = Arc::new(MemoryBucket::default());
-        let leases = Arc::new(BucketHostLeases::new(bucket.clone(), Arc::new(SystemClock)));
         let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
         let runtime = Arc::new(RuntimeStorage::new(
             bucket.clone(),
-            leases.clone(),
             Arc::new(ReplicaSet(vec![])),
             Arc::new(GrpcReplicaPeers::new(access.clone())?),
             access,
             "http://control-plane-unavailable.invalid".into(),
+            std::sync::Arc::new(crate::clock::SystemClock),
         )?);
         let host = HostId::new("host.v3.revision.host");
         let storage = HostStorage {
+            stop: CancellationToken::new(),
             runtime,
-            leases,
+            transport: crate::state_transport::GrpcStateTransport::new(),
             host: host.clone(),
             session: "session".into(),
             region: "us-east".into(),
+            actor: Some(ActorKey {
+                actor_type: "Counter".into(),
+                actor_id: "one".into(),
+            }),
+            new_actor: true,
+            activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         };
@@ -369,7 +428,7 @@ mod tests {
         assert_eq!(activation.state_version, 0);
         assert_eq!(
             bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-            1
+            0
         );
         let snapshot = StateSnapshot::new(
             1,
@@ -382,7 +441,7 @@ mod tests {
         let ticket = storage.prepare_state_write(&actor, &host, 1, 0).await?;
         assert_eq!(
             bucket.owner_reads.load(std::sync::atomic::Ordering::SeqCst),
-            1,
+            0,
             "the first write uses locally established ownership"
         );
         storage

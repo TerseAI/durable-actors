@@ -29,6 +29,19 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn ensure_replicas(
+        &self,
+        failed: Vec<String>,
+    ) -> Result<Vec<crate::replication::ReplicaTarget>> {
+        match self
+            .execute(ControlPlaneCommand::EnsureReplicas { failed })
+            .await?
+        {
+            ControlPlaneCommandReply::Replicas { targets } => Ok(targets),
+            _ => anyhow::bail!("unexpected replica response"),
+        }
+    }
+
     pub(crate) async fn notify_socket_message(
         &self,
         actor: ActorKey,

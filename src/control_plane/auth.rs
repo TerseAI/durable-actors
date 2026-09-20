@@ -30,6 +30,7 @@ impl ActorTokenPurpose {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActorPrincipal {
+    pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub session_id: String,
     pub region: String,
@@ -56,6 +57,7 @@ pub(crate) struct ActorJwtVerifier {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    actor: crate::actor::ActorKey,
     sub: String,
     #[serde(rename = "processId")]
     host_id: String,
@@ -215,7 +217,9 @@ impl ActorJwtVerifier {
             claims.iat <= now.saturating_add(skew_seconds),
             "actor token was issued in the future"
         );
+        claims.actor.validate()?;
         let principal = ActorPrincipal {
+            actor: claims.actor,
             host_id: HostId::new(claims.host_id),
             session_id: claims.session_id,
             region: claims.region,
@@ -306,6 +310,20 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn rejects_tokens_without_actor_scope() -> Result<()> {
+        let (verifier, key_pair) = verifier_and_key_pair()?;
+        let mut claims = valid_claims(unix_seconds()?);
+        claims.as_object_mut().unwrap().remove("actor");
+        let token = token(
+            &key_pair,
+            json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),
+            claims,
+        )?;
+        assert!(verifier.verify(&token).is_err());
+        Ok(())
+    }
 
     #[test]
     fn verifies_a_signed_actor_token() -> Result<()> {
@@ -500,6 +518,7 @@ mod tests {
 
     fn valid_claims(now: i64) -> serde_json::Value {
         json!({
+            "actor": {"actor_type": "Counter", "actor_id": "one"},
             "iss": "durable-object-control-plane",
             "aud": "durable-object-authority",
             "sub": "host.v3.00000000-0000-4000-8000-000000000001",

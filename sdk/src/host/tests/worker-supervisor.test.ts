@@ -7,12 +7,59 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 import type { SocketEffect } from "../../actor/socketProtocol.js"
 import { prepareActorEntrypoint } from "../actor-host.js"
-import { ActorWorkerSupervisor } from "../worker-supervisor.js"
+import { ActorWorker, ActorWorkerSupervisor } from "../worker-supervisor.js"
 
 const actorIdentity = {
     actor_type: "SessionCounter",
     actor_id: "counter-1"
 }
+
+test("a generic Bun worker is warm before customer code is assigned", async () => {
+    const worker = new ActorWorker()
+    try {
+        await worker.warm()
+        const root = await createTypeScriptConsumer("WarmCounter")
+        try {
+            const moduleUrl = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+            worker.load({ moduleUrl, schemas: await prepareActorEntrypoint(moduleUrl) })
+            assert.deepEqual(await worker.ready(), ["WarmCounter"])
+            assert.throws(() => worker.load({ moduleUrl, schemas: [] }), /already assigned/)
+            const command = invokeCommand("one", "WarmCounter")
+            assert.deepEqual(await worker.execute({ type: "hydrate", actor: command.actor, state: { count: 41 } }), {
+                type: "hydrated"
+            })
+            assert.deepEqual(await worker.execute({ ...command, resident_only: true, state: undefined }), {
+                type: "invoked",
+                result: 42,
+                state: { count: 42 }
+            })
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    } finally {
+        worker.terminate("test finished")
+    }
+})
+
+test("an executor never accepts a second actor identity, even after eviction", async () => {
+    const root = await createTypeScriptConsumer("BoundCounter")
+    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint)
+    })
+    try {
+        const first = invokeCommand("first", "BoundCounter")
+        assert.equal((await runtime.handle(first)).type, "invoked")
+        await runtime.handle({ type: "evict", actor: first.actor })
+        const reply = await runtime.handle(invokeCommand("second", "BoundCounter"))
+        assert.equal(reply.type, "failed")
+        if (reply.type === "failed") assert.equal(reply.code, "actor_identity_mismatch")
+    } finally {
+        runtime.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
 
 test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const consumerRoot = await createTypeScriptConsumer()
@@ -51,8 +98,10 @@ test("starts one speculative Worker and gives it to the first actor", async () =
         assert.equal(created.length, 1)
         await runtime.handle(invokeCommand("counter-1", "PreloadedCounter"))
         assert.equal(created.length, 1)
-        await runtime.handle(invokeCommand("counter-2", "PreloadedCounter"))
-        assert.equal(created.length, 2)
+        const second = await runtime.handle(invokeCommand("counter-2", "PreloadedCounter"))
+        assert.equal(second.type, "failed")
+        assert.equal(created.length, 1)
+        runtime.close()
     } finally {
         await rm(consumerRoot, { recursive: true, force: true })
     }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -50,38 +51,40 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 		return nil, err
 	}
 	defer closeClient()
-	p := &provider{api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
+	p := &provider{assigner: httpSpareAssigner{client: &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
 	switch cmd.Operation {
+	case "create_spare":
+		var request spareRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.createSpare(ctx, request)
+	case "retire_spare":
+		var request spareHandle
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return struct{}{}, p.retireSpare(ctx, request)
+	case "publish_code":
+		var request publishCodeRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.publishCode(ctx, request)
 	case "socket_credentials":
 		var request socketRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
 			return nil, err
 		}
 		return p.socketCredentials(ctx, request)
-	case "ensure_replica":
-		var request replicaRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.ensureReplica(ctx, request)
 	case "ensure_host":
 		var request ensureRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
 			return nil, err
 		}
 		return p.ensureHost(ctx, request)
-	case "warm_image":
-		var request imageRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.warmImage(ctx, request)
 	default:
-		var request terminateRequest
-		if err := json.Unmarshal(cmd.Request, &request); err != nil {
-			return nil, err
-		}
-		return p.terminateHosts(ctx, request)
+		return nil, fmt.Errorf("unsupported sandbox operation")
 	}
 }
 
@@ -98,7 +101,7 @@ func readCommand(input io.Reader) (command, error) {
 		return cmd, err
 	}
 	switch cmd.Operation {
-	case "ensure_host", "ensure_replica", "warm_image", "terminate_hosts", "socket_credentials":
+	case "ensure_host", "socket_credentials", "create_spare", "retire_spare", "publish_code":
 		return cmd, nil
 	default:
 		return cmd, fmt.Errorf("unsupported sandbox operation")

@@ -24,8 +24,10 @@ func newModalAPI() (modalAPI, func(), error) {
 		}
 	}
 	// The Rust parent supplies credentials in a sanitized environment without HOME.
-	if err := os.Setenv("MODAL_CONFIG_PATH", os.DevNull); err != nil {
-		return nil, nil, err
+	if os.Getenv("HOME") == "" {
+		if err := os.Setenv("MODAL_CONFIG_PATH", os.DevNull); err != nil {
+			return nil, nil, err
+		}
 	}
 	client, err := modal.NewClient()
 	if err != nil {
@@ -64,16 +66,22 @@ func (a *sdkAPI) Find(ctx context.Context, name string) (sandbox, error) {
 	return &sdkSandbox{sb}, nil
 }
 
+func (a *sdkAPI) ByID(ctx context.Context, id string) (sandbox, error) {
+	sb, err := a.client.Sandboxes.FromID(ctx, id, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &sdkSandbox{sb}, nil
+}
+
 func (a *sdkAPI) Secret(ctx context.Context, name string) (*modal.Secret, error) {
 	return a.client.Secrets.FromName(ctx, name, nil)
 }
 
 type sdkSandbox struct{ sb *modal.Sandbox }
 
-func (s *sdkSandbox) ID() string                             { return s.sb.SandboxID }
-func (s *sdkSandbox) Detach()                                { _ = s.sb.Detach() }
-func (s *sdkSandbox) Poll(ctx context.Context) (*int, error) { return s.sb.Poll(ctx, nil) }
-func (s *sdkSandbox) Wait(ctx context.Context) (int, error)  { return s.sb.Wait(ctx, nil) }
+func (s *sdkSandbox) ID() string { return s.sb.SandboxID }
+func (s *sdkSandbox) Detach()    { _ = s.sb.Detach() }
 func (s *sdkSandbox) Terminate(ctx context.Context) error {
 	_, err := s.sb.Terminate(ctx, nil)
 	return err
@@ -85,12 +93,14 @@ func (s *sdkSandbox) WriteFile(ctx context.Context, path, data string) error {
 	return s.sb.Filesystem.WriteText(ctx, data, path, nil)
 }
 
-func (s *sdkSandbox) Route(ctx context.Context) (string, error) {
+func (s *sdkSandbox) Route(ctx context.Context) (string, error)        { return s.route(ctx, 7101) }
+func (s *sdkSandbox) ControlRoute(ctx context.Context) (string, error) { return s.route(ctx, 7102) }
+func (s *sdkSandbox) route(ctx context.Context, port int) (string, error) {
 	tunnels, err := s.sb.Tunnels(ctx, 50*time.Second, nil)
 	if err != nil {
 		return "", err
 	}
-	if tunnel := tunnels[7101]; tunnel != nil {
+	if tunnel := tunnels[port]; tunnel != nil {
 		return tunnel.URL(), nil
 	}
 	return "", fmt.Errorf("Modal did not create the durable-object HTTP/2 tunnel")
@@ -120,15 +130,22 @@ func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {
 	return document, nil
 }
 
-func (s *sdkSandbox) FailureDetail(ctx context.Context) string {
-	detail, _ := s.sb.Filesystem.ReadText(ctx, stderrFile, nil)
-	return detail
-}
-
 func (s *sdkSandbox) Connect(ctx context.Context) (socketCredentials, error) {
 	credentials, err := s.sb.CreateConnectToken(ctx, &modal.SandboxCreateConnectTokenParams{Port: 7101})
 	if err != nil {
 		return socketCredentials{}, err
 	}
 	return socketCredentials{URL: credentials.URL, Token: credentials.Token}, nil
+}
+
+func (s *sdkSandbox) Mount(ctx context.Context, image *modal.Image) error {
+	return s.sb.MountImage(ctx, "/customer", image, nil)
+}
+
+func (s *sdkSandbox) Snapshot(ctx context.Context) (string, error) {
+	image, err := s.sb.SnapshotDirectory(ctx, "/customer", &modal.SandboxSnapshotDirectoryParams{TTL: modal.NoExpiryTTL})
+	if err != nil {
+		return "", err
+	}
+	return image.ImageID, nil
 }

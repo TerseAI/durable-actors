@@ -2,122 +2,52 @@ use super::*;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Session {
-    id: String,
-    region: String,
-    replicas: Vec<ReplicaTarget>,
-    state: RecoveryState,
+    pub(super) id: String,
+    pub(super) region: String,
+    pub(super) replicas: Vec<ReplicaTarget>,
+    pub(super) state: RecoveryState,
+}
+
+impl Session {
+    pub(super) fn is_open(&self) -> bool {
+        self.state == RecoveryState::Open
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum RecoveryState {
+pub(super) enum RecoveryState {
     Open,
     Recovering,
     Sealed,
 }
 
 impl RuntimeStorage {
-    pub(crate) async fn prepare_session(
-        &self,
-        lease: &HostLease,
-        region: &str,
-    ) -> Result<Vec<ReplicaTarget>> {
-        if self.fleet.replica_regions().is_empty() {
-            return Ok(Vec::new());
-        }
-        let id = identity(&lease.id, &lease.session_id);
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(&id) {
-            ensure!(session.region == region, "session region cannot change");
-            return Ok(session.replicas.clone());
-        }
-        let session = self.open_session(lease, region).await?;
-        sessions.insert(id, session.clone());
-        Ok(session.replicas)
-    }
-
-    async fn open_session(&self, lease: &HostLease, region: &str) -> Result<Session> {
-        let id = identity(&lease.id, &lease.session_id);
-        let key = key(&lease.id, &lease.session_id);
-        if let Some(object) = self.authority.get(&key).await? {
-            let session: Session = serde_json::from_slice(&object.bytes)?;
+    pub async fn retire_replication(&self, scope: &ReplicaScope) -> Result<()> {
+        if let Some(owner) = self.get_owner(&scope.actor.storage_key()).await? {
             ensure!(
-                session.id == id
-                    && session.region == region
-                    && session.state == RecoveryState::Open,
-                "session is recovering or sealed"
+                owner.owner != scope.host
+                    || owner.lease.session_id != scope.session
+                    || owner.lease.expires_at_ms <= self.clock.now_ms()?,
+                "actor activation is still active"
             );
-            return Ok(session);
         }
-        let actor = ActorKey {
-            actor_type: "session".into(),
-            actor_id: "replication".into(),
+        let Some(session) = self.start_recovery(scope).await? else {
+            return Ok(());
         };
-        let replicas = match tokio::time::timeout(
-            Duration::from_secs(20),
-            self.initialize_session(&actor, &id, region),
-        )
-        .await
-        {
-            Ok(Ok(replicas)) => replicas,
-            error => {
-                tracing::warn!(?error, "host session will use object storage");
-                Vec::new()
-            }
-        };
-        let session = Session {
-            id: id.clone(),
-            region: region.into(),
-            replicas,
-            state: RecoveryState::Open,
-        };
-        ensure!(
-            replace(
-                self.authority.as_ref(),
-                &key,
-                None,
-                serde_json::to_vec(&session)?
-            )
-            .await?,
-            "session initialization was fenced"
-        );
-        Ok(session)
+        for snapshot in self.seal_replicas(&session).await? {
+            self.recover_snapshot(&session.replicas, &snapshot).await?;
+        }
+        self.finish_recovery(scope, session).await
     }
 
-    async fn initialize_session(
-        &self,
-        actor: &ActorKey,
-        session: &str,
-        region: &str,
-    ) -> Result<Vec<ReplicaTarget>> {
-        let replicas = self.fleet.ensure(actor, region).await?;
-        ensure!(
-            replicas.len() == self.fleet.replica_regions().len(),
-            "incomplete replica set"
-        );
-        ReplicationTicket {
-            replicas: replicas.clone(),
-            archive_url: "initialization".into(),
-        }
-        .validate()?;
-        let mut pending = JoinSet::new();
-        for target in &replicas {
-            let (peers, target, session) = (self.peers.clone(), target.clone(), session.to_owned());
-            pending.spawn(async move { peers.initialize(&target, &session).await });
-        }
-        while let Some(result) = pending.join_next().await {
-            result??;
-        }
-        Ok(replicas)
-    }
-
-    pub(super) async fn session_replicas(&self, owner: &Ownership) -> Result<Vec<ReplicaTarget>> {
-        let key = key(&owner.owner, &owner.session);
+    pub async fn replica_members(&self, scope: &ReplicaScope) -> Result<Vec<ReplicaTarget>> {
+        let key = key(&scope.host, &scope.session);
         let Some(object) = self.authority.get(&key).await? else {
             return Ok(Vec::new());
         };
         let session: Session = serde_json::from_slice(&object.bytes)?;
         ensure!(
-            session.id == identity(&owner.owner, &owner.session) && session.region == owner.region,
+            session.id == scope.identity() && session.region == scope.region,
             "session identity mismatch"
         );
         Ok(if session.state == RecoveryState::Sealed {
@@ -131,25 +61,25 @@ impl RuntimeStorage {
         &self,
         owner: &Ownership,
     ) -> Result<Option<LoadedSnapshot>> {
-        let Some(session) = self.start_recovery(owner).await? else {
+        let Some(session) = self.start_recovery(&owner.scope()).await? else {
             return Ok(None);
         };
         let snapshots = self.seal_replicas(&session).await?;
         let recovered = self.restore_session(owner, &session, snapshots).await?;
-        self.finish_recovery(owner, session).await?;
+        self.finish_recovery(&owner.scope(), session).await?;
         Ok(recovered)
     }
 
-    async fn start_recovery(&self, owner: &Ownership) -> Result<Option<Session>> {
-        let key = key(&owner.owner, &owner.session);
-        let id = identity(&owner.owner, &owner.session);
+    async fn start_recovery(&self, scope: &ReplicaScope) -> Result<Option<Session>> {
+        let key = key(&scope.host, &scope.session);
+        let id = scope.identity();
         loop {
             let object = self.authority.get(&key).await?;
             let Some(object) = object else {
                 // A tombstone also fences initialization delayed past lease expiry.
                 let sealed = Session {
                     id: id.clone(),
-                    region: owner.region.clone(),
+                    region: scope.region.clone(),
                     replicas: Vec::new(),
                     state: RecoveryState::Sealed,
                 };
@@ -160,7 +90,7 @@ impl RuntimeStorage {
             };
             let mut session: Session = serde_json::from_slice(&object.bytes)?;
             ensure!(
-                session.id == id && session.region == owner.region,
+                session.id == id && session.region == scope.region,
                 "session identity mismatch"
             );
             match session.state {
@@ -179,8 +109,8 @@ impl RuntimeStorage {
         }
     }
 
-    async fn finish_recovery(&self, owner: &Ownership, mut session: Session) -> Result<()> {
-        let key = key(&owner.owner, &owner.session);
+    async fn finish_recovery(&self, scope: &ReplicaScope, mut session: Session) -> Result<()> {
+        let key = key(&scope.host, &scope.session);
         session.state = RecoveryState::Sealed;
         loop {
             let current = self

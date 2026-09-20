@@ -222,6 +222,13 @@ pub(crate) struct LeaseRenewalTask {
     lease_lost: watch::Receiver<bool>,
 }
 
+impl Drop for LeaseRenewalTask {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.task.abort();
+    }
+}
+
 impl LeaseRenewalTask {
     pub(crate) fn lease_lost(&self) -> watch::Receiver<bool> {
         self.lease_lost.clone()
@@ -233,7 +240,7 @@ impl LeaseRenewalTask {
             Ok(result) => result?,
             Err(_) => {
                 self.task.abort();
-                let _ = self.task.await;
+                let _ = (&mut self.task).await;
                 anyhow::bail!(
                     "host lease renewal did not stop within {}ms",
                     LEASE_RENEWAL_SHUTDOWN_TIMEOUT.as_millis()

@@ -50,22 +50,22 @@ Registers actor code for your application. There is one active deployment. The J
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-your-actor-image",
-    "workingDirectory": "/workspace",
-    "actorEntrypoint": "dist/actors.mjs",
-    "secretRefs": [],
-    "warmRegion": "north-america-east"
+    "imageRef": "im-generic-runtime",
+    "codeSnapshot": "im-published-code",
+    "workingDirectory": "/customer",
+    "actorEntrypoint": "actors.mjs",
+    "secretRefs": []
 }
 ```
 
 **JSON parameters**
 
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
-- `imageRef` (`string`, required) — Provider image reference containing the actor project, 1–255 bytes. Registration does not upload or build the image.
-- `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
-- `actorEntrypoint` (`string | null`, default `null`) — Actor artifact produced by `little-actors build`, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.mjs`. The build checks actor definitions and [field annotations](api.md#saved-state-and-serialization). An explicit TypeScript path uses source loading for development.
+- `imageRef` (`string`, required) — Generic Bun/Rust runtime image reference, 1–255 bytes. Registration does not upload or build the image.
+- `codeSnapshot` (`string`, required) — Previously published Modal directory snapshot ID containing the compiled code.
+- `workingDirectory` (`string`, required) — Must be `/customer`, the code snapshot mount point.
+- `actorEntrypoint` (`string | null`, default `null`) — Relative compiled `.mjs` artifact path within the snapshot; defaults to `actors.mjs`. Cloud execution accepts compiled modules only.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
-- `warmRegion` (`string | null`, default `null`) — Supported execution region in which to request background image warmup. It is not retained in the deployment record.
 - `contract` (`object | null`, default `null`) — Public actor contract from `ActorCompiler.compileContract()`, up to 4 MiB. The control plane stores it with the code revision in the same transaction as the deployment. Repeating the same contract is allowed; different content for the active revision returns `409`. Omission preserves the active contract only when the revision is unchanged. Replacing a revision discards its contract; a new revision without a supplied contract has no contract. Deleting a deployment also deletes its contract.
 
 **Response:** `200 OK` with JSON:
@@ -79,8 +79,6 @@ An identical deployment returns `{"changed":false}`. Changing the specification 
 Publishing a contract for the first time also returns `{"changed":true}`. It does not restart hosts when the deployment specification is unchanged.
 
 **Errors:** `400` for an invalid specification or contract, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
-
-Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
 
 ### GET /v1/deployment/contract
 
@@ -105,7 +103,7 @@ Omit `revision` to get the latest deployment's contract. The optional `revision`
 
 The example represents an empty actor API; a missing contract returns `404` with error code `not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
 
-`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the image. Registration validates the contract format and local type references; it does not introspect the deployed image to verify its API.
+`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the published code snapshot. Registration validates the contract format and local type references; it does not introspect the code snapshot to verify its API.
 
 **Errors:** `400` for an invalid revision or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
@@ -118,14 +116,15 @@ Reads the active deployment.
 ```json
 {
     "codeRevision": "chat-v1",
-    "imageRef": "im-your-actor-image",
-    "workingDirectory": "/workspace",
-    "actorEntrypoint": "dist/actors.mjs",
+    "imageRef": "im-generic-runtime",
+    "codeSnapshot": "im-published-code",
+    "workingDirectory": "/customer",
+    "actorEntrypoint": "actors.mjs",
     "secretRefs": []
 }
 ```
 
-If no deployment exists, the response is `404` with error code `not_found`. The record omits `warmRegion`.
+If no deployment exists, the response is `404` with error code `not_found`.
 
 **Errors:** `401` for a rejected admin credential; `500` if the deployment cannot be read.
 
@@ -218,9 +217,8 @@ Internal operations use authenticated gRPC over HTTP/2. They have no public JSON
 | -------------------------- | ------------------------------------------------------------------ | ------------------------------------ |
 | `ActorHostService`         | `Activate`, `Invoke`, `HandleSocket`, `PublishSocketEffects`       | Runtime and backend SDK              |
 | `ActorControlPlaneService` | `Execute`: host registration, storage access and write preparation | Actor hosts                          |
-| `SnapshotService`          | `Read`, `Write`                                                    | Hosts, replicas and archival workers |
+| `SnapshotService`          | `Read`, `Write`                                                    | Actor hosts and recovery runtime     |
 | `ReplicaService`           | `Initialize`, `Head`, `Seal`                                       | Ownership and recovery runtime       |
-| `ArchiveService`           | `Prepare`                                                          | Replica archival workers             |
 
 Socket effects go directly to the owning host and are checked against its actor, host session and ownership epoch. Snapshot and replica calls carry signed, operation-scoped capabilities in gRPC metadata. Storage capability addresses use `grpc://` or `grpcs://`; the runtime resolves them to HTTP/2 connections. Public health checks, JWKS and application callbacks remain HTTP.
 

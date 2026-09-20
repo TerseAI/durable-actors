@@ -5,11 +5,11 @@ After the [local tutorial](../../examples/chat/README.md), use this guide to dep
 Recommended setup:
 
 - One always-on control plane near your database and hosts.
-- Managed PostgreSQL with backups for deployments and public contracts.
-- One GCS bucket for ownership, host leases, and snapshots.
+- Managed PostgreSQL with backups for deployments, public contracts, and exclusive sandbox claims.
+- One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions that include `little-actors build`. The container includes the Rust runtime and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; neither compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
@@ -39,41 +39,12 @@ curl --fail --silent --show-error https://objects.example.com/.well-known/jwks.j
 
 Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
 
-## 3. Package your actor code
+## 3. Publish the generic runtime image
 
-In the chat project from the local tutorial, pin the SDK to the runtime version:
+Build and publish this repository's runtime image once per runtime version. It contains Rust, Bun, and the matching SDK. Import that image into Modal; customer code is published separately. Use the same SDK version in the actor source project:
 
 ```sh
 npm install --save-exact little-actors@YOUR_VERSION
-```
-
-Create a `Dockerfile` in your chat project:
-
-```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION AS runtime
-
-FROM node:22-bookworm
-COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-COPY src ./src
-COPY tsconfig.json ./
-RUN npx little-actors build
-```
-
-The image combines the runtime, Node.js, and the compiled actor artifact. The build embeds schemas in `dist/actors.mjs`, so host startup does not run the TypeScript compiler.
-
-Build and push an amd64 image to a registry you control:
-
-```sh
-docker buildx build --platform linux/amd64 \
-    --tag YOUR_REGISTRY/chat-example:chat-v1 --push .
-```
-
-Configure [Modal image-build credentials](../reference/configuration.md), then import the image with Modal's Python API. This cloud-only step can run in CI:
-
-```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install modal
 ```
@@ -84,33 +55,44 @@ Create `build_image.py`:
 import modal
 
 image = modal.Image.from_registry(
-    "YOUR_REGISTRY/chat-example:chat-v1",
+    "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION",
     add_python="3.12",
 )
-app = modal.App.lookup("chat-example-images", create_if_missing=True)
+app = modal.App.lookup("little-actors-runtime-images", create_if_missing=True)
 with modal.enable_output():
     image.build(app)
 print(image.object_id)
 ```
 
-Then run:
+Run `.venv/bin/python build_image.py` and keep the printed `im-...` ID. Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
+
+## 4. Publish customer code and register the deployment
+
+Configure Modal credentials in the deployment terminal, then run from the actor source project:
 
 ```sh
-.venv/bin/python build_image.py
+npx little-actors deploy --image im-YOUR_RUNTIME_IMAGE_ID
 ```
 
-Keep the printed `im-...` ID. Private registries require a [Modal registry secret](https://modal.com/docs/guide/existing-images).
+The CLI checks the actor contract, bundles customer code and JavaScript dependencies into `actors.mjs`, and publishes a permanent Modal directory snapshot. Only after publication succeeds does it register the snapshot, generic image, and contract. The shared SDK remains external to the bundle. Native add-ons and additional filesystem assets require separate packaging support.
 
-## 4. Register the deployment
+Spare sandboxes initialize Rust, Bun, the SDK worker, and IPC before admission. On assignment, the provider mounts the immutable code snapshot while Rust restores committed state. Routing begins after Bun has loaded the code and hydrated the actor. A sandbox belongs to that actor for its entire lifetime; subsequent calls reuse it. A crash or sandbox expiration starts a fresh activation from committed state, using the existing bucket and replication machinery.
 
-From the actor project used to build the image, register it and publish its public API automatically. Use the image ID printed in step 3:
+Set idle capacity on the control plane, for example:
 
 ```sh
-npx little-actors deploy \
-    --image im-YOUR_IMAGE_ID \
-    --working-directory /app \
-    --actor-entrypoint dist/actors.mjs
+DURABLE_OBJECT_SPARE_IDLE=5
+DURABLE_OBJECT_SPARE_REGIONS=north-america-east
+DURABLE_OBJECT_SPARE_TTL_SECONDS=600
+DURABLE_OBJECT_HOST_CPU_MILLIS=1000
+DURABLE_OBJECT_HOST_MEMORY_MIB=1024
 ```
+
+The idle target defaults to five per role (actor or replica), generic runtime image, region, and resource configuration in this installation. Set it to zero for on-demand creation. Replica spares use `DURABLE_OBJECT_REPLICA_REGIONS` and 1 vCPU / 1 GiB limits. PostgreSQL coordinates claims across controllers; refill and retirement run asynchronously. Modal enforces CPU and memory caps per sandbox. Named Modal secrets require creation-time injection, so deployments using `--secret` bypass the actor spare pool.
+
+Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses; see [replica lifecycle](replication.md#repair-and-lifecycle). Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
+
+Old code snapshots remain immutable deployment artifacts; retiring hosts does not delete snapshots. Track published snapshot IDs if you need artifact retention cleanup.
 
 ## 5. Connect your web app
 

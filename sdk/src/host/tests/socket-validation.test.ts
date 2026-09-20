@@ -60,7 +60,7 @@ const definition = registerActorClass(ValidatedRoom)
 const actor = { actor_type: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
-test("host contracts reject invalid metadata, messages, output, and state without application Zod schemas", async () => {
+test("deployment contracts do not impose runtime AJV validation", async () => {
     let handled = 0
     class ContractRoom extends Actor<{ userId: string }, { count: number }> {
         count = 0
@@ -106,16 +106,11 @@ test("host contracts reject invalid metadata, messages, output, and state withou
         ...event({ type: "connect", connection: invalidConnection }, [invalidConnection]),
         actor: identity
     })
-    assert.equal(metadataReply.type, "failed")
-    assert.match(JSON.stringify(metadataReply), /metadata violates its socket contract/)
+    assert.equal(metadataReply.type, "websocket_handled")
     const messageReply = await runtime.handle({ ...request, actor: identity })
-    assert.equal(messageReply.type, "failed")
-    assert.equal(messageReply.type === "failed" && messageReply.code, "actor_socket_failed")
-    assert.equal(handled, 0)
-    for (const [method, kind] of [
-        ["invalidOutput", "outgoing"],
-        ["invalidState", "state"]
-    ]) {
+    assert.equal(messageReply.type, "websocket_handled")
+    assert.equal(handled, 2)
+    for (const method of ["invalidOutput", "invalidState"]) {
         const reply = await runtime.handle({
             type: "invoke",
             request_id: "invalid",
@@ -124,10 +119,7 @@ test("host contracts reject invalid metadata, messages, output, and state withou
             method: method!,
             args: []
         })
-        assert.equal(reply.type, "failed")
-        assert.match(JSON.stringify(reply), new RegExp(`${kind} violates its socket contract`))
-        assert.equal("state" in reply, false, "invalid state must not be committed")
-        assert.equal("effects" in reply, false, "invalid output must not be returned")
+        assert.equal(reply.type, "invoked")
     }
     const valid = {
         ...request,
@@ -139,7 +131,7 @@ test("host contracts reject invalid metadata, messages, output, and state withou
         }
     }
     assert.equal((await runtime.handle(valid)).type, "websocket_handled")
-    assert.equal(handled, 1)
+    assert.equal(handled, 3)
 })
 
 test("connection metadata is validated before actor hooks run", async () => {

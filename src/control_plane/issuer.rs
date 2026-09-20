@@ -173,7 +173,9 @@ impl ActorJwtIssuer {
         session_id: &str,
         code_revision: &str,
         region: &str,
+        actor: &ActorKey,
     ) -> Result<IssuedActorToken> {
+        actor.validate()?;
         let now_ms = unix_millis()?;
         let expires_at_ms =
             now_ms.saturating_add(duration_millis(self.max_lifetime.min(HOST_TOKEN_TTL))?);
@@ -193,6 +195,7 @@ impl ActorJwtIssuer {
             nbf: now_ms / 1000,
             exp: expires_at_ms / 1000,
             invocation: None,
+            actor: actor.clone(),
         })
     }
 
@@ -227,6 +230,7 @@ impl ActorJwtIssuer {
             iat: now,
             nbf: now,
             exp: expires_at,
+            actor: actor.clone(),
             invocation: Some(ActorInvocationCapability {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
@@ -252,6 +256,7 @@ impl ActorJwtIssuer {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorJwtClaims {
+    actor: ActorKey,
     iss: String,
     aud: Vec<String>,
     sub: String,
@@ -318,6 +323,10 @@ mod tests {
             &uuid::Uuid::new_v4().to_string(),
             "r1",
             "us-east",
+            &ActorKey {
+                actor_type: "Counter".into(),
+                actor_id: "one".into(),
+            },
         )?;
         assert!(issuer.verify_socket(&host.token).is_err());
         Ok(())
@@ -340,8 +349,16 @@ mod tests {
         let issuer = socket_issuer()?;
         let before = unix_millis()?;
         let host = HostId::new("host.v3.r1.one");
-        let issued =
-            issuer.issue_host(&host, &uuid::Uuid::new_v4().to_string(), "r1", "us-east")?;
+        let issued = issuer.issue_host(
+            &host,
+            &uuid::Uuid::new_v4().to_string(),
+            "r1",
+            "us-east",
+            &ActorKey {
+                actor_type: "Counter".into(),
+                actor_id: "one".into(),
+            },
+        )?;
         let verifier = ActorJwtVerifier::for_scope(
             issuer.verifier_keys_json()?,
             "issuer",

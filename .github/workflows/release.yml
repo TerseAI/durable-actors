@@ -98,6 +98,10 @@ jobs:
                   node-version: "22.19.0"
                   cache: pnpm
 
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
+
             - run: pnpm install --frozen-lockfile
             - run: pnpm --dir sdk build
             - run: cargo build --locked
@@ -122,6 +126,10 @@ jobs:
               with:
                   node-version: "22.19.0"
                   cache: pnpm
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile

@@ -20,11 +20,10 @@ use tracing::{Level, info_span};
 
 use crate::{
     bucket::{
-        Bucket, BucketHostLeases, FileBucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
+        Bucket, FileBucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
         access::{BucketLocation, RuntimeAccess},
     },
     clock::SystemClock,
-    host_leases::HostLeaseStore,
     sandbox::{HostSandboxRuntimeConfig, LocalSandboxProvider},
 };
 
@@ -99,7 +98,7 @@ pub async fn serve_local(
     let provider = Arc::new(LocalSandboxProvider::new(
         std::env::current_exe()?,
         project.clone(),
-        storage.leases.clone(),
+        storage.runtime.clone(),
         options.sdk_host.clone(),
     ));
     let routes = local_routes(
@@ -212,7 +211,6 @@ fn prepare_directory(directory: &Path) -> Result<File> {
 struct LocalState {
     runtime: Arc<RuntimeStorage>,
     access: Arc<RuntimeAccess>,
-    leases: Arc<dyn HostLeaseStore>,
     region: String,
 }
 
@@ -230,7 +228,6 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
         BucketLocation::Gcs { bucket } => Arc::new(GcsBucket::new(bucket).await?),
     };
-    let leases = Arc::new(BucketHostLeases::new(bucket.clone(), Arc::new(SystemClock)));
     let access = crate::replication::ReplicaAccess::new(
         &uuid::Uuid::new_v4().to_string(),
         Arc::new(SystemClock),
@@ -239,16 +236,15 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
     let bootstrap = Arc::new(RuntimeAccess::new(location, fleet.clone(), access.clone())?);
     let runtime = Arc::new(RuntimeStorage::new(
         bucket,
-        leases.clone(),
         fleet,
         Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         origin.into(),
+        std::sync::Arc::new(crate::clock::SystemClock),
     )?);
     Ok(LocalState {
         runtime,
         access: bootstrap,
-        leases,
         region: "north-america-east".into(),
     })
 }
@@ -271,6 +267,7 @@ async fn local_routes(
         Duration::from_secs(86_400),
     )?;
     let spec = HostLaunchSpec {
+        code_snapshot: None,
         code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
@@ -289,11 +286,10 @@ async fn local_routes(
         host_idle_timeout_ms: 300_000,
     };
     let provisioner = Arc::new(
-        SandboxHostProvisioner::new(provider, runtime, issuer.clone(), storage.leases.clone())
+        SandboxHostProvisioner::new(provider, runtime, issuer.clone())
             .with_runtime_access(storage.access.clone()),
     );
     let service = ControlPlaneService::new(
-        storage.leases.clone(),
         storage.runtime.clone(),
         auth,
         registry.clone(),

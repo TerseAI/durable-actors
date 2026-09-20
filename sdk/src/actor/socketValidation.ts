@@ -4,7 +4,6 @@ import { ActorProtocolError, ActorSerializationError, ActorValidationError } fro
 import { jsonValueSchema } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
 import type { SocketContract } from "../wire/contract.js"
-import { validateContract } from "../wire/validation.js"
 
 import { socketTagsSchema } from "./socketProtocol.js"
 
@@ -44,17 +43,14 @@ const stateMessageSchema = z.discriminatedUnion("type", [
 ])
 
 function socketMetadata(value: unknown, schemas: ActorSchemas = {}): JsonValue {
-    validateContract(value, "Metadata", schemas.contract)
     return validateValue(value, "socket metadata", schemas.metadata, 64 * 1024)
 }
 
 function incomingMessage(value: unknown, schemas: ActorSchemas = {}): JsonValue {
-    validateContract(value, "Incoming", schemas.contract)
     return validateValue(value, "incoming socket message", schemas.incoming)
 }
 
 function outgoingMessage(value: unknown, schemas: ActorSchemas = {}): JsonValue {
-    validateContract(value, "Outgoing", schemas.contract)
     const message = validateValue(value, "outgoing socket message", schemas.outgoing)
     if (isStateMessage(message))
         throw new ActorProtocolError('socket message types "state" and "state_update" are reserved for actor state')

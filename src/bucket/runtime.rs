@@ -20,24 +20,32 @@ use crate::{
     actor::ActorKey,
     actor_state::ActorStorageKey,
     host::HostId,
-    host_leases::{HostLease, HostLeaseStore},
-    placement::{ObjectPlacement, ObjectPlacementStore, PlacementClaim},
+    host_leases::HostLease,
+    placement::{ObjectPlacement, ObjectPlacementStore},
     replication::{
-        ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaStream, ReplicaTarget,
-        ReplicationTicket, SnapshotRef,
+        ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaScope, ReplicaStream,
+        ReplicaTarget, ReplicationTicket, SnapshotRef,
     },
     storage::{SnapshotReader, WritePlan, snapshot_object_name, snapshot_prefix},
 };
 
 use super::{Bucket, ReplicaPeers, peers::grant, replace};
 
+mod activation;
+mod repair;
 mod session;
+pub use repair::ReplicaMembership;
+
+#[cfg(test)]
+mod activation_tests;
+#[cfg(test)]
+mod repair_tests;
 
 pub struct RuntimeStorage {
+    clock: Arc<dyn crate::clock::Clock>,
     owned: Mutex<HashMap<String, Ownership>>,
-    sessions: tokio::sync::Mutex<HashMap<String, session::Session>>,
+    sessions: Mutex<HashMap<String, Vec<ReplicaTarget>>>,
     authority: Arc<dyn Bucket>,
-    leases: Arc<dyn HostLeaseStore>,
     fleet: Arc<dyn ReplicaProvisioner>,
     peers: Arc<dyn ReplicaPeers>,
     access: ReplicaAccess,
@@ -46,18 +54,17 @@ pub struct RuntimeStorage {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    lease: HostLease,
+    mutation: String,
     actor: ActorKey,
-    owner: HostId,
-    session: String,
     epoch: u64,
     region: String,
     base: Option<SnapshotRef>,
 }
 
-pub(crate) struct LoadedActor {
+pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
-    acquired: bool,
 }
 
 struct LoadedSnapshot {
@@ -66,10 +73,20 @@ struct LoadedSnapshot {
 }
 
 impl Ownership {
+    fn scope(&self) -> ReplicaScope {
+        ReplicaScope {
+            actor: self.actor.clone(),
+            host: self.lease.id.clone(),
+            session: self.lease.session_id.clone(),
+            region: self.region.clone(),
+        }
+    }
+
     fn placement(&self) -> ObjectPlacement {
         let mut placement = ObjectPlacement {
+            lease: self.lease.clone(),
             object: self.actor.storage_key(),
-            owner: self.owner.clone(),
+            owner: self.lease.id.clone(),
             owner_epoch: self.epoch,
             home_region: self.region.clone(),
             state_version: 0,
@@ -83,7 +100,7 @@ impl Ownership {
     fn stream(&self) -> Result<ReplicaStream> {
         let name = snapshot_object_name(&self.actor, 1, &format!("{:032x}", self.epoch))?;
         Ok(ReplicaStream {
-            session: session::identity(&self.owner, &self.session),
+            session: session::identity(&self.lease.id, &self.lease.session_id),
             prefix: name.strip_suffix("1.json").unwrap().into(),
             owner_epoch: self.epoch,
             base_version: self.base.as_ref().map_or(0, |base| base.state_version),
@@ -94,21 +111,21 @@ impl Ownership {
 impl RuntimeStorage {
     pub fn new(
         authority: Arc<dyn Bucket>,
-        leases: Arc<dyn HostLeaseStore>,
         fleet: Arc<dyn ReplicaProvisioner>,
         peers: Arc<dyn ReplicaPeers>,
         access: ReplicaAccess,
         origin: String,
+        clock: Arc<dyn crate::clock::Clock>,
     ) -> Result<Self> {
         ensure!(
             fleet.replica_regions().len() <= crate::replication::MAX_REPLICAS,
             "invalid runtime storage configuration"
         );
         Ok(Self {
+            clock,
             owned: Mutex::new(HashMap::new()),
-            sessions: tokio::sync::Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
             authority,
-            leases,
             fleet,
             peers,
             access,
@@ -120,12 +137,7 @@ impl RuntimeStorage {
         let service = RuntimeStorageService(self);
         tonic::service::Routes::from(Router::new())
             .add_service(
-                proto::snapshot_service_server::SnapshotServiceServer::new(service.clone())
-                    .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
-                    .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
-            )
-            .add_service(
-                proto::archive_service_server::ArchiveServiceServer::new(service)
+                proto::snapshot_service_server::SnapshotServiceServer::new(service)
                     .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
                     .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
             )
@@ -182,17 +194,6 @@ impl ObjectPlacementStore for RuntimeStorage {
         }
         Ok(placements)
     }
-
-    async fn matches_lease(&self, placement: &ObjectPlacement, lease: &HostLease) -> Result<bool> {
-        Ok(self
-            .load(&placement.object)
-            .await?
-            .is_some_and(|(_, record)| {
-                record.epoch == placement.owner_epoch
-                    && record.owner == lease.id
-                    && record.session == lease.session_id
-            }))
-    }
 }
 
 #[async_trait]
@@ -204,59 +205,30 @@ impl SnapshotReader for RuntimeStorage {
 }
 
 impl RuntimeStorage {
-    pub async fn claim_actor(
-        &self,
-        actor: &ActorKey,
-        expected: Option<&ObjectPlacement>,
-        owner: &HostId,
-        region: &str,
-    ) -> Result<PlacementClaim> {
-        let status = self.leases.lease_status(owner).await?;
-        ensure!(status.is_active(), "new owner has no active lease");
-        let loaded = self
-            .acquire(actor, Some(expected), &status.lease.unwrap(), region)
-            .await?;
-        Ok(if loaded.acquired {
-            PlacementClaim::Acquired(loaded.placement)
-        } else {
-            PlacementClaim::Current(loaded.placement)
-        })
-    }
-
     pub async fn read_url(&self, region: &str, object: &str) -> Result<String> {
         self.access.url(
             &self.origin,
             &grant("RUNTIME_READ", region, object, 60_000)?,
         )
     }
-    pub async fn prepare_write(
-        &self,
-        region: &str,
-        actor: &ActorKey,
-        version: u64,
-    ) -> Result<WritePlan> {
-        let (_, record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor has no ownership")?;
-        ensure!(
-            record.actor == *actor && record.region == region,
-            "actor scope mismatch"
-        );
-        let lease = self.live_lease(&record).await?;
-        let replicas = self.prepare_session(&lease, region).await?;
-        self.write_plan(&record, version, &replicas)
-    }
-}
-
-impl RuntimeStorage {
     pub(crate) async fn activate_actor(
         &self,
         actor: &ActorKey,
         lease: &HostLease,
         region: &str,
     ) -> Result<LoadedActor> {
-        self.acquire(actor, None, lease, region).await
+        let (_, record) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("actor has no ownership")?;
+        ensure!(
+            record.actor == *actor
+                && record.region == region
+                && record.lease.id == lease.id
+                && record.lease.session_id == lease.session_id,
+            "actor ownership changed"
+        );
+        self.load_actor(record).await
     }
 
     pub(crate) async fn load_owned_actor(
@@ -270,13 +242,15 @@ impl RuntimeStorage {
             .await?
             .context("actor has no ownership")?;
         ensure!(
-            record.owner == lease.id && record.session == lease.session_id && record.epoch == epoch,
+            record.lease.id == lease.id
+                && record.lease.session_id == lease.session_id
+                && record.epoch == epoch,
             "actor ownership changed"
         );
-        self.load_actor(record, None).await
+        self.load_actor(record).await
     }
 
-    pub(crate) async fn prepare_actor_write(
+    pub async fn prepare_actor_write(
         &self,
         actor: &ActorKey,
         lease: &HostLease,
@@ -291,107 +265,21 @@ impl RuntimeStorage {
             .cloned()
             .context("actor is not locally activated")?;
         ensure!(
-            record.owner == lease.id && record.session == lease.session_id && record.epoch == epoch,
+            record.lease.id == lease.id
+                && record.lease.session_id == lease.session_id
+                && record.epoch == epoch,
             "actor ownership changed"
         );
-        let replicas = self.prepare_session(lease, &record.region).await?;
+        let replicas = self.local_replica_members(&record.scope());
         self.write_plan(&record, version, &replicas)
     }
 
-    async fn acquire(
-        &self,
-        actor: &ActorKey,
-        expected: Option<Option<&ObjectPlacement>>,
-        lease: &HostLease,
-        region: &str,
-    ) -> Result<LoadedActor> {
-        actor.validate()?;
-        crate::placement::validate_region(region)?;
-        let current = self.load(&actor.storage_key()).await?;
-        if let Some(expected) = expected {
-            ensure!(
-                expected.is_none_or(|p| p.object == actor.storage_key()),
-                "expected placement belongs to another actor"
-            );
-            ensure!(
-                current.as_ref().map(|(_, r)| (&r.owner, r.epoch))
-                    == expected.map(|p| (&p.owner, p.owner_epoch)),
-                "ownership changed concurrently"
-            );
-        }
-        let mut recovered = None;
-        if let Some((_, record)) = &current {
-            ensure!(
-                record.actor == *actor && record.region == region,
-                "ownership scope cannot change"
-            );
-            if record.owner == lease.id && record.session == lease.session_id {
-                return self.load_actor(record.clone(), None).await;
-            }
-            self.ensure_previous_owner_stopped(record).await?;
-            let known = self.recover_session(record).await?;
-            recovered = self.latest(record, known).await?;
-        }
-        let epoch = current
-            .as_ref()
-            .map_or(Some(1), |(_, record)| record.epoch.checked_add(1))
-            .context("owner epoch overflow")?;
-        let record = Ownership {
-            actor: actor.clone(),
-            owner: lease.id.clone(),
-            session: lease.session_id.clone(),
-            epoch,
-            region: region.into(),
-            base: recovered.as_ref().map(|s| s.reference.clone()),
-        };
-        ensure!(
-            replace(
-                self.authority.as_ref(),
-                &ownership_key(&actor.storage_key())?,
-                current.map(|(generation, _)| generation),
-                serde_json::to_vec(&record)?
-            )
-            .await?,
-            "ownership claim lost"
-        );
-        Ok(self.remember(record, recovered, true))
+    async fn load_actor(&self, record: Ownership) -> Result<LoadedActor> {
+        let snapshot = self.latest(&record, None).await?;
+        Ok(self.remember(record, snapshot))
     }
 
-    async fn ensure_previous_owner_stopped(&self, record: &Ownership) -> Result<()> {
-        let status = self.leases.lease_status(&record.owner).await?;
-        ensure!(
-            !status.is_active()
-                || status
-                    .lease
-                    .is_none_or(|lease| lease.session_id != record.session),
-            "previous owner lease is still active"
-        );
-        Ok(())
-    }
-
-    async fn live_lease(&self, record: &Ownership) -> Result<HostLease> {
-        let status = self.leases.lease_status(&record.owner).await?;
-        ensure!(status.is_active(), "owner lease expired");
-        let lease = status.lease.unwrap();
-        ensure!(lease.session_id == record.session, "owner session changed");
-        Ok(lease)
-    }
-
-    async fn load_actor(
-        &self,
-        record: Ownership,
-        recovered: Option<LoadedSnapshot>,
-    ) -> Result<LoadedActor> {
-        let snapshot = self.latest(&record, recovered).await?;
-        Ok(self.remember(record, snapshot, false))
-    }
-
-    fn remember(
-        &self,
-        record: Ownership,
-        snapshot: Option<LoadedSnapshot>,
-        acquired: bool,
-    ) -> LoadedActor {
+    fn remember(&self, record: Ownership, snapshot: Option<LoadedSnapshot>) -> LoadedActor {
         let mut placement = record.placement();
         apply_snapshot(&mut placement, snapshot.as_ref().map(|s| &s.reference));
         self.owned
@@ -401,7 +289,6 @@ impl RuntimeStorage {
         LoadedActor {
             placement,
             state: snapshot.map(|s| s.bytes),
-            acquired,
         }
     }
 
@@ -413,11 +300,9 @@ impl RuntimeStorage {
     ) -> Result<WritePlan> {
         ensure!(version > 0, "state version must be positive");
         let stream = record.stream()?;
-        let mut capability = grant("RUNTIME_ARCHIVE", &record.region, &stream.prefix, 60_000)?;
+        let mut capability = grant("APPEND", &record.region, &stream.prefix, 60_000)?;
         capability.stream = Some(stream.clone());
         let expires_at_ms = i64::try_from(capability.expires_at_ms)?;
-        capability.expires_at_ms = u64::MAX;
-        let archive_url = self.access.url(&self.origin, &capability)?;
         let targets = replicas
             .iter()
             .map(|peer| {
@@ -427,10 +312,7 @@ impl RuntimeStorage {
                     url: self.access.url(
                         &peer.url,
                         &ReplicaGrant {
-                            operation: "APPEND".into(),
                             host_id: peer.host_id.clone(),
-                            archive_url: archive_url.clone(),
-                            expires_at_ms: expires_at_ms as u64,
                             ..capability.clone()
                         },
                     )?,
@@ -442,10 +324,7 @@ impl RuntimeStorage {
             object_name: stream.object(version),
             expires_at_ms,
             stream,
-            replication: (!targets.is_empty()).then_some(ReplicationTicket {
-                replicas: targets,
-                archive_url,
-            }),
+            replication: (!targets.is_empty()).then_some(ReplicationTicket { replicas: targets }),
         })
     }
 
@@ -479,7 +358,7 @@ impl RuntimeStorage {
         };
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
-        let replicas = self.session_replicas(record).await?;
+        let replicas = self.replica_members(&record.scope()).await?;
         let mut pending = JoinSet::new();
         for target in &replicas {
             let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
@@ -548,14 +427,6 @@ impl RuntimeStorage {
         Ok(placement)
     }
 
-    async fn archive_snapshot(&self, grant: &ReplicaGrant, bytes: Vec<u8>) -> Result<()> {
-        let stream = grant.stream.as_ref().context("missing write stream")?;
-        let snapshot = stream.snapshot(&bytes)?;
-        self.persist(&snapshot.object, bytes).await?;
-
-        Ok(())
-    }
-
     async fn load(&self, object: &ActorStorageKey) -> Result<Option<(i64, Ownership)>> {
         self.authority
             .get(&ownership_key(object)?)
@@ -574,7 +445,7 @@ impl RuntimeStorage {
             .await?
             .context("missing ownership")?;
         let mut pending = JoinSet::new();
-        for peer in self.session_replicas(&record).await? {
+        for peer in self.replica_members(&record.scope()).await? {
             let peers = self.peers.clone();
             let object = grant.object.clone();
             pending.spawn(async move { peers.read(&peer, &object).await });
@@ -610,65 +481,11 @@ impl proto::snapshot_service_server::SnapshotService for RuntimeStorageService {
 
     async fn write(
         &self,
-        request: Request<proto::SnapshotData>,
+        _: Request<proto::SnapshotData>,
     ) -> Result<Response<proto::SnapshotWriteReply>, Status> {
-        let grant = self
-            .0
-            .access
-            .verify(token(&request)?, "RUNTIME_ARCHIVE_WRITE")
-            .map_err(|_| Status::permission_denied("snapshot archive capability rejected"))?;
-        self.0
-            .archive_snapshot(&grant, request.into_inner().data)
-            .await
-            .map_err(unavailable)?;
-        Ok(Response::new(proto::SnapshotWriteReply {
-            already_exists: false,
-        }))
-    }
-}
-
-#[tonic::async_trait]
-impl proto::archive_service_server::ArchiveService for RuntimeStorageService {
-    async fn prepare(
-        &self,
-        request: Request<proto::ArchiveRequest>,
-    ) -> Result<Response<proto::ArchiveReply>, Status> {
-        let mut capability = self
-            .0
-            .access
-            .verify(token(&request)?, "RUNTIME_ARCHIVE")
-            .map_err(|_| Status::permission_denied("archive capability rejected"))?;
-        let object = request.into_inner().object;
-        let stream = capability
-            .stream
-            .as_ref()
-            .ok_or_else(|| Status::permission_denied("archive stream is required"))?;
-        let version = object
-            .strip_prefix(&stream.prefix)
-            .and_then(|value| value.strip_suffix(".json"))
-            .and_then(|value| value.parse::<u64>().ok())
-            .ok_or_else(|| Status::permission_denied("snapshot is outside the archive stream"))?;
-        if object != stream.object(version) {
-            return Err(Status::permission_denied("invalid archive object"));
-        }
-        capability.operation = "RUNTIME_ARCHIVE_WRITE".into();
-        capability.expires_at_ms = grant("", &capability.region, &object, 60_000)
-            .map_err(unavailable)?
-            .expires_at_ms;
-        let write_url = self
-            .0
-            .access
-            .url(&self.0.origin, &capability)
-            .map_err(unavailable)?;
-        let read_url = self
-            .0
-            .read_url(&capability.region, &object)
-            .await
-            .map_err(unavailable)?;
-        Ok(Response::new(proto::ArchiveReply {
-            write_url,
-            read_url,
-        }))
+        Err(Status::unimplemented(
+            "write snapshots directly to the bucket",
+        ))
     }
 }
 
@@ -739,15 +556,6 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             "write plan does not match snapshot"
         );
         self.persist(&snapshot.object, bytes).await?;
-        let actor = actor_from_object(&snapshot.object)?;
-        let (_, owner) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor ownership missing")?;
-        ensure!(
-            owner.stream()? == *stream,
-            "snapshot writer has been fenced"
-        );
         Ok(crate::state_transport::StateWrite::Written)
     }
 }

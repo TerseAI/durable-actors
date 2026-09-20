@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    actor::ActorKey,
     clock::{Clock, SystemClock},
-    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaTarget},
+    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaScope, ReplicaTarget},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -17,7 +16,7 @@ pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
     pub region: String,
     pub replica_secret: String,
-    pub replicas: Vec<ReplicaTarget>,
+    pub replica_regions: Vec<String>,
     pub token: Option<StorageToken>,
 }
 
@@ -79,22 +78,30 @@ impl RuntimeAccess {
     }
 
     pub async fn bootstrap(&self, region: &str) -> Result<String> {
-        let actor = ActorKey {
-            actor_type: "bootstrap".into(),
-            actor_id: "bootstrap".into(),
-        };
-        let (token, replicas) = tokio::try_join!(self.issue(), self.fleet.ensure(&actor, region))?;
-        ensure!(
-            replicas.len() == self.fleet.replica_regions().len(),
-            "incomplete replica set"
-        );
         Ok(serde_json::to_string(&HostStorageConfig {
             bucket: self.location.clone(),
             region: region.into(),
             replica_secret: self.replicas.secret().to_owned(),
-            replicas,
-            token,
+            replica_regions: self.fleet.replica_regions(),
+            token: self.issue().await?,
         })?)
+    }
+
+    pub fn prewarm(&self, scope: ReplicaScope) {
+        let fleet = self.fleet.clone();
+        tokio::spawn(async move {
+            if let Err(error) = fleet.ensure(&scope).await {
+                tracing::warn!(%error, actor = %scope.actor.storage_key(), "actor replica provisioning failed");
+            }
+        });
+    }
+
+    pub async fn replicas(
+        &self,
+        scope: &ReplicaScope,
+        failed: &[String],
+    ) -> Result<Vec<ReplicaTarget>> {
+        self.fleet.repair(scope, failed).await
     }
 
     pub async fn issue(&self) -> Result<Option<StorageToken>> {
@@ -191,55 +198,6 @@ fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn host_bootstrap_carries_replica_membership_without_a_separate_count() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let replicas: Vec<_> = ["first", "second"]
-            .into_iter()
-            .map(|id| ReplicaTarget {
-                host_id: id.into(),
-                url: format!("https://{id}.example"),
-                region: "north-america-east".into(),
-            })
-            .collect();
-        let access = RuntimeAccess::new(
-            BucketLocation::File {
-                directory: directory.path().into(),
-            },
-            Arc::new(crate::replication::ReplicaSet(replicas.clone())),
-            ReplicaAccess::new("secret", Arc::new(SystemClock)),
-        )?;
-        let document = access.bootstrap("north-america-east").await?;
-        let value: Value = serde_json::from_str(&document)?;
-        assert!(value.get("replicaCount").is_none());
-        let config: HostStorageConfig = serde_json::from_str(&document)?;
-        assert_eq!(config.replicas, replicas);
-        let partial = RuntimeAccess::new(
-            BucketLocation::File {
-                directory: directory.path().into(),
-            },
-            Arc::new(PartialFleet(crate::replication::ReplicaSet(replicas))),
-            ReplicaAccess::new("secret", Arc::new(SystemClock)),
-        )?;
-        assert!(partial.bootstrap("north-america-east").await.is_err());
-        Ok(())
-    }
-
-    struct PartialFleet(crate::replication::ReplicaSet);
-
-    #[async_trait::async_trait]
-    impl ReplicaProvisioner for PartialFleet {
-        fn replica_regions(&self) -> Vec<String> {
-            self.0.replica_regions()
-        }
-
-        async fn ensure(&self, actor: &ActorKey, region: &str) -> Result<Vec<ReplicaTarget>> {
-            let mut replicas = self.0.ensure(actor, region).await?;
-            replicas.pop();
-            Ok(replicas)
-        }
-    }
 
     #[test]
     fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {

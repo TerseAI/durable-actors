@@ -161,6 +161,10 @@ pub enum ActorSocketOutcome {
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_type: &str) -> bool;
 
+    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
+        Ok(())
+    }
+
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
@@ -243,36 +247,72 @@ impl ActorExecutorListener {
                 format!("accept actor executor at {}", self.socket_path.display())
             })?;
         let (reader, writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-        let attach = match read_client_message(&mut reader).await? {
-            Some(ActorExecutorClientMessage::Attach {
-                protocol,
-                actor_types,
-            }) => {
-                ensure!(
-                    protocol == ACTOR_EXECUTOR_PROTOCOL_VERSION,
-                    "customer actor executor uses unsupported protocol version {protocol}"
-                );
-                ensure!(
-                    !actor_types.is_empty(),
-                    "customer actor executor did not advertise any actor types"
-                );
-                actor_types
-            }
-            Some(_) => {
-                anyhow::bail!("first customer actor executor message must attach the process")
-            }
-            None => anyhow::bail!("customer actor executor disconnected before attaching"),
-        };
-
-        let (executor, task) = JsActorExecutor::start(reader, writer, attach);
-        debug!(
-            socket = %self.socket_path.display(),
-            actor_types = ?executor.actor_types,
-            "customer JavaScript process connected to actor executor"
-        );
-        Ok(ActorExecutorConnection { executor, task })
+        let reader = BufReader::new(reader);
+        attach_executor(reader, writer).await
     }
+
+    pub(crate) async fn accept_warm(self) -> Result<WarmExecutor> {
+        let (stream, _) = self.listener.accept().await?;
+        remove_socket(&self.socket_path).await?;
+        let (reader, writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        ensure!(
+            matches!(
+                read_client_message(&mut reader).await?,
+                Some(ActorExecutorClientMessage::Warm {
+                    protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION
+                })
+            ),
+            "generic executor did not finish warming"
+        );
+        Ok(WarmExecutor { reader, writer })
+    }
+}
+
+pub(crate) struct WarmExecutor {
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+}
+
+impl WarmExecutor {
+    pub(crate) async fn load(
+        mut self,
+        entrypoint: &str,
+        idle_timeout_ms: u64,
+    ) -> Result<ActorExecutorConnection> {
+        let mut bytes = serde_json::to_vec(&serde_json::json!({
+            "type": "load", "entrypoint": entrypoint, "actorIdleTimeoutMs": idle_timeout_ms
+        }))?;
+        bytes.push(b'\n');
+        self.writer.write_all(&bytes).await?;
+        attach_executor(self.reader, self.writer).await
+    }
+}
+
+async fn attach_executor(
+    mut reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+) -> Result<ActorExecutorConnection> {
+    let actor_types = match read_client_message(&mut reader).await? {
+        Some(ActorExecutorClientMessage::Attach {
+            protocol,
+            actor_types,
+        }) => {
+            ensure!(
+                protocol == ACTOR_EXECUTOR_PROTOCOL_VERSION,
+                "unsupported executor protocol {protocol}"
+            );
+            ensure!(
+                !actor_types.is_empty(),
+                "customer executor advertised no actor types"
+            );
+            actor_types
+        }
+        _ => anyhow::bail!("customer executor must attach after loading code"),
+    };
+    let (executor, task) = JsActorExecutor::start(reader, writer, actor_types);
+    debug!(actor_types = ?executor.actor_types, "JavaScript executor connected");
+    Ok(ActorExecutorConnection { executor, task })
 }
 
 pub(crate) struct ActorExecutorConnection {
@@ -328,6 +368,22 @@ struct JsActorExecutor {
 
 #[async_trait]
 impl ActorExecutor for JsActorExecutor {
+    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<Value>>) -> Result<()> {
+        match self
+            .exchange(
+                ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
+                state,
+            )
+            .await?
+        {
+            ExecutorReply::Hydrated => Ok(()),
+            ExecutorReply::Failed { code, message } => {
+                anyhow::bail!("actor hydration failed ({code}): {message}")
+            }
+            _ => anyhow::bail!("unexpected actor hydration reply"),
+        }
+    }
+
     fn supports(&self, actor_type: &str) -> bool {
         self.actor_types.contains(actor_type)
     }
@@ -374,7 +430,7 @@ impl ActorExecutor for JsActorExecutor {
                     message,
                 }))
             }
-            ExecutorReply::Evicted | ExecutorReply::StateRequired => {
+            ExecutorReply::Hydrated | ExecutorReply::Evicted | ExecutorReply::StateRequired => {
                 anyhow::bail!("actor executor returned eviction reply to invocation")
             }
             ExecutorReply::WebsocketHandled { .. } => {
@@ -401,7 +457,8 @@ impl ActorExecutor for JsActorExecutor {
                     message,
                 }))
             }
-            ExecutorReply::Invoked { .. }
+            ExecutorReply::Hydrated
+            | ExecutorReply::Invoked { .. }
             | ExecutorReply::Evicted
             | ExecutorReply::StateRequired => {
                 anyhow::bail!("actor executor returned the wrong reply to socket event")
@@ -418,7 +475,7 @@ impl ActorExecutor for JsActorExecutor {
             ExecutorReply::Failed { code, message } => {
                 anyhow::bail!("actor executor rejected eviction ({code}): {message}")
             }
-            ExecutorReply::Invoked { .. } => {
+            ExecutorReply::Hydrated | ExecutorReply::Invoked { .. } => {
                 anyhow::bail!("actor executor returned the wrong reply to eviction")
             }
             ExecutorReply::WebsocketHandled { .. } | ExecutorReply::StateRequired => {
@@ -533,7 +590,7 @@ impl ExecutorDriver {
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
                         ActorExecutorClientMessage::GetConnections { message_id } => self.load_connections(message_id)?,
-                        ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
+                        ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
                 }
                 published = self.publishing.join_next(), if !self.publishing.is_empty() => {
@@ -573,8 +630,11 @@ impl ExecutorDriver {
         match command {
             ExecutorRequest::Exchange(mut pending) => {
                 let resident = self.residents.remove(pending.command.actor());
-                pending.resident_only =
-                    resident && !matches!(pending.command, ExecutorCommand::Evict(_));
+                pending.resident_only = resident
+                    && !matches!(
+                        pending.command,
+                        ExecutorCommand::Evict(_) | ExecutorCommand::Hydrate(_)
+                    );
                 self.enqueue(*pending)
             }
             ExecutorRequest::Ready(written, publisher, sockets) => {
@@ -724,7 +784,9 @@ impl ExecutorDriver {
         }
         if matches!(
             reply,
-            ExecutorReply::Invoked { .. } | ExecutorReply::WebsocketHandled { .. }
+            ExecutorReply::Hydrated
+                | ExecutorReply::Invoked { .. }
+                | ExecutorReply::WebsocketHandled { .. }
         ) {
             if self.residents.len() >= 4096 {
                 self.residents.clear();
@@ -807,7 +869,7 @@ impl ExecutorCommand {
         match self {
             Self::Invoke(invocation) => &invocation.actor,
             Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Evict(eviction) => &eviction.actor,
+            Self::Evict(eviction) | Self::Hydrate(eviction) => &eviction.actor,
         }
     }
 }
@@ -924,6 +986,9 @@ struct ExecutorCommandEnvelope<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
+    Warm {
+        protocol: u32,
+    },
     GetConnections {
         message_id: u64,
     },
@@ -944,6 +1009,7 @@ enum ActorExecutorClientMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorCommand {
+    Hydrate(ActorMethodEviction),
     Invoke(ActorMethodInvocation),
     WebsocketEvent(ActorSocketInvocation),
     Evict(ActorMethodEviction),
@@ -952,6 +1018,7 @@ enum ExecutorCommand {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorReply {
+    Hydrated,
     StateRequired,
     Invoked {
         result: Value,
@@ -973,6 +1040,45 @@ enum ExecutorReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -> Result<()> {
+        let root = tempfile::tempdir_in("/tmp")?;
+        let path = root.path().join("executor.sock");
+        let listener = ActorExecutorListener::bind(&path).await?;
+        let peer = tokio::spawn(async move {
+            let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
+            write_json_line(&mut socket, &json!({"type":"warm","protocol":16})).await?;
+            let load = read_json_line(&mut socket).await?;
+            assert_eq!(load["entrypoint"], "/customer/actors.mjs");
+            write_json_line(
+                &mut socket,
+                &json!({"type":"attach","protocol":16,"actor_types":["counter"]}),
+            )
+            .await?;
+            assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
+            let hydrate = read_json_line(&mut socket).await?;
+            assert_eq!(hydrate["command"]["type"], "hydrate");
+            assert_eq!(hydrate["command"]["state"]["count"], 41);
+            write_json_line(&mut socket, &json!({"type":"reply","message_id":hydrate["message_id"],"reply":{"type":"hydrated"}})).await?;
+            anyhow::Ok(())
+        });
+        let warm = listener.accept_warm().await?;
+        let connection = warm.load("/customer/actors.mjs", 60_000).await?;
+        connection.mark_ready(None, None).await?;
+        connection
+            .executor()
+            .hydrate(
+                ActorKey {
+                    actor_type: "counter".into(),
+                    actor_id: "one".into(),
+                },
+                Some(Arc::new(json!({"count":41}))),
+            )
+            .await?;
+        peer.await??;
+        Ok(())
+    }
     use serde_json::json;
     use tempfile::TempDir;
     use tokio::{

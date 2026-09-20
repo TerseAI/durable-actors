@@ -7,6 +7,32 @@ use tonic::{
 
 pub(crate) const MAX_STORAGE_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
+#[derive(Clone)]
+pub(crate) struct Channels(moka::future::Cache<String, Channel>);
+
+impl Default for Channels {
+    fn default() -> Self {
+        Self(
+            moka::future::Cache::builder()
+                .max_capacity(256)
+                .time_to_idle(Duration::from_secs(300))
+                .build(),
+        )
+    }
+}
+
+impl Channels {
+    pub(crate) async fn capability(&self, url: &str) -> Result<(Channel, String)> {
+        let (origin, token) = capability_origin(url)?;
+        let channel = self
+            .0
+            .try_get_with(origin.clone(), async { channel(&origin) })
+            .await
+            .map_err(|error| anyhow::anyhow!("connect storage endpoint: {error}"))?;
+        Ok((channel, token))
+    }
+}
+
 pub(crate) fn channel(origin: &str) -> Result<Channel> {
     let url = reqwest::Url::parse(origin)?;
     ensure!(
@@ -28,7 +54,7 @@ pub(crate) fn channel(origin: &str) -> Result<Channel> {
     Ok(endpoint.connect_lazy())
 }
 
-pub(crate) fn capability(url: &str) -> Result<(Channel, String)> {
+fn capability_origin(url: &str) -> Result<(String, String)> {
     let mut url = reqwest::Url::parse(url)?;
     let scheme = match url.scheme() {
         "grpc" => "http",
@@ -53,7 +79,7 @@ pub(crate) fn capability(url: &str) -> Result<(Channel, String)> {
         url.username().is_empty() && url.password().is_none() && url.fragment().is_none(),
         "invalid storage capability authority"
     );
-    Ok((channel(&origin)?, token))
+    Ok((origin, token))
 }
 
 pub(crate) fn request<T>(value: T, token: &str) -> Result<Request<T>> {

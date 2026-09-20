@@ -5,6 +5,7 @@ import type {
     ActorExecutorCommand,
     ActorExecutorReply,
     ActorWorkerData,
+    HydrateCommand,
     InvokeCommand,
     WebSocketEventCommand
 } from "./protocol.js"
@@ -49,7 +50,7 @@ interface ResidentActorWorkerOptions {
 interface ActorWorkerHandle {
     ready(): Promise<readonly string[]>
     execute(
-        command: InvokeCommand | WebSocketEventCommand,
+        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply>

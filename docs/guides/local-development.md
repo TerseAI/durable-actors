@@ -4,6 +4,8 @@ Run actors locally using the published npm package. Set the same API key in the 
 
 ## Install the package
 
+Install Node.js 20+ and Bun 1.4.2+ on your PATH. The CLI uses Node; Rust starts Bun to execute each actor in a separate process.
+
 ```sh
 npm install little-actors
 ```
@@ -52,3 +54,25 @@ Keep `little-actors dev` running while editing actor code. It watches TypeScript
 If the CLI is missing, run `npm install little-actors` in your application directory before invoking `npx little-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.
 
 For server startup, storage, and client connection issues, check the [local defaults and connection settings](../reference/configuration.md).
+
+## Test this checkout
+
+From the repository root, with Rust, Node, pnpm, and Bun installed:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --dir sdk build
+cargo build --locked
+export DURABLE_OBJECT_BINARY="$PWD/target/debug/little-actors"
+export DURABLE_OBJECT_API_KEY=local-dev-key
+cd examples/chat
+node ../../sdk/dist/cli.js dev
+```
+
+In another terminal, use the same API key and run the chat example's backend and frontend as described in its README. Stop and restart the runtime to verify state recovery. The local file bucket preserves the existing storage and commit behavior; Modal resource limits and the spare pool apply only to hosted execution.
+
+The generic startup and recovery check uses a real Bun worker and Rust host with delayed code arrival:
+
+```sh
+cargo test --locked generic_bun_host_restores -- --ignored --nocapture
+```

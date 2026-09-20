@@ -13,6 +13,7 @@ import type {
     ActorWorkerMessage,
     ActorWorkerRequest,
     EvictCommand,
+    HydrateCommand,
     InvokeCommand,
     WebSocketEventCommand
 } from "./protocol.js"
@@ -27,16 +28,15 @@ import type {
 
 const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
 
-const MAX_RESIDENT_ACTORS = 32
-
 class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
     private readonly actorSchemas: readonly ActorSchema[] | undefined
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
-    private readonly actors = new Map<string, ResidentActorWorker>()
+    private resident: ResidentActorWorker | undefined
     private speculativeWorker: ActorWorkerHandle | undefined
     private speculativeTimer: NodeJS.Timeout | undefined
+    private identity: string | undefined
     private closed = false
     private actorTypes: readonly string[] | undefined
 
@@ -70,7 +70,12 @@ class ActorWorkerSupervisor {
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (this.closed) return failedReply("actor_worker_terminated", "actor supervisor is closed")
+        const identity = actorKey(command.actor)
+        if (this.identity !== undefined && this.identity !== identity)
+            return failedReply("actor_identity_mismatch", "sandbox is permanently assigned to another actor")
+        if (command.type !== "evict") this.identity ??= identity
         switch (command.type) {
+            case "hydrate":
             case "invoke":
             case "websocket_event":
                 try {
@@ -89,8 +94,8 @@ class ActorWorkerSupervisor {
     close(): void {
         this.closed = true
         this.takeSpeculativeWorker()?.terminate("actor supervisor is closed")
-        for (const actor of this.actors.values()) actor.terminate("actor supervisor is closed")
-        this.actors.clear()
+        this.resident?.terminate("actor supervisor is closed")
+        this.resident = undefined
     }
 
     private preload(): ActorWorkerHandle {
@@ -108,7 +113,7 @@ class ActorWorkerSupervisor {
     }
 
     private execute(
-        command: InvokeCommand | WebSocketEventCommand,
+        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -120,55 +125,31 @@ class ActorWorkerSupervisor {
                 )
             )
         }
-        const key = actorKey(command.actor)
-        let actor = this.actors.get(key)
+        let actor = this.resident
         if (actor === undefined) {
             if (command.resident_only) return Promise.resolve({ type: "state_required" })
-            if (!this.makeRoomForActor()) {
-                return Promise.resolve(
-                    failedReply(
-                        "resource_exhausted",
-                        `actor host already has ${MAX_RESIDENT_ACTORS} active actor Workers`
-                    )
-                )
-            }
             actor = new ResidentActorWorker({
                 moduleUrl: this.actorEntrypointUrl,
                 schemas: this.actorSchemas,
                 idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
-                onIdle: candidate => this.removeIfCurrent(key, candidate)
+                onIdle: candidate => this.removeIfCurrent(candidate)
             })
-            this.actors.set(key, actor)
+            this.resident = actor
         }
         return actor.execute(command, publish, connections)
     }
 
-    private evict(command: EvictCommand): ActorExecutorReply {
-        const key = actorKey(command.actor)
-        const actor = this.actors.get(key)
-        if (actor !== undefined) {
-            this.actors.delete(key)
-            actor.terminate("resident actor was evicted by the Rust host")
-        }
+    private evict(_command: EvictCommand): ActorExecutorReply {
+        this.resident?.terminate("resident actor was evicted by the Rust host")
+        this.resident = undefined
         return { type: "evicted" }
     }
 
-    private makeRoomForActor(): boolean {
-        if (this.actors.size < MAX_RESIDENT_ACTORS) return true
-        const idle = [...this.actors.entries()]
-            .filter(([, actor]) => actor.isIdle())
-            .sort((left, right) => left[1].lastCompletedAt - right[1].lastCompletedAt)[0]
-        if (idle === undefined) return false
-        this.actors.delete(idle[0])
-        idle[1].terminate("resident actor was evicted by the LRU capacity limit")
-        return true
-    }
-
-    private removeIfCurrent(key: string, actor: ResidentActorWorker): void {
-        if (this.actors.get(key) !== actor || !actor.isIdle()) return
-        this.actors.delete(key)
+    private removeIfCurrent(actor: ResidentActorWorker): void {
+        if (this.resident !== actor || !actor.isIdle()) return
+        this.resident = undefined
         actor.terminate(`resident actor was idle for ${this.actorIdleTimeoutMs}ms`)
     }
 
@@ -201,7 +182,7 @@ class ResidentActorWorker {
     }
 
     async execute(
-        command: InvokeCommand | WebSocketEventCommand,
+        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -255,7 +236,18 @@ class ActorWorker implements ActorWorkerHandle {
     private publish: SocketPublisher | undefined
     private connections: SocketSource | undefined
 
-    constructor(data: ActorWorkerData) {
+    private readonly warmPromise: Promise<void>
+    private warmResolve: (() => void) | undefined
+    private warmReject: ((error: Error) => void) | undefined
+    private assigned: boolean
+
+    constructor(data?: ActorWorkerData) {
+        this.assigned = data !== undefined
+        this.warmPromise = new Promise((resolve, reject) => {
+            this.warmResolve = resolve
+            this.warmReject = reject
+        })
+        void this.warmPromise.catch(() => undefined)
         this.readyPromise = new Promise<readonly string[]>((resolve, reject) => {
             this.readyResolve = resolve
             this.readyReject = reject
@@ -268,6 +260,17 @@ class ActorWorker implements ActorWorkerHandle {
         this.worker.unref()
     }
 
+    warm(): Promise<void> {
+        this.worker.ref()
+        return this.warmPromise
+    }
+
+    load(data: ActorWorkerData): void {
+        if (this.assigned) throw new Error("customer code already assigned")
+        this.assigned = true
+        this.post({ type: "load", data })
+    }
+
     ready(): Promise<readonly string[]> {
         this.worker.ref()
         return this.readyPromise.finally(() => {
@@ -276,7 +279,7 @@ class ActorWorker implements ActorWorkerHandle {
     }
 
     async execute(
-        command: InvokeCommand | WebSocketEventCommand,
+        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
@@ -305,6 +308,12 @@ class ActorWorker implements ActorWorkerHandle {
     }
 
     private receive(message: ActorWorkerMessage): void {
+        if (message.type === "warm") {
+            this.warmResolve?.()
+            this.warmResolve = undefined
+            this.warmReject = undefined
+            return
+        }
         if (message.type === "get_connections") {
             void this.loadConnections()
             return
@@ -369,6 +378,7 @@ class ActorWorker implements ActorWorkerHandle {
     private fail(error: Error): void {
         if (this.terminalError !== undefined) return
         this.terminalError = error
+        this.warmReject?.(error)
         this.readyReject?.(error)
         this.readyResolve = undefined
         this.readyReject = undefined
@@ -386,5 +396,5 @@ class ActorWorkerTerminatedError extends Error {
     }
 }
 
-export { ActorWorkerSupervisor, DEFAULT_ACTOR_IDLE_TIMEOUT_MS, MAX_RESIDENT_ACTORS }
+export { ActorWorker, ActorWorkerSupervisor, DEFAULT_ACTOR_IDLE_TIMEOUT_MS }
 export type { ResidentActorWorker }

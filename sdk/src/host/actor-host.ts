@@ -1,5 +1,5 @@
 import { stringifyChunked } from "@discoveryjs/json-ext"
-import { stat, writeFile } from "node:fs/promises"
+import { stat } from "node:fs/promises"
 import { type Socket, createConnection } from "node:net"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -20,9 +20,6 @@ async function runActorHost(): Promise<never> {
     const session = new ActorSession()
     await session.start()
 
-    const readyFile = process.env.DURABLE_OBJECT_HOST_READY_FILE
-    if (readyFile) await writeFile(readyFile, `${Date.now()}\n`, { mode: 0o600 })
-
     await session.waitUntilDisconnected()
     throw new ActorSessionError("Rust host disconnected from actor session")
 }
@@ -33,7 +30,8 @@ class ActorSession {
 
     constructor(
         private readonly settings: ActorHostSettings = parseHostSettings(process.env),
-        private readonly createSupervisor: ActorWorkerSupervisorFactory = options => new ActorWorkerSupervisor(options)
+        private readonly createSupervisor: ActorWorkerSupervisorFactory = options => new ActorWorkerSupervisor(options),
+        private readonly socket?: Socket
     ) {}
 
     start(): Promise<void> {
@@ -64,7 +62,8 @@ class ActorSession {
                 this.settings.socketPath,
                 actorTypes,
                 commandHandler,
-                this.settings.startupTimeoutMs
+                this.settings.startupTimeoutMs,
+                this.socket
             )
             void this.connection.closed().then(() => supervisor.close())
         } catch (error) {
@@ -111,11 +110,12 @@ class ActorSessionConnection {
         socketPath: string,
         actorTypes: readonly string[],
         commandHandler: ActorCommandHandler,
-        timeoutMs: number
+        timeoutMs: number,
+        connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
-        const socket = await connectSocket(socketPath)
+        const socket = connectedSocket ?? (await connectSocket(socketPath))
         const connection = new ActorSessionConnection(socket, commandHandler)
         connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
@@ -421,6 +421,7 @@ const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
 export {
     ActorSession,
+    connectSocket,
     parseHostSettings,
     prepareActorEntrypoint,
     resolveActorEntrypoint,

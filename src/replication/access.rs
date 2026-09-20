@@ -23,7 +23,6 @@ pub struct ReplicaGrant {
     pub object: String,
     pub region: String,
     pub host_id: String,
-    pub archive_url: String,
     pub expires_at_ms: u64,
 }
 
@@ -120,7 +119,6 @@ mod tests {
             object: "little-actors/v2/snapshots/aa/test/1.json".into(),
             region: "us-east".into(),
             host_id: "replica".into(),
-            archive_url: String::new(),
             expires_at_ms: u64::MAX,
         };
         let url = access.url("http://replica", &grant)?;

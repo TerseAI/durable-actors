@@ -10,7 +10,7 @@ use crate::{
     actor::ActorKey,
     bucket::{Bucket, RuntimeStorage, testing::RuntimeFixture},
     host::HostId,
-    host_leases::{HostLeaseRegistry, HostLeaseRequest},
+    host_leases::HostLeaseRequest,
     placement::ObjectPlacementStore,
     state_log::StateSnapshot,
     state_transport::SnapshotWriter,
@@ -77,9 +77,8 @@ async fn inspection_reads_persisted_state_without_a_deployment_or_live_host() ->
         .save(&actor, 1, json!({"internal": {"password": "saved"}}))
         .await?;
     fixture
-        .runtime
-        .leases
-        .unregister(&fixture.host, "session")
+        .store
+        .release_activation(&actor, &fixture.host, &actor.actor_id)
         .await?;
     let before = fixture.store.get(&actor.storage_key()).await?;
 
@@ -113,6 +112,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             &uuid::Uuid::new_v4().to_string(),
             "r1",
             "north-america-east",
+            &fixture.actor("one"),
         )?
         .token;
     for path in ["/v1/actors", "/v1/actors/Room.with.dots/one?include=state"] {
@@ -149,10 +149,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
         StatusCode::NOT_FOUND
     );
     let actor = fixture.actor("empty");
-    fixture
-        .store
-        .claim_actor(&actor, None, &fixture.host, "north-america-east")
-        .await?;
+    fixture.activate(&actor).await?;
     let response: Value = fixture
         .get("/v1/actors/Room.with.dots/empty?include=state")
         .await?
@@ -260,15 +257,6 @@ impl Fixture {
         let routes = super::inspection::router(inspector, admin);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
-        runtime
-            .leases
-            .register(&HostLeaseRequest {
-                id: host.clone(),
-                session_id: "session".into(),
-                route: "http://localhost:7101".into(),
-                duration_ms: 60_000,
-            })
-            .await?;
         Ok(Self {
             runtime,
             store,
@@ -287,13 +275,27 @@ impl Fixture {
         }
     }
 
-    async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {
+    async fn activate(&self, actor: &ActorKey) -> Result<crate::bucket::LoadedActor> {
         self.store
-            .claim_actor(actor, None, &self.host, "north-america-east")
-            .await?;
+            .register_activation(
+                actor,
+                &HostLeaseRequest {
+                    id: self.host.clone(),
+                    session_id: actor.actor_id.clone(),
+                    route: "http://localhost:7101".into(),
+                    duration_ms: 60_000,
+                },
+                "north-america-east",
+                true,
+            )
+            .await
+    }
+
+    async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {
+        let placement = self.activate(actor).await?.placement;
         let ticket = self
             .store
-            .prepare_write("north-america-east", actor, version)
+            .prepare_actor_write(actor, &placement.lease, placement.owner_epoch, version)
             .await?;
         let snapshot =
             StateSnapshot::new(version, 1, format!("request-{version}"), state, Value::Null)?;

@@ -28,29 +28,98 @@ fn snapshot(version: u64) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn replacing_full_snapshots_reclaims_capacity_and_keeps_the_latest_after_restart()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let capacity = (snapshot(9).len() * 2) as u64;
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    let stream = stream();
+    store.initialize_session(&stream.session).await?;
+    for version in 1..=9 {
+        store.append(&stream, &snapshot(version)).await?;
+        if version > 1 {
+            assert!(store.read(&stream.object(version - 1)).await?.is_none());
+        }
+        assert_eq!(
+            store.read(&stream.object(version)).await?,
+            Some(snapshot(version))
+        );
+    }
+    drop(store);
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    let sealed = store.seal_session(&stream.session).await?;
+    assert_eq!(sealed.streams[0].latest.as_ref().unwrap().state_version, 9);
+    assert_eq!(store.read(&stream.object(9)).await?, Some(snapshot(9)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_replacement_preserves_the_previous_recoverable_snapshot() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let capacity = snapshot(1).len() as u64;
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    let stream = stream();
+    store.initialize_session(&stream.session).await?;
+    store.append(&stream, &snapshot(1)).await?;
+    assert!(store.append(&stream, &snapshot(2)).await.is_err());
+    drop(store);
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    let sealed = store.seal_session(&stream.session).await?;
+    assert_eq!(sealed.streams[0].latest.as_ref().unwrap().state_version, 1);
+    assert_eq!(store.read(&stream.object(1)).await?, Some(snapshot(1)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_finishes_compaction_without_deleting_another_stream() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let capacity = (snapshot(1).len() * 3) as u64;
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    let first = stream();
+    let second = ReplicaStream {
+        prefix: "snapshots/epochs/other/1/".into(),
+        ..first.clone()
+    };
+    store.initialize_session(&first.session).await?;
+    store.append(&first, &snapshot(1)).await?;
+    let blob = std::fs::read_dir(directory.path())?
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "blob")
+        })
+        .unwrap();
+    let obsolete = std::fs::read(&blob)?;
+    store.append(&second, &snapshot(1)).await?;
+    store.append(&first, &snapshot(2)).await?;
+    drop(store);
+    // Simulate a crash after publishing the new head but before deleting its predecessor.
+    std::fs::write(blob, obsolete)?;
+    let store = FileReplicaStore::open(directory.path().into(), capacity).await?;
+    assert!(store.read(&first.object(1)).await?.is_none());
+    assert_eq!(store.read(&second.object(1)).await?, Some(snapshot(1)));
+    store.append(&first, &snapshot(3)).await?;
+    assert_eq!(store.read(&first.object(3)).await?, Some(snapshot(3)));
+    assert_eq!(store.read(&second.object(1)).await?, Some(snapshot(1)));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_seal_survives_restart_and_rejects_delayed_writes_and_reinitialization() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     let stream = stream();
     store.initialize_session(&stream.session).await?;
-    store.append(&stream, "archive", &snapshot(1)).await?;
+    store.append(&stream, &snapshot(1)).await?;
     let sealed = store.seal_session(&stream.session).await?;
     assert!(sealed.initialized && sealed.sealed);
     assert_eq!(sealed.streams[0].latest.as_ref().unwrap().state_version, 1);
     drop(store);
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
-    assert!(
-        store
-            .append(&stream, "archive", &snapshot(1))
-            .await
-            .is_err()
-    );
-    assert!(
-        store
-            .append(&stream, "archive", &snapshot(2))
-            .await
-            .is_err()
-    );
+    assert!(store.append(&stream, &snapshot(1)).await.is_err());
+    assert!(store.append(&stream, &snapshot(2)).await.is_err());
     assert!(store.initialize_session(&stream.session).await.is_err());
     assert_eq!(store.seal_session(&stream.session).await?, sealed);
     Ok(())
@@ -62,12 +131,7 @@ async fn missing_streams_are_not_recovery_witnesses_and_cannot_be_initialized_af
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     let stream = stream();
-    assert!(
-        store
-            .append(&stream, "archive", &snapshot(1))
-            .await
-            .is_err()
-    );
+    assert!(store.append(&stream, &snapshot(1)).await.is_err());
     assert!(store.stream_head(&stream).await.is_err());
     assert!(!store.seal_session(&stream.session).await?.initialized);
     assert!(store.initialize_session(&stream.session).await.is_err());
@@ -75,34 +139,22 @@ async fn missing_streams_are_not_recovery_witnesses_and_cannot_be_initialized_af
 }
 
 #[tokio::test]
-async fn archived_snapshots_keep_the_recovery_head_and_conflicting_retries_fail() -> Result<()> {
+async fn replica_snapshots_and_heads_survive_restart_and_conflicting_retries_fail() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     let stream = stream();
     store.initialize_session(&stream.session).await?;
-    store.append(&stream, "archive", &snapshot(1)).await?;
-    store.append(&stream, "archive", &snapshot(1)).await?;
+    store.append(&stream, &snapshot(1)).await?;
+    store.append(&stream, &snapshot(1)).await?;
     let conflicting =
         StateSnapshot::new(1, 1, "other".into(), json!({"value": 50}), json!(50))?.encode()?;
-    assert!(
-        store
-            .append(&stream, "archive", &conflicting)
-            .await
-            .is_err()
-    );
+    assert!(store.append(&stream, &conflicting).await.is_err());
     let head = store.stream_head(&stream).await?;
-    store
-        .archived(&head.latest.as_ref().unwrap().object)
-        .await?;
     drop(store);
     let store = FileReplicaStore::open(directory.path().into(), 4096).await?;
     assert_eq!(store.stream_head(&stream).await?, head);
-    assert!(
-        store
-            .append(&stream, "archive", &conflicting)
-            .await
-            .is_err()
-    );
+    assert_eq!(store.read(&stream.object(1)).await?, Some(snapshot(1)));
+    assert!(store.append(&stream, &conflicting).await.is_err());
     Ok(())
 }
 
@@ -117,20 +169,15 @@ async fn one_session_initialization_covers_multiple_actors_and_a_seal_fences_the
         ..first.clone()
     };
     store.initialize_session(&first.session).await?;
-    store.append(&first, "archive", &snapshot(1)).await?;
-    store.append(&second, "archive", &snapshot(2)).await?;
+    store.append(&first, &snapshot(1)).await?;
+    store.append(&second, &snapshot(2)).await?;
     let sealed = store.seal_session(&first.session).await?;
     assert_eq!(sealed.streams.len(), 2);
-    assert!(
-        store
-            .append(&second, "archive", &snapshot(3))
-            .await
-            .is_err()
-    );
+    assert!(store.append(&second, &snapshot(3)).await.is_err());
     let later = ReplicaStream {
         prefix: "snapshots/epochs/later/1/".into(),
         ..first
     };
-    assert!(store.append(&later, "archive", &snapshot(1)).await.is_err());
+    assert!(store.append(&later, &snapshot(1)).await.is_err());
     Ok(())
 }

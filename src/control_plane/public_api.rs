@@ -201,6 +201,7 @@ async fn register_deployment(
         .transpose()
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
+        code_snapshot: Some(request.code_snapshot),
         code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
@@ -218,9 +219,6 @@ async fn register_deployment(
                 ApiError::bad_request(error)
             }
         })?;
-    if let Some(region) = request.warm_region {
-        state.invocations.warm_deployment_image(spec, region);
-    }
     Ok(Json(DeploymentReply { changed }))
 }
 
@@ -361,13 +359,12 @@ struct RegisterDeploymentRequest {
     #[serde(default)]
     contract: Option<Value>,
     image_ref: String,
+    code_snapshot: String,
     working_directory: String,
     #[serde(default)]
     actor_entrypoint: Option<String>,
     #[serde(default)]
     secret_refs: Vec<String>,
-    #[serde(default)]
-    warm_region: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -496,15 +493,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deployment_registration_accepts_a_background_warm_region() {
-        let request: RegisterDeploymentRequest = serde_json::from_value(serde_json::json!({
+    fn deployment_registration_rejects_the_removed_image_warmup_option() {
+        let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
             "codeRevision": "revision-1",
-            "imageRef": "im-actor",
-            "workingDirectory": "/workspace",
+            "imageRef": "im-runtime",
+            "codeSnapshot": "im-code",
+            "workingDirectory": "/customer",
             "warmRegion": "north-america-west"
-        }))
-        .unwrap();
-
-        assert_eq!(request.warm_region.as_deref(), Some("north-america-west"));
+        }));
+        assert!(request.is_err());
     }
 }

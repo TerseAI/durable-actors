@@ -60,18 +60,17 @@ Checks TypeScript and bundles actor code with its generated schemas into `dist/a
 ## Deploy actors
 
 ```sh
-npx little-actors deploy --image im-chat --working-directory /app --actor-entrypoint dist/actors.mjs
+npx little-actors deploy --image im-runtime
 ```
 
-Registers a built image plus the public API contract extracted from the TypeScript source
+Compiles and publishes the customer code snapshot, then registers it with the generic runtime image and public API contract. Requires Modal credentials in the deployment terminal.
 
-- `--image <ref>` — Provider image to register.
+- `[entrypoint]` — TypeScript source file, default `src/durable-objects.ts`.
+- `--image <ref>` — Published generic Bun/Rust runtime image ID.
 - `--revision <id>` — Optional revision name. Defaults to a new generated ID for each deploy.
-- `--working-directory <path>` — Absolute project path inside the image.
-- `--actor-entrypoint <path>` — Entrypoint inside the image. Use `dist/actors.mjs` for the build artifact; this is also the default.
 - `--config <file>` — TypeScript configuration for extraction.
-- `--secret <name>` — Provider secret reference. Repeatable.
-- `--warm-region <region>` — Background image warmup.
+- `--secret <name>` — Modal secret reference. Repeatable; uses an on-demand generic sandbox.
+- `--region <region>` — Canonical region used when publishing code; default `north-america-east`.
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ## Generate a client and proxy

@@ -9,26 +9,30 @@ use crate::{
     storage::WritePlan,
 };
 
-use super::{ReplicaStore, ReplicationTicket};
+use super::ReplicationTicket;
 
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
     bucket: Arc<dyn SnapshotWriter>,
     transport: Arc<dyn StateTransport>,
-    local: Arc<dyn ReplicaStore>,
+    failures: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl ReplicatedStateTransport {
-    pub fn new(
-        bucket: Arc<dyn SnapshotWriter>,
-        transport: Arc<dyn StateTransport>,
-        local: Arc<dyn ReplicaStore>,
-    ) -> Self {
+    pub fn new(bucket: Arc<dyn SnapshotWriter>, transport: Arc<dyn StateTransport>) -> Self {
         Self {
             bucket,
             transport,
-            local,
+            failures: None,
         }
+    }
+
+    pub fn with_failure_reports(
+        mut self,
+        failures: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Self {
+        self.failures = Some(failures);
+        self
     }
 }
 
@@ -41,7 +45,6 @@ impl SnapshotWriter for ReplicatedStateTransport {
         replication.validate()?;
         let started = Instant::now();
         let bucket = self.bucket.clone();
-        let local = self.local.clone();
         let plan = ticket.clone();
         let object = ticket.object_name.clone();
         let bucket_bytes = bytes.clone();
@@ -49,9 +52,6 @@ impl SnapshotWriter for ReplicatedStateTransport {
             let result = bucket.write_snapshot(&plan, bucket_bytes).await;
             tracing::info!(event = "object_storage_upload", %object, uploaded = result.is_ok(),
                 upload_ms = started.elapsed().as_secs_f64() * 1000.0);
-            if result.is_ok() {
-                let _ = local.archived(&object).await;
-            }
             result
         });
         let bucket = async {
@@ -105,36 +105,35 @@ impl ReplicatedStateTransport {
         bytes: Vec<u8>,
     ) -> Result<StateWrite> {
         let started = Instant::now();
-        let local = async {
-            self.local
-                .put(&ticket.object_name, &replication.archive_url, &bytes)
-                .await?;
-            tracing::info!(event = "replica_local_sync", object = %ticket.object_name,
-                local_sync_ms = started.elapsed().as_secs_f64() * 1000.0, bytes = bytes.len());
-            anyhow::Ok(())
-        };
-        let remote = async {
-            let mut writes = JoinSet::new();
-            for replica in &replication.replicas {
-                let transport = self.transport.clone();
-                let url = replica.url.clone();
-                let bytes = bytes.clone();
-                let host_id = replica.host_id.clone();
-                let region = replica.region.clone();
-                let object = ticket.object_name.clone();
-                writes.spawn(async move {
-                    let result = transport.write(&url, bytes).await;
-                    tracing::info!(event = "replica_ack", %object, %host_id, %region, acknowledged = result.is_ok(),
-                        replica_ms = started.elapsed().as_secs_f64() * 1000.0);
-                    result
-                });
+        let mut writes = JoinSet::new();
+        for replica in &replication.replicas {
+            let transport = self.transport.clone();
+            let url = replica.url.clone();
+            let bytes = bytes.clone();
+            let host_id = replica.host_id.clone();
+            let region = replica.region.clone();
+            let object = ticket.object_name.clone();
+            let failures = self.failures.clone();
+            writes.spawn(async move {
+                let result = tokio::time::timeout(std::time::Duration::from_secs(5), transport.write(&url, bytes)).await.context("replica write timed out").and_then(|result| result);
+                if result.is_err() && let Some(failures) = failures { let _ = failures.send(host_id.clone()); }
+                tracing::info!(event = "replica_ack", %object, %host_id, %region, acknowledged = result.is_ok(),
+                    replica_ms = started.elapsed().as_secs_f64() * 1000.0);
+                result
+            });
+        }
+        let mut failure = None;
+        while let Some(result) = writes.join_next().await {
+            if let Err(error) = result
+                .context("replica task failed")
+                .and_then(|result| result)
+            {
+                failure = Some(error);
             }
-            while let Some(result) = writes.join_next().await {
-                result??;
-            }
-            anyhow::Ok(())
-        };
-        tokio::try_join!(local, remote)?;
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
         Ok(StateWrite::Replicated)
     }
 }

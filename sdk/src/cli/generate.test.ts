@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -146,26 +146,17 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const provider = path.join(author, "provider.mjs")
+    await writeFile(
+        provider,
+        '#!/usr/bin/env node\nprocess.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({status:"success",result:{codeSnapshot:"im-code"}})))\n'
+    )
+    await chmod(provider, 0o700)
     const beforeDeploy = await readdir(author)
     const deployed = await run(
         process.execPath,
-        [
-            cli,
-            "deploy",
-            "--url",
-            origin,
-            "--image",
-            "im-chat",
-            "--revision",
-            "release-1",
-            "--working-directory",
-            "/app",
-            "--secret",
-            "chat-secrets",
-            "--warm-region",
-            "us-east"
-        ],
-        { cwd: author, env }
+        [cli, "deploy", "--url", origin, "--image", "im-chat", "--revision", "release-1", "--secret", "chat-secrets"],
+        { cwd: author, env: { ...env, DURABLE_OBJECT_SANDBOX_COMMAND: provider } }
     )
     assert.match(deployed.stdout, /release-1/)
     assert.deepEqual(await readdir(author), beforeDeploy)
@@ -173,10 +164,10 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     assert.deepEqual(specification, {
         codeRevision: "release-1",
         imageRef: "im-chat",
-        workingDirectory: "/app",
-        actorEntrypoint: "dist/actors.mjs",
-        secretRefs: ["chat-secrets"],
-        warmRegion: "us-east"
+        codeSnapshot: "im-code",
+        workingDirectory: "/customer",
+        actorEntrypoint: "actors.mjs",
+        secretRefs: ["chat-secrets"]
     })
     assert.equal(contract.version, 1)
     assert.equal(contract.actors[0].actorType, "ChatRoom")

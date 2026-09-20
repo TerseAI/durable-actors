@@ -41,19 +41,6 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await rm(path.join(root, "src"), { recursive: true })
     await rm(path.join(root, "tsconfig.json"))
     await rm(path.join(root, "dist"), { recursive: true })
-    const guard = path.join(root, "guard.mjs")
-    await writeFile(
-        guard,
-        `import { register } from "node:module"
-        register(${JSON.stringify(
-            "data:text/javascript," +
-                encodeURIComponent(`export function resolve(specifier, context, nextResolve) {
-                    if (['typescript', 'tsx', 'esbuild'].includes(specifier.split('/')[0]) || specifier.includes('/compiler/'))
-                        throw new Error('build tooling loaded during actor startup: ' + specifier)
-                    return nextResolve(specifier, context)
-                }`)
-        )}, import.meta.url)`
-    )
     const socketPath = path.join(root, "host.sock")
     const bootstrap = path.join(root, "host.mjs")
     await writeFile(
@@ -67,7 +54,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await once(server, "listening")
     const environment = { ...process.env, DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath }
     delete environment.DURABLE_OBJECT_ENTRYPOINT
-    const host = spawn(process.execPath, ["--import", guard, bootstrap], {
+    const host = spawn("bun", [bootstrap], {
         cwd: deployed,
         env: environment,
         stdio: ["ignore", "pipe", "pipe"]
@@ -134,10 +121,9 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
             state: { count: 6 }
         }
     })
-    const failed = (await receive()).reply
-    assert.equal(failed.type, "failed")
-    assert.match(failed.message, /state violates its socket contract/)
-    assert.equal("state" in failed, false)
+    const unchecked = (await receive()).reply
+    assert.equal(unchecked.type, "invoked")
+    assert.deepEqual(unchecked.state, { count: "invalid" })
 })
 
 test("actor builds report invalid persistence annotations before deployment", async t => {

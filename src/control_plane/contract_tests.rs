@@ -262,6 +262,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
 
 fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
+        code_snapshot: None,
         code_revision: "revision-1".into(),
         image_ref: "image".into(),
         working_directory: "/app".into(),

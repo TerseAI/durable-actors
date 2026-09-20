@@ -1,6 +1,6 @@
 # little-actors
 
-Named actors with serial method calls and saved state. Requires Node.js 20+.
+Named actors with serial method calls and saved state. Requires Node.js 20+ for tooling and Bun 1.4.2+ for local actor execution.
 
 ```sh
 npm install little-actors
@@ -61,10 +61,10 @@ await room.sendMessage({ text: "Hello" }) // Arguments and return types come fro
 
 The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
 
-For a hosted deployment, configure the [remote connection](#hosted-backends) once, then register your built actor image from its source project. The CLI extracts and publishes the public contract automatically:
+For a hosted deployment, configure the [remote connection](#hosted-backends) once, then deploy from the actor source project using a matching generic runtime image. The CLI compiles and publishes a code snapshot before registering it with the public contract:
 
 ```sh
-npx little-actors deploy --image im-chat --working-directory /app
+npx little-actors deploy --image im-runtime
 ```
 
 Then generate clients in another repository using the same environment settings:
@@ -110,7 +110,7 @@ The gateway keeps connections while actors hibernate. Actors use `onConnect`, `o
 
 Inside actor hooks and backend SDK connections, send JSON values with `socket.send({ type: "chat", text: "Hello" })`. The backend SDK encodes and parses these values. Native browser sockets use `JSON.stringify` and `JSON.parse`.
 
-`Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).
+`Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Generated JSON schemas are checked at deployment and are not enforced with AJV during execution. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).
 
 | API                                  | Behavior                                             |
 | ------------------------------------ | ---------------------------------------------------- |

@@ -1,7 +1,6 @@
 pub(crate) mod access;
 mod file;
 mod gcs;
-mod leases;
 mod peers;
 mod runtime;
 
@@ -10,9 +9,8 @@ use async_trait::async_trait;
 
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
-pub use leases::BucketHostLeases;
 pub use peers::{GrpcReplicaPeers, ReplicaPeers};
-pub use runtime::RuntimeStorage;
+pub use runtime::{LoadedActor, ReplicaMembership, RuntimeStorage};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

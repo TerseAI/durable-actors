@@ -4,9 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tracing::info;
 
 use crate::{
-    bucket::{BucketHostLeases, GcsBucket, GrpcReplicaPeers, RuntimeStorage},
-    clock::SystemClock,
-    host_leases::HostLeaseStore,
+    bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
     postgres::PostgresDatabase,
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
 };
@@ -43,6 +41,7 @@ pub struct ControlPlaneStorageConfig {
 }
 
 pub struct SandboxProviderConfig {
+    pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub provider_name: String,
     pub command: String,
     pub environment: HashMap<String, String>,
@@ -64,7 +63,9 @@ pub async fn serve_control_plane(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let bind = config.bind;
-    let routes = control_plane_routes(config).await?;
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let routes = control_plane_routes(config, stop).await?;
     info!(bind = %bind, "durable-object control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -83,7 +84,10 @@ async fn serve_routes(
         .context("serve durable-object control plane")
 }
 
-async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic::service::Routes> {
+async fn control_plane_routes(
+    config: ControlPlaneProcessConfig,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<tonic::service::Routes> {
     let issuer = super::ActorJwtIssuer::from_base64_pkcs8(
         &config.jwt_signing_key,
         config.jwt_key_id,
@@ -101,16 +105,16 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
-    let leases: Arc<dyn HostLeaseStore> = Arc::new(BucketHostLeases::new(
-        authority.clone(),
-        Arc::new(SystemClock),
+    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
+        database.clone(),
     ));
-    let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
     let (fleet, access) = super::replication::fleet(
         registry.clone(),
         &config.sandbox_provider,
         &config.jwt_signing_key,
         config.storage.replica_regions,
+        database.clone(),
+        stop.clone(),
     )?;
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
@@ -121,18 +125,21 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )?);
     let storage = Arc::new(RuntimeStorage::new(
         authority,
-        leases.clone(),
-        fleet,
+        fleet.clone(),
         Arc::new(GrpcReplicaPeers::new(access.clone())?),
         access,
         config.sandbox_provider.runtime.control_plane_url.clone(),
+        std::sync::Arc::new(crate::clock::SystemClock),
     )?);
     let placements = storage.clone();
+    fleet.start(storage.clone(), stop.clone());
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
-        &leases,
         runtime_access.clone(),
+        database,
+        registry.clone(),
+        stop,
     )?;
     let socket_events = config
         .socket_event_sink
@@ -142,7 +149,6 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         .transpose()?
         .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
     let mut service = ControlPlaneService::new(
-        leases,
         placements.clone(),
         auth,
         registry.clone(),
@@ -164,22 +170,22 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
 fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
-    leases: &Arc<dyn HostLeaseStore>,
     access: Arc<crate::bucket::access::RuntimeAccess>,
+    database: PostgresDatabase,
+    registry: Arc<dyn super::admin::AdminRegistry>,
+    stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(CommandSandboxProvider::new(
         config.provider_name,
         config.command,
         config.environment,
     )?);
+    let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
+    pool.start(registry, stop);
     Ok(Arc::new(
-        super::service::SandboxHostProvisioner::new(
-            provider,
-            config.runtime,
-            issuer.clone(),
-            leases.clone(),
-        )
-        .with_runtime_access(access),
+        super::service::SandboxHostProvisioner::new(provider, config.runtime, issuer.clone())
+            .with_runtime_access(access)
+            .with_pool(pool),
     ))
 }
 
@@ -290,7 +296,26 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
         "DURABLE_OBJECT_CONTROL_PLANE_URL",
     )?;
+    let idle = pool_number(get, "DURABLE_OBJECT_SPARE_IDLE", 5, 0, 32)?;
+    let regions = get("DURABLE_OBJECT_SPARE_REGIONS")
+        .unwrap_or_else(|| "north-america-east".into())
+        .split(',')
+        .map(|region| region.trim().to_owned())
+        .collect::<Vec<_>>();
+    for region in &regions {
+        super::regions::storage_region(region)?;
+    }
     Ok(SandboxProviderConfig {
+        pool: crate::sandbox::pool::PoolConfig {
+            kind: crate::sandbox::SpareKind::Actor,
+            idle,
+            idle_ttl_seconds: pool_number(get, "DURABLE_OBJECT_SPARE_TTL_SECONDS", 600, 30, 3600)?,
+            regions,
+            resources: crate::sandbox::ResourceLimits {
+                cpu_millis: pool_number(get, "DURABLE_OBJECT_HOST_CPU_MILLIS", 1000, 100, 64000)?,
+                memory_mib: pool_number(get, "DURABLE_OBJECT_HOST_MEMORY_MIB", 1024, 128, 262144)?,
+            },
+        },
         provider_name,
         command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
             .unwrap_or_else(|| "little-actors-modal-go".into()),
@@ -311,6 +336,25 @@ fn sandbox_provider_config(
             )?,
         },
     })
+}
+
+fn pool_number(
+    get: &mut impl FnMut(&str) -> Option<String>,
+    name: &str,
+    default: u32,
+    min: u32,
+    max: u32,
+) -> Result<u32> {
+    let value = get(name)
+        .map(|value| value.parse::<u32>())
+        .transpose()
+        .with_context(|| format!("invalid {name}"))?
+        .unwrap_or(default);
+    ensure!(
+        (min..=max).contains(&value),
+        "{name} must be between {min} and {max}"
+    );
+    Ok(value)
 }
 
 fn provider_credential(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

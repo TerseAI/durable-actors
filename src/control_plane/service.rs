@@ -1,11 +1,7 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use tonic::transport::Endpoint;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
@@ -16,14 +12,13 @@ use crate::{
         actor_control_plane_service_server::{
             ActorControlPlaneService, ActorControlPlaneServiceServer,
         },
-        actor_host_service_client::ActorHostServiceClient,
     },
     host::HostId,
-    host_leases::{HostLease, HostLeaseStore},
+    host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
     sandbox::{
-        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, ImageWarmup,
-        ProviderCommandFailure, SandboxProvider, TerminateHostsRequest, WarmImageRequest,
+        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, ProviderCommandFailure,
+        SandboxProvider, TerminateHostsRequest,
     },
 };
 
@@ -41,7 +36,6 @@ const FALLBACK_REGION: &str = "north-america-central";
 pub struct ControlPlaneService {
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
-    leases: Arc<dyn HostLeaseStore>,
     placements: Arc<dyn ObjectPlacementStore>,
     auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
@@ -60,7 +54,6 @@ impl ControlPlaneService {
     }
 
     pub(crate) fn new(
-        leases: Arc<dyn HostLeaseStore>,
         placements: Arc<dyn ObjectPlacementStore>,
         auth: ActorJwtVerifier,
         registry: Arc<dyn AdminRegistry>,
@@ -70,7 +63,6 @@ impl ControlPlaneService {
         Self {
             runtime_access: None,
             region: None,
-            leases,
             placements,
             auth,
             host_token_issuer: issuer,
@@ -126,45 +118,6 @@ impl ControlPlaneService {
         self.terminate_deployment_hosts(&previous).await?;
         admin.remove_deployment().await?;
         Ok(true)
-    }
-
-    pub(super) fn warm_deployment_image(&self, spec: HostLaunchSpec, region: String) {
-        let provisioner = self.provisioner.clone();
-        if super::regions::storage_region(&region).is_err() {
-            warn!(
-                event = "actor_image_warmup",
-                code_revision = %spec.code_revision,
-                region,
-                outcome = "invalid_region",
-                "actor image warmup skipped"
-            );
-            return;
-        }
-        tokio::spawn(async move {
-            let started_at = Instant::now();
-            match provisioner.warm_image(&spec, &region).await {
-                Ok(warmup) => info!(
-                    event = "actor_image_warmup",
-                    code_revision = %spec.code_revision,
-                    region,
-                    provider = %warmup.provider,
-                    provider_resource_id = %warmup.resource_id,
-                    provider_total_ms = warmup.total_ms,
-                    total_ms = elapsed_ms(started_at),
-                    outcome = "warmed",
-                    "actor image warmup completed"
-                ),
-                Err(error) => warn!(
-                    event = "actor_image_warmup",
-                    code_revision = %spec.code_revision,
-                    region,
-                    total_ms = elapsed_ms(started_at),
-                    outcome = "failed",
-                    error = %format!("{error:#}"),
-                    "actor image warmup failed"
-                ),
-            }
-        });
     }
 
     async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) -> Result<()> {
@@ -393,6 +346,28 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::EnsureReplicas { failed } => {
+                self.require_active_host(principal).await?;
+                ensure!(
+                    failed.len() <= crate::replication::MAX_REPLICAS,
+                    "too many failed replicas"
+                );
+                let targets = self
+                    .runtime_access
+                    .as_ref()
+                    .context("direct storage is not configured")?
+                    .replicas(
+                        &crate::replication::ReplicaScope {
+                            actor: principal.actor.clone(),
+                            host: principal.host_id.clone(),
+                            session: principal.session_id.clone(),
+                            region: principal.region.clone(),
+                        },
+                        &failed,
+                    )
+                    .await?;
+                Ok(ControlPlaneCommandReply::Replicas { targets })
+            }
             ControlPlaneCommand::SocketMessage { actor, event } => {
                 self.authorize_socket_host(principal, &actor).await?;
                 self.deliver_socket_message_event(&actor, None, &event);
@@ -416,6 +391,7 @@ impl ControlPlaneService {
                             .as_deref()
                             .context("host revision missing")?,
                         &principal.region,
+                        &principal.actor,
                     )?
                     .token;
                 Ok(ControlPlaneCommandReply::StorageAccess {
@@ -432,10 +408,11 @@ impl ControlPlaneService {
         actor: &ActorKey,
     ) -> Result<()> {
         actor.validate()?;
+        ensure!(&principal.actor == actor, "host actor scope mismatch");
         let lease = self.require_active_host(principal).await?;
         let placement = self.current_placement(actor).await?;
         ensure!(
-            self.placements.matches_lease(&placement, &lease).await?,
+            placement.lease == lease && placement.owner == lease.id,
             "actor ownership belongs to another session"
         );
         validate_state_owner(
@@ -484,13 +461,39 @@ impl ControlPlaneService {
         if let Some(target) = active {
             return Ok(target);
         }
-        let (region, lease) = self
-            .ensure_actor_host(&spec, current.as_ref(), &storage_region)
-            .await?;
+        let (region, lease, owner_epoch) = match self
+            .ensure_actor_host(actor, &spec, current.as_ref(), &storage_region)
+            .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                let current = self.placements.get_owner(&actor.storage_key()).await?;
+                if let Some(target) = self.active_target(&current, &spec).await? {
+                    if home_region.is_some_and(|region| region != target.placement.home_region) {
+                        return Err(RegionConflict.into());
+                    }
+                    return Ok(target);
+                }
+                return Err(error);
+            }
+        };
         if let Some(timings) = timings.as_deref_mut() {
             timings.host_ensured_at_ms = Some(timings.elapsed_ms());
         }
-        let placement = self.activate_host(actor, &spec, &lease, &region).await?;
+        ensure!(
+            owner_epoch > 0,
+            "host readiness returned no ownership epoch"
+        );
+        let placement = ObjectPlacement {
+            lease: lease.clone(),
+            object: actor.storage_key(),
+            owner: lease.id.clone(),
+            owner_epoch,
+            home_region: region,
+            state_version: 0,
+            state_object: None,
+            last_request_id: None,
+        };
         if let Some(timings) = timings {
             timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
         }
@@ -501,67 +504,36 @@ impl ControlPlaneService {
         })
     }
 
-    async fn activate_host(
+    async fn ensure_actor_host(
         &self,
         actor: &ActorKey,
         spec: &HostLaunchSpec,
-        lease: &HostLease,
-        region: &str,
-    ) -> Result<ObjectPlacement> {
-        let token = self.host_token_issuer.issue_host(
-            &lease.id,
-            &lease.session_id,
-            &spec.host_revision(),
-            region,
-        )?;
-        let channel = Endpoint::new(lease.route.clone())?
-            .connect_timeout(Duration::from_secs(5))
-            .connect()
-            .await
-            .context("connect to actor host")?;
-        let mut request = Request::new(crate::grpc::proto::ActivateActorRequest {
-            actor: Some(actor.clone().into()),
-        });
-        request.set_timeout(super::CONTROL_PLANE_REQUEST_TIMEOUT);
-        request
-            .metadata_mut()
-            .insert("authorization", format!("Bearer {}", token.token).parse()?);
-        let activated = ActorHostServiceClient::new(channel)
-            .activate(request)
-            .await?
-            .into_inner();
-        ensure!(
-            activated.owner_epoch > 0,
-            "host activation returned no ownership epoch"
-        );
-        Ok(ObjectPlacement {
-            object: actor.storage_key(),
-            owner: lease.id.clone(),
-            owner_epoch: activated.owner_epoch,
-            home_region: region.into(),
-            state_version: 0,
-            state_object: None,
-            last_request_id: None,
-        })
-    }
-
-    async fn ensure_actor_host(
-        &self,
-        spec: &HostLaunchSpec,
         current: Option<&ObjectPlacement>,
         requested_region: &str,
-    ) -> Result<(String, HostLease)> {
+    ) -> Result<(String, HostLease, u64)> {
         let region = current
             .map(|p| p.home_region.clone())
             .unwrap_or_else(|| requested_region.to_owned());
-        let lease = self.provisioner.ensure_host(spec, &region).await?;
-        Ok((region, lease))
+        let (lease, epoch) = self
+            .provisioner
+            .ensure_actor_host(spec, &region, actor, current.is_none())
+            .await?;
+        Ok((region, lease, epoch))
     }
 
     async fn require_active_host(&self, principal: &ActorPrincipal) -> Result<HostLease> {
-        let status = self.leases.lease_status(&principal.host_id).await?;
-        ensure!(status.is_active(), "host lease is not active");
-        let lease = status.lease.context("active host lease is missing")?;
+        let placement = self.current_placement(&principal.actor).await?;
+        ensure!(
+            placement.owner == principal.host_id
+                && placement.lease.id == principal.host_id
+                && placement.home_region == principal.region,
+            "host no longer owns actor"
+        );
+        let lease = placement.lease;
+        ensure!(
+            lease.expires_at_ms > crate::clock::Clock::now_ms(&crate::clock::SystemClock)?,
+            "host lease is not active"
+        );
         ensure!(
             lease.session_id == principal.session_id,
             "host lease belongs to another session"
@@ -587,23 +559,16 @@ impl ControlPlaneService {
         if !host_matches_revision(&placement.owner, &spec.host_revision()) {
             return Ok(None);
         }
-        let status = self.leases.lease_status(&placement.owner).await?;
-        if !status.is_active() {
-            return Ok(None);
-        }
-        if !self
-            .placements
-            .matches_lease(
-                placement,
-                status.lease.as_ref().context("active lease is missing")?,
-            )
-            .await?
+        let lease = &placement.lease;
+        if lease.id != placement.owner
+            || lease.expires_at_ms <= crate::clock::Clock::now_ms(&crate::clock::SystemClock)?
         {
             return Ok(None);
         }
+        self.provisioner.wait_ready(&placement.owner).await?;
         Ok(Some(RoutedActor {
             placement: placement.clone(),
-            lease: status.lease.context("active lease is missing")?,
+            lease: lease.clone(),
             spec: spec.clone(),
         }))
     }
@@ -633,6 +598,10 @@ impl std::error::Error for RegionConflict {}
 
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
+    async fn wait_ready(&self, _host: &HostId) -> Result<()> {
+        Ok(())
+    }
+
     async fn socket_credentials(
         &self,
         _spec: &HostLaunchSpec,
@@ -642,8 +611,13 @@ pub(crate) trait HostProvisioner: Send + Sync {
         anyhow::bail!("host provider does not support direct sockets")
     }
 
-    async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease>;
-    async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup>;
+    async fn ensure_actor_host(
+        &self,
+        spec: &HostLaunchSpec,
+        region: &str,
+        actor: &ActorKey,
+        new_actor: bool,
+    ) -> Result<(HostLease, u64)>;
     async fn terminate_hosts(
         &self,
         spec: &HostLaunchSpec,
@@ -652,14 +626,19 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
+    pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
     runtime: HostSandboxRuntimeConfig,
     issuer: ActorJwtIssuer,
-    leases: Arc<dyn HostLeaseStore>,
 }
 
 impl SandboxHostProvisioner {
+    pub(crate) fn with_pool(mut self, pool: Arc<crate::sandbox::pool::SparePool>) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
     pub(crate) fn with_runtime_access(
         mut self,
         access: Arc<crate::bucket::access::RuntimeAccess>,
@@ -671,29 +650,41 @@ impl SandboxHostProvisioner {
         provider: Arc<dyn SandboxProvider>,
         runtime: HostSandboxRuntimeConfig,
         issuer: ActorJwtIssuer,
-        leases: Arc<dyn HostLeaseStore>,
     ) -> Self {
         Self {
+            pool: None,
             runtime_access: None,
             provider,
             runtime,
             issuer,
-            leases,
         }
     }
 }
 
 #[async_trait]
 impl HostProvisioner for SandboxHostProvisioner {
+    async fn wait_ready(&self, host: &HostId) -> Result<()> {
+        match &self.pool {
+            Some(pool) => pool.wait_ready(host.as_str()).await,
+            None => self.provider.wait_ready(host).await,
+        }
+    }
+
     async fn socket_credentials(
         &self,
-        spec: &HostLaunchSpec,
+        _spec: &HostLaunchSpec,
         region: &str,
         lease: &HostLease,
     ) -> Result<crate::sandbox::SocketCredentials> {
         self.provider
             .socket_credentials(&crate::sandbox::SocketCredentialsRequest {
-                code_revision: spec.host_revision(),
+                resource_id: match &self.pool {
+                    Some(pool) => pool
+                        .host(lease.id.as_str())
+                        .await?
+                        .map(|spare| spare.resource_id),
+                    None => None,
+                },
                 canonical_region: region.into(),
                 host_id: lease.id.clone(),
                 session_id: lease.session_id.clone(),
@@ -701,15 +692,97 @@ impl HostProvisioner for SandboxHostProvisioner {
             .await
     }
 
-    async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
+    async fn ensure_actor_host(
+        &self,
+        spec: &HostLaunchSpec,
+        region: &str,
+        actor: &ActorKey,
+        new_actor: bool,
+    ) -> Result<(HostLease, u64)> {
+        self.launch(spec, region, actor, new_actor).await
+    }
+
+    async fn terminate_hosts(
+        &self,
+        spec: &HostLaunchSpec,
+        regions: &[String],
+    ) -> Result<HostTermination> {
+        if let Some(pool) = &self.pool {
+            return Ok(HostTermination {
+                provider: "modal".into(),
+                resource_ids: pool.retire_revision(&spec.host_revision()).await?,
+            });
+        }
+        self.provider
+            .terminate_hosts(&TerminateHostsRequest {
+                code_revision: spec.host_revision(),
+                canonical_regions: regions.to_vec(),
+            })
+            .await
+    }
+}
+
+impl SandboxHostProvisioner {
+    async fn launch(
+        &self,
+        spec: &HostLaunchSpec,
+        region: &str,
+        actor: &ActorKey,
+        new_actor: bool,
+    ) -> Result<(HostLease, u64)> {
         let started_at = Instant::now();
-        let mut request = self.request(spec, region)?;
+        let mut request = self.request(spec, region, actor)?;
+        request.actor_is_new = new_actor;
         if let Some(access) = &self.runtime_access {
-            request.runtime_config = Some(access.bootstrap(region).await?);
+            access.prewarm(crate::replication::ReplicaScope {
+                actor: actor.clone(),
+                host: request.host_id.clone(),
+                session: request.session_id.clone(),
+                region: region.into(),
+            });
+        }
+        let token = async {
+            match &self.runtime_access {
+                Some(access) => Ok(Some(access.bootstrap(region).await?)),
+                None => anyhow::Ok(None),
+            }
+        };
+        let spare = async {
+            match &self.pool {
+                Some(pool) => pool.claim(spec, region, request.host_id.as_str()).await,
+                None => Ok(None),
+            }
+        };
+        let (runtime_config, spare) = tokio::join!(token, spare);
+        request.spare = spare?;
+        if let Some(pool) = &self.pool {
+            if request.spare.is_none() {
+                pool.reserve_host(
+                    &request.session_id,
+                    request.host_id.as_str(),
+                    &spec.host_revision(),
+                )
+                .await?;
+            }
+        }
+        request.runtime_config = match runtime_config {
+            Ok(config) => config,
+            Err(error) => {
+                if let Some(pool) = &self.pool {
+                    let _ = pool.failed(request.host_id.as_str()).await;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(pool) = &self.pool {
+            request.resources = pool.config.resources.clone();
         }
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,
             Err(error) => {
+                if let Some(pool) = &self.pool {
+                    let _ = pool.failed(request.host_id.as_str()).await;
+                }
                 let command = error.downcast_ref::<ProviderCommandFailure>();
                 warn!(
                     event = "actor_host_provisioning",
@@ -730,7 +803,53 @@ impl HostProvisioner for SandboxHostProvisioner {
             }
         };
         let provisioning = handle.provisioning.clone();
-        let lease = self.active_lease(handle, region).await?;
+        let owner_epoch = handle.owner_epoch;
+        let ready = async {
+            ensure!(
+                owner_epoch > 0,
+                "host readiness returned no ownership epoch"
+            );
+            if self.pool.is_some() {
+                ensure!(
+                    handle.host_id == request.host_id,
+                    "provider returned a different host identity"
+                );
+            }
+            let lease = ready_lease(&handle, &request)?;
+            if let Some(pool) = &self.pool {
+                let provisioning = provisioning
+                    .as_ref()
+                    .context("provider did not identify the assigned sandbox")?;
+                pool.remember(
+                    lease.id.as_str(),
+                    &spec.host_revision(),
+                    &crate::sandbox::SpareHandle {
+                        control_route: String::new(),
+                        control_token: String::new(),
+                        name: request
+                            .spare
+                            .as_ref()
+                            .map(|spare| spare.name.clone())
+                            .unwrap_or_else(|| format!("do-actor-{}", request.session_id)),
+                        resource_id: provisioning.resource_id.clone(),
+                        route: lease.route.clone(),
+                        canonical_region: region.into(),
+                    },
+                )
+                .await?;
+            }
+            anyhow::Ok(lease)
+        }
+        .await;
+        let lease = match ready {
+            Ok(lease) => lease,
+            Err(error) => {
+                if let Some(pool) = &self.pool {
+                    let _ = pool.failed(request.host_id.as_str()).await;
+                }
+                return Err(error);
+            }
+        };
         let lease_validated_at_ms = elapsed_ms(started_at);
         info!(
             event = "actor_host_provisioning",
@@ -749,54 +868,37 @@ impl HostProvisioner for SandboxHostProvisioner {
             modal_input_parsed_at_ms = provisioning.as_ref().and_then(|value| value.input_parsed_at_ms),
             modal_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
             modal_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
-            modal_existing_host_checked_at_ms = provisioning.as_ref().and_then(|value| value.existing_host_checked_at_ms),
             modal_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
             modal_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
             modal_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
-            modal_metadata_written_at_ms = provisioning.as_ref().and_then(|value| value.metadata_written_at_ms),
             modal_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),
             lease_validated_at_ms,
             completed_at_ms = elapsed_ms(started_at),
             outcome = "ready",
             "actor host provisioning completed"
         );
-        Ok(lease)
+        Ok((lease, owner_epoch))
     }
 
-    async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup> {
-        self.provider
-            .warm_image(&WarmImageRequest {
-                code_revision: spec.code_revision.clone(),
-                canonical_region: region.to_owned(),
-                image_ref: spec.image_ref.clone(),
-            })
-            .await
-    }
-
-    async fn terminate_hosts(
+    fn request(
         &self,
         spec: &HostLaunchSpec,
-        regions: &[String],
-    ) -> Result<HostTermination> {
-        self.provider
-            .terminate_hosts(&TerminateHostsRequest {
-                code_revision: spec.host_revision(),
-                canonical_regions: regions.to_vec(),
-            })
-            .await
-    }
-}
-
-impl SandboxHostProvisioner {
-    fn request(&self, spec: &HostLaunchSpec, region: &str) -> Result<EnsureHostRequest> {
+        region: &str,
+        actor: &ActorKey,
+    ) -> Result<EnsureHostRequest> {
         let revision = spec.host_revision();
         let host_id = HostId::new(format!("host.v3.{}.{}", revision, uuid::Uuid::new_v4()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
-            .issue_host(&host_id, &session_id, &revision, region)?
+            .issue_host(&host_id, &session_id, &revision, region, actor)?
             .token;
         Ok(EnsureHostRequest {
+            actor_is_new: false,
+            actor: Some(actor.clone()),
+            code_snapshot: spec.code_snapshot.clone(),
+            spare: None,
+            resources: Default::default(),
             runtime_config: None,
             code_revision: revision,
             canonical_region: region.to_owned(),
@@ -810,32 +912,45 @@ impl SandboxHostProvisioner {
             socket_jwt_audience: self.issuer.socket_audience(),
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
-            actor_entrypoint: spec.actor_entrypoint.clone(),
+            actor_entrypoint: spec
+                .actor_entrypoint
+                .clone()
+                .or_else(|| spec.code_snapshot.as_ref().map(|_| "actors.mjs".into())),
             secret_refs: spec.secret_refs.clone(),
             actor_idle_timeout_ms: self.runtime.actor_idle_timeout_ms,
             host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
         })
     }
+}
 
-    async fn active_lease(
-        &self,
-        handle: crate::sandbox::ActorHostHandle,
-        region: &str,
-    ) -> Result<HostLease> {
-        ensure!(
-            handle.canonical_region == region,
-            "sandbox provider returned the wrong region"
-        );
-        validate_host_route(&handle.route)?;
-        let status = self.leases.lease_status(&handle.host_id).await?;
-        ensure!(status.is_active(), "sandbox host lease is not active");
-        let lease = status.lease.context("active sandbox lease is missing")?;
-        ensure!(
-            lease.route == handle.route,
-            "sandbox route does not match its lease"
-        );
-        Ok(lease)
-    }
+fn ready_lease(
+    handle: &crate::sandbox::ActorHostHandle,
+    request: &EnsureHostRequest,
+) -> Result<HostLease> {
+    use crate::clock::{Clock, SystemClock};
+    ensure!(
+        handle.host_id == request.host_id && handle.canonical_region == request.canonical_region,
+        "sandbox readiness scope mismatch"
+    );
+    validate_host_route(&handle.route)?;
+    let lease = handle
+        .lease
+        .clone()
+        .context("sandbox readiness omitted activation lease")?;
+    ensure!(
+        lease.id == request.host_id
+            && lease.session_id == request.session_id
+            && lease.route == handle.route,
+        "sandbox readiness lease mismatch"
+    );
+    let now = SystemClock.now_ms()?;
+    ensure!(
+        lease.expires_at_ms > now
+            && lease.expires_at_ms
+                <= now.saturating_add(crate::host_leases::MAX_HOST_LEASE_DURATION_MS + 5_000),
+        "sandbox readiness lease expired or invalid"
+    );
+    Ok(lease)
 }
 
 struct RoutedActor {
@@ -900,22 +1015,17 @@ fn internal(error: impl std::fmt::Display) -> Status {
 mod streaming_tests;
 
 #[cfg(test)]
+mod activation_tests;
+
+#[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Mutex, time::Duration};
+    use std::{sync::Mutex, time::Duration};
 
     use super::super::{ActorTokenPurpose, admin::LocalAdminRegistry};
     use super::*;
-    use crate::{
-        actor_state::ActorStorageKey,
-        host_leases::{HostLeaseRegistry, HostLeaseRequest, HostLeaseStatus},
-        placement::testing::LocalObjectPlacementStore,
-    };
+    use crate::{actor_state::ActorStorageKey, placement::testing::LocalObjectPlacementStore};
     use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
     use base64::{Engine, engine::general_purpose::STANDARD};
-
-    pub(super) struct FakeLeaseStore {
-        pub(super) leases: Mutex<HashMap<HostId, HostLease>>,
-    }
 
     struct FakeSocketEventSink {
         delivered: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
@@ -929,55 +1039,27 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl HostLeaseRegistry for FakeLeaseStore {
-        async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-            let lease = HostLease {
-                id: request.id.clone(),
-                session_id: request.session_id.clone(),
-                route: request.route.clone(),
-                expires_at_ms: 10_000,
-            };
-            self.leases
-                .lock()
-                .unwrap()
-                .insert(lease.id.clone(), lease.clone());
-            Ok(lease)
-        }
-
-        async fn unregister(&self, id: &HostId, _session_id: &str) -> Result<()> {
-            self.leases.lock().unwrap().remove(id);
-            Ok(())
+    fn test_lease(host: &HostId) -> HostLease {
+        HostLease {
+            id: host.clone(),
+            session_id: "00000000-0000-4000-8000-000000000001".into(),
+            route: "https://host.example.com".into(),
+            expires_at_ms: u64::MAX,
         }
     }
 
-    #[async_trait]
-    impl HostLeaseStore for FakeLeaseStore {
-        async fn lease_status(&self, id: &HostId) -> Result<HostLeaseStatus> {
-            Ok(HostLeaseStatus {
-                lease: self.leases.lock().unwrap().get(id).cloned(),
-                store_now_ms: 0,
-            })
-        }
-    }
-
-    pub(super) struct FakeWarmProvisioner {
-        pub(super) warmed: tokio::sync::mpsc::UnboundedSender<(HostLaunchSpec, String)>,
-    }
+    struct UnavailableProvisioner;
 
     #[async_trait]
-    impl HostProvisioner for FakeWarmProvisioner {
-        async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
+    impl HostProvisioner for UnavailableProvisioner {
+        async fn ensure_actor_host(
+            &self,
+            _spec: &HostLaunchSpec,
+            _region: &str,
+            _actor: &ActorKey,
+            _new_actor: bool,
+        ) -> Result<(HostLease, u64)> {
             anyhow::bail!("host creation is outside this test")
-        }
-
-        async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup> {
-            self.warmed.send((spec.clone(), region.to_owned()))?;
-            Ok(ImageWarmup {
-                provider: "test".into(),
-                resource_id: "sandbox-1".into(),
-                total_ms: 1,
-            })
         }
 
         async fn terminate_hosts(
@@ -996,12 +1078,14 @@ mod tests {
 
     #[async_trait]
     impl HostProvisioner for FakeRetiringProvisioner {
-        async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
+        async fn ensure_actor_host(
+            &self,
+            _spec: &HostLaunchSpec,
+            _region: &str,
+            _actor: &ActorKey,
+            _new_actor: bool,
+        ) -> Result<(HostLease, u64)> {
             anyhow::bail!("host creation is outside this test")
-        }
-
-        async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
-            anyhow::bail!("image warmup is outside this test")
         }
 
         async fn terminate_hosts(
@@ -1074,11 +1158,14 @@ mod tests {
         struct Provisioner(HostLease);
         #[async_trait]
         impl HostProvisioner for Provisioner {
-            async fn ensure_host(&self, _: &HostLaunchSpec, _: &str) -> Result<HostLease> {
-                Ok(self.0.clone())
-            }
-            async fn warm_image(&self, _: &HostLaunchSpec, _: &str) -> Result<ImageWarmup> {
-                anyhow::bail!("unused")
+            async fn ensure_actor_host(
+                &self,
+                _: &HostLaunchSpec,
+                _: &str,
+                _actor: &ActorKey,
+                _new_actor: bool,
+            ) -> Result<(HostLease, u64)> {
+                Ok((self.0.clone(), 42))
             }
             async fn terminate_hosts(
                 &self,
@@ -1112,6 +1199,7 @@ mod tests {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                code_snapshot: None,
                 code_revision: "revision".into(),
                 image_ref: "image".into(),
                 working_directory: "/app".into(),
@@ -1121,9 +1209,6 @@ mod tests {
             .await?;
         let placements = Arc::new(LocalObjectPlacementStore::default());
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
             placements.clone(),
             ActorJwtVerifier::for_scope(
                 issuer.verifier_keys_json()?,
@@ -1152,8 +1237,8 @@ mod tests {
         service.resolve_actor_route(&actor, None, None).await?;
         assert_eq!(
             peers.lock().unwrap().len(),
-            2,
-            "activations open fresh connections"
+            0,
+            "readiness must eliminate the extra activation RPC"
         );
         server.abort();
         Ok(())
@@ -1181,9 +1266,6 @@ mod tests {
             fail: std::sync::atomic::AtomicBool::new(true),
         });
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             registry,
@@ -1191,6 +1273,7 @@ mod tests {
             provisioner.clone(),
         );
         let first = HostLaunchSpec {
+            code_snapshot: None,
             code_revision: "revision-1".into(),
             image_ref: "image-1".into(),
             working_directory: "/workspace".into(),
@@ -1277,48 +1360,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deployment_image_warmup_runs_in_the_background_without_creating_an_actor() -> Result<()>
-    {
-        let issuer = test_issuer()?;
-        let auth = ActorJwtVerifier::for_scope(
-            issuer.verifier_keys_json()?,
-            "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
-        )?;
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        let registry = Arc::new(LocalAdminRegistry::default());
-        let (warmed_tx, mut warmed_rx) = tokio::sync::mpsc::unbounded_channel();
-        let service = ControlPlaneService::new(
-            leases,
-            placements,
-            auth,
-            registry,
-            issuer,
-            Arc::new(FakeWarmProvisioner { warmed: warmed_tx }),
-        );
-        let spec = HostLaunchSpec {
-            code_revision: "revision-1".into(),
-            image_ref: "image-1".into(),
-            working_directory: "/workspace".into(),
-            actor_entrypoint: None,
-            secret_refs: vec![],
-        };
-
-        service.warm_deployment_image(spec.clone(), "north-america-east".into());
-
-        let warmed = tokio::time::timeout(Duration::from_secs(1), warmed_rx.recv())
-            .await?
-            .context("warmup task stopped")?;
-        assert_eq!(warmed, (spec, "north-america-east".into()));
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn accepted_socket_messages_are_delivered_to_the_configured_event_sink() -> Result<()> {
         let issuer = test_issuer()?;
         let auth = ActorJwtVerifier::for_scope(
@@ -1330,16 +1371,11 @@ mod tests {
         )?;
         let (delivered_tx, mut delivered_rx) = tokio::sync::mpsc::unbounded_channel();
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             Arc::new(LocalAdminRegistry::default()),
             issuer,
-            Arc::new(FakeWarmProvisioner {
-                warmed: tokio::sync::mpsc::unbounded_channel().0,
-            }),
+            Arc::new(UnavailableProvisioner),
         )
         .with_socket_event_sink(Some(Arc::new(FakeSocketEventSink {
             delivered: delivered_tx,
@@ -1376,6 +1412,7 @@ mod tests {
     fn existing_actors_stay_pinned_to_the_assigned_region() -> Result<()> {
         let actor = ActorStorageKey::new("object.v1.project.Counter.one");
         let current = ObjectPlacement {
+            lease: test_lease(&HostId::new("host.v3.revision.host")),
             object: actor,
             owner: HostId::new("host.v3.revision.host"),
             owner_epoch: 1,
@@ -1431,6 +1468,82 @@ mod tests {
         Ok(())
     }
 
+    struct LosingActivation {
+        placements: Arc<LocalObjectPlacementStore>,
+        actor: ActorKey,
+        waited: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl HostProvisioner for LosingActivation {
+        async fn ensure_actor_host(
+            &self,
+            spec: &HostLaunchSpec,
+            region: &str,
+            _actor: &ActorKey,
+            _new_actor: bool,
+        ) -> Result<(HostLease, u64)> {
+            let host = HostId::new(format!("host.v3.{}.winner", spec.host_revision()));
+            let mut lease = test_lease(&host);
+            lease.route = "https://winner.example.com".into();
+            self.placements
+                .set_owner(&self.actor.storage_key(), lease, region)?;
+            anyhow::bail!("another activation won ownership")
+        }
+        async fn wait_ready(&self, _: &HostId) -> Result<()> {
+            self.waited.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn terminate_hosts(
+            &self,
+            _: &HostLaunchSpec,
+            _: &[String],
+        ) -> Result<HostTermination> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "invocation",
+            ActorTokenPurpose::Invocation,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        registry
+            .register_test_deployment(&HostLaunchSpec {
+                code_revision: "revision".into(),
+                image_ref: "im-runtime".into(),
+                code_snapshot: Some("im-code".into()),
+                working_directory: "/customer".into(),
+                actor_entrypoint: None,
+                secret_refs: vec![],
+            })
+            .await?;
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        let actor = ActorKey {
+            actor_type: "Counter".into(),
+            actor_id: "one".into(),
+        };
+        let provisioner = Arc::new(LosingActivation {
+            placements: placements.clone(),
+            actor: actor.clone(),
+            waited: false.into(),
+        });
+        let service =
+            ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+        let target = service
+            .route_actor(&actor, "north-america-east", None, None)
+            .await?;
+        assert_eq!(target.lease.route, "https://winner.example.com");
+        assert!(provisioner.waited.load(std::sync::atomic::Ordering::SeqCst));
+        Ok(())
+    }
+
     struct FakeRoutingProvisioner {
         failed_regions: Vec<&'static str>,
         calls: Mutex<Vec<String>>,
@@ -1450,22 +1563,27 @@ mod tests {
             })
         }
 
-        async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
+        async fn ensure_actor_host(
+            &self,
+            spec: &HostLaunchSpec,
+            region: &str,
+            _actor: &ActorKey,
+            _new_actor: bool,
+        ) -> Result<(HostLease, u64)> {
             self.calls.lock().unwrap().push(region.to_owned());
             ensure!(
                 !self.failed_regions.contains(&region),
                 "host unavailable in {region}"
             );
-            Ok(HostLease {
-                id: HostId::new(format!("host.v3.{}.{region}", spec.host_revision())),
-                session_id: uuid::Uuid::new_v4().to_string(),
-                route: "https://host.example.com".into(),
-                expires_at_ms: u64::MAX,
-            })
-        }
-
-        async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
-            unreachable!()
+            Ok((
+                HostLease {
+                    id: HostId::new(format!("host.v3.{}.{region}", spec.host_revision())),
+                    session_id: uuid::Uuid::new_v4().to_string(),
+                    route: "https://host.example.com".into(),
+                    expires_at_ms: u64::MAX,
+                },
+                1,
+            ))
         }
 
         async fn terminate_hosts(
@@ -1519,6 +1637,7 @@ mod tests {
             let registry = Arc::new(LocalAdminRegistry::default());
             registry
                 .register_test_deployment(&HostLaunchSpec {
+                    code_snapshot: None,
                     code_revision: "revision".into(),
                     image_ref: "image".into(),
                     working_directory: "/app".into(),
@@ -1532,9 +1651,11 @@ mod tests {
                 actor_id: "one".into(),
             };
             if existing {
-                placements
-                    .claim(&actor.storage_key(), None, &HostId::new("old-host"), south)
-                    .await?;
+                placements.set_owner(
+                    &actor.storage_key(),
+                    test_lease(&HostId::new("old-host")),
+                    south,
+                )?;
             }
             let before = placements.get(&actor.storage_key()).await?;
             let provisioner = Arc::new(FakeRoutingProvisioner {
@@ -1542,9 +1663,6 @@ mod tests {
                 calls: Mutex::new(vec![]),
             });
             let service = ControlPlaneService::new(
-                Arc::new(FakeLeaseStore {
-                    leases: Mutex::new(HashMap::new()),
-                }),
                 placements.clone(),
                 auth,
                 registry.clone(),
@@ -1554,6 +1672,10 @@ mod tests {
             let spec = registry.launch_spec().await?.unwrap();
             let result = service
                 .ensure_actor_host(
+                    &ActorKey {
+                        actor_type: "Counter".into(),
+                        actor_id: "one".into(),
+                    },
                     &spec,
                     before.as_ref(),
                     &select_target_region(before.as_ref(), reported)?,
@@ -1561,7 +1683,7 @@ mod tests {
                 .await;
             assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);
             if let Some(region) = expected_region {
-                let (selected, _) = result?;
+                let (selected, _, _) = result?;
                 assert_eq!(selected, region);
                 assert_eq!(placements.get(&actor.storage_key()).await?, before);
             } else {
@@ -1589,6 +1711,7 @@ mod tests {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                code_snapshot: None,
                 code_revision: "v1".into(),
                 image_ref: "image".into(),
                 working_directory: "/app".into(),
@@ -1606,28 +1729,18 @@ mod tests {
             )),
             issuer.clone(),
         )?;
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
         let placements = Arc::new(LocalObjectPlacementStore::default());
         let host_id = HostId::new("host.v3.v1.fixture");
-        leases
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: "https://host.example.com".into(),
-                duration_ms: 60_000,
-            })
-            .await?;
         let actor = ActorKey {
             actor_type: "Room".into(),
             actor_id: "lobby".into(),
         };
-        placements
-            .claim(&actor.storage_key(), None, &host_id, "north-america-east")
-            .await?;
+        placements.set_owner(
+            &actor.storage_key(),
+            test_lease(&host_id),
+            "north-america-east",
+        )?;
         let service = ControlPlaneService::new(
-            leases,
             placements,
             auth,
             registry,
@@ -1698,28 +1811,29 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
         let placements = Arc::new(LocalObjectPlacementStore::default());
-        let host_id = HostId::new("host.v3.v1.fixture");
-        leases
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: "https://host.example.com".into(),
-                duration_ms: 60_000,
-            })
-            .await?;
+        let host_id = HostId::new(format!(
+            "host.v3.{}.fixture",
+            HostLaunchSpec {
+                code_revision: "v1".into(),
+                image_ref: "im-runtime".into(),
+                code_snapshot: Some("im-code".into()),
+                working_directory: "/customer".into(),
+                actor_entrypoint: None,
+                secret_refs: vec![]
+            }
+            .host_revision()
+        ));
         let actor = ActorKey {
             actor_type: "Room".into(),
             actor_id: "lobby".into(),
         };
-        placements
-            .claim(&actor.storage_key(), None, &host_id, "north-america-east")
-            .await?;
+        placements.set_owner(
+            &actor.storage_key(),
+            test_lease(&host_id),
+            "north-america-east",
+        )?;
         let service = ControlPlaneService::new(
-            leases,
             placements,
             auth,
             registry,
@@ -1742,6 +1856,7 @@ mod tests {
                 &uuid::Uuid::new_v4().to_string(),
                 "v1",
                 "north-america-east",
+                &actor,
             )?
             .token;
         for credential in ["", "wrong", &host_token] {
@@ -1757,7 +1872,7 @@ mod tests {
             );
         }
         client.put(format!("{origin}/v1/deployment")).bearer_auth("api-key")
-            .json(&serde_json::json!({"codeRevision":"v1","imageRef":"image","workingDirectory":"/app"}))
+            .json(&serde_json::json!({"codeRevision":"v1","imageRef":"im-runtime","codeSnapshot":"im-code","workingDirectory":"/customer"}))
             .send().await?.error_for_status()?;
         for operation in ["websocket", "grpc"] {
             let response = client
@@ -1836,30 +1951,31 @@ mod tests {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::new()),
-        });
         let placements = Arc::new(LocalObjectPlacementStore::default());
         {
-            let host = HostId::new("host.v3.revision.test");
-            leases
-                .register(&HostLeaseRequest {
-                    id: host.clone(),
-                    session_id: "00000000-0000-4000-8000-000000000001".into(),
-                    route: "https://host.example.com".into(),
-                    duration_ms: 60_000,
-                })
-                .await?;
+            let host = HostId::new(format!(
+                "host.v3.{}.fixture",
+                HostLaunchSpec {
+                    code_revision: "revision".into(),
+                    image_ref: "im-runtime".into(),
+                    code_snapshot: Some("im-code".into()),
+                    working_directory: "/customer".into(),
+                    actor_entrypoint: None,
+                    secret_refs: vec![]
+                }
+                .host_revision()
+            ));
             let actor = ActorKey {
                 actor_type: "Counter".into(),
                 actor_id: "one".into(),
             };
-            placements
-                .claim(&actor.storage_key(), None, &host, "north-america-east")
-                .await?;
+            placements.set_owner(
+                &actor.storage_key(),
+                test_lease(&host),
+                "north-america-east",
+            )?;
         }
         let service = ControlPlaneService::new(
-            leases,
             placements,
             auth,
             registry,
@@ -1874,7 +1990,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let client = reqwest::Client::new();
-        let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "image", "workingDirectory": "/app" });
+        let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "im-runtime", "codeSnapshot": "im-code", "workingDirectory": "/customer" });
         let registered = client
             .put(format!("{origin}/v1/deployment"))
             .bearer_auth("api-key")
@@ -1957,6 +2073,7 @@ mod tests {
         let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
         admin
             .register_test_deployment(&HostLaunchSpec {
+                code_snapshot: None,
                 code_revision: "revision-1".into(),
                 image_ref: "image-1".into(),
                 working_directory: "/workspace".into(),
@@ -1966,9 +2083,6 @@ mod tests {
             .await?;
         let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             registry,
@@ -2047,13 +2161,14 @@ mod tests {
                 &uuid::Uuid::new_v4().to_string(),
                 "r1",
                 "us-east",
+                &ActorKey {
+                    actor_type: "Counter".into(),
+                    actor_id: "one".into(),
+                },
             )?
             .token;
         let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
         let service = ControlPlaneService::new(
-            Arc::new(FakeLeaseStore {
-                leases: Mutex::new(HashMap::new()),
-            }),
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             registry,
@@ -2093,7 +2208,7 @@ mod tests {
         }
         let document: serde_json::Value =
             serde_json::from_str(include_str!("../../sdk/fixtures/public-contract.json"))?;
-        let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"image", "workingDirectory":"/app", "contract":document});
+        let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"im-runtime", "codeSnapshot":"im-code", "workingDirectory":"/customer", "contract":document});
         for scope in ["/v1"] {
             for changed in [true, false] {
                 let reply: serde_json::Value = client

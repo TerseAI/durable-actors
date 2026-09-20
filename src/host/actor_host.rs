@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use tokio::{
@@ -137,7 +137,8 @@ struct HostDispatcher {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
-    actors: HashMap<ActorStorageKey, ActorMailbox>,
+    mailbox: Option<ActorMailbox>,
+    identity: Option<ActorStorageKey>,
     tasks: JoinSet<()>,
     accepting: watch::Sender<bool>,
     activity: watch::Sender<usize>,
@@ -161,7 +162,8 @@ impl HostDispatcher {
             storage,
             state,
             publisher,
-            actors: HashMap::new(),
+            mailbox: None,
+            identity: None,
             tasks: JoinSet::new(),
             accepting: watch::channel(true).0,
             activity,
@@ -197,10 +199,19 @@ impl HostDispatcher {
             return;
         }
         let object = request.operation.actor().storage_key();
-        if !self.actors.contains_key(&object) {
+        if self
+            .identity
+            .as_ref()
+            .is_some_and(|identity| *identity != object)
+        {
+            request.finish(&self.endpoint, Ok(ActorExecutionResult::Reroute));
+            return;
+        }
+        self.identity.get_or_insert_with(|| object.clone());
+        if self.mailbox.is_none() {
             self.start_actor(object.clone(), completed.clone());
         }
-        let mailbox = self.actors.get_mut(&object).expect("actor mailbox created");
+        let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
         if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
             request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
             return;
@@ -256,21 +267,16 @@ impl HostDispatcher {
             completed,
             self.accepting.subscribe(),
         ));
-        self.actors.insert(
-            object,
-            ActorMailbox {
-                sender,
-                admitted: 0,
-                task_id: task.id(),
-            },
-        );
+        self.mailbox = Some(ActorMailbox {
+            sender,
+            admitted: 0,
+            task_id: task.id(),
+        });
     }
 
     fn complete(&mut self, completion: ActorCompletion) {
-        let mailbox = self
-            .actors
-            .get_mut(&completion.object)
-            .expect("completed actor mailbox");
+        debug_assert_eq!(self.identity.as_ref(), Some(&completion.object));
+        let mailbox = self.mailbox.as_mut().expect("completed actor mailbox");
         // A stopped task's remaining admissions may already have been released.
         if mailbox.admitted > 0 {
             mailbox.admitted -= 1;
@@ -289,9 +295,9 @@ impl HostDispatcher {
             }
         };
         if let Some(mailbox) = self
-            .actors
-            .values_mut()
-            .find(|mailbox| mailbox.task_id == id)
+            .mailbox
+            .as_mut()
+            .filter(|mailbox| mailbox.task_id == id)
         {
             self.active -= mailbox.admitted;
             mailbox.admitted = 0;
@@ -726,8 +732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_rejects_queued_work()
-    -> Result<()> {
+    async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Result<()> {
         let (host, mut started, release) = controlled_host();
         let mut activity = host.activity();
         let caller = host.clone();
@@ -763,7 +768,7 @@ mod tests {
         );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), other).await??,
-            completed(1)
+            ActorExecutionResult::Reroute
         );
         assert!(host.drain(Duration::from_millis(30)).await.is_err());
         assert_eq!(
@@ -1122,6 +1127,47 @@ mod tests {
         );
         assert!(invoke(&host, "request-1").await.is_err());
         assert!(state.writes.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_results_are_withheld_if_the_lease_expires_during_persistence() -> Result<()> {
+        for replicated in [false, true] {
+            let (commit_started, mut committing) = mpsc::unbounded_channel();
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let authority = Arc::new(FakeAuthority::default());
+            let state = Arc::new(FakeStateTransport {
+                replicated,
+                paused_commit: Some((commit_started, release.clone())),
+                ..Default::default()
+            });
+            let host = Arc::new(ActorHost::new(
+                HostEndpoint {
+                    id: super::super::HostId::new("host-1"),
+                    route: "http://host.invalid/".into(),
+                },
+                Arc::new(IncrementingExecutor {
+                    invocations: AtomicU64::new(0),
+                }),
+                authority.clone(),
+                state.clone(),
+                Arc::new(EmptySocketPublisher),
+            ));
+            let caller = host.clone();
+            let result = tokio::spawn(async move { invoke(&caller, "first").await });
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), committing.recv()).await?,
+                Some(())
+            );
+            authority.fenced.store(true, Ordering::SeqCst);
+            release.add_permits(1);
+            let error = tokio::time::timeout(Duration::from_secs(2), result)
+                .await??
+                .unwrap_err();
+            assert!(error.to_string().contains("host lease expired"));
+            assert_eq!(state.writes.lock().unwrap().len(), 1);
+            host.drain(Duration::from_secs(1)).await?;
+        }
         Ok(())
     }
 

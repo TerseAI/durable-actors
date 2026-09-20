@@ -16,6 +16,8 @@ use super::contracts::{PublicActorContract, PublishedContract, check_contract_ha
 pub(crate) struct HostLaunchSpec {
     pub code_revision: String,
     pub image_ref: String,
+    #[serde(default)]
+    pub code_snapshot: Option<String>,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
@@ -23,17 +25,43 @@ pub(crate) struct HostLaunchSpec {
 
 impl HostLaunchSpec {
     pub(crate) fn host_revision(&self) -> String {
-        if self.secret_refs.is_empty() {
+        if self.secret_refs.is_empty() && self.code_snapshot.is_none() {
             return self.code_revision.clone();
         }
-        let identity = serde_json::to_vec(&(&self.code_revision, &self.secret_refs))
-            .expect("host identity is serializable");
+        let identity = serde_json::to_vec(&(
+            &self.code_revision,
+            &self.secret_refs,
+            &self.image_ref,
+            &self.code_snapshot,
+        ))
+        .expect("host identity is serializable");
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &identity);
         format!("cfg.{}", URL_SAFE_NO_PAD.encode(digest.as_ref()))
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         validate_component("code revision", &self.code_revision, 128)?;
+        if let Some(snapshot) = &self.code_snapshot {
+            ensure!(
+                snapshot.starts_with("im-") && snapshot.len() <= 255,
+                "invalid Modal code snapshot"
+            );
+            ensure!(
+                self.working_directory == "/customer",
+                "snapshot deployments must use /customer"
+            );
+            let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
+            ensure!(
+                entrypoint.ends_with(".mjs")
+                    && !std::path::Path::new(entrypoint)
+                        .components()
+                        .any(|part| matches!(
+                            part,
+                            std::path::Component::ParentDir | std::path::Component::RootDir
+                        )),
+                "snapshot entrypoint must be a relative compiled module path"
+            );
+        }
         ensure!(
             !self.image_ref.is_empty() && self.image_ref.len() <= 255,
             "sandbox image reference must contain between 1 and 255 bytes"
@@ -308,27 +336,28 @@ impl AdminRegistry for PostgresAdminRegistry {
         let changed = transaction
             .execute(
                 "INSERT INTO durable_object_deployment \
-                   (singleton, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs) \
-                 VALUES (TRUE, $1, $2, $3, $4, $5) \
+                   (singleton, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot) \
+                 VALUES (TRUE, $1, $2, $3, $4, $5, $6) \
                  ON CONFLICT (singleton) DO UPDATE SET \
                    code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
-                   secret_refs = EXCLUDED.secret_refs, \
+                   secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, \
                    updated_at = clock_timestamp() \
                  WHERE (durable_object_deployment.code_revision, \
                         durable_object_deployment.image_ref, \
                         durable_object_deployment.working_directory, \
                         durable_object_deployment.actor_entrypoint, \
-                        durable_object_deployment.secret_refs) \
+                        durable_object_deployment.secret_refs, durable_object_deployment.code_snapshot) \
                        IS DISTINCT FROM \
                        (EXCLUDED.code_revision, EXCLUDED.image_ref, \
-                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs)",
+                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.code_snapshot)",
                 &[
                     &spec.code_revision,
                     &spec.image_ref,
                     &spec.working_directory,
                     &spec.actor_entrypoint,
                     &spec.secret_refs,
+                    &spec.code_snapshot,
                 ],
             )
             .await
@@ -387,13 +416,14 @@ impl AdminRegistry for PostgresAdminRegistry {
         Ok(self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs \
+                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot \
                  FROM durable_object_deployment",
                 &[],
             )
             .await
             .context("load PostgreSQL host launch spec")?
             .map(|row| HostLaunchSpec {
+                code_snapshot: row.get(5),
                 code_revision: row.get(0),
                 image_ref: row.get(1),
                 working_directory: row.get(2),
@@ -480,6 +510,7 @@ mod tests {
 
     fn spec(image: &str) -> HostLaunchSpec {
         HostLaunchSpec {
+            code_snapshot: None,
             code_revision: "revision-1".into(),
             image_ref: image.into(),
             working_directory: "/workspace".into(),
