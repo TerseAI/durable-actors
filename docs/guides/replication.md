@@ -34,9 +34,11 @@ For a new actor with a ready spare and no competing claim, the control plane rea
 
 Ownership records must contain their activation lease. Older layouts are unsupported.
 
-Each actor activation gets its own replica sandboxes, claimed in parallel with primary startup. Generic replica spares already run the Rust storage listener, without actor state, Bun, or customer code. An authenticated assignment binds each listener and its capabilities to one actor activation. Replica sandboxes are not shared between actors or activations.
+Each actor activation gets its own replica sandboxes, claimed in parallel with primary startup. Generic replica spares already run the Rust storage listener, without actor state, Bun, or customer code. One assignment request binds each listener and its capabilities to an actor session; the listener checks the request's bearer token locally. Replica sandboxes are not shared between actors or activations.
 
-A new activation writes directly to GCS while replicas are provisioned, initialized, and seeded in the background. The host conditionally publishes session membership, catches the replicas up to its latest committed state, and enables replica acknowledgments only when that state version still matches. Provisioning or initialization failures leave writes on GCS while the host retries.
+A new activation writes directly to GCS while replicas are provisioned and initialized in the background. The control plane conditionally publishes the initial session membership in GCS and returns it to the primary. If a write is still pending when membership becomes ready, the primary sends that write's full snapshot to every replica and races their acknowledgments against the GCS upload. There is no initial-readiness cutoff. GCS can complete a write before replicas are ready; provisioning or initialization failures leave that path available while setup retries. Full snapshots include intervening writes that completed through GCS.
+
+See the [cold-write sequence diagrams](cold-writes.md) for primary startup, replica assignment, and the first write's durability race.
 
 The host races a direct immutable bucket upload against acknowledgments from every recorded replica. The actor host keeps no local snapshot files. Replica acknowledgments require durable snapshot bytes and a durable stream head. Either proof completes the write, followed by a local lease check before releasing the result. Successful bucket uploads need no ownership reread: takeover must wait for lease expiry, and snapshot paths isolate each ownership epoch. The other upload task continues while the actor host is running. Ambiguous writes retry the exact snapshot without executing actor code again.
 
