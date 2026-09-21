@@ -1,6 +1,6 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react"
 import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
@@ -297,6 +297,7 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     let requests = 0
     const client = new HttpObserverClient("/api/observe", async url => {
         if (String(url).includes("/requests/")) return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } })
+        if (String(url).endsWith("/query")) return Response.json({ rows: [], truncated: false })
         requests++
         return new Response(
             new ReadableStream<Uint8Array>({
@@ -391,4 +392,44 @@ test("instance queues show operation bubbles and update while inspecting an inst
     await act(async () => update({ actors: [{ ...current.actors[0]!, instances: [{ ...current.actors[0]!.instances[0]!, waiting: [] }] }] }))
     assert.ok(view.getByText("No requests waiting."))
     assert.equal(view.queryByText("sendMessage"), null)
+})
+
+test("actor pages show the average queue wait per class and instance from retained history", async () => {
+    const queries: { sql: string; params: unknown[] }[] = []
+    const client = {
+        checkConnection: async () => {},
+        listActors: async () => inventory,
+        query: async (query: { sql: string; params: unknown[] }) => {
+            queries.push(query)
+            const rows = [
+                { actor_name: "Room", actor_id: "general", admitted: 3, average_ms: 12.5, max_ms: 40 },
+                { actor_name: "Room", actor_id: "quiet", admitted: 1, average_ms: 1500, max_ms: 1500 },
+                { actor_name: "Counter", actor_id: "one", admitted: 2, average_ms: 2, max_ms: 3 }
+            ]
+            return { rows: rows.filter(row => query.params.length < 2 || row.actor_name === query.params[1]), truncated: false }
+        }
+    }
+    const view = render(<ActorObserver client={client} />)
+    await waitFor(() => assert.equal(view.getByLabelText("Average queue wait").textContent, "256.9 ms"))
+    assert.match(view.container.textContent!, /Last hour · max 1.5 s · 6 admitted/u)
+    assert.match(view.getByRole("cell", { name: "Room" }).closest("tr")!.textContent!, /384.4 msmax 1.5 s/u, "the class average weights instances by admitted requests")
+    assert.match(view.getByRole("cell", { name: "Counter" }).closest("tr")!.textContent!, /2 msmax 3 ms/u)
+    assert.equal(queries[0]!.params.length, 1)
+    fireEvent.click(view.getByRole("button", { name: "Room" }))
+    await waitFor(() => assert.equal(queries.at(-1)!.params[1], "Room"))
+    await waitFor(() => assert.match(view.container.textContent!, /max 1.5 s · 4 admitted/u))
+    assert.equal(view.getByLabelText("Average queue wait").textContent, "384.4 ms")
+    const general = view.getByRole("button", { name: "general" }).closest("tr")!
+    assert.match(general.textContent!, /12.5 msmax 40 ms/u)
+    assert.match(view.getByRole("button", { name: "waiting" }).closest("tr")!.textContent!, /—/u)
+    fireEvent.click(view.getByRole("button", { name: "general" }))
+    const section = await view.findByRole("region", { name: "Queue wait" })
+    assert.equal(within(section).getByLabelText("Average queue wait").textContent, "12.5 ms")
+    assert.equal(within(section).getByLabelText("Longest queue wait").textContent, "40 ms")
+    assert.equal(within(section).getByLabelText("Admitted requests").textContent, "3")
+    view.unmount()
+    const plain = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    await plain.findByRole("cell", { name: "Room" })
+    assert.equal(plain.queryByLabelText("Average queue wait"), null)
+    assert.equal(plain.queryByRole("columnheader", { name: "Avg queue wait" }), null)
 })

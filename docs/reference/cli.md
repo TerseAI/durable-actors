@@ -127,6 +127,8 @@ Starts the packaged server using the [hosted server configuration](configuration
 
 The observe page lists actor names in the connected deployment with live (resident in memory), dormant, and total instance counts. Deployed types with zero instances remain visible. Unknown counts indicate a live host without a fresh residency report.
 
+When request history is available, the actor list, each actor class page, its instance table, and each instance page also show the **average queue wait**: the mean time admitted requests spent waiting to enter the actor over the last hour, with the longest single wait and the number of admitted requests. It is computed from `queue_wait_ms` in `request_events`, excludes rerouted attempts and requests that never began processing, and weights class-level averages by each instance's admitted count.
+
 Inventory changes stream from the Rust control plane over SSE, with automatic reconnection and stale-data warnings. Worker residency changes trigger an early host report; socket connections and disconnections publish immediately. Updated Rust hosts, control planes, and SDKs are required. The admin-only stream is `GET /v1/observe/events`; `GET /v1/observe/actors` remains available for single reads. Neither activates actors.
 
 A fifteen-second reconciliation catches missed notifications and lease expiry. Notifications are local to a control-plane process. Socket snapshots are persisted with host leases, so other control-plane processes reconcile the same data. Expired or replaced host sessions cannot contribute connection counts.

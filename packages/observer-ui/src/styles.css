@@ -169,6 +169,39 @@
 .la-observer-summary p {
     font-size: 0.75rem;
 }
+.la-observer-summary-compact {
+    margin: 16px 0 0;
+}
+.la-observer-summary-compact > div {
+    padding: 14px 18px;
+}
+.la-observer-summary-compact dd {
+    font-size: 1.25rem;
+}
+.la-observer-queue-wait-detail {
+    margin-top: 28px;
+}
+.la-observer-queue-wait-detail > p {
+    margin-top: 6px;
+}
+.la-observer-table th.la-observer-wait-cell,
+.la-observer-table td.la-observer-wait-cell,
+.la-observer-instance-table th.la-observer-wait-cell,
+.la-observer-instance-table td.la-observer-wait-cell {
+    width: 150px;
+    text-align: right;
+}
+.la-observer-wait {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    font-variant-numeric: tabular-nums;
+}
+.la-observer-wait small {
+    font-size: 0.6875rem;
+    color: var(--muted-foreground);
+}
 .la-observer-dot {
     display: inline-block;
     width: 6px;

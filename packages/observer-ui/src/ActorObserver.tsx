@@ -9,6 +9,9 @@ import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useInventory } from "./observer-hooks.js"
+import { useQueueWaits } from "./queue-wait-history.js"
+import { formatWait, queueWaitByActor, queueWaitByInstance, queueWaitTotal } from "./queue-wait.js"
+import type { QueueWaitStats } from "./queue-wait.js"
 
 interface ActorObserverProps {
     client: ObserverClient
@@ -27,6 +30,10 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
     const previousActor = useRef(initialActorName)
     const detailsId = useId()
     const selectedActor = inventory?.actors.find(actor => actor.actorName === selectedActorName)
+    const waits = useQueueWaits(client, selectedActorName)
+    const waitsByActor = waits.rows && queueWaitByActor(waits.rows)
+    const waitsByInstance = waits.rows && selectedActorName !== undefined ? queueWaitByInstance(waits.rows, selectedActorName) : undefined
+    const totalWait = waits.supported ? (waits.rows ? queueWaitTotal(waits.rows) : undefined) : undefined
     useEffect(() => {
         setLocalActorName(initialActorName)
         setQuery("")
@@ -72,17 +79,24 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
                     {selectedActorName !== undefined ? (
                         selectedActor ? (
                             <>
-                                <InventorySummary inventory={{ actors: [selectedActor] }} actorName={selectedActorName} />
-                                <ActorInstances client={client} key={selectedActorName} id={detailsId} actorName={selectedActorName} instances={selectedActor.instances} />
+                                <InventorySummary inventory={{ actors: [selectedActor] }} actorName={selectedActorName} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
+                                <ActorInstances
+                                    client={client}
+                                    key={selectedActorName}
+                                    id={detailsId}
+                                    actorName={selectedActorName}
+                                    instances={selectedActor.instances}
+                                    waits={waits.supported ? waitsByInstance : undefined}
+                                />
                             </>
                         ) : (
                             <EmptyState title="Actor class unavailable" description="This actor class is no longer in the latest inventory. Return to Actors to see available classes." />
                         )
                     ) : (
                         <>
-                            <InventorySummary inventory={inventory} />
+                            <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
                             {inventory.actors.length ? (
-                                <ActorTable inventory={inventory} query={query} onQueryChange={setQuery} onSelectActor={setSelectedActorName} />
+                                <ActorTable inventory={inventory} query={query} onQueryChange={setQuery} onSelectActor={setSelectedActorName} waits={waits.supported ? waitsByActor : undefined} />
                             ) : (
                                 <EmptyState title="No actors yet" description="Deploy your actor classes to see them here. Instance counts appear as actors are used." />
                             )}
@@ -112,7 +126,7 @@ function InventorySkeleton() {
     )
 }
 
-function InventorySummary({ inventory, actorName }: { inventory: ActorInventory; actorName?: string }) {
+function InventorySummary({ inventory, actorName, queueWait }: { inventory: ActorInventory; actorName?: string; queueWait?: QueueWaitStats | null }) {
     const totals = inventory.actors.reduce((sum, actor) => ({ live: sum.live + actor.live, dormant: sum.dormant + actor.dormant, unknown: sum.unknown + actor.unknown }), {
         live: 0,
         dormant: 0,
@@ -151,6 +165,13 @@ function InventorySummary({ inventory, actorName }: { inventory: ActorInventory;
                     <p>Awaiting host report</p>
                 </div>
             )}
+            {queueWait !== undefined && (
+                <div className="la-observer-queue-wait">
+                    <dt>Avg queue wait</dt>
+                    <dd aria-label="Average queue wait">{formatWait(queueWait?.averageMs)}</dd>
+                    <p>{queueWait ? `Last hour · max ${formatWait(queueWait.maxMs)} · ${queueWait.admitted.toLocaleString()} admitted` : "No admitted requests in the last hour"}</p>
+                </div>
+            )}
         </dl>
     )
 }
@@ -159,12 +180,14 @@ function ActorTable({
     inventory,
     query,
     onQueryChange,
-    onSelectActor
+    onSelectActor,
+    waits
 }: {
     inventory: ActorInventory
     query: string
     onQueryChange: (query: string) => void
     onSelectActor: (actorName: string) => void
+    waits?: Map<string, QueueWaitStats>
 }) {
     const hasUnknown = inventory.actors.some(actor => actor.unknown > 0)
     const actors = inventory.actors.filter(actor => matches(actor.actorName, query)).sort((a, b) => Number(b.live > 0) - Number(a.live > 0))
@@ -186,6 +209,11 @@ function ActorTable({
                                 <TableHead scope="col">Dormant</TableHead>
                                 {hasUnknown && <TableHead scope="col">Unknown</TableHead>}
                                 <TableHead scope="col">Total</TableHead>
+                                {waits && (
+                                    <TableHead scope="col" className="la-observer-wait-cell">
+                                        Avg queue wait
+                                    </TableHead>
+                                )}
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -203,6 +231,11 @@ function ActorTable({
                                     <TableCell>{actor.dormant.toLocaleString()}</TableCell>
                                     {hasUnknown && <TableCell>{actor.unknown.toLocaleString()}</TableCell>}
                                     <TableCell>{(actor.live + actor.dormant + actor.unknown).toLocaleString()}</TableCell>
+                                    {waits && (
+                                        <TableCell className="la-observer-wait-cell">
+                                            <QueueWait stats={waits.get(actor.actorName)} />
+                                        </TableCell>
+                                    )}
                                 </TableRow>
                             ))}
                         </TableBody>
@@ -221,7 +254,7 @@ function ActorTable({
     )
 }
 
-function ActorInstances({ client, id, actorName, instances }: { client: ObserverClient; id: string; actorName: string; instances: ActorInstance[] }) {
+function ActorInstances({ client, id, actorName, instances, waits }: { client: ObserverClient; id: string; actorName: string; instances: ActorInstance[]; waits?: Map<string, QueueWaitStats> }) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
     const [selectedInstanceId, setSelectedInstanceId] = useState<string>()
@@ -250,6 +283,7 @@ function ActorInstances({ client, id, actorName, instances }: { client: Observer
                     )}
                 </div>
                 {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
+                {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} />}
                 {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
                 {client.watchRequests || client.query ? (
                     <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} />
@@ -291,6 +325,11 @@ function ActorInstances({ client, id, actorName, instances }: { client: Observer
                                         <TableHead scope="col">Instance</TableHead>
                                         <TableHead scope="col">State</TableHead>
                                         <TableHead scope="col">Connections</TableHead>
+                                        {waits && (
+                                            <TableHead scope="col" className="la-observer-wait-cell">
+                                                Avg queue wait
+                                            </TableHead>
+                                        )}
                                         <TableHead scope="col" className="la-observer-waiting-cell">
                                             Waiting
                                         </TableHead>
@@ -311,6 +350,11 @@ function ActorInstances({ client, id, actorName, instances }: { client: Observer
                                                 </Badge>
                                             </TableCell>
                                             <TableCell>{instance.connections.length.toLocaleString()}</TableCell>
+                                            {waits && (
+                                                <TableCell className="la-observer-wait-cell">
+                                                    <QueueWait stats={waits.get(instance.actorId)} />
+                                                </TableCell>
+                                            )}
                                             <TableCell className="la-observer-waiting-cell">
                                                 <QueueBubbles waiting={instance.waiting} compact />
                                             </TableCell>
@@ -336,6 +380,44 @@ function ActorInstances({ client, id, actorName, instances }: { client: Observer
                 <p className="la-observer-instance-empty" role="status">
                     No {actorName} instances have been created yet.
                 </p>
+            )}
+        </section>
+    )
+}
+
+function QueueWait({ stats }: { stats?: QueueWaitStats }) {
+    if (!stats) return <span title="No admitted requests in the last hour">—</span>
+    return (
+        <span className="la-observer-wait" title={`Average of ${stats.admitted.toLocaleString()} admitted requests in the last hour; longest wait ${formatWait(stats.maxMs)}`}>
+            {formatWait(stats.averageMs)}
+            <small>max {formatWait(stats.maxMs)}</small>
+        </span>
+    )
+}
+
+function InstanceQueueWait({ stats }: { stats?: QueueWaitStats }) {
+    return (
+        <section className="la-observer-queue-wait-detail" aria-label="Queue wait">
+            <h3>Queue wait</h3>
+            <p>{stats ? "Time requests spent waiting to enter this actor over the last hour." : "No requests were admitted to this actor in the last hour."}</p>
+            {stats && (
+                <dl className="la-observer-summary la-observer-summary-compact">
+                    <div>
+                        <dt>Average</dt>
+                        <dd aria-label="Average queue wait">{formatWait(stats.averageMs)}</dd>
+                        <p>Per admitted request</p>
+                    </div>
+                    <div>
+                        <dt>Longest</dt>
+                        <dd aria-label="Longest queue wait">{formatWait(stats.maxMs)}</dd>
+                        <p>Single request</p>
+                    </div>
+                    <div>
+                        <dt>Admitted</dt>
+                        <dd aria-label="Admitted requests">{stats.admitted.toLocaleString()}</dd>
+                        <p>Requests that entered the actor</p>
+                    </div>
+                </dl>
             )}
         </section>
     )
