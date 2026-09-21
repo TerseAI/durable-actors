@@ -28,6 +28,8 @@ use super::{
     queues::{ActorQueues, WaitingRequest},
 };
 
+mod reentrant;
+
 const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
 const HOST_COMMAND_CAPACITY: usize = 256;
 
@@ -37,6 +39,7 @@ pub(crate) struct ActorHost {
     endpoint: HostEndpoint,
     commands: mpsc::Sender<HostCommand>,
     activity: watch::Receiver<usize>,
+    stopped: watch::Receiver<bool>,
 }
 
 impl ActorHost {
@@ -50,6 +53,7 @@ impl ActorHost {
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
         let (activity_tx, activity) = watch::channel(0);
+        let (stopped_tx, stopped) = watch::channel(false);
         let queues = ActorQueues::new();
         let dispatcher = HostDispatcher::new(
             endpoint.clone(),
@@ -57,7 +61,7 @@ impl ActorHost {
             storage,
             state,
             publisher,
-            activity_tx,
+            (activity_tx, stopped_tx),
             queues.clone(),
         );
         tokio::spawn(dispatcher.run(incoming));
@@ -67,6 +71,7 @@ impl ActorHost {
             endpoint,
             commands,
             activity,
+            stopped,
         }
     }
 
@@ -76,6 +81,10 @@ impl ActorHost {
 
     pub(crate) fn activity(&self) -> watch::Receiver<usize> {
         self.activity.clone()
+    }
+
+    pub(crate) fn stopped(&self) -> watch::Receiver<bool> {
+        self.stopped.clone()
     }
 
     pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
@@ -219,6 +228,7 @@ struct HostDispatcher {
     tasks: JoinSet<()>,
     accepting: watch::Sender<bool>,
     activity: watch::Sender<usize>,
+    stopped: watch::Sender<bool>,
     active: usize,
     queues: ActorQueues,
     drained: Vec<oneshot::Sender<()>>,
@@ -232,7 +242,7 @@ impl HostDispatcher {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
-        activity: watch::Sender<usize>,
+        status: (watch::Sender<usize>, watch::Sender<bool>),
         queues: ActorQueues,
     ) -> Self {
         Self {
@@ -245,7 +255,8 @@ impl HostDispatcher {
             identity: None,
             tasks: JoinSet::new(),
             accepting: watch::channel(true).0,
-            activity,
+            activity: status.0,
+            stopped: status.1,
             active: 0,
             queues,
             drained: Vec::new(),
@@ -289,7 +300,12 @@ impl HostDispatcher {
         }
         self.identity.get_or_insert_with(|| object.clone());
         if self.mailbox.is_none() {
-            self.start_actor(object.clone(), completed.clone());
+            self.start_actor(
+                object.clone(),
+                completed.clone(),
+                self.executor
+                    .allows_reentrancy(&request.operation.actor().actor_name),
+            );
         }
         let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
         if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
@@ -337,7 +353,12 @@ impl HostDispatcher {
         None
     }
 
-    fn start_actor(&mut self, object: ActorStorageKey, completed: mpsc::Sender<ActorCompletion>) {
+    fn start_actor(
+        &mut self,
+        object: ActorStorageKey,
+        completed: mpsc::Sender<ActorCompletion>,
+        reentrant: bool,
+    ) {
         let runtime = ActorRuntime::new(
             self.endpoint.clone(),
             self.executor.clone(),
@@ -352,6 +373,7 @@ impl HostDispatcher {
             requests,
             completed,
             self.accepting.subscribe(),
+            reentrant,
         ));
         self.mailbox = Some(ActorMailbox {
             sender,
@@ -388,6 +410,7 @@ impl HostDispatcher {
             self.active -= mailbox.admitted;
             mailbox.admitted = 0;
         }
+        self.stopped.send_replace(true);
         self.publish_activity();
     }
 
@@ -407,7 +430,12 @@ async fn run_actor(
     mut requests: mpsc::Receiver<ActorRequest>,
     completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
+    reentrant: bool,
 ) {
+    if reentrant {
+        reentrant::run(object, runtime, requests, completed, accepting).await;
+        return;
+    }
     while let Some(mut request) = requests.recv().await {
         drop(request.waiting.take());
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {

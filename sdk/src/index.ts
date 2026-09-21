@@ -1,5 +1,5 @@
 export { Actor } from "./actor/actor.js"
-export { Emittable, Ephemeral, Persisted } from "./actor/decorators.js"
+export { Emittable, Ephemeral, Persisted, Reentrant } from "./actor/decorators.js"
 export type { ActorClass, ActorMessageOf, ActorSocketOf } from "./actor/actor.js"
 export { ActorInvocationError } from "./errors.js"
 export type {

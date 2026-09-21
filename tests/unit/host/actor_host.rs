@@ -57,6 +57,113 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
 struct ExhaustedExecutor;
 
 #[tokio::test]
+async fn reentrant_completions_commit_in_snapshot_order_even_when_delivered_out_of_order()
+-> Result<()> {
+    assert_reentrant_commit_order(false).await
+}
+
+#[tokio::test]
+async fn a_failed_reentrant_commit_stops_the_activation_without_acknowledging_later_writes()
+-> Result<()> {
+    assert_reentrant_commit_order(true).await
+}
+
+async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
+    struct ReentrantExecutor {
+        first_started: tokio::sync::Notify,
+        second_started: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl ActorExecutor for ReentrantExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        fn allows_reentrancy(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            _: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
+            let sequence = if invocation.request_id == "first" {
+                self.first_started.notify_one();
+                self.second_started.notified().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                1
+            } else {
+                self.second_started.notify_one();
+                2
+            };
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence,
+                    result: json!(sequence),
+                    state: json!({"count": sequence}),
+                    effects: vec![],
+                },
+            ))
+        }
+    }
+    let executor = Arc::new(ReentrantExecutor {
+        first_started: Default::default(),
+        second_started: Default::default(),
+    });
+    let state = Arc::new(FakeStateTransport::default());
+    if fail_write {
+        state.failures.store(1, Ordering::SeqCst);
+    }
+    let host = ActorHost::new(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        state.clone(),
+        Arc::new(EmptySocketPublisher),
+    );
+    let operation = async {
+        let first = invoke(&host, "first");
+        let second = async {
+            executor.first_started.notified().await;
+            invoke(&host, "second").await
+        };
+        let (first, second) = tokio::join!(first, second);
+        if fail_write {
+            for result in [first?, second?] {
+                assert!(
+                    matches!(result, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
+                );
+            }
+            assert_eq!(state.writes.lock().unwrap().len(), 1);
+            assert_eq!(
+                invoke(&host, "after-failure").await?,
+                ActorExecutionResult::HostUnavailable
+            );
+            assert!(*host.stopped().borrow());
+            return Ok(());
+        }
+        assert_eq!(first?, completed(1));
+        assert_eq!(second?, completed(2));
+        let writes = state.writes.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            StateSnapshot::decode(&writes[0])?.state,
+            json!({"count": 1})
+        );
+        assert_eq!(
+            StateSnapshot::decode(&writes[1])?.state,
+            json!({"count": 2})
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(2), operation).await??;
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn application_errors_preserve_the_worker_and_committed_state() -> Result<()> {
     struct FailingExecutor {
         evictions: AtomicUsize,
@@ -178,6 +285,9 @@ impl ActorExecutor for ControlledExecutor {
             )
             .await?;
         match result {
+            ActorMethodOutcome::Interleaved(outcome) => {
+                Ok(ActorSocketOutcome::Interleaved(outcome))
+            }
             ActorMethodOutcome::Completed { state, effects, .. } => {
                 Ok(ActorSocketOutcome::Handled { state, effects })
             }

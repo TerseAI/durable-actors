@@ -107,6 +107,10 @@ See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guide
 
 The gateway keeps connections while actors hibernate. Actors use `onConnect`, `onMessage`, and `onDisconnect` to manage application messages. Browser connections receive explicit actor messages plus automatic snapshots and committed updates of public `@Persisted @Emittable` fields. Private, protected, and non-emittable fields are excluded.
 
+For long-running async methods, import the experimental `Reentrant` decorator and apply `@Reentrant` to allow other calls and socket hooks to run while the method awaits. The method retains actor state access, but state can change across awaits. Undecorated calls still serialize with each other; reentrant continuations may overlap their awaits. Direct `this.method()` calls inherit the current invocation's mode.
+
+Declaring any reentrant method disables application-error rollback for the whole actor class. Failed-call mutations remain in memory and may be saved by another successful call. Persistence still occurs on successful completion, so this does not make streamed progress immediately durable. See the [scheduling and persistence contract](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#reentrant-methods-experimental) before opting in.
+
 Inside actor hooks and backend SDK connections, send JSON values with `socket.send({ type: "chat", text: "Hello" })`. The backend SDK encodes and parses these values. Native browser sockets use `JSON.stringify` and `JSON.parse`.
 
 `Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Generated JSON schemas are checked at deployment and are not enforced with AJV during execution. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).

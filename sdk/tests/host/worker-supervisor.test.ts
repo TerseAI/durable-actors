@@ -16,6 +16,73 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
+test("correlates overlapping worker replies and socket lookups without idle eviction", { timeout: 10000 }, async () => {
+    const root = await createTypeScriptConsumer("InterleavedWorker")
+    const file = path.join(root, "src/durable-objects.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted, Reentrant } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class InterleavedWorker extends Actor {
+            @Persisted count = 0
+            @Reentrant async hold() {
+                const sockets = await this.getConnections()
+                this.broadcast("started:" + sockets[0]?.id)
+                await new Promise(resolve => setTimeout(resolve, 150))
+                this.broadcast("ended:" + sockets[0]?.id)
+                return ++this.count
+            }
+            async increment() { this.broadcast("increment"); return ++this.count }
+        }`
+    )
+    const entrypoint = pathToFileURL(file).href
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint),
+        actorIdleTimeoutMs: 25
+    })
+    const events: string[] = []
+    let started!: () => void
+    const start = new Promise<void>(resolve => {
+        started = resolve
+    })
+    try {
+        const holding = runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), method: "hold" },
+            async effects => {
+                for (const effect of effects) if (effect.type === "broadcast") events.push(effect.message.data)
+                started()
+            },
+            async () => [{ id: "one", metadata: {}, tags: [] }]
+        )
+        await start
+        const second = await runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), request_id: "second" },
+            async effects => {
+                assert.deepEqual(
+                    effects.map(effect => effect.type === "broadcast" && effect.message.data),
+                    ['"increment"']
+                )
+            }
+        )
+        assert.equal("result" in second && second.result, 1)
+        const first = await holding
+        assert.equal("result" in first && first.result, 2)
+        assert.deepEqual(events, ['"started:one"', '"ended:one"'])
+        await new Promise(resolve => setTimeout(resolve, 60))
+        assert.deepEqual(runtime.activeActors(), [])
+        const resumed = await runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), state: { count: 2 } },
+            async () => {}
+        )
+        assert.ok(resumed.type === "invoked")
+        assert.equal(resumed.result, 3)
+        assert.equal(resumed.sequence, 3)
+    } finally {
+        runtime.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("a generic Bun worker is warm before customer code is assigned", async () => {
     const worker = new ActorWorker()
     try {
@@ -141,6 +208,7 @@ test("starts one speculative Worker and gives it to the first actor", async () =
                 created.push(created.length + 1)
                 return {
                     state: "ready",
+                    reentrantActors: () => [],
                     async ready() {
                         return ["PreloadedCounter"]
                     },
@@ -230,6 +298,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
             created += 1
             return {
                 state: "starting",
+                reentrantActors: () => [],
                 ready: () => new Promise(() => undefined),
                 async execute() {
                     return { type: "invoked", result: null, state: {} }
@@ -287,6 +356,7 @@ test("discards a failed preload before accepting the first actor", async () => {
                 const failed = created++ === 0
                 return {
                     state: failed ? "stopped" : "ready",
+                    reentrantActors: () => [],
                     ready: () =>
                         failed ? Promise.reject(new Error("preload failed")) : Promise.resolve(["RetryPreloadCounter"]),
                     async execute() {
@@ -320,6 +390,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
         actorSchemas: [],
         createWorker: () => ({
             state: "ready",
+            reentrantActors: () => [],
             async ready() {
                 return ["UnusedCounter"]
             },
@@ -563,6 +634,7 @@ test("residency reports actual workers and drops evicted and failed instances", 
         actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
+            reentrantActors: () => [],
             ready: async () => ["SessionCounter"],
             execute: async () =>
                 fail
@@ -591,6 +663,7 @@ test("residency subscribers see worker creation and eviction immediately", async
         actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
+            reentrantActors: () => [],
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -618,6 +691,7 @@ test("activity resets the idle timeout without publishing dormant residency", as
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",
+            reentrantActors: () => [],
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -654,6 +728,7 @@ test("a running request stays resident beyond the idle timeout", async context =
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",
+            reentrantActors: () => [],
             ready: async () => ["SessionCounter"],
             async execute() {
                 if (block) await pending

@@ -87,6 +87,71 @@ impl ActorRuntime {
         &self.endpoint
     }
 
+    pub(super) fn executor(&self) -> Arc<dyn ActorExecutor> {
+        self.executor.clone()
+    }
+
+    pub(super) async fn prepare_interleaved(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        timings: &mut InvocationTimings,
+    ) -> Result<Option<Arc<Value>>> {
+        self.storage.ensure_authority()?;
+        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
+        let cached = self
+            .take_or_load_state(&invocation.actor, owner_epoch, timings)
+            .await?;
+        ensure!(
+            cached.pending.is_none(),
+            "interleaved activation has an unresolved commit"
+        );
+        let state = cached.state();
+        self.cached_state = Some(cached);
+        Ok(state)
+    }
+
+    pub(super) async fn commit_interleaved(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        outcome: crate::actor::ActorInterleavedOutcome,
+        timings: &mut InvocationTimings,
+    ) -> Result<ActorExecutionResult> {
+        self.storage.ensure_authority()?;
+        validate_socket_effects(&outcome.effects)?;
+        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("interleaved activation has no state")?;
+        ensure!(
+            cached.owner_epoch == owner_epoch,
+            "interleaved ownership changed"
+        );
+        let publication = if cached.state.as_deref() != Some(&outcome.state) {
+            self.publish_result(
+                invocation,
+                owner_epoch,
+                &mut cached,
+                outcome.result.clone(),
+                outcome.state,
+            )
+            .await
+        } else {
+            Ok(ActorExecutionResult::Completed {
+                result: outcome.result.clone(),
+                effects: vec![],
+            })
+        };
+        let version = cached.state_version;
+        self.cached_state = Some(cached);
+        publication?;
+        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
+        self.complete_with_state(&invocation.actor, version, outcome.result, outcome.effects)
+            .await
+    }
+
     pub(super) async fn activate_actor(
         &mut self,
         actor: &crate::actor::ActorKey,
@@ -376,6 +441,9 @@ impl ActorRuntime {
             )
             .await;
         match outcome {
+            Ok(ActorMethodOutcome::Interleaved(_)) => {
+                Err(failed("actor_error", "unexpected interleaved result"))
+            }
             Ok(ActorMethodOutcome::Completed {
                 result,
                 state,
@@ -417,6 +485,9 @@ impl ActorRuntime {
     ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
         match self.executor.handle_socket_shared(invocation, state).await {
+            Ok(ActorSocketOutcome::Interleaved(_)) => {
+                Err(failed("actor_error", "unexpected interleaved result"))
+            }
             Ok(ActorSocketOutcome::Handled { state, effects }) => {
                 match validate_socket_effects(&effects) {
                     Ok(()) => Ok((state, effects)),
@@ -713,7 +784,7 @@ impl ActorRuntime {
         );
     }
 
-    async fn evict(&self, actor: &crate::actor::ActorKey) {
+    pub(super) async fn evict(&self, actor: &crate::actor::ActorKey) {
         if let Err(error) = self
             .executor
             .evict(ActorMethodEviction {
