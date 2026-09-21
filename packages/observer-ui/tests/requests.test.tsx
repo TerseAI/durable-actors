@@ -136,7 +136,8 @@ test("saved history sends SQL and loads older pages without mixing live rows", a
     assert.match(queries[0]!.sql, /FROM request_events/u)
     assert.match(queries[1]!.sql, /sequence <= \?/u)
     assert.match(queries[0]!.sql, /started_at_ms >= \?/u, "history defaults to the last hour")
-    assert.ok(Number(queries[0]!.params[0]) >= Date.now() - 61 * 60_000)
+    // The bound is floored to the minute, so allow a full extra minute of slack.
+    assert.ok(Number(queries[0]!.params[0]) >= Date.now() - 62 * 60_000 && Number(queries[0]!.params[0]) <= Date.now() - 60 * 60_000)
     assert.deepEqual(queries[1]!.params.slice(1), [200, 1000, 101])
     fireEvent.click(view.getByRole("button", { name: "Live" }))
     await view.findByText("post")
