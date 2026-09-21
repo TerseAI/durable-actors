@@ -134,6 +134,12 @@ test("live inventory decides whether unfinished sessions are open or lost and ad
         "live inventory metadata wins for open connections; saved connect metadata serves closed ones"
     )
     assert.deepEqual(sessionDuration(sessions[0]!, 10_000), null, "a connection without a retained connect event has no duration")
+    const seen = socketSessions(rows, inventory, new Map([[JSON.stringify(["Room", "random", "c9"]), 9_000]]))[0]!
+    assert.deepEqual(
+        [seen.openedAtMs, seen.estimatedStart, sessionDuration(seen, 10_000)],
+        [9_000, true, { ms: 1_000, lowerBound: false }],
+        "an inventory-only connection borrows the time it was first seen"
+    )
     assert.deepEqual(sessionDuration(sessions[1]!, 10_000), { ms: 4000, lowerBound: false })
     assert.deepEqual(sessionDuration(sessions[2]!, 10_000), { ms: 3000, lowerBound: false })
     assert.deepEqual(sessionDuration(sessions[3]!, 10_000), { ms: 200, lowerBound: true })

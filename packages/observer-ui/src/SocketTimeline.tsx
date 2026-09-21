@@ -140,7 +140,11 @@ export function SocketTimeline({ sessions, start, end, endLabel = "now", selecte
                         <dt>Status</dt>
                         <dd>{statusLabel(hover.session.status)}</dd>
                         <dt>Opened</dt>
-                        <dd>{hover.session.openedAtMs === null ? "Before retained history" : new Date(hover.session.openedAtMs).toLocaleTimeString([], { hour12: false })}</dd>
+                        <dd>
+                            {hover.session.openedAtMs === null
+                                ? "Before retained history"
+                                : `${hover.session.estimatedStart ? "≈ " : ""}${new Date(hover.session.openedAtMs).toLocaleTimeString([], { hour12: false })}`}
+                        </dd>
                         <dt>Duration</dt>
                         <dd>{durationLabel(hover.session, end)}</dd>
                         <dt>Messages</dt>

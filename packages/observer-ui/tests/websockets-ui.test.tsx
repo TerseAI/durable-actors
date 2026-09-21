@@ -1,4 +1,4 @@
-import React from "react"
+import React, { act } from "react"
 
 import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react"
 import { JSDOM } from "jsdom"
@@ -194,4 +194,45 @@ test("timeline lanes pack overlapping sessions per instance and ticks land on ro
     )
     assert.deepEqual(timelineTicks(1_000, 61_000), [10_000, 20_000, 30_000, 40_000, 50_000])
     assert.deepEqual(timelineTicks(0, 3_600_000).length, 5)
+})
+
+test("a connection reported by a host before its connect trace is saved starts where it was first seen, not at the window edge", async () => {
+    let publish: (inventory: ActorInventory) => void = () => {}
+    const queries: ObserverQuery[] = []
+    const client: ObserverClient = {
+        listActors: async () => inventory,
+        checkConnection: async () => {},
+        watchActors: async (onInventory, signal) => {
+            publish = onInventory
+            onInventory(inventory)
+            await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+        },
+        query: async query => {
+            queries.push(query)
+            return { rows: rows.slice(1, 2), truncated: false }
+        }
+    }
+    const view = render(<WebSocketObserver client={client} />)
+    await view.findByRole("button", { name: "Inspect connection closed-connection-1234567890" })
+    const timeline = view.getByRole("group", { name: "Connection timeline" })
+    const preexisting = within(timeline).getByRole("button", { name: /open-con…7890/u })
+    assert.ok(preexisting.className.includes("socket-bar-unknown-start"), "connections already open when the page loads have an unknown start")
+    const before = queries.length
+    await act(async () =>
+        publish({
+            actors: [
+                {
+                    ...inventory.actors[0]!,
+                    instances: [
+                        { ...inventory.actors[0]!.instances[0]!, connections: [...inventory.actors[0]!.instances[0]!.connections, { id: "fresh-connection-1234567890", metadata: { name: "Linus" } }] }
+                    ]
+                }
+            ]
+        })
+    )
+    const fresh = await within(timeline).findByRole("button", { name: /fresh-co…7890/u })
+    assert.ok(!fresh.className.includes("socket-bar-unknown-start"), "a connection that appears later starts when it was first seen")
+    assert.match(fresh.getAttribute("aria-label")!, /, (\d+ ms|[0-5](\.\d)? s)$/u, "its duration counts from when it appeared, not from the window start")
+    assert.match(view.getByRole("row", { name: /fresh-co…7890/u }).textContent!, /≈ \d\d:\d\d:\d\d/u, "the table marks the start as approximate")
+    await waitFor(() => assert.ok(queries.length > before, "an inventory change refreshes history immediately"))
 })

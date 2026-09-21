@@ -15,6 +15,7 @@ export interface SocketSession {
     failures: number
     status: SocketSessionStatus
     metadata?: unknown
+    estimatedStart?: boolean
 }
 
 export type SocketSessionRow = Omit<SocketSession, "status">
@@ -80,7 +81,12 @@ function connectMetadata(event: SqlValue | undefined): unknown {
     return parsed && typeof parsed === "object" && "metadata" in parsed ? parsed.metadata : undefined
 }
 
-export function socketSessions(rows: SocketSessionRow[], inventory: ActorInventory | undefined): SocketSession[] {
+export function connectionKey(actorName: string, actorId: string, connectionId: string): string {
+    return JSON.stringify([actorName, actorId, connectionId])
+}
+
+// Connections the inventory reports before their connect trace is saved borrow the time they were first seen.
+export function socketSessions(rows: SocketSessionRow[], inventory: ActorInventory | undefined, firstSeen: ReadonlyMap<string, number> = new Map()): SocketSession[] {
     const live = new Map<string, unknown>()
     for (const actor of inventory?.actors ?? [])
         for (const instance of actor.instances) for (const connection of instance.connections) live.set(JSON.stringify([actor.actorName, instance.actorId, connection.id]), connection.metadata)
@@ -93,13 +99,16 @@ export function socketSessions(rows: SocketSessionRow[], inventory: ActorInvento
     for (const actor of inventory?.actors ?? [])
         for (const instance of actor.instances)
             for (const connection of instance.connections) {
-                if (known.has(JSON.stringify([actor.actorName, instance.actorId, connection.id]))) continue
+                const key = connectionKey(actor.actorName, instance.actorId, connection.id)
+                if (known.has(key)) continue
+                const seen = firstSeen.get(key)
                 sessions.unshift({
                     connectionId: connection.id,
                     actorName: actor.actorName,
                     actorId: instance.actorId,
                     hostId: null,
-                    openedAtMs: null,
+                    openedAtMs: seen ?? null,
+                    estimatedStart: seen !== undefined,
                     closedAtMs: null,
                     lastSeenMs: null,
                     messages: 0,

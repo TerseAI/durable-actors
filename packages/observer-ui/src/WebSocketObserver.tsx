@@ -11,7 +11,7 @@ import { Button } from "./components/ui/button.js"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { useInventory } from "./observer-hooks.js"
 import { useSocketHistory } from "./socket-history.js"
-import { formatDuration, sessionDuration, sessionSummary, socketSessions } from "./socket-sessions.js"
+import { connectionKey, formatDuration, sessionDuration, sessionSummary, socketSessions } from "./socket-sessions.js"
 import type { SocketSession, SocketSessionStatus } from "./socket-sessions.js"
 import { defaultTimeRange, rangeLabel, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
@@ -41,7 +41,8 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
     const resolved = resolveRange(range, now)
     const end = resolved.toMs ?? now
     const history = useSocketHistory(client, resolved)
-    const sessions = useMemo(() => socketSessions(history.rows ?? [], inventory), [history.rows, inventory])
+    const firstSeen = useFirstSeenConnections(inventory, history.retry)
+    const sessions = useMemo(() => socketSessions(history.rows ?? [], inventory, firstSeen), [history.rows, inventory, firstSeen])
     const ready = !!inventory || failed
     const needle = query.trim().toLocaleLowerCase()
     const visible = sessions
@@ -308,7 +309,11 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
                 {session.openedAtMs === null ? (
                     <span title="The connect event is not in retained history">—</span>
                 ) : (
-                    <time dateTime={new Date(session.openedAtMs).toISOString()} title={new Date(session.openedAtMs).toLocaleString()}>
+                    <time
+                        dateTime={new Date(session.openedAtMs).toISOString()}
+                        title={session.estimatedStart ? "Approximate: first reported by the host; the connect event has not been saved yet" : new Date(session.openedAtMs).toLocaleString()}
+                    >
+                        {session.estimatedStart ? "≈ " : ""}
                         {new Date(session.openedAtMs).toLocaleTimeString([], { hour12: false })}
                     </time>
                 )}
@@ -341,7 +346,7 @@ function SessionDetails({ session, now, onSelectActor }: { session: SocketSessio
         Connection: session.connectionId,
         "Actor class": session.actorName,
         "Instance ID": session.actorId,
-        Opened: session.openedAtMs === null ? "Before retained history" : new Date(session.openedAtMs).toLocaleString(),
+        Opened: session.openedAtMs === null ? "Before retained history" : `${session.estimatedStart ? "≈ " : ""}${new Date(session.openedAtMs).toLocaleString()}`,
         ...(session.closedAtMs !== null ? { Closed: new Date(session.closedAtMs).toLocaleString() } : {}),
         ...(session.status === "lost" && session.lastSeenMs !== null ? { "Last activity": new Date(session.lastSeenMs).toLocaleString() } : {}),
         Duration: durationLabel(session, now),
@@ -379,6 +384,31 @@ function timelineOrigin(sessions: SocketSession[], windowStart: number | undefin
     const earliest = Math.min(...sessions.map(session => session.openedAtMs ?? session.lastSeenMs ?? now))
     const origin = Number.isFinite(earliest) ? earliest - Math.max(5_000, (now - earliest) * 0.06) : now - 60_000
     return Math.max(windowStart ?? -Infinity, Math.min(origin, now - 10_000))
+}
+
+// Connections already present in the first snapshot keep an unknown start; ones that appear later
+// started roughly when they appeared. A changed connection set also refreshes history right away.
+function useFirstSeenConnections(inventory: ActorInventory | undefined, refresh: () => void) {
+    const [firstSeen, setFirstSeen] = useState<ReadonlyMap<string, number>>(new Map())
+    const previous = useRef<Set<string>>(undefined)
+    useEffect(() => {
+        if (!inventory) return
+        const current = new Set(
+            inventory.actors.flatMap(actor => actor.instances.flatMap(instance => instance.connections.map(connection => connectionKey(actor.actorName, instance.actorId, connection.id))))
+        )
+        const before = previous.current
+        previous.current = current
+        if (!before) return
+        const added = [...current].filter(key => !before.has(key))
+        const removed = [...before].filter(key => !current.has(key))
+        if (!added.length && !removed.length) return
+        if (added.length) {
+            const now = Date.now()
+            setFirstSeen(seen => new Map([...seen, ...added.map(key => [key, now] as const)]))
+        }
+        refresh()
+    }, [inventory])
+    return firstSeen
 }
 
 function filterSuggestions(sessions: SocketSession[], inventory: ActorInventory | undefined): FilterSuggestion[] {
