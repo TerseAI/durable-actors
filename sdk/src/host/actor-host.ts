@@ -55,8 +55,8 @@ class ActorSession {
             actorSchemas,
             actorIdleTimeoutMs: this.settings.actorIdleTimeoutMs
         })
-        const commandHandler: ActorCommandHandler = (command, publish, connections) =>
-            supervisor.handle(command, publish, connections)
+        const commandHandler: ActorCommandHandler = (command, allowNextInvocation, publish, connections) =>
+            supervisor.handle(command, allowNextInvocation, publish, connections)
         try {
             const actorNames = await discoverActorNames(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
@@ -124,7 +124,11 @@ class ActorSessionConnection {
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
-        connection.send({ type: "attach", protocol: 16, actor_names: actorNames })
+        connection.send({
+            type: "attach",
+            protocol: 17,
+            actor_names: actorNames
+        })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }
@@ -220,6 +224,7 @@ class ActorSessionConnection {
                         message.command,
                         await this.commandHandler(
                             message.command,
+                            () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
                             effects => this.publish(message.message_id, effects),
                             () => this.getConnections(message.message_id)
                         )
@@ -286,7 +291,10 @@ class ActorSessionConnection {
             this.socket.write(`${document}\n`)
             return
         }
-        if (command.type !== "evict") await this.commandHandler({ type: "evict", actor: command.actor })
+        if (command.type !== "evict")
+            await this.commandHandler({ type: "evict", actor: command.actor }, () => {
+                throw new ActorProtocolError("eviction cannot admit another invocation")
+            })
         this.send({
             type: "reply",
             message_id: messageId,

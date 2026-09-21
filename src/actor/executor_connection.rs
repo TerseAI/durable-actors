@@ -26,7 +26,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 16;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 17;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -75,7 +75,7 @@ pub enum ActorSocketEvent {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ActorSocketInvocation {
     pub request_id: String,
     pub actor: ActorKey,
@@ -141,6 +141,7 @@ pub enum ActorSocketEffect {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
+    Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
         state: Value,
@@ -151,6 +152,7 @@ pub enum ActorMethodOutcome {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorSocketOutcome {
+    Interleaved(ActorInterleavedOutcome),
     Handled {
         state: Value,
         effects: Vec<ActorSocketEffect>,
@@ -158,9 +160,21 @@ pub enum ActorSocketOutcome {
     Failed(ActorInvocationFailure),
 }
 
+#[derive(Debug, PartialEq)]
+pub struct ActorInterleavedOutcome {
+    pub sequence: u64,
+    pub result: Value,
+    pub state: Value,
+    pub effects: Vec<ActorSocketEffect>,
+}
+
 #[async_trait]
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_name: &str) -> bool;
+
+    fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+        None
+    }
 
     async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
         Ok(())
@@ -376,11 +390,16 @@ struct JsActorExecutor {
     changes: watch::Sender<()>,
     residency: Residency,
     actor_names: HashSet<String>,
+    admission: watch::Sender<()>,
     commands: mpsc::Sender<ExecutorRequest>,
 }
 
 #[async_trait]
 impl ActorExecutor for JsActorExecutor {
+    fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+        Some(self.admission.subscribe())
+    }
+
     async fn hydrate(&self, actor: ActorKey, state: Option<Arc<Value>>) -> Result<()> {
         match self
             .exchange(
@@ -444,10 +463,19 @@ impl ActorExecutor for JsActorExecutor {
                 result,
                 state,
                 effects,
-            } => Ok(ActorMethodOutcome::Completed {
-                result,
-                state,
-                effects,
+                sequence,
+            } => Ok(match sequence {
+                Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
+                    sequence,
+                    result,
+                    state,
+                    effects,
+                }),
+                None => ActorMethodOutcome::Completed {
+                    result,
+                    state,
+                    effects,
+                },
             }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
@@ -473,9 +501,19 @@ impl ActorExecutor for JsActorExecutor {
             .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
             .await?
         {
-            ExecutorReply::WebsocketHandled { state, effects } => {
-                Ok(ActorSocketOutcome::Handled { state, effects })
-            }
+            ExecutorReply::WebsocketHandled {
+                state,
+                effects,
+                sequence,
+            } => Ok(match sequence {
+                Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
+                    sequence,
+                    result: Value::Null,
+                    state,
+                    effects,
+                }),
+                None => ActorSocketOutcome::Handled { state, effects },
+            }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
                     code,
@@ -519,14 +557,16 @@ impl JsActorExecutor {
         let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
         let residency = Arc::new(Mutex::new(None));
         let (changes, _) = watch::channel(());
+        let (admission, _) = watch::channel(());
         let executor = Arc::new(Self {
             changes: changes.clone(),
             residency: residency.clone(),
             actor_names: actor_names.into_iter().collect(),
+            admission: admission.clone(),
             commands,
         });
         let task = tokio::spawn(run_executor_connection(
-            reader, writer, incoming, residency, changes,
+            reader, writer, incoming, residency, changes, admission,
         ));
         (executor, task)
     }
@@ -558,6 +598,7 @@ impl JsActorExecutor {
                 state,
                 reply,
                 resident_only: false,
+                admission_granted: false,
             })))
             .await
             .context("actor executor stopped")?;
@@ -573,10 +614,12 @@ async fn run_executor_connection(
     commands: mpsc::Receiver<ExecutorRequest>,
     residency: Residency,
     changes: watch::Sender<()>,
+    admission: watch::Sender<()>,
 ) -> Result<()> {
     let (outbound, writes) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS + 1);
     let (inbound, replies) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
     let driver = ExecutorDriver {
+        admission,
         changes,
         residency,
         pending: HashMap::new(),
@@ -599,6 +642,7 @@ async fn run_executor_connection(
 }
 
 struct ExecutorDriver {
+    admission: watch::Sender<()>,
     changes: watch::Sender<()>,
     residency: Residency,
     pending: HashMap<u64, PendingCommand>,
@@ -632,6 +676,7 @@ impl ExecutorDriver {
                             *current = Some((Instant::now(), actors));
                             if changed { self.changes.send_replace(()); }
                         }
+                        ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
                         ActorExecutorClientMessage::GetConnections { message_id } => self.load_connections(message_id)?,
@@ -698,6 +743,27 @@ impl ExecutorDriver {
                     })
             }
         }
+    }
+
+    fn allow_next_invocation(&mut self, message_id: u64) -> Result<()> {
+        let pending = self
+            .pending
+            .get_mut(&message_id)
+            .context("invocation admission has no active call")?;
+        ensure!(
+            matches!(
+                pending.command,
+                ExecutorCommand::Invoke(_) | ExecutorCommand::WebsocketEvent(_)
+            ),
+            "only invocations can admit another call"
+        );
+        ensure!(
+            !pending.admission_granted,
+            "invocation admission was already granted"
+        );
+        pending.admission_granted = true;
+        self.admission.send_replace(());
+        Ok(())
     }
 
     fn load_connections(&mut self, message_id: u64) -> Result<()> {
@@ -902,6 +968,7 @@ struct PendingCommand {
     command: ExecutorCommand,
     state: Option<Arc<Value>>,
     resident_only: bool,
+    admission_granted: bool,
     reply: oneshot::Sender<Result<ExecutorReply>>,
 }
 
@@ -1042,6 +1109,9 @@ enum ActorExecutorClientMessage {
     GetConnections {
         message_id: u64,
     },
+    ReadyForInvocation {
+        message_id: u64,
+    },
     SocketEffects {
         message_id: u64,
         effects: Vec<ActorSocketEffect>,
@@ -1074,10 +1144,14 @@ enum ExecutorReply {
         result: Value,
         state: Value,
         #[serde(default)]
+        sequence: Option<u64>,
+        #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
         state: Value,
+        #[serde(default)]
+        sequence: Option<u64>,
         effects: Vec<ActorSocketEffect>,
     },
     Failed {

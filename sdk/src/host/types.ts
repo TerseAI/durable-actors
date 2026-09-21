@@ -24,6 +24,7 @@ type SocketSource = () => Promise<readonly SocketConnection[]>
 
 type ActorCommandHandler = (
     command: ActorExecutorCommand,
+    allowNextInvocation: () => void,
     publish?: SocketPublisher,
     connections?: SocketSource
 ) => Promise<ActorExecutorReply>
@@ -41,6 +42,7 @@ interface ActorWorkerSupervisorOptions {
 
 interface ResidentActorWorkerOptions {
     readonly identity: ActorIdentity
+    readonly sequenceBase: number
     readonly onActiveActorsChange: () => void
     readonly moduleUrl: string
     readonly schemas: readonly ActorSchema[] | undefined
@@ -57,6 +59,7 @@ interface ActorWorkerHandle {
     ready(): Promise<readonly string[]>
     execute(
         command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        allowNextInvocation: () => void,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply>
