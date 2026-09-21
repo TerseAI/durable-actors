@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from "react"
 import { Box, CircleHelp, RefreshCw, Search, Unplug } from "lucide-react"
 
 import { RequestObserver } from "./RequestObserver.js"
+import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInstance, ActorInventory, ObserverClient } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
@@ -12,16 +13,23 @@ import { useInventory } from "./observer-hooks.js"
 import { useQueueWaits } from "./queue-wait-history.js"
 import { formatWait, queueWaitByActor, queueWaitByInstance, queueWaitTotal } from "./queue-wait.js"
 import type { QueueWaitStats } from "./queue-wait.js"
+import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
+import type { TimeRange } from "./time-range.js"
 
 interface ActorObserverProps {
     client: ObserverClient
     className?: string
     initialActorName?: string
     navigation?: { actorName?: string; onSelectActor: (actorName?: string) => void }
+    timeRange?: TimeRange
+    onTimeRangeChange?: (range: TimeRange) => void
 }
 
-function ActorObserver({ client, className = "", initialActorName, navigation }: ActorObserverProps) {
+function ActorObserver({ client, className = "", initialActorName, navigation, timeRange, onTimeRangeChange }: ActorObserverProps) {
     const { inventory, loading, failed, retry } = useInventory(client)
+    const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
+    const range = timeRange ?? localRange
+    const setRange = onTimeRangeChange ?? setLocalRange
     const [localActorName, setLocalActorName] = useState(initialActorName)
     const selectedActorName = navigation ? navigation.actorName : localActorName
     const setSelectedActorName = navigation ? navigation.onSelectActor : setLocalActorName
@@ -30,7 +38,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
     const previousActor = useRef(initialActorName)
     const detailsId = useId()
     const selectedActor = inventory?.actors.find(actor => actor.actorName === selectedActorName)
-    const waits = useQueueWaits(client, selectedActorName)
+    const waits = useQueueWaits(client, resolveRange(range, Date.now()), selectedActorName)
     const waitsByActor = waits.rows && queueWaitByActor(waits.rows)
     const waitsByInstance = waits.rows && selectedActorName !== undefined ? queueWaitByInstance(waits.rows, selectedActorName) : undefined
     const totalWait = waits.supported ? (waits.rows ? queueWaitTotal(waits.rows) : undefined) : undefined
@@ -62,10 +70,13 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
                     </div>
                     <p>{selectedActorName === undefined ? "Inspect instances, residency, and connections." : "Inspect this actor class’s instances, residency, and connections."}</p>
                 </div>
-                <Button variant="outline" type="button" disabled={loading} onClick={retry}>
-                    <RefreshCw aria-hidden="true" className={loading ? "la-observer-spin" : undefined} />
-                    {loading ? "Refreshing…" : failed ? "Try again" : "Refresh"}
-                </Button>
+                <div className="la-observer-actions">
+                    {waits.supported && <TimeRangePicker value={range} onChange={setRange} />}
+                    <Button variant="outline" type="button" disabled={loading} onClick={retry}>
+                        <RefreshCw aria-hidden="true" className={loading ? "la-observer-spin" : undefined} />
+                        {loading ? "Refreshing…" : failed ? "Try again" : "Refresh"}
+                    </Button>
+                </div>
             </div>
             {failed && (
                 <div className="la-observer-error" role="alert">
@@ -79,7 +90,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
                     {selectedActorName !== undefined ? (
                         selectedActor ? (
                             <>
-                                <InventorySummary inventory={{ actors: [selectedActor] }} actorName={selectedActorName} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
+                                <InventorySummary inventory={{ actors: [selectedActor] }} actorName={selectedActorName} queueWait={waits.supported ? (totalWait ?? null) : undefined} range={range} />
                                 <ActorInstances
                                     client={client}
                                     key={selectedActorName}
@@ -87,6 +98,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
                                     actorName={selectedActorName}
                                     instances={selectedActor.instances}
                                     waits={waits.supported ? waitsByInstance : undefined}
+                                    range={range}
                                 />
                             </>
                         ) : (
@@ -94,7 +106,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation }:
                         )
                     ) : (
                         <>
-                            <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} />
+                            <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} range={range} />
                             {inventory.actors.length ? (
                                 <ActorTable inventory={inventory} query={query} onQueryChange={setQuery} onSelectActor={setSelectedActorName} waits={waits.supported ? waitsByActor : undefined} />
                             ) : (
@@ -126,7 +138,7 @@ function InventorySkeleton() {
     )
 }
 
-function InventorySummary({ inventory, actorName, queueWait }: { inventory: ActorInventory; actorName?: string; queueWait?: QueueWaitStats | null }) {
+function InventorySummary({ inventory, actorName, queueWait, range }: { inventory: ActorInventory; actorName?: string; queueWait?: QueueWaitStats | null; range: TimeRange }) {
     const totals = inventory.actors.reduce((sum, actor) => ({ live: sum.live + actor.live, dormant: sum.dormant + actor.dormant, unknown: sum.unknown + actor.unknown }), {
         live: 0,
         dormant: 0,
@@ -169,7 +181,7 @@ function InventorySummary({ inventory, actorName, queueWait }: { inventory: Acto
                 <div className="la-observer-queue-wait">
                     <dt>Avg queue wait</dt>
                     <dd aria-label="Average queue wait">{formatWait(queueWait?.averageMs)}</dd>
-                    <p>{queueWait ? `Last hour · max ${formatWait(queueWait.maxMs)} · ${queueWait.admitted.toLocaleString()} admitted` : "No admitted requests in the last hour"}</p>
+                    <p>{queueWait ? `Max ${formatWait(queueWait.maxMs)} · ${queueWait.admitted.toLocaleString()} admitted ${rangePhrase(range)}` : `No admitted requests ${rangePhrase(range)}`}</p>
                 </div>
             )}
         </dl>
@@ -254,7 +266,21 @@ function ActorTable({
     )
 }
 
-function ActorInstances({ client, id, actorName, instances, waits }: { client: ObserverClient; id: string; actorName: string; instances: ActorInstance[]; waits?: Map<string, QueueWaitStats> }) {
+function ActorInstances({
+    client,
+    id,
+    actorName,
+    instances,
+    waits,
+    range
+}: {
+    client: ObserverClient
+    id: string
+    actorName: string
+    instances: ActorInstance[]
+    waits?: Map<string, QueueWaitStats>
+    range: TimeRange
+}) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
     const [selectedInstanceId, setSelectedInstanceId] = useState<string>()
@@ -283,10 +309,10 @@ function ActorInstances({ client, id, actorName, instances, waits }: { client: O
                     )}
                 </div>
                 {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
-                {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} />}
+                {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} range={range} />}
                 {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
                 {client.watchRequests || client.query ? (
-                    <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} />
+                    <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} />
                 ) : (
                     <section>
                         <h3>Requests</h3>
@@ -386,20 +412,20 @@ function ActorInstances({ client, id, actorName, instances, waits }: { client: O
 }
 
 function QueueWait({ stats }: { stats?: QueueWaitStats }) {
-    if (!stats) return <span title="No admitted requests in the last hour">—</span>
+    if (!stats) return <span title="No admitted requests in the selected time range">—</span>
     return (
-        <span className="la-observer-wait" title={`Average of ${stats.admitted.toLocaleString()} admitted requests in the last hour; longest wait ${formatWait(stats.maxMs)}`}>
+        <span className="la-observer-wait" title={`Average of ${stats.admitted.toLocaleString()} admitted requests in the selected time range; longest wait ${formatWait(stats.maxMs)}`}>
             {formatWait(stats.averageMs)}
             <small>max {formatWait(stats.maxMs)}</small>
         </span>
     )
 }
 
-function InstanceQueueWait({ stats }: { stats?: QueueWaitStats }) {
+function InstanceQueueWait({ stats, range }: { stats?: QueueWaitStats; range: TimeRange }) {
     return (
         <section className="la-observer-queue-wait-detail" aria-label="Queue wait">
             <h3>Queue wait</h3>
-            <p>{stats ? "Time requests spent waiting to enter this actor over the last hour." : "No requests were admitted to this actor in the last hour."}</p>
+            <p>{stats ? `Time requests spent waiting to enter this actor ${rangePhrase(range)}.` : `No requests were admitted to this actor ${rangePhrase(range)}.`}</p>
             {stats && (
                 <dl className="la-observer-summary la-observer-summary-compact">
                     <div>

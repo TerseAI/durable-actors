@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Pause, Play, RefreshCw } from "lucide-react"
 
+import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
@@ -11,15 +12,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
 import type { HistoryFilters } from "./request-sql.js"
+import { defaultTimeRange, resolveRange } from "./time-range.js"
+import type { TimeRange } from "./time-range.js"
 
 interface RequestObserverProps {
     client: Pick<ObserverClient, "watchRequests" | "query">
     actor?: Pick<RequestTrace, "actorName" | "actorId">
+    timeRange?: TimeRange
+    onTimeRangeChange?: (range: TimeRange) => void
 }
 
-function RequestObserver({ client, actor }: RequestObserverProps) {
+function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: RequestObserverProps) {
     const [query, setQuery] = useState<HistoryFilters>()
-    const scopedQuery = useMemo(() => (query ? { ...query, ...actor } : undefined), [query, actor?.actorName, actor?.actorId])
+    const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
+    const range = timeRange ?? localRange
+    const setRange = onTimeRangeChange ?? setLocalRange
+    const scopedQuery = useMemo(() => (query ? { ...query, ...actor, ...resolveRange(range, Date.now()) } : undefined), [query, actor?.actorName, actor?.actorId, range])
     const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
@@ -82,7 +90,7 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
                     )}
                 </div>
             </div>
-            {query && <HistoryFilters query={query} loading={history.loading} onSearch={setQuery} scoped={!!actor} />}
+            {query && <HistoryFilters query={query} range={range} onRangeChange={setRange} loading={history.loading} onSearch={setQuery} scoped={!!actor} />}
             {query && history.failed && (
                 <div className="la-observer-error" role="alert">
                     Request history unavailable.{" "}
@@ -237,37 +245,37 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
     )
 }
 
-function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFilters; loading: boolean; onSearch: (query: HistoryFilters) => void; scoped: boolean }) {
-    const [invalid, setInvalid] = useState(false)
+function HistoryFilters({
+    query,
+    range,
+    onRangeChange,
+    loading,
+    onSearch,
+    scoped
+}: {
+    query: HistoryFilters
+    range: TimeRange
+    onRangeChange: (range: TimeRange) => void
+    loading: boolean
+    onSearch: (query: HistoryFilters) => void
+    scoped: boolean
+}) {
     return (
         <form
             className="la-request-history-filters"
             onSubmit={event => {
                 event.preventDefault()
                 const data = new FormData(event.currentTarget)
-                const fromMs = data.get("from") ? new Date(String(data.get("from"))).getTime() : undefined
-                const toMs = data.get("to") ? new Date(String(data.get("to"))).getTime() : undefined
-                if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
-                    setInvalid(true)
-                    return
-                }
-                setInvalid(false)
                 onSearch({
-                    fromMs,
-                    toMs,
                     actorId: String(data.get("actorId") || "").trim() || undefined,
                     outcome: (String(data.get("outcome") || "") as HistoryFilters["outcome"]) || undefined
                 })
             }}
         >
-            <label>
-                From
-                <Input type="datetime-local" name="from" />
-            </label>
-            <label>
-                To
-                <Input type="datetime-local" name="to" />
-            </label>
+            <div className="la-request-history-range">
+                <span>Time range</span>
+                <TimeRangePicker value={range} onChange={onRangeChange} />
+            </div>
             {!scoped && (
                 <label>
                     Actor ID
@@ -288,11 +296,6 @@ function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFi
             <Button type="submit" variant="outline" disabled={loading}>
                 Search
             </Button>
-            {invalid && (
-                <p className="la-observer-error" role="alert">
-                    From must be before To.
-                </p>
-            )}
         </form>
     )
 }

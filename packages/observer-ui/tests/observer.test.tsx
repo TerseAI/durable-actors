@@ -411,13 +411,13 @@ test("actor pages show the average queue wait per class and instance from retain
     }
     const view = render(<ActorObserver client={client} />)
     await waitFor(() => assert.equal(view.getByLabelText("Average queue wait").textContent, "256.9 ms"))
-    assert.match(view.container.textContent!, /Last hour · max 1.5 s · 6 admitted/u)
+    assert.match(view.container.textContent!, /Max 1.5 s · 6 admitted in the last hour/u)
     assert.match(view.getByRole("cell", { name: "Room" }).closest("tr")!.textContent!, /384.4 msmax 1.5 s/u, "the class average weights instances by admitted requests")
     assert.match(view.getByRole("cell", { name: "Counter" }).closest("tr")!.textContent!, /2 msmax 3 ms/u)
     assert.equal(queries[0]!.params.length, 1)
     fireEvent.click(view.getByRole("button", { name: "Room" }))
     await waitFor(() => assert.equal(queries.at(-1)!.params[1], "Room"))
-    await waitFor(() => assert.match(view.container.textContent!, /max 1.5 s · 4 admitted/u))
+    await waitFor(() => assert.match(view.container.textContent!, /Max 1.5 s · 4 admitted/u))
     assert.equal(view.getByLabelText("Average queue wait").textContent, "384.4 ms")
     const general = view.getByRole("button", { name: "general" }).closest("tr")!
     assert.match(general.textContent!, /12.5 msmax 40 ms/u)

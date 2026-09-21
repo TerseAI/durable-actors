@@ -1,4 +1,5 @@
 import type { ActorInventory, ObserverQuery, ObserverQueryResult, SqlValue } from "./client.js"
+import type { ResolvedRange } from "./time-range.js"
 
 export type SocketSessionStatus = "open" | "closed" | "lost"
 
@@ -25,7 +26,17 @@ export interface SocketDuration {
 
 export const sessionLimit = 500
 
-export function sessionsQuery(fromMs?: number): ObserverQuery {
+export function sessionsQuery(range: ResolvedRange = {}): ObserverQuery {
+    const bounds: string[] = []
+    const params: SqlValue[] = []
+    if (range.fromMs !== undefined) {
+        bounds.push("MAX(started_at_ms) >= ?")
+        params.push(range.fromMs)
+    }
+    if (range.toMs !== undefined) {
+        bounds.push("MIN(started_at_ms) <= ?")
+        params.push(range.toMs)
+    }
     return {
         sql: `SELECT connection_id, actor_name, actor_id, MIN(host_id) AS host_id,
     MIN(CASE WHEN operation = 'onConnect' THEN started_at_ms END) AS opened_at_ms,
@@ -37,10 +48,10 @@ export function sessionsQuery(fromMs?: number): ObserverQuery {
 FROM request_events
 WHERE kind = 'websocket' AND connection_id IS NOT NULL
 GROUP BY connection_id, actor_name, actor_id
-${fromMs === undefined ? "" : "HAVING MAX(started_at_ms) >= ?"}
+${bounds.length ? `HAVING ${bounds.join(" AND ")}` : ""}
 ORDER BY COALESCE(opened_at_ms, last_seen_ms) DESC, connection_id
 LIMIT ${sessionLimit}`,
-        params: fromMs === undefined ? [] : [fromMs]
+        params
     }
 }
 

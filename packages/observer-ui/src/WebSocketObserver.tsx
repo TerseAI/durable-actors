@@ -1,33 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { RefreshCw, Search } from "lucide-react"
+import { RefreshCw } from "lucide-react"
 
+import { FilterCombobox } from "./FilterCombobox.js"
+import type { FilterSuggestion } from "./FilterCombobox.js"
 import { SocketTimeline, durationLabel, shortId, statusLabel } from "./SocketTimeline.js"
-import type { ObserverClient } from "./client.js"
+import { TimeRangePicker } from "./TimeRangePicker.js"
+import type { ActorInventory, ObserverClient } from "./client.js"
 import { Button } from "./components/ui/button.js"
-import { Input } from "./components/ui/input.js"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { useInventory } from "./observer-hooks.js"
 import { useSocketHistory } from "./socket-history.js"
 import { formatDuration, sessionDuration, sessionSummary, socketSessions } from "./socket-sessions.js"
 import type { SocketSession, SocketSessionStatus } from "./socket-sessions.js"
-
-const windows = [
-    { minutes: 15, label: "Last 15 minutes" },
-    { minutes: 60, label: "Last hour" },
-    { minutes: 24 * 60, label: "Last 24 hours" },
-    { minutes: 7 * 24 * 60, label: "Last 7 days" },
-    { minutes: 0, label: "All retained" }
-]
+import { defaultTimeRange, rangeLabel, rangePhrase, resolveRange } from "./time-range.js"
+import type { TimeRange } from "./time-range.js"
 
 interface WebSocketObserverProps {
     client: ObserverClient
     onSelectActor?: (actorName: string) => void
+    timeRange?: TimeRange
+    onTimeRangeChange?: (range: TimeRange) => void
 }
 
-export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverProps) {
+export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRangeChange }: WebSocketObserverProps) {
     const { inventory, failed, retry } = useInventory(client)
-    const [minutes, setMinutes] = useState(60)
+    const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
+    const range = timeRange ?? localRange
+    const setRange = onTimeRangeChange ?? setLocalRange
     const [now, setNow] = useState(Date.now)
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState<SocketSessionStatus | "all">("all")
@@ -38,8 +38,9 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
         const timer = setInterval(() => setNow(Date.now()), 5_000)
         return () => clearInterval(timer)
     }, [])
-    const windowStart = minutes ? now - minutes * 60_000 : undefined
-    const history = useSocketHistory(client, minutes ? Math.floor(windowStart! / 60_000) * 60_000 : undefined)
+    const resolved = resolveRange(range, now)
+    const end = resolved.toMs ?? now
+    const history = useSocketHistory(client, resolved)
     const sessions = useMemo(() => socketSessions(history.rows ?? [], inventory), [history.rows, inventory])
     const ready = !!inventory || failed
     const needle = query.trim().toLocaleLowerCase()
@@ -52,8 +53,9 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
         .sort((a, b) => Number(b.status === "open") - Number(a.status === "open") || (b.openedAtMs ?? b.lastSeenMs ?? Infinity) - (a.openedAtMs ?? a.lastSeenMs ?? Infinity))
     const summary = sessionSummary(sessions, now)
     const longest = Math.max(0, ...sessions.filter(session => session.status !== "open").map(session => sessionDuration(session, now)?.ms ?? 0)) || summary.p95
-    const timelineStart = timelineOrigin(visible, windowStart, now)
-    useEffect(() => setSelected(undefined), [client, minutes])
+    const timelineStart = timelineOrigin(visible, resolved.fromMs, end)
+    const suggestions = useMemo(() => filterSuggestions(sessions, inventory), [sessions, inventory])
+    useEffect(() => setSelected(undefined), [client, range])
     return (
         <section ref={container} className="la-observer overview websockets" aria-label="WebSocket observer">
             <div className="overview-heading">
@@ -61,7 +63,7 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
                     <h1>WebSockets</h1>
                     <p>
                         {ready
-                            ? `${summary.open.toLocaleString()} open now${history.supported ? ` · ${summary.total.toLocaleString()} ${summary.total === 1 ? "session" : "sessions"} ${windowLabel(minutes)}` : ""}`
+                            ? `${summary.open.toLocaleString()} open now${history.supported ? ` · ${summary.total.toLocaleString()} ${summary.total === 1 ? "session" : "sessions"} ${rangePhrase(range)}` : ""}`
                             : "Connecting to inventory…"}
                     </p>
                 </div>
@@ -75,15 +77,7 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
                             </>
                         ) : null}
                     </span>
-                    {history.supported && (
-                        <select aria-label="Time window" value={minutes} onChange={event => setMinutes(Number(event.target.value))}>
-                            {windows.map(window => (
-                                <option key={window.minutes} value={window.minutes}>
-                                    {window.label}
-                                </option>
-                            ))}
-                        </select>
-                    )}
+                    {history.supported && <TimeRangePicker value={range} onChange={setRange} />}
                     <Button
                         variant="outline"
                         size="icon"
@@ -108,12 +102,9 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
                     Connection history unavailable. {history.rows ? "Showing the last loaded sessions." : "Only currently open connections are shown."} Retrying automatically.
                 </p>
             )}
-            <SummaryTiles summary={summary} ready={ready} history={history.supported && !!history.rows} minutes={minutes} />
+            <SummaryTiles summary={summary} ready={ready} history={history.supported && !!history.rows} range={range} />
             <div className="socket-filterbar">
-                <div className="overview-search">
-                    <Search aria-hidden="true" />
-                    <Input aria-label="Filter connections" placeholder="Filter by connection, actor, instance, or host…" value={query} onInput={event => setQuery(event.currentTarget.value)} />
-                </div>
+                <FilterCombobox label="Filter connections" placeholder="Filter by connection, actor, instance, or host…" value={query} onChange={setQuery} suggestions={suggestions} />
                 <select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value as SocketSessionStatus | "all")}>
                     <option value="all">All statuses</option>
                     <option value="open">Open</option>
@@ -143,7 +134,8 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
                         <SocketTimeline
                             sessions={visible}
                             start={timelineStart}
-                            end={now}
+                            end={end}
+                            endLabel={resolved.toMs === undefined ? "now" : new Date(resolved.toMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}
                             selected={selected}
                             onSelect={(session, element) => {
                                 trigger.current = element
@@ -237,7 +229,7 @@ export function WebSocketObserver({ client, onSelectActor }: WebSocketObserverPr
     )
 }
 
-function SummaryTiles({ summary, ready, history, minutes }: { summary: ReturnType<typeof sessionSummary>; ready: boolean; history: boolean; minutes: number }) {
+function SummaryTiles({ summary, ready, history, range }: { summary: ReturnType<typeof sessionSummary>; ready: boolean; history: boolean; range: TimeRange }) {
     return (
         <div className="overview-metrics socket-metrics">
             <section className="overview-metric">
@@ -254,7 +246,7 @@ function SummaryTiles({ summary, ready, history, minutes }: { summary: ReturnTyp
                 <h2>Sessions</h2>
                 <div className="overview-value">
                     <strong aria-label="WebSocket sessions">{history ? summary.total.toLocaleString() : "—"}</strong>
-                    <span>{windowLabel(minutes)}</span>
+                    <span>{range.kind === "absolute" ? rangeLabel(range) : rangePhrase(range)}</span>
                 </div>
                 <div className="overview-metric-foot">
                     <span>
@@ -389,8 +381,21 @@ function timelineOrigin(sessions: SocketSession[], windowStart: number | undefin
     return Math.max(windowStart ?? -Infinity, Math.min(origin, now - 10_000))
 }
 
-function windowLabel(minutes: number) {
-    return minutes ? `in the ${windows.find(window => window.minutes === minutes)!.label.toLocaleLowerCase()}` : "in retained history"
+function filterSuggestions(sessions: SocketSession[], inventory: ActorInventory | undefined): FilterSuggestion[] {
+    const actors = new Map<string, Set<string>>()
+    for (const actor of inventory?.actors ?? []) actors.set(actor.actorName, new Set(actor.instances.map(instance => instance.actorId)))
+    for (const session of sessions) {
+        const instances = actors.get(session.actorName) ?? new Set<string>()
+        actors.set(session.actorName, instances.add(session.actorId))
+    }
+    return [
+        ...[...actors.keys()].map(actorName => ({
+            group: "Actor class",
+            value: actorName,
+            hint: `${actors.get(actorName)!.size.toLocaleString()} ${actors.get(actorName)!.size === 1 ? "instance" : "instances"}`
+        })),
+        ...[...actors].flatMap(([actorName, instances]) => [...instances].map(actorId => ({ group: "Instance", value: actorId, hint: actorName })))
+    ]
 }
 
 function emptyTitle(ready: boolean, history: { supported: boolean; rows?: unknown; failed: boolean }, total: number) {

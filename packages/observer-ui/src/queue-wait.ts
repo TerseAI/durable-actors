@@ -1,4 +1,5 @@
-import type { ObserverQuery, ObserverQueryResult } from "./client.js"
+import type { ObserverQuery, ObserverQueryResult, SqlValue } from "./client.js"
+import type { ResolvedRange } from "./time-range.js"
 
 export interface QueueWaitRow {
     actorName: string
@@ -14,18 +15,30 @@ export interface QueueWaitStats {
     maxMs: number
 }
 
-export const queueWaitWindowMs = 60 * 60_000
-
 // Queue wait exists only for admitted attempts; reroutes never entered the actor.
-export function queueWaitQuery(fromMs: number, actorName?: string): ObserverQuery {
+export function queueWaitQuery(range: ResolvedRange, actorName?: string): ObserverQuery {
+    const clauses = ["queue_wait_ms IS NOT NULL", "outcome <> 'rerouted'"]
+    const params: SqlValue[] = []
+    if (range.fromMs !== undefined) {
+        clauses.push("started_at_ms >= ?")
+        params.push(range.fromMs)
+    }
+    if (range.toMs !== undefined) {
+        clauses.push("started_at_ms <= ?")
+        params.push(range.toMs)
+    }
+    if (actorName !== undefined) {
+        clauses.push("actor_name = ?")
+        params.push(actorName)
+    }
     return {
         sql: `SELECT actor_name, actor_id, COUNT(*) AS admitted, AVG(queue_wait_ms) AS average_ms, MAX(queue_wait_ms) AS max_ms
 FROM request_events
-WHERE started_at_ms >= ? AND queue_wait_ms IS NOT NULL AND outcome <> 'rerouted'${actorName === undefined ? "" : " AND actor_name = ?"}
+WHERE ${clauses.join(" AND ")}
 GROUP BY actor_name, actor_id
 ORDER BY admitted DESC, actor_name, actor_id
 LIMIT 500`,
-        params: actorName === undefined ? [fromMs] : [fromMs, actorName]
+        params
     }
 }
 

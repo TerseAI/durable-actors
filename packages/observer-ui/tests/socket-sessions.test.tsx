@@ -81,11 +81,16 @@ test("sessions pair connect and disconnect events per connection and count messa
             { connectionId: "c3", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: null, closedAtMs: null, lastSeenMs: 500, messages: 1, failures: 0, metadata: undefined }
         ])
         assert.deepEqual(
-            sessionRows(execute(db, sessionsQuery(4000))).map(row => row.connectionId),
+            sessionRows(execute(db, sessionsQuery({ fromMs: 4000 }))).map(row => row.connectionId),
             ["c2", "c1"],
             "the window keeps sessions with any activity inside it and still pairs their earlier events"
         )
-        assert.deepEqual(execute(db, sessionsQuery(4001)).rows.length, 1)
+        assert.deepEqual(execute(db, sessionsQuery({ fromMs: 4001 })).rows.length, 1)
+        assert.deepEqual(
+            sessionRows(execute(db, sessionsQuery({ fromMs: 1000, toMs: 5000 }))).map(row => row.connectionId),
+            ["c1"],
+            "an absolute range keeps sessions that overlap it"
+        )
     } finally {
         db.close()
     }

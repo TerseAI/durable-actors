@@ -58,14 +58,14 @@ test("queue wait averages admitted attempts per instance inside the window and r
         append(db, { actorId: "lobby", queueWaitMs: 900, startedAtMs: 100 })
         append(db, { actorId: "random", queueWaitMs: 100 })
         append(db, { actorName: "Counter", actorId: "one", queueWaitMs: 4 })
-        const rows = queueWaitRows(execute(db, queueWaitQuery(1000)))
+        const rows = queueWaitRows(execute(db, queueWaitQuery({ fromMs: 1000 })))
         assert.deepEqual(rows, [
             { actorName: "Room", actorId: "lobby", admitted: 2, averageMs: 20, maxMs: 30 },
             { actorName: "Counter", actorId: "one", admitted: 1, averageMs: 4, maxMs: 4 },
             { actorName: "Room", actorId: "random", admitted: 1, averageMs: 100, maxMs: 100 }
         ])
         assert.deepEqual(
-            queueWaitRows(execute(db, queueWaitQuery(1000, "Room"))).map(row => row.actorId),
+            queueWaitRows(execute(db, queueWaitQuery({ fromMs: 1000 }, "Room"))).map(row => row.actorId),
             ["lobby", "random"]
         )
         assert.deepEqual(
@@ -76,6 +76,11 @@ test("queue wait averages admitted attempts per instance inside the window and r
             ]
         )
         assert.deepEqual([...queueWaitByInstance(rows, "Room").keys()], ["lobby", "random"])
+        assert.deepEqual(
+            queueWaitRows(execute(db, queueWaitQuery({ fromMs: 0, toMs: 200 }))).map(row => row.averageMs),
+            [900],
+            "an absolute range bounds both ends"
+        )
         assert.equal(queueWaitByInstance(rows, "Room").get("lobby")!.averageMs, 20)
     } finally {
         db.close()

@@ -1,6 +1,6 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render } from "@testing-library/react"
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
@@ -135,7 +135,9 @@ test("saved history sends SQL and loads older pages without mixing live rows", a
     assert.ok(view.getByText("saved call 0"))
     assert.match(queries[0]!.sql, /FROM request_events/u)
     assert.match(queries[1]!.sql, /sequence <= \?/u)
-    assert.deepEqual(queries[1]!.params, [200, 1000, 101])
+    assert.match(queries[0]!.sql, /started_at_ms >= \?/u, "history defaults to the last hour")
+    assert.ok(Number(queries[0]!.params[0]) >= Date.now() - 61 * 60_000)
+    assert.deepEqual(queries[1]!.params.slice(1), [200, 1000, 101])
     fireEvent.click(view.getByRole("button", { name: "Live" }))
     await view.findByText("post")
     assert.equal(view.queryByText("saved call 0"), null)
@@ -195,7 +197,7 @@ test("changing history filters cancels the old query and ignores a late response
     fireEvent.submit(actor.closest("form")!)
     await view.findByText("filtered call")
     assert.equal(firstSignal?.aborted, true)
-    assert.deepEqual((queries[1] as { params: string[] }).params, ["lobby"])
+    assert.deepEqual((queries[1] as { params: string[] }).params.slice(1), ["lobby"])
     await act(async () => resolveFirst(sqlRows()))
     assert.equal(view.queryByText("post"), null)
 })
@@ -227,8 +229,12 @@ test("instance requests filter both class and ID in live and saved history", asy
     await view.findByRole("table", { name: "Saved requests" })
     assert.match(queries[0]!.sql, /actor_name = \?/u)
     assert.match(queries[0]!.sql, /actor_id = \?/u)
-    assert.deepEqual(queries[0]!.params, ["Room", "lobby"])
+    assert.deepEqual(queries[0]!.params.slice(1), ["Room", "lobby"])
     assert.equal(view.queryByLabelText("Actor ID"), null)
+    fireEvent.click(view.getByRole("button", { name: "Last hour" }))
+    fireEvent.click(view.getByRole("button", { name: "All retained" }))
+    await waitFor(() => assert.equal(queries.length, 2))
+    assert.deepEqual(queries[1]!.params, ["Room", "lobby"], "all retained history drops the time bound")
 })
 
 test("request inspection keeps table rows intact and opens a separate details sheet", async () => {

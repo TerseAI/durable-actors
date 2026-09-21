@@ -7,6 +7,8 @@ import { Overview } from "./Overview.js"
 import { RequestObserver } from "./RequestObserver.js"
 import { WebSocketObserver } from "./WebSocketObserver.js"
 import type { ObserverClient } from "./client.js"
+import { defaultTimeRange } from "./time-range.js"
+import type { TimeRange } from "./time-range.js"
 
 const views = [
     { id: "overview", label: "little-actors", icon: LayoutGrid },
@@ -18,6 +20,8 @@ const views = [
 export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; toggleTheme: () => void }) {
     const [view, setView] = useState<(typeof views)[number]["id"]>("overview")
     const [actor, setActor] = useState<string>()
+    const [timeRange, setTimeRange] = useState<TimeRange>(defaultTimeRange)
+    const range = { timeRange, onTimeRangeChange: setTimeRange }
     function selectActor(actorName: string) {
         setActor(actorName)
         setView("actors")
@@ -66,10 +70,10 @@ export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; to
                     </a>
                 </header>
                 <main id="main" tabIndex={-1}>
-                    {view === "overview" && <Overview client={client} onSelectActor={selectActor} />}
-                    {view === "actors" && <ActorObserver client={client} navigation={{ actorName: actor, onSelectActor: setActor }} />}
-                    {view === "requests" && <RequestObserver client={client} />}
-                    {view === "websockets" && <WebSocketObserver client={client} onSelectActor={selectActor} />}
+                    {view === "overview" && <Overview client={client} onSelectActor={selectActor} {...range} />}
+                    {view === "actors" && <ActorObserver client={client} navigation={{ actorName: actor, onSelectActor: setActor }} {...range} />}
+                    {view === "requests" && <RequestObserver client={client} {...range} />}
+                    {view === "websockets" && <WebSocketObserver client={client} onSelectActor={selectActor} {...range} />}
                 </main>
             </div>
         </div>

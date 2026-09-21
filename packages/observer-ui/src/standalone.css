@@ -237,7 +237,7 @@ main {
     color: var(--foreground);
     font-size: 11px;
 }
-.overview-controls button {
+.overview-controls > button {
     width: 33px;
     height: 33px;
 }
@@ -579,13 +579,22 @@ main {
     gap: 10px;
     margin-bottom: 14px;
 }
-.socket-filterbar .overview-search {
-    width: 360px;
-    padding: 0 12px;
-    border: 1px solid var(--border);
+.socket-filterbar .la-combobox {
+    width: 380px;
+}
+.socket-filterbar .la-combobox-field {
+    width: 100%;
+}
+.socket-filterbar .la-combobox-field input {
+    height: 33px;
+    border-color: var(--border);
     border-radius: 5px;
-    background: var(--card);
-    min-height: 33px;
+    font-size: 12px;
+}
+.overview-controls .la-range-trigger {
+    height: 33px;
+    padding: 0 12px;
+    font-size: 11px;
 }
 .socket-timeline-panel {
     margin-bottom: 14px;
@@ -772,7 +781,7 @@ main {
     position: absolute;
     z-index: 3;
     transform: translate(-50%, calc(-100% - 10px));
-    min-width: 220px;
+    width: 340px;
     padding: 12px 14px;
     background: var(--popover);
     color: var(--popover-foreground);
@@ -785,30 +794,11 @@ main {
 .socket-tooltip-below {
     transform: translate(-50%, 10px);
 }
-.socket-tooltip strong {
-    display: block;
-    font: 12px var(--console-mono);
-    font-weight: 600;
-}
-.socket-tooltip > span {
-    display: block;
-    margin-top: 2px;
-    color: var(--muted-foreground);
-    font-family: var(--console-mono);
-}
-.socket-tooltip-metadata {
-    display: block;
-    margin-top: 6px;
-    font-style: normal;
-    font-size: 12px;
-    font-weight: 500;
-    overflow-wrap: anywhere;
-}
 .socket-tooltip dl {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 4px 14px;
-    margin: 10px 0 0;
+    margin: 0;
 }
 .socket-tooltip dt {
     color: var(--muted-foreground);
@@ -817,6 +807,39 @@ main {
     margin: 0;
     text-align: right;
     font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+.socket-tooltip .socket-tooltip-metadata {
+    display: block;
+    margin: 0 0 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.socket-tooltip-metadata > div {
+    display: grid;
+    gap: 1px;
+}
+.socket-tooltip-metadata > div + div {
+    margin-top: 6px;
+}
+.socket-tooltip .socket-tooltip-metadata dt {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.socket-tooltip .socket-tooltip-metadata dd {
+    text-align: left;
+    font: 12px/1.45 var(--console-mono);
+    font-weight: 600;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.socket-tooltip-metadata p {
+    margin: 6px 0 0;
+    font-size: 10px;
+    color: var(--muted-foreground);
 }
 .socket-table {
     text-align: left;
@@ -1031,7 +1054,7 @@ main {
     }
     .overview select,
     .overview input,
-    .overview-controls button,
+    .overview-controls > button,
     .theme-toggle,
     .overview-class-link,
     .overview-thresholds summary {
