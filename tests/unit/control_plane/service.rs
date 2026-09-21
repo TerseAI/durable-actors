@@ -1639,3 +1639,130 @@ fn fixture_host(revision: &str, suffix: &str) -> HostId {
     };
     HostId::new(format!("host.v3.{}.{suffix}", spec.host_revision()))
 }
+
+#[tokio::test]
+async fn regional_connections_allow_omitted_home_region() -> Result<()> {
+    for transport in ["grpc", "websocket"] {
+        for existing in [false, true] {
+            let issuer = test_issuer()?;
+            let auth = ActorJwtVerifier::for_scope(
+                issuer.verifier_keys_json()?,
+                "issuer",
+                "authority",
+                ActorTokenPurpose::ControlPlane,
+                Duration::from_secs(60),
+            )?;
+            let registry = Arc::new(LocalAdminRegistry::default());
+            registry
+                .register_test_deployment(&HostLaunchSpec {
+                    project_id: "default".into(),
+                    source: None,
+                    code_snapshot: None,
+                    code_revision: "v1".into(),
+                    image_ref: "image".into(),
+                    working_directory: "/app".into(),
+                    actor_entrypoint: None,
+                    secret_refs: vec![],
+                })
+                .await?;
+            let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+            let placements = Arc::new(LocalObjectPlacementStore::default());
+            let actor = ActorKey {
+                project_id: "default".into(),
+                actor_name: "Room".into(),
+                actor_id: "lobby".into(),
+            };
+            if existing {
+                placements.set_owner(
+                    &actor.storage_key(),
+                    test_lease(&HostId::new("old-host")),
+                    "north-america-east",
+                )?;
+            }
+            let provisioner = Arc::new(FakeRoutingProvisioner {
+                failed_regions: vec![],
+                calls: Mutex::new(vec![]),
+            });
+            let mut service = ControlPlaneService::new(
+                placements,
+                auth,
+                registry,
+                issuer.clone(),
+                provisioner.clone(),
+            );
+            service.region = Some("north-america-west".into());
+            let routes = super::super::public_api::router(service, admin);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let url = format!(
+                "http://{}/v1/projects/default/actors/Room/lobby/connect",
+                listener.local_addr()?
+            );
+            let server = tokio::spawn(async { axum::serve(listener, routes).await });
+            let client = reqwest::Client::new();
+            let mut body = serde_json::json!({"transport": transport});
+            if transport == "websocket" {
+                body["metadata"] = serde_json::json!({"userId":"trusted"});
+            }
+            let response = client
+                .post(&url)
+                .bearer_auth("api-key")
+                .json(&body)
+                .send()
+                .await?;
+            let status = response.status();
+            let grant: serde_json::Value = response.json().await?;
+            assert_eq!(
+                status,
+                reqwest::StatusCode::OK,
+                "{transport}, existing={existing}: {grant}"
+            );
+            let expected_region = if existing {
+                "north-america-east"
+            } else {
+                "north-america-west"
+            };
+            assert_eq!(grant["homeRegion"], expected_region);
+            assert_eq!(*provisioner.calls.lock().unwrap(), vec![expected_region]);
+            if transport == "websocket" {
+                let url = reqwest::Url::parse(grant["websocketUrl"].as_str().unwrap())?;
+                assert_eq!(url.scheme(), "wss");
+                let key = url
+                    .query_pairs()
+                    .find(|(name, _)| name == "key")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                let ticket = issuer.verify_socket(&key)?;
+                assert_eq!(ticket.region, expected_region);
+                assert_eq!(ticket.actor, actor);
+                assert_eq!(ticket.metadata, body["metadata"]);
+            }
+            body["homeRegion"] = "north-america-east".into();
+            assert_eq!(
+                client
+                    .post(&url)
+                    .bearer_auth("api-key")
+                    .json(&body)
+                    .send()
+                    .await?
+                    .status(),
+                reqwest::StatusCode::CONFLICT
+            );
+            if existing {
+                body["homeRegion"] = "north-america-west".into();
+                assert_eq!(
+                    client
+                        .post(&url)
+                        .bearer_auth("api-key")
+                        .json(&body)
+                        .send()
+                        .await?
+                        .status(),
+                    reqwest::StatusCode::CONFLICT
+                );
+            }
+            server.abort();
+        }
+    }
+    Ok(())
+}
