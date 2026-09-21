@@ -18,7 +18,7 @@
         "@tiptap/y-tiptap": "^3.0.7",
         "express": "^5.2.1",
         "lib0": "^0.2.117",
-        "little-actors": "^0.1.28",
+        "little-actors": "workspace:^",
         "react": "^19.3.0",
         "react-dom": "^19.3.0",
         "yjs": "^13.6.32"
