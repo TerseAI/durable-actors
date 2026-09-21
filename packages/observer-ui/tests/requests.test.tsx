@@ -1,26 +1,14 @@
 import React, { act } from "react"
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
-import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
 import { HttpObserverClient } from "../src/client.js"
 import type { RequestTracePage } from "../src/client.js"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, {
-    window: dom.window,
-    document: dom.window.document,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    NodeFilter: dom.window.NodeFilter,
-    HTMLInputElement: dom.window.HTMLInputElement,
-    MutationObserver: dom.window.MutationObserver,
-    CustomEvent: dom.window.CustomEvent,
-    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
-    IS_REACT_ACT_ENVIRONMENT: true
-})
+import "./dom.js"
+
 const { RequestObserver } = await import("../src/RequestObserver.js")
 afterEach(cleanup)
 const page: RequestTracePage = {
@@ -174,7 +162,6 @@ test("live reconnect resumes after the last received cursor and preserves distin
 })
 
 test("changing history filters cancels the old query and ignores a late response", async () => {
-    Object.assign(globalThis, { FormData: dom.window.FormData })
     let resolveFirst!: (page: ReturnType<typeof sqlRows>) => void
     let firstSignal: AbortSignal | undefined
     const queries: unknown[] = []
@@ -232,7 +219,7 @@ test("instance requests filter both class and ID in live and saved history", asy
     assert.match(queries[0]!.sql, /actor_id = \?/u)
     assert.deepEqual(queries[0]!.params.slice(1), ["Room", "lobby"])
     assert.equal(view.queryByLabelText("Actor ID"), null)
-    fireEvent.click(view.getByRole("button", { name: "Last hour" }))
+    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
     fireEvent.click(view.getByRole("button", { name: "All retained" }))
     await waitFor(() => assert.equal(queries.length, 2))
     assert.deepEqual(queries[1]!.params, ["Room", "lobby"], "all retained history drops the time bound")

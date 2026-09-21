@@ -52,7 +52,7 @@ export function Overview({ client, onSelectActor, timeRange, onTimeRangeChange }
                             "Connecting…"
                         )}
                     </span>
-                    <TimeRangePicker value={range} onChange={setRange} />
+                    <TimeRangePicker value={range} onChange={setRange} className="overview-range" />
                     <Button
                         variant="outline"
                         size="icon"

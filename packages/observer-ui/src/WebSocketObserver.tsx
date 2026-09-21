@@ -78,7 +78,7 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
                             </>
                         ) : null}
                     </span>
-                    {history.supported && <TimeRangePicker value={range} onChange={setRange} />}
+                    {history.supported && <TimeRangePicker value={range} onChange={setRange} className="overview-range" />}
                     <Button
                         variant="outline"
                         size="icon"
@@ -424,7 +424,7 @@ function filterSuggestions(sessions: SocketSession[], inventory: ActorInventory 
             value: actorName,
             hint: `${actors.get(actorName)!.size.toLocaleString()} ${actors.get(actorName)!.size === 1 ? "instance" : "instances"}`
         })),
-        ...[...actors].flatMap(([actorName, instances]) => [...instances].map(actorId => ({ group: "Instance", value: actorId, hint: actorName })))
+        ...[...actors].flatMap(([actorName, instances]) => [...instances].map(actorId => ({ group: "Instances", value: actorId, hint: actorName })))
     ]
 }
 

@@ -274,7 +274,7 @@ function HistoryFilters({
         >
             <div className="la-request-history-range">
                 <span>Time range</span>
-                <TimeRangePicker value={range} onChange={onRangeChange} />
+                <TimeRangePicker value={range} onChange={onRangeChange} align="start" />
             </div>
             {!scoped && (
                 <label>

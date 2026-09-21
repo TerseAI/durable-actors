@@ -1,11 +1,10 @@
 import React from "react"
 
-import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
+import "./dom.js"
+
 // React DOM must see the jsdom globals when it loads, or it falls back to legacy input polyfills on focus.
 const { cleanup, fireEvent, render } = await import("@testing-library/react")
 const { FilterCombobox, matchSuggestions } = await import("../src/FilterCombobox.js")
@@ -39,15 +38,19 @@ test("the combobox lists actor classes and instances and picks one with the keyb
     let value = ""
     const view = render(<FilterCombobox label="Filter connections" placeholder="Filter…" value={value} onChange={next => (value = next)} suggestions={suggestions} />)
     const input = view.getByRole("combobox", { name: "Filter connections" })
-    assert.equal(input.getAttribute("aria-expanded"), "false")
+    assert.equal(view.queryByRole("listbox"), null)
     fireEvent.focus(input)
     const list = view.getByRole("listbox", { name: "Filter connections suggestions" })
     assert.deepEqual(
         view.getAllByRole("option").map(option => option.textContent),
-        ["Actor classChatRoom3 instances", "InstancegeneralChatRoom", "Instanceops-generalChatRoom", "InstancedesignChatRoom"]
+        ["ChatRoom3 instances", "generalChatRoom", "ops-generalChatRoom", "designChatRoom"]
+    )
+    assert.deepEqual(
+        [...list.querySelectorAll("[cmdk-group-heading]")].map(heading => heading.textContent),
+        ["Actor class", "Instance"],
+        "suggestions are grouped under their kind"
     )
     assert.equal(input.getAttribute("aria-expanded"), "true")
-    assert.equal(input.getAttribute("aria-activedescendant"), view.getAllByRole("option")[0]!.id)
     fireEvent.keyDown(input, { key: "ArrowDown" })
     fireEvent.keyDown(input, { key: "ArrowDown" })
     assert.equal(view.getAllByRole("option")[2]!.getAttribute("aria-selected"), "true")
@@ -56,7 +59,7 @@ test("the combobox lists actor classes and instances and picks one with the keyb
     view.rerender(<FilterCombobox label="Filter connections" placeholder="Filter…" value={value} onChange={next => (value = next)} suggestions={suggestions} />)
     assert.equal(view.queryByRole("listbox"), null)
     assert.ok(list)
-    fireEvent.input(input, { target: { value: "des" } })
+    fireEvent.change(input, { target: { value: "des" } })
     assert.equal(value, "des")
     view.rerender(<FilterCombobox label="Filter connections" placeholder="Filter…" value={value} onChange={next => (value = next)} suggestions={suggestions} />)
     fireEvent.click(view.getByRole("option", { name: /design/u }))

@@ -1,29 +1,17 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react"
-import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
 import type { ActorInventory, ObserverClient, ObserverQuery } from "../src/client.js"
 import type { SocketSession } from "../src/socket-sessions.js"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, {
-    window: dom.window,
-    document: dom.window.document,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    NodeFilter: dom.window.NodeFilter,
-    HTMLInputElement: dom.window.HTMLInputElement,
-    MutationObserver: dom.window.MutationObserver,
-    CustomEvent: dom.window.CustomEvent,
-    FormData: dom.window.FormData,
-    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
-    IS_REACT_ACT_ENVIRONMENT: true
-})
+import "./dom.js"
+
+const { cleanup, fireEvent, render, waitFor, within } = await import("@testing-library/react")
 const { WebSocketObserver } = await import("../src/WebSocketObserver.js")
 const { packLanes, timelineTicks } = await import("../src/SocketTimeline.js")
+const { rangeLabel } = await import("../src/time-range.js")
 afterEach(cleanup)
 
 const now = Date.now()
@@ -87,26 +75,11 @@ test("the WebSocket page pairs saved sessions with live inventory, filters them,
     assert.equal(view.getByLabelText("WebSocket messages").textContent, "7")
     assert.match(queries[0]!.sql, /request_events/u)
     assert.equal(queries[0]!.params.length, 1, "the default window bounds the query")
-    fireEvent.click(view.getByRole("button", { name: "Last hour" }))
+    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
     fireEvent.click(view.getByRole("button", { name: "Last 15 minutes" }))
     await waitFor(() => assert.equal(queries.length, 2))
     assert.ok(queries[1]!.params[0]! >= now - 16 * 60_000, "choosing a preset re-queries with the new lower bound")
     assert.match(view.container.textContent!, /3 sessions in the last 15 minutes/u)
-    fireEvent.click(view.getByRole("button", { name: "Last 15 minutes" }))
-    const panel = view.getByRole("dialog", { name: "Time range" })
-    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "2026-01-05T09:00" } })
-    fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "2026-01-05T08:00" } })
-    fireEvent.submit(panel.querySelector("form")!)
-    assert.ok(within(panel).getByRole("alert"))
-    fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "2026-01-05T10:30" } })
-    fireEvent.submit(panel.querySelector("form")!)
-    await waitFor(() => assert.equal(queries.length, 3))
-    assert.deepEqual(queries[2]!.params, [new Date(2026, 0, 5, 9, 0).getTime(), new Date(2026, 0, 5, 10, 30).getTime()], "a custom range binds both ends")
-    assert.ok(view.getByRole("button", { name: "Jan 5 09:00 – 10:30" }))
-    assert.match(view.getByRole("group", { name: "Connection timeline" }).textContent!, /10:30/u, "the timeline ends at the range end instead of now")
-    fireEvent.click(view.getByRole("button", { name: "Jan 5 09:00 – 10:30" }))
-    fireEvent.click(view.getByRole("button", { name: "Last hour" }))
-    await waitFor(() => assert.equal(queries.length, 4))
     const table = view.getByRole("region", { name: "WebSocket connections" })
     const statuses = within(table)
         .getAllByRole("row")
@@ -129,7 +102,7 @@ test("the WebSocket page pairs saved sessions with live inventory, filters them,
     fireEvent.change(view.getByRole("combobox", { name: "Filter by status" }), { target: { value: "closed" } })
     assert.equal(within(timeline).getAllByRole("button").length, 1)
     assert.equal(within(table).getAllByRole("row").length, 2)
-    fireEvent.input(view.getByRole("combobox", { name: "Filter connections" }), { target: { value: "nothing" } })
+    fireEvent.change(view.getByRole("combobox", { name: "Filter connections" }), { target: { value: "nothing" } })
     assert.ok(view.getAllByText("No matching connections").length >= 1)
     fireEvent.click(view.getByRole("button", { name: "Clear filter" }))
     fireEvent.click(view.getByRole("button", { name: "Inspect connection closed-connection-1234567890" }))
@@ -147,7 +120,7 @@ test("without SQL history the page still lists open connections from inventory a
     const view = render(<WebSocketObserver client={client} />)
     await view.findByRole("button", { name: "Inspect connection open-connection-1234567890" })
     assert.equal(view.queryByRole("group", { name: "Connection timeline" }), null)
-    assert.equal(view.queryByRole("button", { name: "Last hour" }), null)
+    assert.equal(view.queryByRole("button", { name: "Time range: Last hour" }), null)
     assert.equal(view.getByLabelText("WebSocket sessions").textContent, "—")
     assert.match(view.getByRole("row", { name: /open-con…7890/u }).textContent!, /Open/u)
     view.unmount()
@@ -235,4 +208,38 @@ test("a connection reported by a host before its connect trace is saved starts w
     assert.match(fresh.getAttribute("aria-label")!, /, (\d+ ms|[0-5](\.\d)? s)$/u, "its duration counts from when it appeared, not from the window start")
     assert.match(view.getByRole("row", { name: /fresh-co…7890/u }).textContent!, /≈ \d\d:\d\d:\d\d/u, "the table marks the start as approximate")
     await waitFor(() => assert.ok(queries.length > before, "an inventory change refreshes history immediately"))
+})
+
+test("a custom range is picked from the calendar and time fields, validated, and bounds the session query", async () => {
+    const queries: ObserverQuery[] = []
+    const client: ObserverClient = {
+        listActors: async () => inventory,
+        checkConnection: async () => {},
+        query: async query => {
+            queries.push(query)
+            return { rows, truncated: false }
+        }
+    }
+    const view = render(<WebSocketObserver client={client} />)
+    await view.findByRole("button", { name: "Inspect connection closed-connection-1234567890" })
+    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
+    const panel = view.getByRole("dialog", { name: "Time range" })
+    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "09:00" } })
+    fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "08:00" } })
+    fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
+    assert.ok(within(panel).getByRole("alert"), "a same-day range that ends before it starts is rejected")
+    fireEvent.click(within(panel).getByRole("button", { name: /previous month/iu }))
+    const today = new Date()
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 5)
+    const end = new Date(today.getFullYear(), today.getMonth() - 1, 6)
+    fireEvent.click(panel.querySelector(`[data-day="${start.toLocaleDateString()}"]`)!)
+    fireEvent.click(panel.querySelector(`[data-day="${end.toLocaleDateString()}"]`)!)
+    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "07:30" } })
+    fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
+    await waitFor(() => assert.equal(queries.length, 2))
+    const custom = { kind: "absolute" as const, fromMs: new Date(start.getFullYear(), start.getMonth(), 5, 7, 30).getTime(), toMs: new Date(end.getFullYear(), end.getMonth(), 6, 8, 0).getTime() }
+    assert.deepEqual(queries[1]!.params, [custom.fromMs, custom.toMs], "a custom range binds both ends from the calendar and time fields")
+    assert.ok(view.getByRole("button", { name: `Time range: ${rangeLabel(custom)}` }))
+    assert.match(view.getByRole("group", { name: "Connection timeline" }).textContent!, /08:00/u, "the timeline ends at the range end instead of now")
+    assert.match(view.container.textContent!, new RegExp(`sessions between ${rangeLabel(custom).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"))
 })

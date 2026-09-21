@@ -15,52 +15,54 @@
     --console-sidebar: #131512;
     --console-selected: #272d25;
 }
-* {
-    box-sizing: border-box;
-    scrollbar-color: var(--input) transparent;
-    scrollbar-width: thin;
-}
-body {
-    margin: 0;
-}
-button,
-input,
-select {
-    font: inherit;
-}
-button,
-select,
-summary {
-    cursor: pointer;
-}
-button {
-    color: inherit;
-}
-button:disabled {
-    cursor: default;
-}
-button svg,
-a svg {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-    stroke-width: 1.5;
-}
-input {
-    caret-color: var(--foreground);
-}
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-summary:focus-visible,
-[tabindex="0"]:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 3px;
-}
-::selection {
-    color: var(--background);
-    background: var(--foreground);
+@layer base {
+    * {
+        box-sizing: border-box;
+        scrollbar-color: var(--input) transparent;
+        scrollbar-width: thin;
+    }
+    body {
+        margin: 0;
+    }
+    button,
+    input,
+    select {
+        font: inherit;
+    }
+    button,
+    select,
+    summary {
+        cursor: pointer;
+    }
+    button {
+        color: inherit;
+    }
+    button:disabled {
+        cursor: default;
+    }
+    button svg,
+    a svg {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+        stroke-width: 1.5;
+    }
+    input {
+        caret-color: var(--foreground);
+    }
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    summary:focus-visible,
+    [tabindex="0"]:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 3px;
+    }
+    ::selection {
+        color: var(--background);
+        background: var(--foreground);
+    }
 }
 .console-shell {
     display: grid;
@@ -237,7 +239,7 @@ main {
     color: var(--foreground);
     font-size: 11px;
 }
-.overview-controls > button {
+.overview-controls > button:not(.overview-range) {
     width: 33px;
     height: 33px;
 }
@@ -582,16 +584,17 @@ main {
 .socket-filterbar .la-combobox {
     width: 380px;
 }
-.socket-filterbar .la-combobox-field {
-    width: 100%;
-}
-.socket-filterbar .la-combobox-field input {
+.socket-filterbar [data-slot="command-input-wrapper"] {
     height: 33px;
-    border-color: var(--border);
+    border: 1px solid var(--border);
     border-radius: 5px;
+    background: var(--card);
+}
+.socket-filterbar [data-slot="command-input"] {
+    height: 31px;
     font-size: 12px;
 }
-.overview-controls .la-range-trigger {
+.overview-controls > .overview-range {
     height: 33px;
     padding: 0 12px;
     font-size: 11px;
@@ -1054,7 +1057,7 @@ main {
     }
     .overview select,
     .overview input,
-    .overview-controls > button,
+    .overview-controls > button:not(.overview-range),
     .theme-toggle,
     .overview-class-link,
     .overview-thresholds summary {

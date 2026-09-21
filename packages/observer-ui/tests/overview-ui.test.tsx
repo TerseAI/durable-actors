@@ -1,17 +1,17 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
-import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import { ConsoleApp } from "../src/ConsoleApp.js"
-import { Overview } from "../src/Overview.js"
 import type { ActorInventory, ObserverClient, RequestTracePage } from "../src/client.js"
-import { requestSummary, tracesInRange } from "../src/overview-data.js"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
+import "./dom.js"
+
+// React DOM and Radix must see the jsdom globals when they load.
+const { cleanup, fireEvent, render, waitFor } = await import("@testing-library/react")
+const { ConsoleApp } = await import("../src/ConsoleApp.js")
+const { Overview } = await import("../src/Overview.js")
+const { requestSummary, tracesInRange } = await import("../src/overview-data.js")
 afterEach(cleanup)
 
 const inventory: ActorInventory = {
@@ -137,7 +137,7 @@ test("console navigation opens the selected actor and real WebSocket metadata", 
     fireEvent.click(view.getByRole("button", { name: "WebSockets", exact: true }))
     assert.ok(await view.findByRole("button", { name: "Inspect connection socket-a" }))
     assert.ok(view.getByText("null"))
-    fireEvent.input(view.getByRole("combobox", { name: "Filter connections" }), { target: { value: "missing" } })
+    fireEvent.change(view.getByRole("combobox", { name: "Filter connections" }), { target: { value: "missing" } })
     assert.ok(view.getByText("No matching connections"))
     fireEvent.click(view.getByRole("button", { name: "Clear filter" }))
     assert.ok(view.getByRole("button", { name: "Inspect connection socket-a" }))
@@ -172,7 +172,7 @@ test("with SQL history the overview reads metrics for the selected time range in
     assert.match(room.textContent!, /8 ms/u)
     assert.match(view.getByRole("button", { name: "Inspect Counter" }).closest("tr")!.textContent!, /Counter10———0/u, "classes without requests show no metrics rather than made-up percentages")
     assert.match(view.container.textContent!, /every retained request in the last hour/u)
-    fireEvent.click(view.getByRole("button", { name: "Last hour" }))
+    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
     fireEvent.click(view.getByRole("button", { name: "All retained" }))
     await waitFor(() => assert.equal(queries.length, 2))
     assert.deepEqual(queries[1]!.params, [])

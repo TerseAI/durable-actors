@@ -1,14 +1,13 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react"
-import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import { ActorObserver, HttpObserverClient } from "../src/index.js"
+import "./dom.js"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
+// React DOM and Radix must see the jsdom globals when they load.
+const { cleanup, fireEvent, render, waitFor, within } = await import("@testing-library/react")
+const { ActorObserver, HttpObserverClient } = await import("../src/index.js")
 afterEach(cleanup)
 
 const inventory = {
