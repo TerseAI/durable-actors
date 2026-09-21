@@ -183,7 +183,7 @@ Inspection does not start a host or invoke actor code. When state is requested, 
 
 The deployment router chooses and persists the nearest enabled region for a new actor. It sends `homeRegion` to the selected regional control plane in `/connect` requests. The runtime does not select a region from caller location or query a routing database.
 
-A control plane configured with `DURABLE_OBJECT_REGION` requires an explicit assignment matching its region. An existing actor keeps its persisted home: a conflicting assignment returns `409`. A failed provisioning attempt does not move it elsewhere. An unpinned local runtime may omit the assignment and defaults to `north-america-central` for new actors.
+When `homeRegion` is omitted, new actors use `DURABLE_OBJECT_REGION`, or `north-america-central` if the control plane is unpinned. Existing actors keep their persisted home. An explicit assignment must match the control plane's configured region and any existing actor placement; a conflict returns `409`. A failed provisioning attempt does not move an actor elsewhere.
 
 ### POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 
@@ -245,7 +245,7 @@ Content-Type: application/json
 { "transport": "websocket", "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_OBJECT_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
+Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_OBJECT_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Setup accepts the optional `homeRegion` assignment described above. The response has `Cache-Control: no-store`:
 
 ```json
 {
@@ -329,7 +329,7 @@ Events cover successfully handled incoming messages. Connection changes and outg
 Management API validation and handler errors have this shape:
 
 ```json
-{ "error": { "code": "invalid_request", "message": "homeRegion is required" } }
+{ "error": { "code": "invalid_request", "message": "socket authorization lifetime must be between one second and one day" } }
 ```
 
 | HTTP status | Error code          | Meaning                                           |

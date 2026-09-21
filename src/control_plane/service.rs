@@ -228,9 +228,7 @@ impl ControlPlaneService {
         if let Some(assignment) = assignment {
             crate::placement::validate_region(assignment)?;
         }
-        if let Some(local) = &self.region {
-            let assignment =
-                assignment.context("homeRegion is required by this regional control plane")?;
+        if let (Some(local), Some(assignment)) = (&self.region, assignment) {
             if assignment != local {
                 return Err(RegionConflict.into());
             }
