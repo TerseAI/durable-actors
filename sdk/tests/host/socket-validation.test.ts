@@ -56,8 +56,8 @@ class ValidatedRoom extends Actor<
     }
 }
 
-const definition = registerActorClass(ValidatedRoom)
-const actor = { actor_type: "ValidatedRoom", actor_id: "one" }
+const definition = registerActorClass(ValidatedRoom, { actorName: "ValidatedRoom", fields: [] })
+const actor = { project_id: "default", actor_name: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
 test("deployment contracts do not impose runtime AJV validation", async () => {
@@ -78,11 +78,11 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
         }
     }
     const definition = registerActorClass(ContractRoom, {
-        actorType: "ContractRoom",
+        actorName: "ContractRoom",
         fields: [{ name: "count", persistence: Persistence.Persisted }],
         contract: {
             version: 1,
-            actorType: "ContractRoom",
+            actorName: "ContractRoom",
             emittable: [],
             schema: {
                 definitions: {
@@ -100,7 +100,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
         connection_id: connection.id,
         message: { type: "text", data: '{"count":"wrong"}' }
     })
-    const identity = { ...actor, actor_type: "ContractRoom" }
+    const identity = { ...actor, actor_name: "ContractRoom" }
     const invalidConnection = { ...connection, metadata: { userId: 123 } }
     const metadataReply = await runtime.handle({
         ...event({ type: "connect", connection: invalidConnection }, [invalidConnection]),

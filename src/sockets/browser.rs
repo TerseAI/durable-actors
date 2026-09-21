@@ -98,18 +98,7 @@ pub(super) async fn connect(
         .on_upgrade(move |socket| run(socket, state, ticket)))
 }
 
-async fn run(mut socket: WebSocket, state: SocketServerState, mut ticket: SocketTicket) {
-    if ticket.backend {
-        let initialized =
-            tokio::time::timeout(Duration::from_secs(10), receive_metadata(&mut socket)).await;
-        match initialized {
-            Ok(Some(metadata)) => ticket.metadata = metadata,
-            _ => {
-                close(&mut socket, (1002, "socket metadata was not initialized")).await;
-                return;
-            }
-        }
-    }
+async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
     let connection = ActorSocketConnection {
         id: uuid::Uuid::new_v4().to_string(),
         metadata: ticket.metadata.clone(),
@@ -184,12 +173,6 @@ impl Session {
             Some(Ok(Message::Text(text))) => self.enqueue(ActorSocketMessage::Text {
                 data: text.to_string(),
             }),
-            Some(Ok(Message::Binary(data))) if self.ticket.backend => {
-                use base64::Engine;
-                self.enqueue(ActorSocketMessage::Binary {
-                    data: base64::engine::general_purpose::STANDARD.encode(data),
-                })
-            }
             Some(Ok(Message::Ping(data))) => self.send_frame(socket, Message::Pong(data)).await,
             Some(Ok(Message::Pong(_))) => Ok(()),
             Some(Ok(Message::Close(_))) => Err((1000, "client closed")),
@@ -262,22 +245,12 @@ impl Session {
         outbound: OutboundMessage,
     ) -> Result<(), Closed> {
         match outbound {
-            OutboundMessage::Control(value) if self.ticket.backend => {
+            OutboundMessage::Control(value) => {
                 self.send_frame(socket, Message::Text(value.to_string().into()))
                     .await
             }
-            OutboundMessage::Control(_) => Ok(()),
             OutboundMessage::Message(ActorSocketMessage::Text { data }) => {
                 self.send_frame(socket, Message::Text(data.into())).await
-            }
-            OutboundMessage::Message(ActorSocketMessage::Binary { data })
-                if self.ticket.backend =>
-            {
-                use base64::Engine;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .map_err(|_| (4400, "invalid binary message"))?;
-                self.send_frame(socket, Message::Binary(bytes.into())).await
             }
             OutboundMessage::Message(_) => Err((4400, "actor produced a binary message")),
             OutboundMessage::Close { code, reason } => {
@@ -404,20 +377,4 @@ async fn dispatch_since(
     }
     state.dispatcher.notify(ticket, &event);
     Ok(())
-}
-
-async fn receive_metadata(socket: &mut WebSocket) -> Option<serde_json::Value> {
-    let Message::Text(text) = socket.recv().await?.ok()? else {
-        return None;
-    };
-    if text.len() > crate::actor::MAX_SOCKET_METADATA_BYTES + 128 {
-        return None;
-    }
-    let document: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if document["type"] != "initialize" {
-        return None;
-    }
-    let metadata = document.get("metadata")?.clone();
-    crate::actor::validate_socket_metadata(&metadata).ok()?;
-    Some(metadata)
 }

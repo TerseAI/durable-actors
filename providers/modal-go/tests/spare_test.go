@@ -34,7 +34,7 @@ func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
 	request.ActorIsNew = true
-	request.Actor = json.RawMessage(`{"actor_type":"Counter","actor_id":"one"}`)
+	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
 	request.ActorEntrypoint = "actors.mjs"
@@ -102,6 +102,19 @@ func TestAssignmentRejectsInvalidActivationLease(t *testing.T) {
 		sb := &fakeSandbox{metadata: string(document)}
 		if _, err := newTestProvider(&fakeAPI{found: sb}).ensureHost(context.Background(), request); err == nil {
 			t.Fatalf("accepted %s lease", invalid)
+		}
+	}
+}
+
+func TestAssignmentRequiresProjectAndActorName(t *testing.T) {
+	for _, identity := range []string{
+		`{"actor_name":"Counter","actor_id":"one"}`,
+		`{"project_id":"default","actor_type":"Counter","actor_id":"one"}`,
+	} {
+		request := testRequest()
+		request.Actor = json.RawMessage(identity)
+		if err := validateAssignment(request); err == nil {
+			t.Fatalf("accepted incomplete actor identity: %s", identity)
 		}
 	}
 }

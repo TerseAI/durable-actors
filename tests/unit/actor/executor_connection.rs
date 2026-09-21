@@ -12,7 +12,7 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":16,"actor_types":["counter"]}),
+            &json!({"type":"attach","protocol":16,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -33,7 +33,8 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         .executor()
         .hydrate(
             ActorKey {
-                actor_type: "counter".into(),
+                project_id: "default".into(),
+                actor_name: "counter".into(),
                 actor_id: "one".into(),
             },
             Some(Arc::new(json!({"count":41}))),
@@ -58,7 +59,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":16, "actor_types":["Room"]}),
+        &json!({"type":"attach", "protocol":16, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -69,7 +70,8 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
         .residency_changes()
         .expect("residency notifications");
     let actor = ActorKey {
-        actor_type: "Room".into(),
+        project_id: "default".into(),
+        actor_name: "Room".into(),
         actor_id: "one".into(),
     };
     for actors in [vec![actor], vec![]] {
@@ -123,7 +125,7 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
         let mut customer = BufReader::new(customer);
         assert_eq!(read_json_line(&mut customer).await?["type"], "attached");
         let slow = read_json_line(&mut customer).await?;
-        write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"actor_type":"forged","actor_id":"forged"}})).await?;
+        write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"project_id": "default", "actor_name":"forged","actor_id":"forged"}})).await?;
         let fast = read_json_line(&mut customer).await?;
         assert_eq!(fast["command"]["actor"]["actor_id"], "fast");
         write_json_line(&mut customer, &json!({"type":"reply", "message_id":fast["message_id"], "reply":{"type":"invoked", "result":42, "state":{}}})).await?;
@@ -139,7 +141,8 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
             ActorMethodInvocation {
                 request_id: id.into(),
                 actor: ActorKey {
-                    actor_type: "counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "counter".into(),
                     actor_id: id.into(),
                 },
                 method: "run".into(),
@@ -151,7 +154,7 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
     let callers = async {
         let fast = async {
             let actor = requests.recv().await.context("no lookup")?;
-            assert_eq!(actor.actor_type, "counter");
+            assert_eq!(actor.actor_name, "counter");
             assert_eq!(actor.actor_id, "slow");
             assert!(
                 matches!(invoke("fast").await?, ActorMethodOutcome::Completed { result, .. } if result == json!(42))
@@ -195,7 +198,8 @@ async fn multiplexes_out_of_order_replies_before_peer_disconnect() -> Result<()>
             ActorMethodInvocation {
                 request_id: id.into(),
                 actor: ActorKey {
-                    actor_type: "counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "counter".into(),
                     actor_id: id.into(),
                 },
                 method: "get".into(),
@@ -230,7 +234,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":16, "actor_types":["counter"]}),
+            &json!({"type":"attach", "protocol":16, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -247,7 +251,8 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
                 ActorMethodInvocation {
                     request_id: "blocked-write".into(),
                     actor: ActorKey {
-                        actor_type: "counter".into(),
+                        project_id: "default".into(),
+                        actor_name: "counter".into(),
                         actor_id: "one".into(),
                     },
                     method: "accept".into(),
@@ -285,7 +290,8 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
             ActorMethodInvocation {
                 request_id: "request-1".into(),
                 actor: ActorKey {
-                    actor_type: "counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "counter".into(),
                     actor_id: "counter-1".into(),
                 },
                 method: "increment".into(),
@@ -307,7 +313,8 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
             ActorSocketInvocation {
                 request_id: "socket-request-1".into(),
                 actor: ActorKey {
-                    actor_type: "counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "counter".into(),
                     actor_id: "counter-1".into(),
                 },
                 event: ActorSocketEvent::Connect {
@@ -376,7 +383,8 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
                     ActorMethodInvocation {
                         request_id: format!("request-{count}"),
                         actor: ActorKey {
-                            actor_type: "counter".into(),
+                            project_id: "default".into(),
+                            actor_name: "counter".into(),
                             actor_id: "one".into(),
                         },
                         method: "increment".into(),
@@ -413,7 +421,8 @@ async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
             ActorMethodInvocation {
                 request_id: "request-1".into(),
                 actor: ActorKey {
-                    actor_type: "counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "counter".into(),
                     actor_id: "counter-1".into(),
                 },
                 method: "accept".into(),
@@ -462,7 +471,7 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_types\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
@@ -526,7 +535,7 @@ async fn run_attached_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_types\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?

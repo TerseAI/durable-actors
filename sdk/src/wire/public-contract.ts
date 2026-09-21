@@ -8,7 +8,7 @@ interface PublicActorContract {
 }
 
 interface ActorApi {
-    readonly actorType: string
+    readonly actorName: string
     readonly socket: SocketContract
     readonly rpc: RpcContract
 }

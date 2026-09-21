@@ -25,7 +25,8 @@ impl TryFrom<proto::InvokeActorRequest> for ActorInvocation {
 impl From<proto::ActorKey> for ActorKey {
     fn from(actor: proto::ActorKey) -> Self {
         Self {
-            actor_type: actor.actor_type,
+            project_id: actor.project_id,
+            actor_name: actor.actor_name,
             actor_id: actor.actor_id,
         }
     }
@@ -34,7 +35,8 @@ impl From<proto::ActorKey> for ActorKey {
 impl From<ActorKey> for proto::ActorKey {
     fn from(actor: ActorKey) -> Self {
         Self {
-            actor_type: actor.actor_type,
+            project_id: actor.project_id,
+            actor_name: actor.actor_name,
             actor_id: actor.actor_id,
         }
     }

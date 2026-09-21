@@ -291,7 +291,7 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
 fn trace(id: usize) -> RequestTrace {
     RequestTrace {
         request_id: id.to_string(),
-        actor_type: "Counter".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
         kind: RequestKind::Method,
         operation: "increment".into(),

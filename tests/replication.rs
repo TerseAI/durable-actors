@@ -271,7 +271,8 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
     let origin = format!("http://{}", listener.local_addr()?);
     let scope = little_actors::replication::ReplicaScope {
         actor: little_actors::actor::ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "one".into(),
         },
         host: little_actors::host::HostId::new("primary"),
@@ -360,7 +361,8 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             stream: None,
             object: little_actors::storage::snapshot_object_name(
                 &little_actors::actor::ActorKey {
-                    actor_type: "Counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "Counter".into(),
                     actor_id: "other".into(),
                 },
                 1,

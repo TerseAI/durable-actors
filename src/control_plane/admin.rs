@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -14,6 +14,7 @@ use super::contracts::{PublicActorContract, PublishedContract, check_contract_ha
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchSpec {
+    pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentSource>,
     pub code_revision: String,
@@ -45,10 +46,8 @@ impl From<&HostLaunchSpec> for DeploymentSource {
 
 impl HostLaunchSpec {
     pub(crate) fn host_revision(&self) -> String {
-        if self.secret_refs.is_empty() && self.code_snapshot.is_none() {
-            return self.code_revision.clone();
-        }
         let identity = serde_json::to_vec(&(
+            &self.project_id,
             &self.code_revision,
             &self.secret_refs,
             &self.image_ref,
@@ -60,6 +59,7 @@ impl HostLaunchSpec {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        validate_component("project ID", &self.project_id, 64)?;
         validate_component("code revision", &self.code_revision, 128)?;
         if let Some(snapshot) = &self.code_snapshot {
             ensure!(
@@ -120,10 +120,12 @@ pub(crate) trait AdminRegistry: Send + Sync {
     ) -> Result<bool>;
     async fn deployment_contract(
         &self,
+        project_id: &str,
         revision: Option<&str>,
     ) -> Result<Option<PublishedContract>>;
-    async fn launch_spec(&self) -> Result<Option<HostLaunchSpec>>;
-    async fn remove_deployment(&self) -> Result<()>;
+    async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>>;
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>>;
+    async fn remove_deployment(&self, project_id: &str) -> Result<()>;
 }
 
 #[derive(Clone)]
@@ -197,8 +199,11 @@ impl AdminService {
         self.registry.register_test_deployment(spec).await
     }
 
-    pub(crate) async fn current_deployment(&self) -> Result<Option<HostLaunchSpec>> {
-        self.registry.launch_spec().await
+    pub(crate) async fn current_deployment(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<HostLaunchSpec>> {
+        self.registry.launch_spec(project_id).await
     }
 
     pub(crate) async fn register_deployment(
@@ -211,12 +216,15 @@ impl AdminService {
 
     pub(crate) async fn deployment_contract(
         &self,
+        project_id: &str,
         revision: Option<&str>,
     ) -> Result<Option<PublishedContract>> {
         if let Some(revision) = revision {
             validate_component("code revision", revision, 128)?;
         }
-        self.registry.deployment_contract(revision).await
+        self.registry
+            .deployment_contract(project_id, revision)
+            .await
     }
 
     pub(crate) async fn validate_contract_registration(
@@ -225,7 +233,9 @@ impl AdminService {
         contract: Option<&PublicActorContract>,
     ) -> Result<()> {
         if let Some(contract) = contract {
-            let existing = self.deployment_contract(Some(&spec.code_revision)).await?;
+            let existing = self
+                .deployment_contract(&spec.project_id, Some(&spec.code_revision))
+                .await?;
             check_contract_hash(
                 existing
                     .as_ref()
@@ -236,8 +246,8 @@ impl AdminService {
         Ok(())
     }
 
-    pub(crate) async fn remove_deployment(&self) -> Result<()> {
-        self.registry.remove_deployment().await
+    pub(crate) async fn remove_deployment(&self, project_id: &str) -> Result<()> {
+        self.registry.remove_deployment(project_id).await
     }
 
     pub(crate) fn jwks_json(&self) -> Result<Vec<u8>> {
@@ -247,7 +257,7 @@ impl AdminService {
 
 #[derive(Default)]
 pub(crate) struct LocalAdminRegistry {
-    state: Mutex<LocalAdminState>,
+    state: Mutex<HashMap<String, LocalAdminState>>,
 }
 
 #[derive(Default)]
@@ -258,12 +268,11 @@ struct LocalAdminState {
 
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
-    async fn remove_deployment(&self) -> Result<()> {
-        *self
-            .state
+    async fn remove_deployment(&self, project_id: &str) -> Result<()> {
+        self.state
             .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))? =
-            LocalAdminState::default();
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
+            .remove(project_id);
         Ok(())
     }
 
@@ -277,6 +286,7 @@ impl AdminRegistry for LocalAdminRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
+        let state = state.entry(spec.project_id.clone()).or_default();
         let mut changed = state.deployment.as_ref() != Some(spec);
         if let Some(contract) = contract {
             let existing = state
@@ -303,6 +313,7 @@ impl AdminRegistry for LocalAdminRegistry {
 
     async fn deployment_contract(
         &self,
+        project_id: &str,
         revision: Option<&str>,
     ) -> Result<Option<PublishedContract>> {
         let state = self
@@ -310,19 +321,29 @@ impl AdminRegistry for LocalAdminRegistry {
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
         Ok(state
-            .contract
-            .as_ref()
+            .get(project_id)
+            .and_then(|state| state.contract.as_ref())
             .filter(|record| revision.is_none_or(|revision| record.code_revision == revision))
             .cloned())
     }
 
-    async fn launch_spec(&self) -> Result<Option<HostLaunchSpec>> {
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
         Ok(self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
-            .deployment
-            .clone())
+            .values()
+            .filter_map(|state| state.deployment.clone())
+            .collect())
+    }
+
+    async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
+            .get(project_id)
+            .and_then(|state| state.deployment.clone()))
     }
 }
 
@@ -338,9 +359,12 @@ impl PostgresAdminRegistry {
 
 #[async_trait]
 impl AdminRegistry for PostgresAdminRegistry {
-    async fn remove_deployment(&self) -> Result<()> {
+    async fn remove_deployment(&self, project_id: &str) -> Result<()> {
         self.database
-            .execute("DELETE FROM durable_object_deployment", &[])
+            .execute(
+                "DELETE FROM durable_object_deployment WHERE project_id = $1",
+                &[&project_id],
+            )
             .await?;
         Ok(())
     }
@@ -356,9 +380,9 @@ impl AdminRegistry for PostgresAdminRegistry {
         let changed = transaction
             .execute(
                 "INSERT INTO durable_object_deployment \
-                   (singleton, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json) \
-                 VALUES (TRUE, $1, $2, $3, $4, $5, $6, $7) \
-                 ON CONFLICT (singleton) DO UPDATE SET \
+                   (project_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json) \
+                 VALUES ($8, $1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT (project_id) DO UPDATE SET \
                    code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
                    secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, \
@@ -379,29 +403,30 @@ impl AdminRegistry for PostgresAdminRegistry {
                     &spec.secret_refs,
                     &spec.code_snapshot,
                     &spec.source.as_ref().map(serde_json::to_string).transpose()?,
+                    &spec.project_id,
                 ],
             )
             .await
             .context("register PostgreSQL deployment")? == 1;
         transaction
             .execute(
-                "DELETE FROM durable_object_contracts WHERE code_revision <> $1",
-                &[&spec.code_revision],
+                "DELETE FROM durable_object_contracts WHERE code_revision <> $1 AND project_id = $2",
+                &[&spec.code_revision, &spec.project_id],
             )
             .await?;
         let mut published = false;
         if let Some(contract) = contract {
             let existing = transaction
                 .query_opt(
-                    "SELECT contract_hash FROM durable_object_contracts WHERE code_revision = $1",
-                    &[&spec.code_revision],
+                    "SELECT contract_hash FROM durable_object_contracts WHERE code_revision = $1 AND project_id = $2",
+                    &[&spec.code_revision, &spec.project_id],
                 )
                 .await?;
             check_contract_hash(existing.as_ref().map(|row| row.get::<_, &str>(0)), contract)?;
             if existing.is_none() {
                 transaction.execute(
-                    "INSERT INTO durable_object_contracts (singleton, code_revision, contract_hash, contract_json) VALUES (TRUE, $1, $2, $3)",
-                    &[&spec.code_revision, &contract.hash(), &serde_json::to_string(contract.document())?],
+                    "INSERT INTO durable_object_contracts (project_id, code_revision, contract_hash, contract_json) VALUES ($4, $1, $2, $3)",
+                    &[&spec.code_revision, &contract.hash(), &serde_json::to_string(contract.document())?, &spec.project_id],
                 ).await?;
                 published = true;
             }
@@ -412,15 +437,16 @@ impl AdminRegistry for PostgresAdminRegistry {
 
     async fn deployment_contract(
         &self,
+        project_id: &str,
         revision: Option<&str>,
     ) -> Result<Option<PublishedContract>> {
         let row = self
             .database
             .query_opt(
                 "SELECT code_revision, contract_hash, contract_json FROM durable_object_contracts \
-             WHERE code_revision = COALESCE($1, \
-               (SELECT code_revision FROM durable_object_deployment))",
-                &[&revision],
+             WHERE project_id = $2 AND code_revision = COALESCE($1, \
+               (SELECT code_revision FROM durable_object_deployment WHERE project_id = $2))",
+                &[&revision, &project_id],
             )
             .await?;
         row.map(|row| {
@@ -433,27 +459,43 @@ impl AdminRegistry for PostgresAdminRegistry {
         .transpose()
     }
 
-    async fn launch_spec(&self) -> Result<Option<HostLaunchSpec>> {
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
+        self.database.connection().await?.query(
+            "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_object_deployment",
+            &[],
+        ).await.context("load PostgreSQL host launch specs")?
+            .iter().map(launch_spec_from_row).collect()
+    }
+
+    async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {
         self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json \
-                 FROM durable_object_deployment",
-                &[],
+                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id \
+                 FROM durable_object_deployment WHERE project_id = $1",
+                &[&project_id],
             )
             .await
             .context("load PostgreSQL host launch spec")?
-            .map(|row| Ok(HostLaunchSpec {
-                source: row.get::<_, Option<&str>>(6).map(serde_json::from_str).transpose()?,
-                code_snapshot: row.get(5),
-                code_revision: row.get(0),
-                image_ref: row.get(1),
-                working_directory: row.get(2),
-                actor_entrypoint: row.get(3),
-                secret_refs: row.get(4),
-            }))
+            .as_ref().map(launch_spec_from_row)
             .transpose()
     }
+}
+
+fn launch_spec_from_row(row: &tokio_postgres::Row) -> Result<HostLaunchSpec> {
+    Ok(HostLaunchSpec {
+        project_id: row.get(7),
+        source: row
+            .get::<_, Option<&str>>(6)
+            .map(serde_json::from_str)
+            .transpose()?,
+        code_snapshot: row.get(5),
+        code_revision: row.get(0),
+        image_ref: row.get(1),
+        working_directory: row.get(2),
+        actor_entrypoint: row.get(3),
+        secret_refs: row.get(4),
+    })
 }
 
 pub(crate) fn validate_component(name: &str, value: &str, maximum: usize) -> Result<()> {

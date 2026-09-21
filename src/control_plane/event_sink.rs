@@ -9,7 +9,7 @@ use crate::actor::{ActorKey, ActorSocketMessage};
 pub(crate) struct SocketMessageEvent {
     pub event_id: String,
 
-    pub actor_type: String,
+    pub actor_name: String,
     pub actor_id: String,
     pub trigger_id: Option<String>,
     pub connection_id: String,
@@ -26,7 +26,7 @@ impl SocketMessageEvent {
         Self {
             event_id: uuid::Uuid::new_v4().to_string(),
 
-            actor_type: actor.actor_type.clone(),
+            actor_name: actor.actor_name.clone(),
             actor_id: actor.actor_id.clone(),
             trigger_id,
             connection_id: connection_id.to_owned(),

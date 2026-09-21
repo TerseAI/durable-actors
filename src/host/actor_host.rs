@@ -325,12 +325,12 @@ impl HostDispatcher {
         }
         if !self
             .executor
-            .supports(&request.operation.actor().actor_type)
+            .supports(&request.operation.actor().actor_name)
         {
             return Some(Ok(ActorExecutionResult::Failed {
                 failure: ActorInvocationFailure {
                     code: "actor_error".into(),
-                    message: "actor type is not loaded by this host".into(),
+                    message: "actor name is not loaded by this host".into(),
                 },
             }));
         }

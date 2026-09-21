@@ -22,7 +22,7 @@ pub(crate) const TRACE_BATCH_SIZE: usize = 64;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RequestTrace {
     pub request_id: String,
-    pub actor_type: String,
+    pub actor_name: String,
     pub actor_id: String,
     pub kind: RequestKind,
     pub operation: String,
@@ -36,7 +36,8 @@ pub(crate) struct RequestTrace {
 impl RequestTrace {
     pub(crate) fn validate(&self) -> Result<()> {
         crate::actor::ActorKey {
-            actor_type: self.actor_type.clone(),
+            project_id: "trace-validation".into(),
+            actor_name: self.actor_name.clone(),
             actor_id: self.actor_id.clone(),
         }
         .validate()?;
@@ -311,7 +312,7 @@ impl RequestSpan {
             started,
             trace: Some(RequestTrace {
                 request_id: invocation.request_id.clone(),
-                actor_type: invocation.actor.actor_type.clone(),
+                actor_name: invocation.actor.actor_name.clone(),
                 actor_id: invocation.actor.actor_id.clone(),
                 kind,
                 operation: invocation.method.clone(),

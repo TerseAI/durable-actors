@@ -68,7 +68,8 @@ impl Fixture {
         let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
         let scope = ReplicaScope {
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "repair".into(),
             },
             host: HostId::new("primary"),

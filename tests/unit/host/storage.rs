@@ -73,7 +73,8 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
         session: "session".into(),
         region: "us-east".into(),
         actor: Some(ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "one".into(),
         }),
         new_actor: true,
@@ -82,7 +83,8 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
         lease: Mutex::new(None),
     };
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     assert!(storage.acquire_actor(&actor, &host).await.is_err());

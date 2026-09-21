@@ -15,6 +15,5 @@ pub(crate) use executor_connection::{
     MAX_ACTOR_EXECUTOR_MESSAGE_BYTES, WarmExecutor,
 };
 pub(crate) use socket::{
-    ActorSocketSource, MAX_SOCKET_MESSAGE_BYTES, MAX_SOCKET_METADATA_BYTES,
-    validate_socket_effects, validate_socket_metadata,
+    ActorSocketSource, MAX_SOCKET_MESSAGE_BYTES, validate_socket_effects, validate_socket_metadata,
 };

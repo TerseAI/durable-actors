@@ -51,7 +51,7 @@ fn embedded_migrations_have_no_version_gaps() {
 }
 
 #[tokio::test]
-async fn contract_migration_creates_latest_only_schema() -> Result<()> {
+async fn contract_schema_keeps_one_contract_per_project() -> Result<()> {
     with_postgres_schema(async |database| {
         let mut client = database.pool.get().await?;
         embedded::migrations::runner()
@@ -61,8 +61,9 @@ async fn contract_migration_creates_latest_only_schema() -> Result<()> {
         client
             .batch_execute(
                 "INSERT INTO durable_object_deployment
-                    (code_revision, image_ref, working_directory)
-                 VALUES ('revision-1', 'image', '/app');",
+                    (project_id, code_revision, image_ref, working_directory)
+                 VALUES ('team-a', 'revision-1', 'image', '/app'),
+                        ('team-b', 'revision-1', 'image', '/app');",
             )
             .await?;
         embedded::migrations::runner()
@@ -71,13 +72,15 @@ async fn contract_migration_creates_latest_only_schema() -> Result<()> {
             .await?;
         client
             .execute(
-                "INSERT INTO durable_object_contracts VALUES (TRUE, 'revision-1', 'hash', '{}')",
+                "INSERT INTO durable_object_contracts VALUES
+                    ('team-a', 'revision-1', 'hash', '{}'),
+                    ('team-b', 'revision-1', 'hash', '{}')",
                 &[],
             )
             .await?;
         let duplicate = client
             .execute(
-                "INSERT INTO durable_object_contracts VALUES (TRUE, 'revision-2', 'hash', '{}')",
+                "INSERT INTO durable_object_contracts VALUES ('team-a', 'revision-2', 'hash', '{}')",
                 &[],
             )
             .await
@@ -87,13 +90,13 @@ async fn contract_migration_creates_latest_only_schema() -> Result<()> {
             Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
         );
         client
-            .execute("DELETE FROM durable_object_deployment", &[])
+            .execute("DELETE FROM durable_object_deployment WHERE project_id = 'team-a'", &[])
             .await?;
-        let count: i64 = client
-            .query_one("SELECT count(*) FROM durable_object_contracts", &[])
+        let project: String = client
+            .query_one("SELECT project_id FROM durable_object_contracts", &[])
             .await?
             .get(0);
-        assert_eq!(count, 0);
+        assert_eq!(project, "team-b");
         Ok(())
     })
     .await
@@ -140,7 +143,7 @@ async fn check_isolated_rows(
     first: &tokio_postgres::Client,
     second: &tokio_postgres::Client,
 ) -> Result<()> {
-    let insert = "INSERT INTO durable_object_deployment (code_revision, image_ref, working_directory) VALUES ('revision', 'image', '/app')";
+    let insert = "INSERT INTO durable_object_deployment (project_id, code_revision, image_ref, working_directory) VALUES ('project', 'revision', 'image', '/app')";
     first.execute(insert, &[]).await?;
     let count: i64 = second
         .query_one("SELECT count(*) FROM durable_object_deployment", &[])

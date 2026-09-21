@@ -21,7 +21,8 @@ async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Re
     let artifact = compile_counter(&sdk, project.path()).await?;
     let issuer = issuer()?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     for before in -1..2 {

@@ -2,10 +2,10 @@
   "version": 1,
   "actors": [
     {
-      "actorType": "ChatRoom",
+      "actorName": "ChatRoom",
       "socket": {
         "version": 1,
-        "actorType": "ChatRoom",
+        "actorName": "ChatRoom",
         "schema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "definitions": {

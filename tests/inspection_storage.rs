@@ -43,7 +43,8 @@ impl little_actors::replication::ReplicaProvisioner for EmptyFleet {
 async fn check_listing(store: &little_actors::bucket::RuntimeStorage) -> Result<()> {
     for (id, committed) in [("a", true), ("b.with.dots", true), ("uncommitted", false)] {
         let actor = ActorKey {
-            actor_type: "Room.with.dots".into(),
+            project_id: "default".into(),
+            actor_name: "Room.with.dots".into(),
             actor_id: id.into(),
         };
         let request = HostLeaseRequest {

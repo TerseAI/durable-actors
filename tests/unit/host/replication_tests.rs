@@ -130,7 +130,8 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
     let _guard = stop.clone().drop_guard();
     let scope = ReplicaScope {
         actor: ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "catch-up".into(),
         },
         host: HostId::new("primary"),

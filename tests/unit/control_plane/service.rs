@@ -214,6 +214,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_snapshot: None,
             code_revision: "revision".into(),
@@ -243,7 +244,8 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         })),
     );
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let target = service.resolve_actor_route(&actor, None, None).await?;
@@ -289,6 +291,7 @@ async fn replacing_a_deployment_terminates_the_previous_revision_hosts() -> Resu
         provisioner.clone(),
     );
     let first = HostLaunchSpec {
+        project_id: "default".into(),
         source: None,
         code_snapshot: None,
         code_revision: "revision-1".into(),
@@ -309,7 +312,10 @@ async fn replacing_a_deployment_terminates_the_previous_revision_hosts() -> Resu
             .await
             .is_err()
     );
-    assert_eq!(admin.current_deployment().await?, Some(first.clone()));
+    assert_eq!(
+        admin.current_deployment("default").await?,
+        Some(first.clone())
+    );
     assert_eq!(
         retired_rx.recv().await,
         Some((
@@ -338,7 +344,10 @@ async fn replacing_a_deployment_terminates_the_previous_revision_hosts() -> Resu
                 .collect()
         ))
     );
-    assert_eq!(admin.current_deployment().await?, Some(replacement.clone()));
+    assert_eq!(
+        admin.current_deployment("default").await?,
+        Some(replacement.clone())
+    );
     assert!(
         !service
             .register_deployment(&admin, &replacement, None)
@@ -365,14 +374,17 @@ async fn replacing_a_deployment_terminates_the_previous_revision_hosts() -> Resu
     provisioner
         .fail
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    assert!(service.delete_deployment(&admin).await.is_err());
-    assert_eq!(admin.current_deployment().await?, Some(secret_update));
+    assert!(service.delete_deployment(&admin, "default").await.is_err());
+    assert_eq!(
+        admin.current_deployment("default").await?,
+        Some(secret_update)
+    );
     provisioner
         .fail
         .store(false, std::sync::atomic::Ordering::Relaxed);
-    assert!(service.delete_deployment(&admin).await?);
-    assert_eq!(admin.current_deployment().await?, None);
-    assert!(!service.delete_deployment(&admin).await?);
+    assert!(service.delete_deployment(&admin, "default").await?);
+    assert_eq!(admin.current_deployment("default").await?, None);
+    assert!(!service.delete_deployment(&admin, "default").await?);
     Ok(())
 }
 
@@ -398,7 +410,8 @@ async fn accepted_socket_messages_are_delivered_to_the_configured_event_sink() -
         delivered: delivered_tx,
     })));
     let actor = ActorKey {
-        actor_type: "ChatRoom".into(),
+        project_id: "default".into(),
+        actor_name: "ChatRoom".into(),
         actor_id: "room-1".into(),
     };
 
@@ -416,7 +429,7 @@ async fn accepted_socket_messages_are_delivered_to_the_configured_event_sink() -
     let delivered = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
         .await?
         .context("socket event delivery task stopped")?;
-    assert_eq!(delivered["actorType"], "ChatRoom");
+    assert_eq!(delivered["actorName"], "ChatRoom");
     assert_eq!(delivered["actorId"], "room-1");
     assert_eq!(delivered["triggerId"], "trigger-1");
     assert_eq!(delivered["connectionId"], "socket-1");
@@ -541,6 +554,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_revision: "revision".into(),
             image_ref: "im-runtime".into(),
@@ -552,7 +566,8 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
         .await?;
     let placements = Arc::new(LocalObjectPlacementStore::default());
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let provisioner = Arc::new(LosingActivation {
@@ -674,6 +689,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                project_id: "default".into(),
                 source: None,
                 code_snapshot: None,
                 code_revision: "revision".into(),
@@ -685,7 +701,8 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
             .await?;
         let placements = Arc::new(LocalObjectPlacementStore::default());
         let actor = ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "one".into(),
         };
         if existing {
@@ -707,11 +724,12 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
             issuer,
             provisioner.clone(),
         );
-        let spec = registry.launch_spec().await?.unwrap();
+        let spec = registry.launch_spec("default").await?.unwrap();
         let result = service
             .ensure_actor_host(
                 &ActorKey {
-                    actor_type: "Counter".into(),
+                    project_id: "default".into(),
+                    actor_name: "Counter".into(),
                     actor_id: "one".into(),
                 },
                 &spec,
@@ -749,6 +767,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_snapshot: None,
             code_revision: "v1".into(),
@@ -769,9 +788,10 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
         issuer.clone(),
     )?;
     let placements = Arc::new(LocalObjectPlacementStore::default());
-    let host_id = HostId::new("host.v3.v1.fixture");
+    let host_id = fixture_host("v1", "fixture");
     let actor = ActorKey {
-        actor_type: "Room".into(),
+        project_id: "default".into(),
+        actor_name: "Room".into(),
         actor_id: "lobby".into(),
     };
     placements.set_owner(
@@ -800,7 +820,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     )];
     for (path, body) in requests {
         let response = client
-            .post(format!("{origin}/v1/{path}"))
+            .post(format!("{origin}/v1/projects/default/{path}"))
             .bearer_auth("api-key")
             .json(&body)
             .send()
@@ -826,7 +846,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     }
     assert_eq!(
         client
-            .get(format!("{origin}/v1/deployment"))
+            .get(format!("{origin}/v1/projects/default/deployment"))
             .bearer_auth("api-key")
             .send()
             .await?
@@ -854,6 +874,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_revision: "v1".into(),
             image_ref: "im-runtime".into(),
@@ -865,7 +886,8 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         .host_revision()
     ));
     let actor = ActorKey {
-        actor_type: "Room".into(),
+        project_id: "default".into(),
+        actor_name: "Room".into(),
         actor_id: "lobby".into(),
     };
     placements.set_owner(
@@ -888,11 +910,11 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let url = format!("{origin}/v1/actors/Room/lobby/connect");
+    let url = format!("{origin}/v1/projects/default/actors/Room/lobby/connect");
     let body = serde_json::json!({"transport":"websocket", "metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000,"homeRegion":"north-america-east"});
     let host_token = issuer
         .issue_host(
-            &HostId::new("host.v3.v1.fixture"),
+            &fixture_host("v1", "fixture"),
             &uuid::Uuid::new_v4().to_string(),
             "v1",
             "north-america-east",
@@ -911,7 +933,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
             reqwest::StatusCode::UNAUTHORIZED
         );
     }
-    client.put(format!("{origin}/v1/deployment")).bearer_auth("api-key")
+    client.put(format!("{origin}/v1/projects/default/deployment")).bearer_auth("api-key")
         .json(&serde_json::json!({"codeRevision":"v1","imageRef":"im-runtime","workingDirectory":"/customer"}))
         .send().await?.error_for_status()?;
     for operation in ["websocket", "grpc"] {
@@ -967,7 +989,9 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     );
     assert_eq!(
         client
-            .post(format!("{origin}/v1/actors/Room/lobby/connect"))
+            .post(format!(
+                "{origin}/v1/projects/default/actors/Room/lobby/connect"
+            ))
             .bearer_auth(&key)
             .json(&serde_json::json!({}))
             .send()
@@ -996,6 +1020,7 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
             HostLaunchSpec {
+                project_id: "default".into(),
                 source: None,
                 code_revision: "revision".into(),
                 image_ref: "im-runtime".into(),
@@ -1007,7 +1032,8 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
             .host_revision()
         ));
         let actor = ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "one".into(),
         };
         placements.set_owner(
@@ -1033,14 +1059,14 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
     let client = reqwest::Client::new();
     let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "im-runtime", "workingDirectory": "/customer" });
     let registered = client
-        .put(format!("{origin}/v1/deployment"))
+        .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
         .json(&deployment)
         .send()
         .await?;
     assert_eq!(registered.status(), reqwest::StatusCode::OK);
     for suffix in ["connect"] {
-        let url = format!("{origin}/v1/actors/Counter/one/{suffix}");
+        let url = format!("{origin}/v1/projects/default/actors/Counter/one/{suffix}");
         for key in ["", "wrong-key"] {
             assert_eq!(
                 client
@@ -1055,7 +1081,9 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         }
     }
     let target: serde_json::Value = client
-        .post(format!("{origin}/v1/actors/Counter/one/connect"))
+        .post(format!(
+            "{origin}/v1/projects/default/actors/Counter/one/connect"
+        ))
         .bearer_auth("api-key")
         .json(&serde_json::json!({"transport":"grpc"}))
         .send()
@@ -1074,7 +1102,9 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         serde_json::json!({"transport":"websocket","metadata":{},"unknown":true}),
     ] {
         let reply = client
-            .post(format!("{origin}/v1/actors/Counter/one/connect"))
+            .post(format!(
+                "{origin}/v1/projects/default/actors/Counter/one/connect"
+            ))
             .bearer_auth("api-key")
             .json(&body)
             .send()
@@ -1088,7 +1118,9 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
     assert_ne!(target["token"], "api-key");
     assert_eq!(
         client
-            .post(format!("{origin}/v1/actors/Counter/one/socket-effects"))
+            .post(format!(
+                "{origin}/v1/projects/default/actors/Counter/one/socket-effects"
+            ))
             .bearer_auth("api-key")
             .json(&serde_json::json!({"effects":[]}))
             .send()
@@ -1114,6 +1146,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
     admin
         .register_test_deployment(&HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_snapshot: None,
             code_revision: "revision-1".into(),
@@ -1139,7 +1172,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let deployment_url = format!("{origin}/v1/deployment");
+    let deployment_url = format!("{origin}/v1/projects/default/deployment");
     for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
         assert_eq!(
             client
@@ -1204,7 +1237,8 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
             "r1",
             "us-east",
             &ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "one".into(),
             },
         )?
@@ -1225,7 +1259,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    for path in ["/v1/deployment/contract"] {
+    for path in ["/v1/projects/default/deployment/contract"] {
         for credential in ["", "wrong", &host_token] {
             assert_eq!(
                 client
@@ -1252,7 +1286,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
     let mut deployment = serde_json::json!({"codeRevision":"r1", "imageRef":"im-runtime", "workingDirectory":"/customer", "contract":document});
-    for scope in ["/v1"] {
+    for scope in ["/v1/projects/default"] {
         for changed in [true, false] {
             let reply: serde_json::Value = client
                 .put(format!("{origin}{scope}/deployment"))
@@ -1284,7 +1318,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     }
     deployment["contract"] = serde_json::json!({"version":1,"actors":[]});
     let response = client
-        .put(format!("{origin}/v1/deployment"))
+        .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
         .json(&deployment)
         .send()
@@ -1292,14 +1326,14 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
     deployment["codeRevision"] = "r2".into();
     client
-        .put(format!("{origin}/v1/deployment"))
+        .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
         .json(&deployment)
         .send()
         .await?
         .error_for_status()?;
     let active: serde_json::Value = client
-        .get(format!("{origin}/v1/deployment/contract"))
+        .get(format!("{origin}/v1/projects/default/deployment/contract"))
         .bearer_auth("api-key")
         .send()
         .await?
@@ -1310,7 +1344,9 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     assert_eq!(active["contract"]["actors"], serde_json::json!([]));
     assert_eq!(
         client
-            .get(format!("{origin}/v1/deployment/contract?revision=r1"))
+            .get(format!(
+                "{origin}/v1/projects/default/deployment/contract?revision=r1"
+            ))
             .bearer_auth("api-key")
             .send()
             .await?
@@ -1318,7 +1354,9 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
         reqwest::StatusCode::NOT_FOUND
     );
     let pinned: serde_json::Value = client
-        .get(format!("{origin}/v1/deployment/contract?revision=r2"))
+        .get(format!(
+            "{origin}/v1/projects/default/deployment/contract?revision=r2"
+        ))
         .bearer_auth("api-key")
         .send()
         .await?
@@ -1329,7 +1367,9 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     for suffix in ["?revision=bad%2Frevision", "?unknown=1"] {
         assert_eq!(
             client
-                .get(format!("{origin}/v1/deployment/contract{suffix}"))
+                .get(format!(
+                    "{origin}/v1/projects/default/deployment/contract{suffix}"
+                ))
                 .bearer_auth("api-key")
                 .send()
                 .await?
@@ -1341,7 +1381,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
     deployment["contract"] = serde_json::json!({"version":2,"actors":[]});
     assert_eq!(
         client
-            .put(format!("{origin}/v1/deployment"))
+            .put(format!("{origin}/v1/projects/default/deployment"))
             .bearer_auth("api-key")
             .json(&deployment)
             .send()
@@ -1350,7 +1390,7 @@ async fn contract_api_publishes_with_deployments_and_reads_only_the_active_revis
         reqwest::StatusCode::BAD_REQUEST
     );
     let unchanged: serde_json::Value = client
-        .get(format!("{origin}/v1/deployment"))
+        .get(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
         .send()
         .await?
@@ -1388,7 +1428,8 @@ async fn initial_replica_registration_is_authenticated_and_does_not_require_an_a
     let directory = tempfile::tempdir()?;
     let scope = ReplicaScope {
         actor: ActorKey {
-            actor_type: "Counter".into(),
+            project_id: "default".into(),
+            actor_name: "Counter".into(),
             actor_id: "starting".into(),
         },
         host: HostId::new("host.v3.revision.primary"),
@@ -1485,4 +1526,116 @@ async fn initial_replica_registration_is_authenticated_and_does_not_require_an_a
         tonic::Code::FailedPrecondition
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> Result<()> {
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let registry = Arc::new(LocalAdminRegistry::default());
+    let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+    let (retired, mut retired_rx) = tokio::sync::mpsc::unbounded_channel();
+    let service = ControlPlaneService::new(
+        Arc::new(LocalObjectPlacementStore::default()),
+        auth,
+        registry,
+        issuer,
+        Arc::new(FakeRetiringProvisioner {
+            retired,
+            fail: std::sync::atomic::AtomicBool::new(false),
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let routes = super::super::public_api::router(service, admin);
+    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+    let client = reqwest::Client::new();
+    let document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    for (method, path) in [
+        (reqwest::Method::PUT, "/v1/deployment"),
+        (reqwest::Method::GET, "/v1/deployment/contract"),
+        (reqwest::Method::POST, "/v1/actors/Counter/same/connect"),
+    ] {
+        assert_eq!(
+            client
+                .request(method, format!("{origin}{path}"))
+                .bearer_auth("api-key")
+                .json(&serde_json::json!({}))
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+    }
+    for project in ["team-a", "team-b"] {
+        client.put(format!("{origin}/v1/projects/{project}/deployment")).bearer_auth("api-key")
+            .json(&serde_json::json!({"codeRevision":"same", "imageRef":project, "workingDirectory":"/app", "contract":document}))
+            .send().await?.error_for_status()?;
+    }
+    assert!(retired_rx.try_recv().is_err());
+    client.put(format!("{origin}/v1/projects/team-a/deployment")).bearer_auth("api-key")
+        .json(&serde_json::json!({"codeRevision":"new", "imageRef":"new-a", "workingDirectory":"/app", "contract":document}))
+        .send().await?.error_for_status()?;
+    assert_eq!(retired_rx.try_recv()?.0.project_id, "team-a");
+    client
+        .delete(format!("{origin}/v1/projects/team-a/deployment"))
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(retired_rx.try_recv()?.0.project_id, "team-a");
+    assert!(retired_rx.try_recv().is_err());
+    let remaining: serde_json::Value = client
+        .get(format!("{origin}/v1/projects/team-b/deployment"))
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(remaining["imageRef"], "team-b");
+    let contract: serde_json::Value = client
+        .get(format!(
+            "{origin}/v1/projects/team-b/deployment/contract?revision=same"
+        ))
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(contract["contract"], document);
+    assert_eq!(
+        client
+            .get(format!("{origin}/v1/projects/team-a/deployment/contract"))
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    server.abort();
+    Ok(())
+}
+
+fn fixture_host(revision: &str, suffix: &str) -> HostId {
+    let spec = HostLaunchSpec {
+        source: None,
+        code_snapshot: None,
+        project_id: "default".into(),
+        code_revision: revision.into(),
+        image_ref: "image".into(),
+        working_directory: "/app".into(),
+        actor_entrypoint: None,
+        secret_refs: vec![],
+    };
+    HostId::new(format!("host.v3.{}.{suffix}", spec.host_revision()))
 }

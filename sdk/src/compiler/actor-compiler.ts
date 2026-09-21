@@ -37,7 +37,7 @@ class ActorCompiler {
             ...schema,
             contract: socketContract(
                 checker,
-                actors.find(actor => actor.name!.text === schema.actorType)!,
+                actors.find(actor => actor.name!.text === schema.actorName)!,
                 schema
             )
         }))
@@ -51,13 +51,13 @@ class ActorCompiler {
             version: 1,
             actors: [...schemas]
                 .sort((left, right) =>
-                    left.actorType < right.actorType ? -1 : left.actorType > right.actorType ? 1 : 0
+                    left.actorName < right.actorName ? -1 : left.actorName > right.actorName ? 1 : 0
                 )
                 .map(schema => {
-                    const actor = actors.find(actor => actor.name!.text === schema.actorType)!
+                    const actor = actors.find(actor => actor.name!.text === schema.actorName)!
                     const socket = socketContract(checker, actor, schema)
                     return {
-                        actorType: schema.actorType,
+                        actorName: schema.actorName,
                         socket: {
                             ...socket,
                             schema: extractPublicSchema(socket.schema, ["Metadata", "Incoming", "Outgoing", "State"])
@@ -225,7 +225,7 @@ function actorExportError(
         return `actor entrypoint export ${name} must be a class that directly extends Actor`
     if (actor.name?.text !== name) return `actor entrypoint export ${name} must have the same class name`
     try {
-        validateActorComponent("actor type", name)
+        validateActorComponent("actor name", name)
     } catch (error) {
         return error instanceof Error ? error.message : String(error)
     }
@@ -280,7 +280,7 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...actor.diagnostics, ...actor.members.flatMap(member => member.diagnostics))
         const persistence = validatePersistence(actor)
         diagnostics.push(...persistence.diagnostics)
-        schemas.push({ actorType: actor.name, fields: persistence.fields })
+        schemas.push({ actorName: actor.name, fields: persistence.fields })
     }
     return { schemas: diagnostics.length === 0 ? schemas : [], diagnostics }
 }

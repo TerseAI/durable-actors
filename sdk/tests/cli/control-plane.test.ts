@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { ControlPlaneClient } from "../../src/cli/control-plane.js"
 
-const connection = { controlPlaneUrl: "https://control.example", credential: "admin-key" }
+const connection = { projectId: "default", controlPlaneUrl: "https://control.example", credential: "admin-key" }
 
 test("connection checks work before any deployment exists", async () => {
     const client = new ControlPlaneClient(connection, async input => {
@@ -30,9 +30,9 @@ test("contract and object reads use the active deployment", async () => {
     await client.listObjects(new URLSearchParams({ limit: "50" }))
     await client.inspectObject("Room", "one")
     assert.deepEqual(requests, [
-        "https://control.example/v1/deployment/contract?revision=r1",
+        "https://control.example/v1/projects/default/deployment/contract?revision=r1",
         "https://control.example/v1/actors?limit=50",
-        "https://control.example/v1/actors/Room/one?include=state"
+        "https://control.example/v1/projects/default/actors/Room/one?include=state"
     ])
 })
 

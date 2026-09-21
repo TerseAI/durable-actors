@@ -4,7 +4,7 @@ import type { ObserverQuery, ObserverQueryResult, RequestTrace, RequestTracePage
 export interface HistoryFilters {
     fromMs?: number
     toMs?: number
-    actorType?: string
+    actorName?: string
     actorId?: string
     outcome?: RequestTrace["outcome"]
 }
@@ -23,7 +23,7 @@ export function historyQuery(filters: HistoryFilters, cursor?: string): Observer
     for (const [column, operator, value] of [
         ["started_at_ms", ">=", filters.fromMs],
         ["started_at_ms", "<=", filters.toMs],
-        ["actor_type", "=", filters.actorType],
+        ["actor_name", "=", filters.actorName],
         ["actor_id", "=", filters.actorId],
         ["outcome", "=", filters.outcome]
     ] as const) {

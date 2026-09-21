@@ -13,7 +13,11 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     let client = reqwest::Client::new();
     for (method, path, status) in [
         (reqwest::Method::GET, "/.well-known/jwks.json", 200),
-        (reqwest::Method::POST, "/v1/actors/Counter/one/connect", 401),
+        (
+            reqwest::Method::POST,
+            "/v1/projects/default/actors/Counter/one/connect",
+            401,
+        ),
         (reqwest::Method::GET, "/v1/actors", 401),
         (reqwest::Method::GET, "/missing", 404),
     ] {
@@ -35,7 +39,11 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     assert_eq!(requests.len(), 4, "missing terminal request logs: {output}");
     for (log, (method, path, status)) in requests.iter().zip([
         ("GET", "/.well-known/jwks.json", 200),
-        ("POST", "/v1/actors/Counter/one/connect", 401),
+        (
+            "POST",
+            "/v1/projects/default/actors/Counter/one/connect",
+            401,
+        ),
         ("GET", "/v1/actors", 401),
         ("GET", "/missing", 404),
     ]) {
@@ -108,7 +116,15 @@ impl LocalRuntime {
         std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
         command
-            .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .args([
+                "dev",
+                "--project-id",
+                "default",
+                "--port",
+                "0",
+                "--entrypoint",
+                "actors.ts",
+            ])
             .arg("--project")
             .arg(project.path())
             .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")

@@ -565,7 +565,7 @@ impl ActorRuntime {
                 event = "actor_state_write",
                 request_id = %invocation.request_id,
 
-                actor_type = %invocation.actor.actor_type,
+                actor_name = %invocation.actor.actor_name,
                 actor_id = %invocation.actor.actor_id,
                 host_id = %self.endpoint.id,
                 owner_epoch,
@@ -586,7 +586,7 @@ impl ActorRuntime {
                 event = "actor_state_write",
                 request_id = %invocation.request_id,
 
-                actor_type = %invocation.actor.actor_type,
+                actor_name = %invocation.actor.actor_name,
                 actor_id = %invocation.actor.actor_id,
                 host_id = %self.endpoint.id,
                 owner_epoch,
@@ -693,7 +693,7 @@ impl ActorRuntime {
                 event = "actor_host_invocation",
                 request_id = %invocation.request_id,
 
-                actor_type = %invocation.actor.actor_type,
+                actor_name = %invocation.actor.actor_name,
                 actor_id = %invocation.actor.actor_id,
                 method = %invocation.method,
                 host_id = %endpoint.id,

@@ -41,6 +41,7 @@ if (process.env.TEST_WATCH_SOURCE) {
     controlPlaneUrl = "http://127.0.0.1:" + server.address().port
 }
 createWriteStream(null, { fd: 3 }).end(JSON.stringify({
+    projectId: "default",
     pid: process.pid,
     controlPlaneUrl,
     apiKey: "test-key",
@@ -56,16 +57,24 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
         { mode: 0o755 }
     )
-    const env = { ...process.env, DURABLE_OBJECT_BINARY: executable, DURABLE_OBJECT_API_KEY: "test-key" }
+    const env = {
+        ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
+        DURABLE_OBJECT_BINARY: executable,
+        DURABLE_OBJECT_API_KEY: "test-key"
+    }
     const args = [cli, "dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)
-    assert.equal(result.contract.actors[0].actorType, "Room")
+    assert.equal(result.contract.actors[0].actorName, "Room")
     assert.deepEqual(
         result.contract.actors[0].rpc.methods.map((method: { name: string }) => method.name),
         ["hello"]
     )
     assert.ok(result.args.includes(project))
+    const sdkHostIndex = result.args.indexOf("--sdk-host")
+    assert.notEqual(sdkHostIndex, -1, "dev must provide its host module for projects that depend on a wrapper SDK")
+    assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
     const failure = await run(process.execPath, args, {

@@ -49,7 +49,7 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
             .is_success()
     );
     let url = format!("http://{control_address}/assign");
-    let mut assignment = serde_json::json!({"hostId":"replica-one", "secret":"replica-signing-secret-with-32-bytes", "scope":{"actor":{"actor_type":"Counter","actor_id":"one"},"host":"primary","session":"session","region":"us-east"}});
+    let mut assignment = serde_json::json!({"hostId":"replica-one", "secret":"replica-signing-secret-with-32-bytes", "scope":{"actor":{"project_id":"default","actor_name":"Counter","actor_id":"one"},"host":"primary","session":"session","region":"us-east"}});
     let scope: ReplicaScope = serde_json::from_value(assignment["scope"].clone())?;
     let access = ReplicaAccess::new(
         assignment["secret"].as_str().unwrap(),

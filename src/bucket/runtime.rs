@@ -578,9 +578,9 @@ impl ActorInventoryReader for RuntimeStorage {
             };
             let record: Ownership = serde_json::from_slice(&object.bytes)?;
             let row = actors
-                .entry(record.actor.actor_type.clone())
+                .entry(record.actor.actor_name.clone())
                 .or_insert_with(|| ActorInventory {
-                    actor_type: record.actor.actor_type.clone(),
+                    actor_name: record.actor.actor_name.clone(),
                     ..Default::default()
                 });
             let instance = actor_instance_overview(&record, self.clock.now_ms()?);

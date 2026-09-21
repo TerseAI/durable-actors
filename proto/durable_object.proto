@@ -22,8 +22,9 @@ message ControlPlaneReply {
 }
 
 message ActorKey {
+  string project_id = 4;
   reserved 1;
-  string actor_type = 2;
+  string actor_name = 2;
   string actor_id = 3;
 }
 

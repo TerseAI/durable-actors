@@ -58,10 +58,10 @@ class ActorSession {
         const commandHandler: ActorCommandHandler = (command, publish, connections) =>
             supervisor.handle(command, publish, connections)
         try {
-            const actorTypes = await discoverActorTypes(supervisor, this.settings.startupTimeoutMs)
+            const actorNames = await discoverActorNames(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
                 this.settings.socketPath,
-                actorTypes,
+                actorNames,
                 commandHandler,
                 this.settings.startupTimeoutMs,
                 supervisor.activeActors.bind(supervisor),
@@ -76,7 +76,7 @@ class ActorSession {
     }
 }
 
-async function discoverActorTypes(
+async function discoverActorNames(
     supervisor: Pick<ActorWorkerSupervisor, "ready">,
     timeoutMs: number
 ): Promise<readonly string[]> {
@@ -113,18 +113,18 @@ class ActorSessionConnection {
 
     static async open(
         socketPath: string,
-        actorTypes: readonly string[],
+        actorNames: readonly string[],
         commandHandler: ActorCommandHandler,
         timeoutMs: number,
         activeActors: () => readonly ActorIdentity[],
         watchActiveActors: (listener: () => void) => () => void,
         connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
-        if (actorTypes.length === 0)
+        if (actorNames.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
-        connection.send({ type: "attach", protocol: 16, actor_types: actorTypes })
+        connection.send({ type: "attach", protocol: 16, actor_names: actorNames })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }

@@ -116,12 +116,12 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     if version < 2 {
         transaction.execute_batch("
         ALTER TABLE traces ADD COLUMN started_at_ms INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE traces ADD COLUMN actor_type TEXT NOT NULL DEFAULT '';
+        ALTER TABLE traces ADD COLUMN actor_name TEXT NOT NULL DEFAULT '';
         ALTER TABLE traces ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';
         ALTER TABLE traces ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
-        UPDATE traces SET started_at_ms = json_extract(event, '$.startedAtMs'), actor_type = json_extract(event, '$.actorType'), actor_id = json_extract(event, '$.actorId'), outcome = json_extract(event, '$.outcome');
+        UPDATE traces SET started_at_ms = json_extract(event, '$.startedAtMs'), actor_name = json_extract(event, '$.actorName'), actor_id = json_extract(event, '$.actorId'), outcome = json_extract(event, '$.outcome');
         CREATE INDEX traces_time ON traces(started_at_ms DESC, position DESC);
-        CREATE INDEX traces_actor ON traces(actor_type, actor_id, started_at_ms DESC, position DESC);
+        CREATE INDEX traces_actor ON traces(actor_name, actor_id, started_at_ms DESC, position DESC);
         CREATE INDEX traces_outcome ON traces(outcome, started_at_ms DESC, position DESC);
         CREATE TABLE trace_meta (generation TEXT NOT NULL, pruned INTEGER NOT NULL, total INTEGER NOT NULL);
     ")?;
@@ -131,7 +131,7 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
         )?;
     }
     transaction.execute_batch("
-        CREATE VIEW request_events AS SELECT position AS sequence, event_id, started_at_ms, actor_type, actor_id, outcome, event,
+        CREATE VIEW request_events AS SELECT position AS sequence, event_id, started_at_ms, actor_name, actor_id, outcome, event,
             json_extract(event, '$.requestId') AS request_id,
             json_extract(event, '$.hostId') AS host_id,
             json_extract(event, '$.sessionId') AS session_id,
@@ -151,7 +151,7 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
 }
 
 fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result<usize> {
-    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_type, actor_id, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (event_id) DO NOTHING")?;
+    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (event_id) DO NOTHING")?;
     let mut inserted = 0;
     for event in events {
         let outcome = serde_json::to_value(event.trace.outcome)?;
@@ -159,7 +159,7 @@ fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result
             event.event_id,
             serde_json::to_string(event)?,
             i64::try_from(event.trace.started_at_ms)?,
-            event.trace.actor_type,
+            event.trace.actor_name,
             event.trace.actor_id,
             outcome.as_str()
         ])?;

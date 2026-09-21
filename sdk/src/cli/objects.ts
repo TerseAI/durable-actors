@@ -15,7 +15,7 @@ interface ListOptions extends ObjectOptions {
 }
 
 interface SavedObject {
-    actorType: string
+    actorName: string
     actorId: string
     homeRegion: string
     stateVersion: number
@@ -40,7 +40,7 @@ function registerObjectCommands(program: Command): void {
         .option("--json", "print the list as JSON")
         .action(listObjects)
     connectionOptions(
-        objects.command("inspect <actor-type> <actor-id>").description("Print an object's committed state as JSON")
+        objects.command("inspect <actor-name> <actor-id>").description("Print an object's committed state as JSON")
     ).action(inspectObject)
 }
 
@@ -70,10 +70,10 @@ async function listObjects(options: ListOptions): Promise<void> {
         console.error(`More objects available. Repeat this command with --after '${after.replaceAll("'", "'\\''")}'`)
 }
 
-async function inspectObject(actorType: string, actorId: string, options: ObjectOptions): Promise<void> {
+async function inspectObject(actorName: string, actorId: string, options: ObjectOptions): Promise<void> {
     const settings = connection(options)
     const client = new ControlPlaneClient(settings, fetch)
-    const result = await client.inspectObject(actorType, actorId)
+    const result = await client.inspectObject(actorName, actorId)
     console.log(JSON.stringify(result, null, 2))
 }
 
@@ -84,7 +84,7 @@ function printObjects(actors: SavedObject[]): void {
     }
     const rows = [
         ["TYPE", "ID", "VERSION", "REGION"],
-        ...actors.map(object => [object.actorType, object.actorId, String(object.stateVersion), object.homeRegion])
+        ...actors.map(object => [object.actorName, object.actorId, String(object.stateVersion), object.homeRegion])
     ]
     const widths = rows[0]!.map((_, column) =>
         rows.reduce((width, row) => Math.max(width, (row[column] ?? "").length), 0)

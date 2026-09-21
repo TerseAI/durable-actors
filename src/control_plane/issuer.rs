@@ -124,7 +124,6 @@ impl ActorJwtIssuer {
             actor: grant.actor,
             region: grant.region,
             target: grant.target,
-            backend: grant.backend,
             metadata: grant.metadata,
             authorized_until_ms,
             connect_by_ms,

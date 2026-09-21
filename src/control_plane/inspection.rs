@@ -34,7 +34,10 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
         )
         .route("/v1/observe/requests/events", get(request_events))
         .route("/v1/actors", get(list_objects))
-        .route("/v1/actors/{actor_type}/{actor_id}", get(inspect_object))
+        .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}",
+            get(inspect_object),
+        )
         .with_state(InspectionApi { inspector, admin })
 }
 
@@ -232,7 +235,7 @@ struct ObjectPage {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedObject {
-    actor_type: String,
+    actor_name: String,
     actor_id: String,
     home_region: String,
     state_version: u64,
@@ -242,7 +245,7 @@ struct SavedObject {
 impl SavedObject {
     fn new(actor: ActorKey, placement: &ObjectPlacement) -> Self {
         Self {
-            actor_type: actor.actor_type,
+            actor_name: actor.actor_name,
             actor_id: actor.actor_id,
             home_region: placement.home_region.clone(),
             state_version: placement.state_version,
@@ -298,15 +301,15 @@ async fn read_inventory(state: &InspectionApi) -> Result<Vec<crate::placement::A
         .actor_inventory()
         .await?
         .into_iter()
-        .map(|row| (row.actor_type.clone(), row))
+        .map(|row| (row.actor_name.clone(), row))
         .collect();
-    if let Some(contract) = state.admin.deployment_contract(None).await? {
+    if let Some(contract) = state.admin.deployment_contract("default", None).await? {
         if let Some(actors) = contract.contract["actors"].as_array() {
             for actor in actors {
-                if let Some(name) = actor["actorType"].as_str() {
+                if let Some(name) = actor["actorName"].as_str() {
                     rows.entry(name.to_owned()).or_insert_with(|| {
                         crate::placement::ActorInventory {
-                            actor_type: name.to_owned(),
+                            actor_name: name.to_owned(),
                             ..Default::default()
                         }
                     });

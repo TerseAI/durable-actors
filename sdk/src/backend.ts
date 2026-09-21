@@ -1,6 +1,7 @@
 import { validateActorComponent } from "./actor/identity.js"
 import { actorClient } from "./client/client.js"
 import type { ActorClientTransport } from "./client/client.js"
+import type { DurableObjectsClientOptions } from "./client/remoteClient.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
 
 type ActorRpcTransport = Pick<ActorClientTransport, "invoke">
@@ -11,26 +12,26 @@ interface ActorRpcMethod {
 }
 
 function createActorStub<Stub extends object>(
-    actorType: string,
+    actorName: string,
     actorId: string,
     methods: readonly ActorRpcMethod[],
     transport?: ActorRpcTransport
 ): Stub {
-    validateActorComponent("actor type", actorType)
+    validateActorComponent("actor name", actorName)
     validateActorComponent("actor ID", actorId)
     const stub = Object.create(null)
     for (const method of methods) {
         validateActorComponent("actor method", method.name)
         if (["then", "connect", "broadcast", "onConnect", "onMessage", "onDisconnect"].includes(method.name))
-            throw new ActorDefinitionError(`actor method ${actorType}.${method.name} is reserved`)
+            throw new ActorDefinitionError(`actor method ${actorName}.${method.name} is reserved`)
         if (Object.hasOwn(stub, method.name))
-            throw new ActorDefinitionError(`duplicate actor method ${actorType}.${method.name}`)
+            throw new ActorDefinitionError(`duplicate actor method ${actorName}.${method.name}`)
         Object.defineProperty(stub, method.name, {
             enumerable: true,
             value: async (...args: unknown[]) => {
                 const parameters = invocationArguments(args)
                 const client = transport ?? (await actorClient())
-                const result = await client.invoke(actorType, actorId, method.name, parameters)
+                const result = await client.invoke(actorName, actorId, method.name, parameters)
                 return method.result === "void" ? undefined : result
             }
         })
@@ -49,3 +50,16 @@ function invocationArguments(args: readonly unknown[]): readonly unknown[] {
 
 export { createActorStub }
 export type { ActorRpcMethod, ActorRpcTransport }
+
+export function createActorTransport(options: DurableObjectsClientOptions): ActorRpcTransport {
+    let client: Promise<ActorRpcTransport> | undefined
+    return {
+        async invoke(...args) {
+            client ??= import("./client/remoteClient.js").then(
+                ({ RemoteActorClient }) => new RemoteActorClient(options)
+            )
+            return (await client).invoke(...args)
+        }
+    }
+}
+export type { DurableObjectsClientOptions }

@@ -25,12 +25,14 @@ export class RuntimeBuilder {
     }
 
     async compile(staging) {
+        const provider = path.join(this.root, "target/release/little-actors-modal-go")
         await this.run("cargo", ["build", "--locked", "--release", "--bin", "little-actors"], { cwd: this.root })
         await copyFile(path.join(this.root, "target/release/little-actors"), path.join(staging, "little-actors"))
-        await this.run("go", ["build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", path.join(staging, "little-actors-modal-go"), "."], {
+        await this.run("go", ["build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", provider, "."], {
             cwd: path.join(this.root, "providers/modal-go"),
             env: { ...process.env, CGO_ENABLED: "0" }
         })
+        await copyFile(provider, path.join(staging, "little-actors-modal-go"))
     }
 
     async package(staging, output) {

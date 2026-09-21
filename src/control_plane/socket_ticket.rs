@@ -11,7 +11,6 @@ pub(crate) struct SocketGrant {
     pub actor: ActorKey,
     pub region: String,
     pub target: Option<SocketTarget>,
-    pub backend: bool,
     pub metadata: Value,
     pub authorization_lifetime_ms: i64,
 }
@@ -41,8 +40,6 @@ pub(crate) struct SocketTicket {
     pub actor: ActorKey,
     pub region: String,
     pub target: Option<SocketTarget>,
-    #[serde(default)]
-    pub backend: bool,
     pub metadata: Value,
     pub connect_by_ms: i64,
     pub authorized_until_ms: i64,

@@ -10,10 +10,19 @@ test("client settings require an API key and accept an explicit home assignment"
     )
     assert.equal(
         configuredSettings({
+            projectId: "default",
             controlPlaneUrl: "https://actors.example",
             apiKey: "key",
             homeRegion: "north-america-west"
         }).homeRegion,
         "north-america-west"
     )
+})
+
+test("client settings reject absent or empty project IDs", () => {
+    for (const projectId of [undefined, "", ".", ".."])
+        assert.throws(
+            () => configuredSettings({ projectId, controlPlaneUrl: "https://actors.example", apiKey: "key" }),
+            /projectId/
+        )
 })

@@ -155,7 +155,7 @@ Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`
 
 ### Saved state and serialization
 
-For backend SDK connections, stack `@Emittable` with `@Persisted` on a public field to publish its final value after each successful operation commits. Nested mutations are detected and coalesced once per operation. Private and protected fields are never included in automatic socket state. Native browser connections receive explicit application messages only; use `socket.send()` and `this.broadcast()` for them.
+Stack `@Emittable` with `@Persisted` on a public field to synchronize it with connected browsers. Connections receive an initial `state` snapshot of those fields, then `state_update` messages after successful commits. Nested mutations are detected and coalesced once per operation. Private, protected, and non-emittable fields are excluded. Actors without emittable fields send no automatic state messages. Use `socket.send()` and `this.broadcast()` for application messages.
 
 Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `little-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
 
@@ -194,7 +194,7 @@ A method returning `undefined` produces `null` at runtime. TypeScript return ann
 
 When an actor method or socket lifecycle hook throws, its state changes are not saved. The worker stays alive and reconstructs the actor from its pre-request persisted state before returning the error; ephemeral fields reset. A worker crash or failed reconstruction still requires eviction. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
-Backend SDK connections receive automatic public persisted state, excluding private and protected fields. Signed browser connections receive only explicit application messages.
+Signed browser connections receive automatic snapshots and updates of public `@Emittable` fields, alongside explicit application messages. Private, protected, and non-emittable fields are excluded.
 
 Saved state is limited to 16 MiB of JSON. Method requests and responses must fit 32 MiB, including encoded state, arguments or results, and message overhead. Individual limits do not guarantee that a near-limit combination fits in one request.
 

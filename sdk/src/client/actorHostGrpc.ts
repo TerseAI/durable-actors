@@ -22,8 +22,9 @@ interface ActorHostTarget {
 }
 
 interface DirectActorInvocation {
+    readonly projectId: string
     readonly requestId: string
-    readonly actorType: string
+    readonly actorName: string
     readonly actorId: string
     readonly method: string
     readonly args: readonly JsonValue[]
@@ -38,7 +39,7 @@ type ActorHostReply =
 interface ActorHostTransport {
     publish(
         target: ActorHostTarget,
-        actor: { actorType: string; actorId: string },
+        actor: { projectId: string; actorName: string; actorId: string },
         effects: readonly SocketEffect[]
     ): Promise<void>
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
@@ -54,7 +55,8 @@ class GrpcActorHostTransport implements ActorHostTransport {
             invocation: {
                 requestId: invocation.requestId,
                 actor: {
-                    actorType: invocation.actorType,
+                    projectId: invocation.projectId,
+                    actorName: invocation.actorName,
                     actorId: invocation.actorId
                 },
                 method: invocation.method,
@@ -75,7 +77,7 @@ class GrpcActorHostTransport implements ActorHostTransport {
 
     async publish(
         target: ActorHostTarget,
-        actor: { actorType: string; actorId: string },
+        actor: { projectId: string; actorName: string; actorId: string },
         effects: readonly SocketEffect[]
     ): Promise<void> {
         const metadata = new Metadata()

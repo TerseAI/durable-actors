@@ -14,12 +14,12 @@ import type { HistoryFilters } from "./request-sql.js"
 
 interface RequestObserverProps {
     client: Pick<ObserverClient, "watchRequests" | "query">
-    actor?: Pick<RequestTrace, "actorType" | "actorId">
+    actor?: Pick<RequestTrace, "actorName" | "actorId">
 }
 
 function RequestObserver({ client, actor }: RequestObserverProps) {
     const [query, setQuery] = useState<HistoryFilters>()
-    const scopedQuery = useMemo(() => (query ? { ...query, ...actor } : undefined), [query, actor?.actorType, actor?.actorId])
+    const scopedQuery = useMemo(() => (query ? { ...query, ...actor } : undefined), [query, actor?.actorName, actor?.actorId])
     const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
@@ -29,12 +29,12 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
     const Heading = actor ? "h3" : "h1"
     const shown = query ? history.page : (frozen ?? page)
     const statusPage = page ?? history.page
-    const records = (shown?.records ?? []).filter(record => !actor || (record.actorType === actor.actorType && record.actorId === actor.actorId))
+    const records = (shown?.records ?? []).filter(record => !actor || (record.actorName === actor.actorName && record.actorId === actor.actorId))
     useEffect(() => {
         setFrozen(undefined)
         setQuery(undefined)
-    }, [client, actor?.actorType, actor?.actorId])
-    useEffect(() => setSelected(undefined), [client, page?.epoch, query, actor?.actorType, actor?.actorId])
+    }, [client, actor?.actorName, actor?.actorId])
+    useEffect(() => setSelected(undefined), [client, page?.epoch, query, actor?.actorName, actor?.actorId])
     return (
         <section ref={container} className="la-observer la-requests" aria-label="Request observer">
             <div className="la-observer-toolbar">
@@ -149,8 +149,8 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
                                     </span>
                                 </TableCell>
                                 <TableCell>
-                                    <span className="la-request-actor" title={`${record.actorType} / ${record.actorId}`}>
-                                        {record.actorType} / {record.actorId}
+                                    <span className="la-request-actor" title={`${record.actorName} / ${record.actorId}`}>
+                                        {record.actorName} / {record.actorId}
                                     </span>
                                 </TableCell>
                                 <TableCell>{record.kind === "method" ? "Method" : "WebSocket"}</TableCell>
@@ -300,7 +300,7 @@ function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFi
 function RequestDetails({ record }: { record: RequestTrace }) {
     const fields = {
         Operation: record.operation,
-        "Actor class": record.actorType,
+        "Actor class": record.actorName,
         "Instance ID": record.actorId,
         "Request ID": record.requestId,
         Time: new Date(record.startedAtMs).toLocaleString(),

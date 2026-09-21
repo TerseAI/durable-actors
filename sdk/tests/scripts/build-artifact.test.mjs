@@ -22,7 +22,7 @@ test("deployment builds produce code and a contract without executing customer c
     const output = path.join(root, "published")
     const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output])
     const contract = JSON.parse(stdout)
-    assert.equal(contract.actors[0].actorType, "Counter")
+    assert.equal(contract.actors[0].actorName, "Counter")
     assert.equal(contract.actors[0].rpc.methods[0].name, "get")
     assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
     await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
@@ -88,10 +88,10 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     t.after(() => socket.destroy())
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
     const receive = async () => JSON.parse((await lines.next()).value)
-    assert.deepEqual(await receive(), { type: "attach", protocol: 16, actor_types: ["BuiltCounter"] })
+    assert.deepEqual(await receive(), { type: "attach", protocol: 16, actor_names: ["BuiltCounter"] })
     const send = message => socket.write(JSON.stringify(message) + "\n")
     send({ type: "attached", protocol: 16 })
-    const actor = { actor_type: "BuiltCounter", actor_id: "counter" }
+    const actor = { project_id: "default", actor_name: "BuiltCounter", actor_id: "counter" }
     const invoke = (messageId, state) =>
         send({
             type: "command",

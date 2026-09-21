@@ -145,7 +145,8 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         clock.clone(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let first = runtime
@@ -263,7 +264,8 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
         clock.clone(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
     let placement = runtime
@@ -411,7 +413,8 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
         clock.clone(),
     )?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "race".into(),
     };
     let (first, second) = tokio::join!(
@@ -450,7 +453,8 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
         "peer".into(),
         little_actors::replication::ReplicaScope {
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "http".into(),
             },
             host: request("old").id,
@@ -486,7 +490,8 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
             .await
     });
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "http".into(),
     };
     let first = runtime
@@ -632,7 +637,8 @@ async fn recovery_retries_failed_checkpoint_and_reuses_sealed_state_after_a_fail
     };
     let old = runtime()?;
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
     let placement = old
@@ -739,7 +745,8 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         clock.clone(),
     )?);
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "delayed".into(),
     };
     let first = runtime
@@ -764,5 +771,84 @@ async fn takeover_fences_replication_initialization_that_was_delayed_past_lease_
         task.await?.is_err(),
         "old session must never receive replication authority after takeover"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_named_actors_in_different_projects_recover_independent_state() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let bucket = Arc::new(MemoryBucket::default());
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let targets: Vec<_> = ["a", "b"]
+        .into_iter()
+        .map(|id| ReplicaTarget {
+            host_id: id.into(),
+            url: format!("http://{id}"),
+            region: "us-east".into(),
+        })
+        .collect();
+    let mut stores = BTreeMap::new();
+    for peer in &targets {
+        stores.insert(
+            peer.host_id.clone(),
+            Arc::new(FileReplicaStore::open(directory.path().join(&peer.host_id), 4096).await?),
+        );
+    }
+    let peers = Arc::new(Peers {
+        stores,
+        unavailable: Mutex::new(vec![]),
+        seals: AtomicU64::new(0),
+        initializations: AtomicU64::new(0),
+        initialization_gate: None,
+    });
+    let runtime = RuntimeStorage::new(
+        bucket.clone(),
+        Arc::new(Fleet(targets)),
+        peers.clone(),
+        ReplicaAccess::new("secret", clock.clone()),
+        "http://control".into(),
+        clock.clone(),
+    )?;
+    let mut committed = Vec::new();
+    for (project, count) in [("team-a", 1), ("team-b", 3)] {
+        let actor = ActorKey {
+            project_id: project.into(),
+            actor_name: "Counter".into(),
+            actor_id: "same".into(),
+        };
+        let placement = runtime
+            .register_activation(&actor, &request(&format!("old-{project}")), "us-east", true)
+            .await?
+            .placement;
+        enable_replicas(&runtime, &actor, &placement.lease).await?;
+        let ticket = runtime
+            .prepare_actor_write(&actor, &placement.lease, placement.owner_epoch, 1)
+            .await?;
+        let bytes = StateSnapshot::new(
+            1,
+            placement.owner_epoch,
+            project.into(),
+            serde_json::json!({"count": count}),
+            serde_json::json!(count),
+        )?
+        .encode()?;
+        for store in peers.stores.values() {
+            store.append(&ticket.stream, &bytes).await?;
+        }
+        committed.push((actor, bytes));
+    }
+    clock.0.store(20_000, Ordering::SeqCst);
+    for (actor, bytes) in committed {
+        let restored = runtime
+            .register_activation(
+                &actor,
+                &request(&format!("new-{}", actor.project_id)),
+                "us-east",
+                false,
+            )
+            .await?;
+        assert_eq!(restored.placement.state_version, 1);
+        assert_eq!(restored.state.unwrap().as_ref(), bytes);
+    }
     Ok(())
 }

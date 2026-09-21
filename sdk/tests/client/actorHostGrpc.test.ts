@@ -23,7 +23,7 @@ test("direct transport speaks the actor host protobuf contract", async () => {
             assert.deepEqual(call.request, {
                 invocation: {
                     requestId: "request-1",
-                    actor: { actorType: "Counter", actorId: "counter-1" },
+                    actor: { projectId: "team-a", actorName: "Counter", actorId: "counter-1" },
                     method: "increment",
                     argsJson: Buffer.from("[2]")
                 },
@@ -49,7 +49,8 @@ test("direct transport speaks the actor host protobuf contract", async () => {
                 },
                 {
                     requestId: "request-1",
-                    actorType: "Counter",
+                    projectId: "team-a",
+                    actorName: "Counter",
                     actorId: "counter-1",
                     method: "increment",
                     args: [2]
@@ -83,8 +84,9 @@ test("direct transport rejects structurally invalid socket effects", async () =>
                     expiresAtMs: 4_000_000_000_000
                 },
                 {
+                    projectId: "default",
                     requestId: "request-1",
-                    actorType: "Counter",
+                    actorName: "Counter",
                     actorId: "counter-1",
                     method: "increment",
                     args: [2]
@@ -118,8 +120,9 @@ test("only transport authentication rejections are safe to retry", async () => {
                     expiresAtMs: 1
                 },
                 {
+                    projectId: "default",
                     requestId: "one",
-                    actorType: "Counter",
+                    actorName: "Counter",
                     actorId: "one",
                     method: "get",
                     args: []
@@ -171,7 +174,7 @@ interface GrpcPackages {
 interface HostRequest {
     readonly invocation: {
         readonly requestId: string
-        readonly actor: { readonly actorType: string; readonly actorId: string }
+        readonly actor: { readonly actorName: string; readonly actorId: string }
         readonly method: string
         readonly argsJson: Buffer
     }
@@ -196,13 +199,13 @@ test("socket effects use authenticated host gRPC with actor ownership binding", 
     server.addService(definition.durable_object.v1.ActorHostService.service, {
         publishSocketEffects(
             call: ServerUnaryCall<
-                { actor: { actorType: string; actorId: string }; ownerEpoch: number; effectsJson: Buffer },
+                { actor: { actorName: string; actorId: string }; ownerEpoch: number; effectsJson: Buffer },
                 object
             >,
             callback: sendUnaryData<object>
         ) {
             assert.equal(call.metadata.get("authorization")[0], "Bearer actor-token")
-            assert.deepEqual(call.request.actor, { actorType: "Room", actorId: "lobby" })
+            assert.deepEqual(call.request.actor, { projectId: "team-b", actorName: "Room", actorId: "lobby" })
             assert.equal(call.request.ownerEpoch, 7)
             assert.deepEqual(JSON.parse(call.request.effectsJson.toString()), [
                 { type: "broadcast", message: { type: "text", data: '"hello"' }, except_connection_ids: [], tags: [] }
@@ -215,7 +218,7 @@ test("socket effects use authenticated host gRPC with actor ownership binding", 
     try {
         await new GrpcActorHostTransport().publish(
             { route: `http://127.0.0.1:${port}`, token: "actor-token", ownerEpoch: 7, expiresAtMs: 4_000_000_000_000 },
-            { actorType: "Room", actorId: "lobby" },
+            { projectId: "team-b", actorName: "Room", actorId: "lobby" },
             [{ type: "broadcast", message: { type: "text", data: '"hello"' }, except_connection_ids: [], tags: [] }]
         )
         assert.equal(delivered, true)

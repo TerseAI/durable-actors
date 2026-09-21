@@ -10,7 +10,7 @@ import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
 import type { DurableObjectsClientOptions } from "../../src/client/remoteClient.js"
 
-const options = { apiKey: " key ", controlPlaneUrl: "https://CONTROL.example.com:443/" }
+const options = { projectId: "default", apiKey: " key ", controlPlaneUrl: "https://CONTROL.example.com:443/" }
 
 test("environment and explicit client settings normalize routes and API keys equally", async () => {
     {
@@ -19,7 +19,7 @@ test("environment and explicit client settings normalize routes and API keys equ
         const dependencies = {
             environment: environmentFor(settings),
             fetch: async (url: string | URL | Request, init?: RequestInit) => {
-                assert.equal(String(url), "https://control.example.com/v1/actors/Counter/one/connect")
+                assert.equal(String(url), "https://control.example.com/v1/projects/default/actors/Counter/one/connect")
                 assert.equal(new Headers(init?.headers).get("authorization"), "Bearer key")
                 return Response.json({ websocketUrl: "wss://host.example.com/v1/socket?key=ticket", key: "ticket" })
             },
@@ -39,7 +39,11 @@ test("environment and explicit client settings normalize routes and API keys equ
 })
 
 test("environment and explicit client settings report the same validation errors", async () => {
-    for (const invalid of [{ apiKey: " " }, { homeRegion: "bad/region" }, { controlPlaneUrl: "invalid" }]) {
+    for (const invalid of [
+        { projectId: "default", apiKey: " " },
+        { homeRegion: "bad/region" },
+        { projectId: "default", controlPlaneUrl: "invalid" }
+    ]) {
         const settings = { ...options, ...invalid }
         let expected: Error | undefined
         assert.throws(
@@ -58,6 +62,7 @@ test("environment and explicit client settings report the same validation errors
 
 function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEnv {
     return {
+        DURABLE_OBJECT_PROJECT_ID: settings.projectId,
         DURABLE_OBJECT_API_KEY: settings.apiKey,
         DURABLE_OBJECT_HOME_REGION: settings.homeRegion,
         DURABLE_OBJECT_CONTROL_PLANE_URL: settings.controlPlaneUrl
@@ -84,7 +89,7 @@ test("clients require explicit credentials even if a discovery file exists", asy
             connectWebSocket: async () => assert.fail('used file credentials')
         });
         await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
-        assert.throws(() => new SocketProxy({Room:{}}), /API key/);
+        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /API key/);
     `
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))
     await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })

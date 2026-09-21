@@ -1,4 +1,4 @@
-import { Command } from "commander"
+import { Command, Option } from "commander"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 
@@ -19,6 +19,7 @@ function registerDeployCommand(program: Command): void {
         .option("--working-directory <path>", "project directory inside the build image", "/customer")
         .option("--revision <revision>", "code revision (defaults to a new generated ID)")
         .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
+        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option(
             "--secret <name>",

@@ -23,27 +23,27 @@ Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. 
 
 | Operation                      | Method and path                                      | Credential                    |
 | ------------------------------ | ---------------------------------------------------- | ----------------------------- |
-| Register or replace deployment | `PUT /v1/deployment`                                 | API key                       |
-| Read deployment                | `GET /v1/deployment`                                 | API key                       |
-| Read public actor contract     | `GET /v1/deployment/contract`                        | API key                       |
-| Remove deployment              | `DELETE /v1/deployment`                              | API key                       |
+| Register or replace deployment | `PUT /v1/projects/{projectId}/deployment`                                 | API key                       |
+| Read deployment                | `GET /v1/projects/{projectId}/deployment`                                 | API key                       |
+| Read public actor contract     | `GET /v1/projects/{projectId}/deployment/contract`                        | API key                       |
+| Remove deployment              | `DELETE /v1/projects/{projectId}/deployment`                              | API key                       |
 | List saved actors              | `GET /v1/actors`                                     | API key                       |
-| Inspect actor metadata         | `GET /v1/actors/{actorType}/{actorId}`               | API key                       |
-| Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}?include=state` | API key                       |
-| Prepare a connection           | `POST /v1/actors/{actorType}/{actorId}/connect`      | API key                       |
+| Inspect actor metadata         | `GET /v1/projects/{projectId}/actors/{actorName}/{actorId}`               | API key                       |
+| Inspect committed state        | `GET /v1/projects/{projectId}/actors/{actorName}/{actorId}?include=state` | API key                       |
+| Prepare a connection           | `POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect`      | API key                       |
 | Read public signing keys       | `GET /.well-known/jwks.json`                         | None                          |
 | Check control-plane health     | `GET /healthz`                                       | None                          |
 | Connect from an app            | `GET /v1/socket` on the actor host                   | Signed URL; WebSocket upgrade |
 
 Call actor methods and send application broadcasts through the [TypeScript SDK](api.md). Management JSON request bodies are limited to 16 MiB; larger bodies receive `413`.
 
-Path parameters `actorType` and `actorId` follow the [actor identity limits](api.md#identity).
+Path parameters `actorName` and `actorId` follow the [actor identity limits](api.md#identity).
 
 ## Deployments
 
 All three operations require the API key and manage the installation's active deployment.
 
-### PUT /v1/deployment
+### PUT /v1/projects/{projectId}/deployment
 
 Builds and registers actor code from a published customer image in one request. There is one active deployment. The JSON request replaces the complete source specification.
 
@@ -82,13 +82,13 @@ Publishing a contract for the first time also returns `{"changed":true}`. It doe
 
 **Errors:** `400` for an invalid specification, contract, or failed build, `401` for a rejected admin credential, and `409` for a conflicting contract on the active revision. See [HTTP errors](#http-errors) for shared failure responses.
 
-### GET /v1/deployment/contract
+### GET /v1/projects/{projectId}/deployment/contract
 
 Returns the active deployment's public actor contract. Requires the API key. No actor host needs to be running.
 
 ```text
-GET /v1/deployment/contract
-GET /v1/deployment/contract?revision=chat-v1
+GET /v1/projects/{projectId}/deployment/contract
+GET /v1/projects/{projectId}/deployment/contract?revision=chat-v1
 ```
 
 Omit `revision` to get the latest deployment's contract. The optional `revision` query checks that this revision is active and returns `404` otherwise. Only the active contract is stored; historical contracts are discarded on replacement or deletion. Unknown query parameters are rejected.
@@ -109,11 +109,11 @@ The example represents an empty actor API; a missing contract returns `404` with
 
 **Errors:** `400` for an invalid revision or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 
-### GET /v1/deployment
+### GET /v1/projects/{projectId}/deployment
 
 Reads the active deployment.
 
-**Response:** `200 OK` with the original customer image and source paths, including its code revision. Internal runtime image and snapshot IDs are not returned, so this response can be sent back to `PUT /v1/deployment` when changing secrets:
+**Response:** `200 OK` with the original customer image and source paths, including its code revision. Internal runtime image and snapshot IDs are not returned, so this response can be sent back to `PUT /v1/projects/{projectId}/deployment` when changing secrets:
 
 ```json
 {
@@ -129,7 +129,7 @@ If no deployment exists, the response is `404` with error code `not_found`.
 
 **Errors:** `401` for a rejected admin credential; `500` if the deployment cannot be read.
 
-### DELETE /v1/deployment
+### DELETE /v1/projects/{projectId}/deployment
 
 Stops the deployment's cloud hosts and removes the active deployment registration.
 
@@ -158,7 +158,7 @@ Optional query parameters:
 {
     "actors": [
         {
-            "actorType": "ChatRoom",
+            "actorName": "ChatRoom",
             "actorId": "lobby",
             "homeRegion": "north-america-east",
             "stateVersion": 3,
@@ -171,7 +171,7 @@ Optional query parameters:
 
 Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
 
-### GET /v1/actors/{actorType}/{actorId}
+### GET /v1/projects/{projectId}/actors/{actorName}/{actorId}
 
 **Response:** `200 OK` with the same actor metadata fields as listing. Add `?include=state` to include `state`, containing all committed persisted fields, including internal fields. The `state` field is omitted by default. An existing placement without committed state has `stateVersion: 0` and `lastRequestId: null`; requesting state returns `state: null`.
 
@@ -185,7 +185,7 @@ The deployment router chooses and persists the nearest enabled region for a new 
 
 A control plane configured with `DURABLE_OBJECT_REGION` requires an explicit assignment matching its region. An existing actor keeps its persisted home: a conflicting assignment returns `409`. A failed provisioning attempt does not move it elsewhere. An unpinned local runtime may omit the assignment and defaults to `north-america-central` for new actors.
 
-### POST /v1/actors/{actorType}/{actorId}/connect
+### POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 
 Requires the API key. Select `transport: "grpc"` or `transport: "websocket"`. Unknown fields and fields belonging to the other transport are rejected. Setup can provision and activate an actor host.
 
@@ -231,16 +231,12 @@ Socket effects go directly to the owning host and are checked against its actor,
 
 ## Direct WebSocket connections
 
-### Backend connections
-
-The SDK requests `/connect` with `transport: "websocket"` and `backend: true` and opens the returned host URL. Within 10 seconds, it sends `{"type":"initialize","metadata":{}}`. Backend connections receive automatic persisted state updates. Initialization metadata is limited to 64 KiB. Application messages then travel as JSON text frames directly to the actor host.
-
-### External connections
+### Browser connections
 
 Your backend checks user access, then calls the generated `actors.ChatRoom.prepareWebsocket({ actorId, metadata })` helper. It issues a signed grant through this API:
 
 ```http
-POST /v1/actors/{actorType}/{actorId}/connect
+POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 Authorization: Bearer <api-key>
 Content-Type: application/json
 ```
@@ -249,7 +245,7 @@ Content-Type: application/json
 { "transport": "websocket", "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Grants require the backend API key. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
+Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_OBJECT_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Regional setup requires the router-assigned `homeRegion` described above. The response has `Cache-Control: no-store`:
 
 ```json
 {
@@ -261,7 +257,7 @@ Grants require the backend API key. Your application proxy authenticates the cus
 }
 ```
 
-The URL comes from the owning actor host's provider; local development returns a local host URL without a Modal token. Preserve the whole URL. Its signed key binds one actor to its host, session, and ownership epoch; it does not authorize backend RPCs or administration. Open the URL before `connectByMs` (normally within 60 seconds). `authorizedUntilMs` is the connection authorization deadline. Both are Unix timestamps in milliseconds. The URL and both tokens are credentials; omit them from access logs.
+The URL comes from the owning actor host's provider; local development returns a local host URL without a Modal token. Preserve the whole URL. Its signed key binds the project ID, actor name, and actor ID to the owning host, session, and ownership epoch; it does not authorize backend RPCs or administration. Open the URL before `connectByMs` (normally within 60 seconds). `authorizedUntilMs` is the connection authorization deadline. Both are Unix timestamps in milliseconds. The URL and both tokens are credentials; omit them from access logs.
 
 Pass the URL directly to a native WebSocket:
 
@@ -273,7 +269,7 @@ socket.onmessage = event => console.log(JSON.parse(event.data))
 
 The actor host verifies the key and host binding before upgrading. Missing, invalid, expired, or stale host-bound keys receive HTTP `401`. No subprotocol, authorization frame, or readiness frame is required. Messages sent immediately after the browser's `open` event wait for the actor's `onConnect` handler to finish.
 
-Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Actors send initial data explicitly from `onConnect`, and call `socket.send()` or `this.broadcast()` for subsequent messages. Signed browser connections do not receive automatic state snapshots or updates.
+Application JSON travels directly in text frames in both directions. The actor host validates incoming messages. Public `@Persisted @Emittable` fields synchronize automatically: a connection receives `{"type":"state","state":{"count":0},"version":1}`, then committed changes such as `{"type":"state_update","changes":{"count":1},"removed":[],"version":2}`. Apply `changes` and delete fields listed in `removed`. Private, protected, and non-emittable fields never enter these messages. Actors without emittable fields send no automatic state frames. Explicit messages from `socket.send()` and `this.broadcast()` share the connection; `state` and `state_update` are reserved message types.
 
 Authorization expires even while idle or running a handler; the host closes the connection with `4408`. There is no renewal protocol or automatic reconnect. To reconnect, your application obtains another grant and creates another WebSocket. Transient messages are not replayed.
 
@@ -308,7 +304,7 @@ After successful actor handling, the callback receives:
 ```json
 {
     "eventId": "<event-id>",
-    "actorType": "ChatRoom",
+    "actorName": "ChatRoom",
     "actorId": "lobby",
     "triggerId": "chat",
     "connectionId": "<connection-id>",
@@ -319,7 +315,7 @@ After successful actor handling, the callback receives:
 **Request fields** (all present)
 
 - `eventId` (`string`) — Unique event ID.
-- `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
+- `actorName` (`string`), `actorId` (`string`) — Actor that handled the message.
 - `triggerId` (`string | null`) — External route's trigger ID, or `null` for a backend connection.
 - `connectionId` (`string`) — Connection that sent the message.
 - `message` (`object`) — The transport envelope `{"type":"text","data":"<JSON text>"}`. Parse `message.data` to read the application value. The transport also defines a binary envelope, but the TypeScript actor runtime rejects binary application messages.

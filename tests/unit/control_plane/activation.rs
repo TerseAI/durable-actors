@@ -115,6 +115,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            project_id: "default".into(),
             source: None,
             code_snapshot: None,
             code_revision: "revision".into(),
@@ -147,7 +148,8 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     let service = ControlPlaneService::new(runtime, auth.clone(), registry, issuer, provisioner)
         .with_runtime_access(runtime_access);
     let actor = ActorKey {
-        actor_type: "Counter".into(),
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
     let target = service.resolve_actor_route(&actor, None, None).await?;

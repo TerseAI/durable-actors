@@ -11,9 +11,11 @@ import { RuntimeBuilder } from "../../scripts/build-runtime.mjs"
 
 const execute = promisify(execFile)
 
-test("native bundles contain both executable files and a matching download checksum", async t => {
+test("native builds refresh both local executables and bundle them with a matching checksum", async t => {
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
+    await mkdir(path.join(root, "target/release"), { recursive: true })
+    await writeFile(path.join(root, "target/release/little-actors-modal-go"), "stale provider", { mode: 0o755 })
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
@@ -37,6 +39,8 @@ test("native bundles contain both executable files and a matching download check
         ["little-actors", "runtime"],
         ["little-actors-modal-go", "provider"]
     ]) {
+        assert.equal(await readFile(path.join(root, "target/release", name), "utf8"), contents)
+        await execute("test", ["-x", path.join(root, "target/release", name)])
         assert.equal(await readFile(path.join(extracted, name), "utf8"), contents)
         await execute("test", ["-x", path.join(extracted, name)])
     }

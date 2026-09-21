@@ -12,7 +12,7 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
         rules[0]["availabilityCondition"]["expression"]
             .as_str()
             .unwrap()
-            .contains("little-actors/v2/owners/")
+            .contains("little-actors/v3/owners/")
     );
     assert_eq!(
         rules[1]["availablePermissions"],
@@ -25,7 +25,7 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
         rules[1]["availabilityCondition"]["expression"]
             .as_str()
             .unwrap()
-            .contains("little-actors/v2/snapshots/")
+            .contains("little-actors/v3/snapshots/")
     );
     Ok(())
 }

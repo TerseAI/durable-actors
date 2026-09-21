@@ -73,7 +73,7 @@ pub struct ActorConnectionInventory {
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorInventory {
-    pub actor_type: String,
+    pub actor_name: String,
     pub live: u64,
     pub dormant: u64,
     pub unknown: u64,

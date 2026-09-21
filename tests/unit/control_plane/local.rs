@@ -19,6 +19,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     let directory = tempfile::tempdir_in(&cwd)?;
     let relative = directory.path().strip_prefix(&cwd)?;
     let options = DevOptions {
+        project_id: "default".into(),
         api_key: Some("test-key".into()),
         contract: None,
         project: cwd.clone(),
@@ -46,7 +47,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
             "session",
             vec![crate::request_traces::RequestTrace {
                 request_id: "request".into(),
-                actor_type: "Counter".into(),
+                actor_name: "Counter".into(),
                 actor_id: "one".into(),
                 kind: crate::request_traces::RequestKind::Method,
                 operation: "increment".into(),

@@ -101,8 +101,11 @@ impl ControlPlaneService {
         self.region.as_deref().unwrap_or(FALLBACK_REGION)
     }
 
-    pub(super) async fn runtime_deployment(&self) -> Result<Option<HostLaunchSpec>> {
-        self.registry.launch_spec().await
+    pub(super) async fn runtime_deployment(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<HostLaunchSpec>> {
+        self.registry.launch_spec(project_id).await
     }
 
     pub(super) async fn register_deployment(
@@ -111,7 +114,7 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
         contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
-        let previous = admin.current_deployment().await?;
+        let previous = admin.current_deployment(&spec.project_id).await?;
         spec.validate()?;
         admin.validate_contract_registration(spec, contract).await?;
         if let Some(previous) = previous
@@ -135,7 +138,7 @@ impl ControlPlaneService {
         admin
             .validate_contract_registration(source, supplied_contract)
             .await?;
-        let previous = admin.current_deployment().await?;
+        let previous = admin.current_deployment(&source.project_id).await?;
         let (prepared, mut compiled_contract) = self
             .provisioner
             .prepare_deployment(source, previous.as_ref(), self.default_region())
@@ -146,7 +149,7 @@ impl ControlPlaneService {
                 .filter(|old| old.code_snapshot == prepared.code_snapshot)
                 .context("compiled deployment has no matching source contract")?;
             let record = admin
-                .deployment_contract(Some(&previous.code_revision))
+                .deployment_contract(&source.project_id, Some(&previous.code_revision))
                 .await?
                 .context("compiled deployment contract is missing")?;
             compiled_contract = Some(super::contracts::PublicActorContract::new(record.contract)?);
@@ -165,13 +168,17 @@ impl ControlPlaneService {
         .await
     }
 
-    pub(super) async fn delete_deployment(&self, admin: &AdminService) -> Result<bool> {
+    pub(super) async fn delete_deployment(
+        &self,
+        admin: &AdminService,
+        project_id: &str,
+    ) -> Result<bool> {
         let _update = self.deployment_update.lock().await;
-        let Some(previous) = admin.current_deployment().await? else {
+        let Some(previous) = admin.current_deployment(project_id).await? else {
             return Ok(false);
         };
         self.terminate_deployment_hosts(&previous).await?;
-        admin.remove_deployment().await?;
+        admin.remove_deployment(project_id).await?;
         self.changes.send_replace(());
         Ok(true)
     }
@@ -285,7 +292,7 @@ impl ControlPlaneService {
         }
         info!(
             event = "actor_socket_message_committed",
-            actor_type = %actor.actor_type,
+            actor_name = %actor.actor_name,
             actor_id = %actor.actor_id,
             connection_id,
             message_kind = match message {
@@ -538,7 +545,7 @@ impl ControlPlaneService {
             None => select_target_region(None, storage_region)?,
         };
         let spec = self
-            .runtime_deployment()
+            .runtime_deployment(&actor.project_id)
             .await?
             .context("project has no registered actor code")?;
         if let Some(timings) = timings.as_deref_mut() {
@@ -818,6 +825,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
         let prepared = HostLaunchSpec {
+            project_id: source.project_id.clone(),
             source: Some(input),
             code_revision: source.code_revision.clone(),
             image_ref: image.clone(),

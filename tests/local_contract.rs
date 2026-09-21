@@ -75,7 +75,10 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
         Duration::from_secs(5),
         Command::new(env!("CARGO_BIN_EXE_little-actors"))
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .env("DURABLE_OBJECT_PROJECT_ID", "default")
             .env("DURABLE_OBJECT_API_KEY", "test-key")
+            .arg("--project-id")
+            .arg("default")
             .arg("--project")
             .arg(project.path())
             .arg("--contract")
@@ -106,6 +109,8 @@ impl LocalRuntime {
         let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .arg("--project-id")
+            .arg("default")
             .arg("--project")
             .arg(project)
             .env_remove("DURABLE_OBJECT_API_KEY")
@@ -165,7 +170,10 @@ impl LocalRuntime {
 
     async fn contract(&self, query: &str) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
-            .get(format!("{}/v1/deployment/contract{query}", self.origin))
+            .get(format!(
+                "{}/v1/projects/default/deployment/contract{query}",
+                self.origin
+            ))
             .bearer_auth(&self.api_key)
             .send()
             .await?)

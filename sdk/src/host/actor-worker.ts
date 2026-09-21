@@ -32,7 +32,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
     try {
         if (assigned) throw new Error("customer code already assigned")
         assigned = true
-        const actorTypes = await loadActorEntrypoint(data.moduleUrl, data.schemas)
+        const actorNames = await loadActorEntrypoint(data.moduleUrl, data.schemas)
         let runtime: ActorRuntime | undefined
 
         port!.on("message", (message: ActorWorkerRequest) => {
@@ -51,12 +51,12 @@ async function initialize(data: ActorWorkerData): Promise<void> {
                 else pending?.reject(new Error(message.error))
                 return
             }
-            const definition = findActorDefinition(message.command.actor.actor_type)
+            const definition = findActorDefinition(message.command.actor.actor_name)
             if (definition === undefined) {
                 post(
                     failedReply(
-                        "actor_type_not_found",
-                        `actor entrypoint ${data.moduleUrl} does not export ${message.command.actor.actor_type}`
+                        "actor_name_not_found",
+                        `actor entrypoint ${data.moduleUrl} does not export ${message.command.actor.actor_name}`
                     )
                 )
                 return
@@ -67,7 +67,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
                 error => post(failedReply("actor_worker_failed", errorMessage(error)))
             )
         })
-        post({ type: "ready", actorTypes })
+        post({ type: "ready", actorNames })
     } catch (error) {
         post(failedReply("actor_worker_failed", errorMessage(error)))
     }
@@ -107,7 +107,7 @@ async function loadTypeScript(moduleUrl: string): Promise<Record<string, unknown
 }
 
 function registerActors(actorModule: Record<string, unknown>, schemas: readonly ActorSchema[]): string[] {
-    const actorTypes: string[] = []
+    const actorNames: string[] = []
     for (const [exportName, value] of Object.entries(actorModule)) {
         if (!isActorClass(value)) continue
         if (exportName === "default") {
@@ -121,16 +121,16 @@ function registerActors(actorModule: Record<string, unknown>, schemas: readonly 
         if (value.name !== exportName) {
             throw new ActorDefinitionError(`actor entrypoint export ${exportName} must have the same class name`)
         }
-        const schema = schemas.find(schema => schema.actorType === exportName)
+        const schema = schemas.find(schema => schema.actorName === exportName)
         if (schema === undefined)
             throw new ActorDefinitionError(`actor ${exportName} has no validated schema; restart the actor host`)
-        actorTypes.push(registerActorClass(value, schema).actorType)
+        actorNames.push(registerActorClass(value, schema).actorName)
     }
-    if (actorTypes.length === 0) throw new ActorDefinitionError("actor entrypoint has no named actor exports")
-    if (actorTypes.length !== schemas.length)
+    if (actorNames.length === 0) throw new ActorDefinitionError("actor entrypoint has no named actor exports")
+    if (actorNames.length !== schemas.length)
         throw new ActorDefinitionError("actor exports do not match validated schemas; restart the actor host")
-    actorTypes.sort()
-    return actorTypes
+    actorNames.sort()
+    return actorNames
 }
 
 function isActorClass(value: unknown): value is ActorClass {

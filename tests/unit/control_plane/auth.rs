@@ -214,7 +214,7 @@ fn public_key_set(key_pair: &Ed25519KeyPair) -> Result<String> {
 
 fn valid_claims(now: i64) -> serde_json::Value {
     json!({
-        "actor": {"actor_type": "Counter", "actor_id": "one"},
+        "actor": {"project_id":"default","actor_name": "Counter", "actor_id": "one"},
         "iss": "durable-object-control-plane",
         "aud": "durable-object-authority",
         "sub": "host.v3.00000000-0000-4000-8000-000000000001",

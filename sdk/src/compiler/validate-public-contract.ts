@@ -10,17 +10,17 @@ function parsePublicContract(input: unknown): PublicActorContract {
     const document = documentSchema.parse(input)
     const names = new Set<string>()
     for (const actor of document.actors) {
-        unique(names, actor.actorType, "actor")
+        unique(names, actor.actorName, "actor")
         validateActor(actor)
     }
     return document
 }
 
 function validateActor(actor: ActorApi): void {
-    const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, actor.actorType)
+    const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, actor.actorName)
     if (scanner.scan() !== ts.SyntaxKind.Identifier || scanner.scan() !== ts.SyntaxKind.EndOfFileToken)
-        throw new Error(`actor name ${actor.actorType} cannot be emitted as a TypeScript identifier`)
-    if (actor.actorType !== actor.socket.actorType) throw new Error("actor and socket contract names must match")
+        throw new Error(`actor name ${actor.actorName} cannot be emitted as a TypeScript identifier`)
+    if (actor.actorName !== actor.socket.actorName) throw new Error("actor and socket contract names must match")
     validateSocket(actor.socket)
     validateRpc(actor.rpc)
 }
@@ -134,10 +134,10 @@ const documentSchema = z.strictObject({
     version: z.literal(1),
     actors: z.array(
         z.strictObject({
-            actorType: component,
+            actorName: component,
             socket: z.strictObject({
                 version: z.literal(1),
-                actorType: component,
+                actorName: component,
                 schema,
                 emittable: z.array(z.string())
             }),

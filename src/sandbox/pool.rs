@@ -160,29 +160,32 @@ impl SparePool {
     }
 
     async fn reconcile(&self, registry: &dyn AdminRegistry) -> Result<()> {
-        let deployment = registry.launch_spec().await?;
-        let deployment = deployment.filter(|spec| {
-            self.config.kind == SpareKind::Replica
-                || (spec.code_snapshot.is_some() && spec.secret_refs.is_empty())
-        });
-        let keys: Vec<String> = deployment
-            .as_ref()
-            .map(|spec| {
+        let deployments = registry.launch_specs().await?;
+        let images: std::collections::BTreeSet<_> = deployments
+            .iter()
+            .filter(|spec| {
+                self.config.kind == SpareKind::Replica
+                    || (spec.code_snapshot.is_some() && spec.secret_refs.is_empty())
+            })
+            .map(|spec| spec.image_ref.as_str())
+            .collect();
+        let keys: Vec<String> = images
+            .iter()
+            .flat_map(|image| {
                 self.config
                     .regions
                     .iter()
-                    .map(|region| self.key(&spec.image_ref, region))
-                    .collect()
+                    .map(|region| self.key(image, region))
             })
-            .unwrap_or_default();
+            .collect();
         self.store.retire_unwanted(&keys, self.config.idle).await?;
         self.cleanup().await?;
-        if let Some(spec) = deployment {
+        for image in images {
             for region in &self.config.regions {
-                let key = self.key(&spec.image_ref, region);
+                let key = self.key(image, region);
                 let mut builds = Vec::new();
                 while let Some(name) = self.store.reserve(&key, self.config.idle).await? {
-                    builds.push(self.build(&key, &spec.image_ref, region, name));
+                    builds.push(self.build(&key, image, region, name));
                 }
                 for result in futures_util::future::join_all(builds).await {
                     result?;

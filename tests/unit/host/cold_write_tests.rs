@@ -98,7 +98,8 @@ impl Fixture {
         let stop = CancellationToken::new();
         let scope = ReplicaScope {
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "cold".into(),
             },
             host: HostId::new("primary"),

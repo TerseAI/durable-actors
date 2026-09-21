@@ -18,8 +18,8 @@ const views = [
 export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; toggleTheme: () => void }) {
     const [view, setView] = useState<(typeof views)[number]["id"]>("overview")
     const [actor, setActor] = useState<string>()
-    function selectActor(actorType: string) {
-        setActor(actorType)
+    function selectActor(actorName: string) {
+        setActor(actorName)
         setView("actors")
     }
     return (
@@ -67,7 +67,7 @@ export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; to
                 </header>
                 <main id="main" tabIndex={-1}>
                     {view === "overview" && <Overview client={client} onSelectActor={selectActor} />}
-                    {view === "actors" && <ActorObserver client={client} navigation={{ actorType: actor, onSelectActor: setActor }} />}
+                    {view === "actors" && <ActorObserver client={client} navigation={{ actorName: actor, onSelectActor: setActor }} />}
                     {view === "requests" && <RequestObserver client={client} />}
                     {view === "websockets" && <WebSocketObserver client={client} />}
                 </main>

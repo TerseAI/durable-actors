@@ -153,3 +153,59 @@ async fn zero_capacity_and_runtime_changes_retire_only_unassigned_spares() -> Re
     })
     .await
 }
+
+#[tokio::test]
+async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
+    use crate::control_plane::admin::{HostLaunchSpec, LocalAdminRegistry};
+    with_postgres(async |fixture| {
+        let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
+        let registry = LocalAdminRegistry::default();
+        let mut names = Vec::new();
+        for (project, image) in [("team-a", "im-a"), ("team-b", "im-b")] {
+            registry
+                .register_test_deployment(&HostLaunchSpec {
+                    project_id: project.into(),
+                    source: None,
+                    code_revision: "same".into(),
+                    image_ref: image.into(),
+                    code_snapshot: Some("im-code".into()),
+                    working_directory: "/customer".into(),
+                    actor_entrypoint: Some("actors.mjs".into()),
+                    secret_refs: vec![],
+                })
+                .await?;
+            let key = pool.key(image, "region");
+            let name = pool.store.reserve(&key, 1).await?.unwrap();
+            pool.store
+                .publish(
+                    &key,
+                    &SpareHandle {
+                        name: name.clone(),
+                        resource_id: format!("sb-{project}"),
+                        route: format!("https://{project}.test"),
+                        canonical_region: "region".into(),
+                        control_route: String::new(),
+                        control_token: String::new(),
+                    },
+                    600,
+                )
+                .await?;
+            names.push(name);
+        }
+        pool.reconcile(&registry).await?;
+        for name in names {
+            let row = pool
+                .store
+                .0
+                .query_opt(
+                    "SELECT status FROM durable_object_spares WHERE name = $1",
+                    &[&name],
+                )
+                .await?
+                .unwrap();
+            assert_eq!(row.get::<_, &str>(0), "ready");
+        }
+        Ok(())
+    })
+    .await
+}

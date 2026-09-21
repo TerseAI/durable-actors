@@ -21,7 +21,7 @@ test("deploy registers the source image in one request without local source or M
     const server = createServer(async (request, response) => {
         requests++
         assert.equal(request.method, "PUT")
-        assert.equal(request.url, "/v1/deployment")
+        assert.equal(request.url, "/v1/projects/default/deployment")
         assert.equal(request.headers.authorization, "Bearer test-key")
         const chunks: Buffer[] = []
         for await (const chunk of request) chunks.push(Buffer.from(chunk))
@@ -51,6 +51,7 @@ test("deploy registers the source image in one request without local source or M
     await once(server, "listening")
     const env = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_API_KEY: "test-key",
         DURABLE_OBJECT_SANDBOX_COMMAND: "/does-not-exist",
         DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`

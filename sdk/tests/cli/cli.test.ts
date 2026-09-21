@@ -28,6 +28,7 @@ test("observe serves a local UI using environment settings or flag overrides", {
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
         DURABLE_OBJECT_API_KEY: "observe-key"
     }
@@ -75,7 +76,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const args = [cli, "observe", "--url", origin, "--api-key", "wrong"]
+    const args = [cli, "observe", "--project-id", "default", "--url", origin, "--api-key", "wrong"]
     const failure = (message: RegExp) => (error: unknown) => {
         const result = error as Error & { code: number; stdout: string; stderr: string }
         assert.equal(result.code, 1)
@@ -129,7 +130,7 @@ test("objects lists every page locally and inspects committed internal state", a
                 JSON.stringify({
                     actors: [
                         {
-                            actorType: "Room",
+                            actorName: "Room",
                             actorId: secondPage ? "two" : "one",
                             stateVersion: 7
                         }
@@ -145,6 +146,7 @@ test("objects lists every page locally and inspects committed internal state", a
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env: NodeJS.ProcessEnv = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_CONTROL_PLANE_URL: "",
         DURABLE_OBJECT_API_KEY: ""
     }
@@ -158,7 +160,7 @@ test("objects lists every page locally and inspects committed internal state", a
     assert.match(requests[1]!, /after=object.v1.local.Room.one/u)
     const inspected = await run(process.execPath, [cli, "objects", "inspect", "Room", "one", ...flags], { env })
     assert.deepEqual(JSON.parse(inspected.stdout).state, { secret: "saved" })
-    assert.equal(requests[2], "/v1/actors/Room/one?include=state")
+    assert.equal(requests[2], "/v1/projects/default/actors/Room/one?include=state")
 })
 
 test("objects uses cloud credentials, and reports API errors", async t => {
@@ -176,7 +178,12 @@ test("objects uses cloud credentials, and reports API errors", async t => {
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env = { ...process.env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin, DURABLE_OBJECT_API_KEY: "cloud-key" }
+    const env = {
+        ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
+        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
+        DURABLE_OBJECT_API_KEY: "cloud-key"
+    }
     const result = await run(process.execPath, [cli, "objects", "list"], { env })
     assert.match(result.stdout, /No saved objects/u)
     assert.equal(requests[0], "/v1/actors?limit=50")
@@ -184,7 +191,7 @@ test("objects uses cloud credentials, and reports API errors", async t => {
         run(process.execPath, [cli, "objects", "inspect", "Room", "missing"], { env }),
         /Object not found/u
     )
-    assert.equal(requests[1], "/v1/actors/Room/missing?include=state")
+    assert.equal(requests[1], "/v1/projects/default/actors/Room/missing?include=state")
     await assert.rejects(
         run(process.execPath, [cli, "objects", "list", "--url", origin], {
             env: { ...env, DURABLE_OBJECT_API_KEY: "" }
@@ -197,7 +204,7 @@ test("objects uses cloud credentials, and reports API errors", async t => {
 test("objects limits rows by default and resumes a filtered page without fetching ahead", async t => {
     const requests: URL[] = []
     const objects = Array.from({ length: 55 }, (_, index) => ({
-        actorType: "Room",
+        actorName: "Room",
         actorId: String(index),
         homeRegion: "north-america-east",
         stateVersion: 1
@@ -221,6 +228,7 @@ test("objects limits rows by default and resumes a filtered page without fetchin
     await once(server, "listening")
     const env = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
         DURABLE_OBJECT_API_KEY: "cloud-key"
     }
@@ -257,7 +265,10 @@ test("objects rejects invalid limits and conflicting pagination flags before con
         ["--all", "--limit", "10"],
         ["--all", "--after", "cursor"]
     ]) {
-        await assert.rejects(run(process.execPath, [cli, "objects", "list", ...flags]), /cannot be used with/u)
+        await assert.rejects(
+            run(process.execPath, [cli, "objects", "list", "--project-id", "default", ...flags]),
+            /cannot be used with/u
+        )
     }
 })
 
@@ -277,7 +288,7 @@ test("dev accepts configured keys without logging the generated key from readine
         binary,
         `#!${process.execPath}
 require("node:fs").createWriteStream(null, { fd: 3 }).end(JSON.stringify({
-    pid: process.pid, controlPlaneUrl: "http://127.0.0.1:7200", apiKey: "dev-key", storageRegion: "local"
+    pid: process.pid, projectId: "default", controlPlaneUrl: "http://127.0.0.1:7200", apiKey: "dev-key", storageRegion: "local"
 }))
 console.log(JSON.stringify(process.argv.slice(2)))
 `
@@ -285,6 +296,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
     await chmod(binary, 0o755)
     const env = {
         ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_BINARY: binary,
         DURABLE_OBJECT_API_KEY: "dev-key",
         DURABLE_OBJECT_PROJECT: project,
@@ -295,8 +307,10 @@ console.log(JSON.stringify(process.argv.slice(2)))
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
     assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
-    assert.deepEqual(JSON.parse(stdout).slice(0, 13), [
+    assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
+        "--project-id",
+        "default",
         "--project",
         env.DURABLE_OBJECT_PROJECT,
         "--port",
@@ -305,6 +319,8 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "actors.ts",
         "--storage",
         "gcs",
+        "--sdk-host",
+        path.resolve(path.dirname(cli), "host.js"),
         "--api-key",
         "dev-key",
         "--data-dir",

@@ -46,7 +46,7 @@ test("validates actors without writing files", async () => {
             writeFile: () => assert.fail("actor validation must not write files")
         })
         const schemas = compiler.check(path.join(root, "src/actors.ts"))
-        assert.equal(schemas[0]?.actorType, "Counter")
+        assert.equal(schemas[0]?.actorName, "Counter")
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -69,7 +69,7 @@ test("compiles socket validation schemas without importing actor implementation"
             throw new Error("must not execute during generation")`
         )
         const [actor] = new ActorCompiler().compile(entrypoint)
-        assert.equal(actor.contract.actorType, "Room")
+        assert.equal(actor.contract.actorName, "Room")
         assert.deepEqual(actor.contract.emittable, ["messages"])
         const state = actor.contract.schema.definitions?.State
         assert.ok(state && typeof state === "object")
@@ -119,7 +119,7 @@ test("checks source actors and returns persistence schemas without generating fi
         const schemas = compiler.check(entrypoint)
         assert.deepEqual(schemas, [
             {
-                actorType: "Counter",
+                actorName: "Counter",
                 fields: [
                     { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                     { name: "cache", persistence: Persistence.Ephemeral },
@@ -174,7 +174,7 @@ test("actor loading validates its dependency graph without type checking unrelat
     try {
         await writeFile(path.join(root, "src/unrelated.ts"), "const invalid: string = 123")
         const schemas = new ActorCompiler().check(path.join(root, "src/actors.ts"))
-        assert.equal(schemas[0]?.actorType, "Counter")
+        assert.equal(schemas[0]?.actorName, "Counter")
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -199,7 +199,7 @@ test("source loading respects noEmit configurations with TypeScript extension im
         const config = JSON.parse(await readFile(configFile, "utf8"))
         Object.assign(config.compilerOptions, { noEmit: true, allowImportingTsExtensions: true })
         await writeFile(configFile, JSON.stringify(config))
-        assert.equal(new ActorCompiler().check(path.join(root, "src/actors.ts"))[0]?.actorType, "Counter")
+        assert.equal(new ActorCompiler().check(path.join(root, "src/actors.ts"))[0]?.actorName, "Counter")
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -224,7 +224,7 @@ test("checks private and optional computed fields on re-exported actors", async 
         const compiler = new ActorCompiler()
         assert.deepEqual(compiler.check(path.join(root, "src/actors.ts")), [
             {
-                actorType: "Counter",
+                actorName: "Counter",
                 fields: [
                     { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                     { name: "label", persistence: Persistence.Persisted },
@@ -257,7 +257,7 @@ test("resolves actor and decorator aliases through re-exports and namespaces", (
     )
     assert.deepEqual(result.schemas, [
         {
-            actorType: "Counter",
+            actorName: "Counter",
             fields: [
                 { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                 { name: "cache", persistence: Persistence.Ephemeral },
@@ -277,7 +277,7 @@ test("discovers actors alongside unrelated runtime and type exports", () => {
         export class Utility { value = 1 }
         export enum Status { Ready }
         export interface Options { limit: number }
-        export type { Actor as ActorType } from "./sdk.js"
+        export type { Actor as ActorName } from "./sdk.js"
         export default { limit }
         export class Counter extends Actor { @Persisted count = 0 }`)
     assert.deepEqual(
@@ -285,7 +285,7 @@ test("discovers actors alongside unrelated runtime and type exports", () => {
         []
     )
     assert.deepEqual(result.schemas, [
-        { actorType: "Counter", fields: [{ name: "count", persistence: Persistence.Persisted }] }
+        { actorName: "Counter", fields: [{ name: "count", persistence: Persistence.Persisted }] }
     ])
 })
 
@@ -354,8 +354,8 @@ test("checks class decorators and entrypoint exports", () => {
         ["class Base<T> extends Actor {}; export class Counter extends Base<string> {}", /directly extends Actor/],
         ["export abstract class Counter extends Actor {}", /cannot be abstract/],
         ["export class Counter<T> extends Actor {}", /cannot have type parameters/],
-        ["export class $Counter extends Actor {}", /actor type may contain only ASCII/],
-        ["export class Café extends Actor {}", /actor type may contain only ASCII/]
+        ["export class $Counter extends Actor {}", /actor name may contain only ASCII/],
+        ["export class Café extends Actor {}", /actor name may contain only ASCII/]
     ] as const) {
         const result = analyze(`import { Actor, Persisted } from "./sdk.js";
             export const helper = 1

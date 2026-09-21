@@ -1,11 +1,15 @@
+import { projectActorPath, validateProjectId } from "../actor/identity.js"
+
 import { connection } from "./connection.js"
 
 interface ControlPlaneOptions {
+    projectId: string
     url?: string | true
     apiKey?: string
 }
 
 interface ControlPlaneConnection {
+    projectId: string
     controlPlaneUrl: string
     credential: string
 }
@@ -21,12 +25,12 @@ class ControlPlaneClient {
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
-        return this.requestJson("PUT", "/v1/deployment", deployment, 150_000)
+        return this.requestJson("PUT", `${this.projectPath()}/deployment`, deployment, 150_000)
     }
 
     getContract(revision?: string): Promise<unknown> {
         const query = revision ? `?${new URLSearchParams({ revision })}` : ""
-        return this.requestJson("GET", `/v1/deployment/contract${query}`)
+        return this.requestJson("GET", `${this.projectPath()}/deployment/contract${query}`)
     }
 
     listActors(): Promise<unknown> {
@@ -63,11 +67,15 @@ class ControlPlaneClient {
         return this.requestJson("GET", `/v1/actors${query.size ? `?${query}` : ""}`)
     }
 
-    inspectObject(actorType: string, actorId: string): Promise<unknown> {
+    inspectObject(actorName: string, actorId: string): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}?include=state`
+            `${projectActorPath(this.connection.projectId, actorName, actorId)}?include=state`
         )
+    }
+
+    private projectPath(): string {
+        return `/v1/projects/${encodeURIComponent(validateProjectId(this.connection.projectId))}`
     }
 
     private async requestJson(
@@ -99,6 +107,7 @@ class ControlPlaneClient {
 function createControlPlaneClient(options: ControlPlaneOptions, request: typeof fetch): ControlPlaneClient {
     return new ControlPlaneClient(
         connection({
+            projectId: options.projectId,
             url:
                 typeof options.url === "string"
                     ? options.url

@@ -4,9 +4,11 @@ import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
+import { validateProjectId } from "./actor/identity.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
+    projectId: string
     apiKey?: string
     entrypoint: string
     project?: string
@@ -17,6 +19,7 @@ export interface LocalActorOptions {
 }
 
 const connectionSchema = z.object({
+    projectId: z.string().min(1),
     controlPlaneUrl: z.string().url(),
     apiKey: z.string().min(1),
     storageRegion: z.string().min(1),
@@ -31,6 +34,7 @@ export interface LocalActorRuntime {
 
 /** Resolves when the local server is ready; stopping it preserves its data directory. */
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
+    validateProjectId(options.projectId)
     const child = launch(await fetchRuntimeExecutablePath(), options)
     const { closed, stop } = lifecycle(child)
     try {
@@ -52,6 +56,8 @@ function launch(executable: string, options: LocalActorOptions) {
         executable,
         [
             "dev",
+            "--project-id",
+            options.projectId,
             ...(options.apiKey === undefined ? [] : ["--api-key", options.apiKey]),
             "--project",
             project,

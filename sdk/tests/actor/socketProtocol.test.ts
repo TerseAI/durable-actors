@@ -5,7 +5,7 @@ import { parseSocketEffects } from "../../src/actor/socketProtocol.js"
 import { receivedMessage } from "../../src/actor/socketValidation.js"
 import { ActorProtocolError } from "../../src/errors.js"
 
-test("retains committed state versions and accepts backend state control messages", () => {
+test("retains committed state versions and accepts automatic state control messages", () => {
     const effects = [{ type: "state_snapshot", connection_id: "socket", state: { count: 1 }, version: 3 }]
     assert.deepEqual(parseSocketEffects(effects), effects)
     assert.deepEqual(receivedMessage({ type: "state", state: { count: 1 }, version: 3 }), {

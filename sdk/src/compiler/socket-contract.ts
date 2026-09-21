@@ -25,12 +25,12 @@ function socketContract(checker: ts.TypeChecker, actor: ts.ClassDeclaration, sch
         else state.required!.push(field.name)
     }
     for (const [name, type] of Object.entries(types))
-        assertJsonType(checker, type, `${schema.actorType}.${name}`, optional.has(name))
+        assertJsonType(checker, type, `${schema.actorName}.${name}`, optional.has(name))
     const generated = jsonSchema(checker, types)
     const definitions = { ...generated.definitions, State: state }
     return {
         version: 1,
-        actorType: schema.actorType,
+        actorName: schema.actorName,
         schema: { $schema: "http://json-schema.org/draft-07/schema#", definitions },
         emittable: schema.fields.filter(field => field.emittable).map(field => field.name)
     }

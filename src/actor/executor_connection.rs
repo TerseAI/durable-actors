@@ -160,7 +160,7 @@ pub enum ActorSocketOutcome {
 
 #[async_trait]
 pub trait ActorExecutor: Send + Sync {
-    fn supports(&self, actor_type: &str) -> bool;
+    fn supports(&self, actor_name: &str) -> bool;
 
     async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
         Ok(())
@@ -302,25 +302,25 @@ async fn attach_executor(
     mut reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
 ) -> Result<ActorExecutorConnection> {
-    let actor_types = match read_client_message(&mut reader).await? {
+    let actor_names = match read_client_message(&mut reader).await? {
         Some(ActorExecutorClientMessage::Attach {
             protocol,
-            actor_types,
+            actor_names,
         }) => {
             ensure!(
                 protocol == ACTOR_EXECUTOR_PROTOCOL_VERSION,
                 "unsupported executor protocol {protocol}"
             );
             ensure!(
-                !actor_types.is_empty(),
-                "customer executor advertised no actor types"
+                !actor_names.is_empty(),
+                "customer executor advertised no actor names"
             );
-            actor_types
+            actor_names
         }
         _ => anyhow::bail!("customer executor must attach after loading code"),
     };
-    let (executor, task) = JsActorExecutor::start(reader, writer, actor_types);
-    debug!(actor_types = ?executor.actor_types, "JavaScript executor connected");
+    let (executor, task) = JsActorExecutor::start(reader, writer, actor_names);
+    debug!(actor_names = ?executor.actor_names, "JavaScript executor connected");
     Ok(ActorExecutorConnection { executor, task })
 }
 
@@ -341,7 +341,7 @@ impl ActorExecutorConnection {
     ) -> Result<()> {
         self.executor.mark_ready(publisher, sockets).await?;
         info!(
-            actor_types = ?self.executor.actor_types,
+            actor_names = ?self.executor.actor_names,
             "customer JavaScript process attached to actor executor"
         );
         Ok(())
@@ -375,7 +375,7 @@ type Residency = Arc<Mutex<Option<(Instant, Vec<ActorKey>)>>>;
 struct JsActorExecutor {
     changes: watch::Sender<()>,
     residency: Residency,
-    actor_types: HashSet<String>,
+    actor_names: HashSet<String>,
     commands: mpsc::Sender<ExecutorRequest>,
 }
 
@@ -409,8 +409,8 @@ impl ActorExecutor for JsActorExecutor {
             .map(|(_, actors)| actors.clone())
     }
 
-    fn supports(&self, actor_type: &str) -> bool {
-        self.actor_types.contains(actor_type)
+    fn supports(&self, actor_name: &str) -> bool {
+        self.actor_names.contains(actor_name)
     }
 
     async fn invoke(
@@ -514,7 +514,7 @@ impl JsActorExecutor {
     fn start(
         reader: BufReader<OwnedReadHalf>,
         writer: OwnedWriteHalf,
-        actor_types: Vec<String>,
+        actor_names: Vec<String>,
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
         let residency = Arc::new(Mutex::new(None));
@@ -522,7 +522,7 @@ impl JsActorExecutor {
         let executor = Arc::new(Self {
             changes: changes.clone(),
             residency: residency.clone(),
-            actor_types: actor_types.into_iter().collect(),
+            actor_names: actor_names.into_iter().collect(),
             commands,
         });
         let task = tokio::spawn(run_executor_connection(
@@ -1048,7 +1048,7 @@ enum ActorExecutorClientMessage {
     },
     Attach {
         protocol: u32,
-        actor_types: Vec<String>,
+        actor_names: Vec<String>,
     },
     Reply {
         message_id: u64,

@@ -134,7 +134,8 @@ impl Fixture {
             clock,
             runtime,
             actor: ActorKey {
-                actor_type: "Counter".into(),
+                project_id: "default".into(),
+                actor_name: "Counter".into(),
                 actor_id: "one".into(),
             },
         })

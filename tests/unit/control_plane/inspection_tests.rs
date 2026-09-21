@@ -33,13 +33,15 @@ async fn actor_inspection_separates_metadata_from_optional_state() -> Result<()>
     let fixture = Fixture::start().await?;
     let actor = fixture.actor("one");
     fixture.save(&actor, 1, json!({"value": 7})).await?;
-    let response = fixture.get("/v1/actors/Room.with.dots/one").await?;
+    let response = fixture
+        .get("/v1/projects/default/actors/Room.with.dots/one")
+        .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let metadata: Value = response.json().await?;
     assert_eq!(metadata["homeRegion"], "north-america-east");
     assert!(metadata.get("state").is_none());
     let state: Value = fixture
-        .get("/v1/actors/Room.with.dots/one?include=state")
+        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
         .await?
         .error_for_status()?
         .json()
@@ -54,14 +56,14 @@ async fn actor_inspection_separates_metadata_from_optional_state() -> Result<()>
     assert_eq!(page["actors"][0]["actorId"], "one");
     for path in [
         "/v1/objects",
-        "/v1/actors/Room.with.dots/one/state",
-        "/v1/actors/Room.with.dots/one/placement",
+        "/v1/projects/default/actors/Room.with.dots/one/state",
+        "/v1/projects/default/actors/Room.with.dots/one/placement",
     ] {
         assert_eq!(fixture.get(path).await?.status(), StatusCode::NOT_FOUND);
     }
     assert_eq!(
         fixture
-            .get("/v1/actors/Room.with.dots/one?include=unknown")
+            .get("/v1/projects/default/actors/Room.with.dots/one?include=unknown")
             .await?
             .status(),
         StatusCode::BAD_REQUEST
@@ -85,13 +87,13 @@ async fn inspection_reads_persisted_state_without_a_deployment_or_live_host() ->
     let response = fixture.get("/v1/actors?limit=1").await?;
     assert_eq!(response.headers()["cache-control"], "no-store");
     let page: Value = response.error_for_status()?.json().await?;
-    assert_eq!(page["actors"][0]["actorType"], "Room.with.dots");
+    assert_eq!(page["actors"][0]["actorName"], "Room.with.dots");
     assert_eq!(page["actors"][0]["actorId"], "one");
     assert_eq!(page["actors"][0]["stateVersion"], 1);
     assert_eq!(page["nextCursor"], Value::Null);
 
     let response = fixture
-        .get("/v1/actors/Room.with.dots/one?include=state")
+        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
         .await?;
     assert_eq!(response.headers()["cache-control"], "no-store");
     let inspected: Value = response.error_for_status()?.json().await?;
@@ -133,7 +135,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
         "/v1/observe/events",
         "/v1/observe/requests/events",
         "/v1/actors",
-        "/v1/actors/Room.with.dots/one?include=state",
+        "/v1/projects/default/actors/Room.with.dots/one?include=state",
     ] {
         for credential in ["", "wrong", &token] {
             assert_eq!(
@@ -162,7 +164,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
     }
     assert_eq!(
         fixture
-            .get("/v1/actors/Room.with.dots/missing?include=state")
+            .get("/v1/projects/default/actors/Room.with.dots/missing?include=state")
             .await?
             .status(),
         StatusCode::NOT_FOUND
@@ -170,7 +172,7 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
     let actor = fixture.actor("empty");
     fixture.activate(&actor).await?;
     let response: Value = fixture
-        .get("/v1/actors/Room.with.dots/empty?include=state")
+        .get("/v1/projects/default/actors/Room.with.dots/empty?include=state")
         .await?
         .error_for_status()?
         .json()
@@ -235,7 +237,7 @@ async fn inspection_reports_inconsistent_snapshots_instead_of_returning_state() 
         .compare_and_swap(&object, Some(stored.generation), wrong.encode()?)
         .await?;
     let response = fixture
-        .get("/v1/actors/Room.with.dots/one?include=state")
+        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
         .await?;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert!(!response.text().await?.contains("uncommitted"));
@@ -302,7 +304,8 @@ impl Fixture {
 
     fn actor(&self, id: &str) -> ActorKey {
         ActorKey {
-            actor_type: "Room.with.dots".into(),
+            project_id: "default".into(),
+            actor_name: "Room.with.dots".into(),
             actor_id: id.into(),
         }
     }
@@ -503,6 +506,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .admin
         .register_deployment(
             &super::admin::HostLaunchSpec {
+                project_id: "default".into(),
                 source: None,
                 code_revision: "revision".into(),
                 code_snapshot: Some("im-code".into()),
@@ -524,7 +528,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["actorType"] == "ChatRoom")
+        .find(|row| row["actorName"] == "ChatRoom")
         .unwrap();
     assert_eq!(row["live"], 0);
     assert_eq!(row["dormant"], 0);
@@ -556,7 +560,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                 "session",
                 vec![RequestTrace {
                     request_id: id.into(),
-                    actor_type: "Room".into(),
+                    actor_name: "Room".into(),
                     actor_id: "one".into(),
                     kind: RequestKind::Method,
                     operation: "post".into(),

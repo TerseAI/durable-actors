@@ -9,7 +9,7 @@ const trace = (durationMs: number, outcome: RequestTrace["outcome"]): RequestTra
     requestId: "request",
     hostId: "host",
     sessionId: "session",
-    actorType: "Room",
+    actorName: "Room",
     actorId: "one",
     kind: "method",
     operation: "post",

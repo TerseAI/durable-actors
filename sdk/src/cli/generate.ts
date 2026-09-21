@@ -1,4 +1,4 @@
-import { Command } from "commander"
+import { Command, Option } from "commander"
 import { rm } from "node:fs/promises"
 import path from "node:path"
 import { z } from "zod"
@@ -6,6 +6,7 @@ import { z } from "zod"
 import { createControlPlaneClient } from "./control-plane.js"
 
 interface GenerateOptions {
+    projectId: string
     outDir: string
     config?: string
     url?: string | true
@@ -20,6 +21,7 @@ function registerGenerateCommand(program: Command): void {
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
         .option("--url [origin]", "fetch a published contract (defaults to the configured or local runtime URL)")
+        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
         .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option("--revision <revision>", "require this active code revision (defaults to the latest deployment)")
         .action(generate)

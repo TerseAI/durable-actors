@@ -16,8 +16,8 @@ afterEach(cleanup)
 
 const inventory: ActorInventory = {
     actors: [
-        { actorType: "Room", live: 2, dormant: 1, unknown: 0, instances: [{ actorId: "general", status: "live", connections: [{ id: "socket-a", metadata: null }] }] },
-        { actorType: "Counter", live: 0, dormant: 0, unknown: 1, instances: [] }
+        { actorName: "Room", live: 2, dormant: 1, unknown: 0, instances: [{ actorId: "general", status: "live", connections: [{ id: "socket-a", metadata: null }] }] },
+        { actorName: "Counter", live: 0, dormant: 0, unknown: 1, instances: [] }
     ]
 }
 const page: RequestTracePage = {
@@ -32,7 +32,7 @@ const page: RequestTracePage = {
             requestId: "r2",
             hostId: "h",
             sessionId: "s",
-            actorType: "Room",
+            actorName: "Room",
             actorId: "general",
             kind: "method",
             operation: "post",
@@ -47,7 +47,7 @@ const page: RequestTracePage = {
             requestId: "r1",
             hostId: "h",
             sessionId: "s",
-            actorType: "Room",
+            actorName: "Room",
             actorId: "general",
             kind: "method",
             operation: "post",

@@ -199,7 +199,8 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
         .send_modify(|sources| sources.queues = Some(queues.clone()));
     let waiting = queues.enqueue(
         &crate::actor::ActorKey {
-            actor_type: "Room".into(),
+            project_id: "default".into(),
+            actor_name: "Room".into(),
             actor_id: "one".into(),
         },
         "sendMessage".into(),

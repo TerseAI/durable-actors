@@ -30,9 +30,9 @@ test("contract parsing reports invalid embedded schemas at their contract paths"
 test("codegen rejects malformed contracts and unsafe type overrides", async () => {
     const cases: [string, (document: typeof fixture) => void, RegExp][] = [
         ["duplicate actors", document => document.actors.push(document.actors[0]), /duplicate actor/],
-        ["path traversal", document => (document.actors[0].actorType = "../outside"), /Invalid/],
-        ["keyword actor", document => (document.actors[0].actorType = "class"), /identifier/],
-        ["mismatched socket", document => (document.actors[0].socket.actorType = "Other"), /must match/],
+        ["path traversal", document => (document.actors[0].actorName = "../outside"), /Invalid/],
+        ["keyword actor", document => (document.actors[0].actorName = "class"), /identifier/],
+        ["mismatched socket", document => (document.actors[0].socket.actorName = "Other"), /must match/],
         [
             "missing type",
             document => delete document.actors[0].socket.schema.definitions.Incoming,

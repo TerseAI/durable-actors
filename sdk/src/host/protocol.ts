@@ -106,7 +106,7 @@ type ActorSessionClientMessage =
 interface AttachMessage {
     readonly type: "attach"
     readonly protocol: 16
-    readonly actor_types: readonly string[]
+    readonly actor_names: readonly string[]
 }
 
 interface ReplyMessage {
@@ -154,7 +154,7 @@ type ActorWorkerRequest =
       }
 type ActorWorkerMessage =
     | { readonly type: "warm" }
-    | { readonly type: "ready"; readonly actorTypes: readonly string[] }
+    | { readonly type: "ready"; readonly actorNames: readonly string[] }
     | ActorExecutorReply
     | { readonly type: "socket_effects"; readonly effects: readonly SocketEffect[] }
     | { readonly type: "get_connections" }

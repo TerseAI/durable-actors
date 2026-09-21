@@ -105,7 +105,7 @@ See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guide
 
 ## WebSocket API
 
-The gateway keeps connections while actors hibernate. Actors use `onConnect`, `onMessage`, and `onDisconnect` to manage application messages. Browser connections receive only explicit actor messages. Backend connections opened with `Actor.get(id).connect()` also receive automatic public persisted state; private and protected fields are excluded.
+The gateway keeps connections while actors hibernate. Actors use `onConnect`, `onMessage`, and `onDisconnect` to manage application messages. Browser connections receive explicit actor messages plus automatic snapshots and committed updates of public `@Persisted @Emittable` fields. Private, protected, and non-emittable fields are excluded.
 
 Inside actor hooks and backend SDK connections, send JSON values with `socket.send({ type: "chat", text: "Hello" })`. The backend SDK encodes and parses these values. Native browser sockets use `JSON.stringify` and `JSON.parse`.
 
@@ -154,7 +154,7 @@ export async function POST(request: Request) {
 
 `prepareWebsocket` returns `{ websocketUrl, key }`. The URL already includes the signed key and can be passed directly to `new WebSocket()`. The key grants socket access to one actor; it cannot invoke backend RPC methods or issue other keys. Metadata comes from your backend and is validated by the actor host.
 
-The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorType, actorId, metadata })` remains available for dynamic actor selection.
+The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorName, actorId, metadata })` remains available for dynamic actor selection.
 
 The frontend fetches your application endpoint and opens the returned URL:
 
@@ -170,7 +170,7 @@ socket.onclose = event => showDisconnected(event.code)
 socket.onerror = () => showConnectionError()
 ```
 
-Messages are application JSON in text frames, with no SDK envelopes, initialization frames, or special subprotocol. Actors send initial application data explicitly from `onConnect` and use `socket.send()` or `this.broadcast()` for updates. Browser connections have no automatic state snapshots, subscriptions, reconnection, replay, or renewal.
+Messages are application JSON in text frames, with no SDK envelopes, initialization frames, or special subprotocol. Actors send initial application data explicitly from `onConnect` and use `socket.send()` or `this.broadcast()` for updates. Public `@Persisted @Emittable` fields also send automatic `state` snapshots and committed `state_update` messages. Actors without emittable fields send only application messages. Reconnection, message replay, and ticket renewal remain application responsibilities.
 
 Open a grant within 60 seconds. Connection authorization defaults to 15 minutes; set `authorizationLifetimeMs` in `prepareWebsocket` to change it, subject to the server's maximum. The server closes expired connections with code `4408`, including while idle or running a handler. Your application decides whether to request a fresh grant and open another socket.
 

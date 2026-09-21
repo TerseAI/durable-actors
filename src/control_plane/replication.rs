@@ -92,7 +92,7 @@ impl ReplicaProvisioner for ActorReplicaFleet {
         scope.actor.validate()?;
         let spec = self
             .registry
-            .launch_spec()
+            .launch_spec(&scope.actor.project_id)
             .await?
             .context("no actor image is registered")?;
         let group = self

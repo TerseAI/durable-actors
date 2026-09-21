@@ -213,10 +213,11 @@ func validateAssignment(request ensureRequest) error {
 		return err
 	}
 	var actor struct {
-		Type string `json:"actor_type"`
-		ID   string `json:"actor_id"`
+		ProjectID string `json:"project_id"`
+		Name      string `json:"actor_name"`
+		ID        string `json:"actor_id"`
 	}
-	if err := json.Unmarshal(request.Actor, &actor); err != nil || actor.Type == "" || actor.ID == "" {
+	if err := json.Unmarshal(request.Actor, &actor); err != nil || actor.ProjectID == "" || actor.Name == "" || actor.ID == "" {
 		return fmt.Errorf("exactly one actor identity is required")
 	}
 	if !strings.HasPrefix(request.CodeSnapshot, "im-") {
