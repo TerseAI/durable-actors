@@ -54,7 +54,239 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
     Ok(())
 }
 
+struct SerialAdmissionExecutor {
+    inner: IncrementingExecutor,
+    admission: watch::Sender<()>,
+}
+
+impl SerialAdmissionExecutor {
+    fn new() -> Self {
+        Self {
+            inner: IncrementingExecutor {
+                invocations: AtomicU64::new(0),
+            },
+            admission: watch::channel(()).0,
+        }
+    }
+}
+
+#[async_trait]
+impl ActorExecutor for SerialAdmissionExecutor {
+    fn supports(&self, _: &str) -> bool {
+        true
+    }
+    fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+        Some(self.admission.subscribe())
+    }
+    async fn invoke(
+        &self,
+        invocation: ActorMethodInvocation,
+        state: Option<&Value>,
+    ) -> Result<ActorMethodOutcome> {
+        self.inner.invoke(invocation, state).await
+    }
+}
+
 struct ExhaustedExecutor;
+
+#[tokio::test]
+async fn reentrant_completions_commit_in_snapshot_order_even_when_delivered_out_of_order()
+-> Result<()> {
+    assert_reentrant_commit_order(false).await
+}
+
+#[tokio::test]
+async fn a_failed_reentrant_commit_stops_the_activation_without_acknowledging_later_writes()
+-> Result<()> {
+    assert_reentrant_commit_order(true).await
+}
+
+async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
+    struct ReentrantExecutor {
+        admission: watch::Sender<()>,
+        first_started: tokio::sync::Notify,
+        second_started: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl ActorExecutor for ReentrantExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+            Some(self.admission.subscribe())
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            _: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
+            let sequence = if invocation.request_id == "first" {
+                self.admission.send_replace(());
+                self.first_started.notify_one();
+                self.second_started.notified().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                1
+            } else {
+                self.second_started.notify_one();
+                2
+            };
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence,
+                    result: json!(sequence),
+                    state: json!({"count": sequence}),
+                    effects: vec![],
+                },
+            ))
+        }
+    }
+    let executor = Arc::new(ReentrantExecutor {
+        admission: watch::channel(()).0,
+        first_started: Default::default(),
+        second_started: Default::default(),
+    });
+    let state = Arc::new(FakeStateTransport::default());
+    if fail_write {
+        state.failures.store(1, Ordering::SeqCst);
+    }
+    let host = ActorHost::new(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        state.clone(),
+        Arc::new(EmptySocketPublisher),
+    );
+    let operation = async {
+        let first = invoke(&host, "first");
+        let second = async {
+            executor.first_started.notified().await;
+            invoke(&host, "second").await
+        };
+        let (first, second) = tokio::join!(first, second);
+        if fail_write {
+            for result in [first?, second?] {
+                assert!(
+                    matches!(result, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
+                );
+            }
+            assert_eq!(state.writes.lock().unwrap().len(), 1);
+            assert_eq!(
+                invoke(&host, "after-failure").await?,
+                ActorExecutionResult::HostUnavailable
+            );
+            assert!(*host.stopped().borrow());
+            return Ok(());
+        }
+        assert_eq!(first?, completed(1));
+        assert_eq!(second?, completed(2));
+        let writes = state.writes.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            StateSnapshot::decode(&writes[0])?.state,
+            json!({"count": 1})
+        );
+        assert_eq!(
+            StateSnapshot::decode(&writes[1])?.state,
+            json!({"count": 2})
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(2), operation).await??;
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Result<()> {
+    struct Executor {
+        admission: watch::Sender<()>,
+        started: mpsc::UnboundedSender<String>,
+        release_background: tokio::sync::Notify,
+        release_ordinary: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+            Some(self.admission.subscribe())
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            _: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
+            self.started.send(invocation.request_id.clone())?;
+            let sequence = match invocation.request_id.as_str() {
+                "background" => {
+                    self.admission.send_replace(());
+                    self.release_background.notified().await;
+                    1
+                }
+                "ordinary" => {
+                    self.release_ordinary.notified().await;
+                    2
+                }
+                "next" => 3,
+                _ => unreachable!(),
+            };
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence,
+                    result: json!(sequence),
+                    state: json!({"count": sequence}),
+                    effects: vec![],
+                },
+            ))
+        }
+    }
+    let (started, mut starts) = mpsc::unbounded_channel();
+    let executor = Arc::new(Executor {
+        admission: watch::channel(()).0,
+        started,
+        release_background: Default::default(),
+        release_ordinary: Default::default(),
+    });
+    let host = Arc::new(ActorHost::new(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        Arc::new(EmptySocketPublisher),
+    ));
+    let operation = async {
+        let caller = host.clone();
+        let background = tokio::spawn(async move { invoke(&caller, "background").await });
+        assert_eq!(starts.recv().await.as_deref(), Some("background"));
+        let caller = host.clone();
+        let ordinary = tokio::spawn(async move { invoke(&caller, "ordinary").await });
+        assert_eq!(starts.recv().await.as_deref(), Some("ordinary"));
+        let caller = host.clone();
+        let next = tokio::spawn(async move { invoke(&caller, "next").await });
+        executor.release_background.notify_one();
+        assert_eq!(background.await??, completed(1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), starts.recv())
+                .await
+                .is_err()
+        );
+        executor.release_ordinary.notify_one();
+        assert_eq!(ordinary.await??, completed(2));
+        assert_eq!(starts.recv().await.as_deref(), Some("next"));
+        assert_eq!(next.await??, completed(3));
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(2), operation).await??;
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn application_errors_preserve_the_worker_and_committed_state() -> Result<()> {
@@ -178,6 +410,9 @@ impl ActorExecutor for ControlledExecutor {
             )
             .await?;
         match result {
+            ActorMethodOutcome::Interleaved(outcome) => {
+                Ok(ActorSocketOutcome::Interleaved(outcome))
+            }
             ActorMethodOutcome::Completed { state, effects, .. } => {
                 Ok(ActorSocketOutcome::Handled { state, effects })
             }
@@ -253,9 +488,7 @@ async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Resu
         paused_commit: Some((commit_started, release.clone())),
         ..Default::default()
     });
-    let executor = Arc::new(IncrementingExecutor {
-        invocations: AtomicU64::new(0),
-    });
+    let executor = Arc::new(SerialAdmissionExecutor::new());
     let host = Arc::new(ActorHost::new(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
@@ -281,7 +514,7 @@ async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Resu
             .await
             .is_err()
     );
-    assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
+    assert_eq!(executor.inner.invocations.load(Ordering::Relaxed), 1);
     release.add_permits(1);
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), second).await???,
@@ -928,9 +1161,7 @@ async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Re
     let authority = Arc::new(FakeAuthority::default());
     let state = Arc::new(FakeStateTransport::default());
     state.failures.store(1, Ordering::SeqCst);
-    let executor = Arc::new(IncrementingExecutor {
-        invocations: AtomicU64::new(0),
-    });
+    let executor = Arc::new(SerialAdmissionExecutor::new());
     let host = ActorHost::new(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
@@ -949,7 +1180,7 @@ async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Re
     ));
     assert_eq!(invoke(&host, "request-1").await?, completed(1));
 
-    assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
+    assert_eq!(executor.inner.invocations.load(Ordering::Relaxed), 1);
     assert_eq!(state.writes.lock().unwrap().len(), 2);
     assert_eq!(state.writes.lock().unwrap().len(), 2);
     Ok(())

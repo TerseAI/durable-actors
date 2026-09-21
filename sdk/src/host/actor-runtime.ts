@@ -23,9 +23,14 @@ class ActorRuntime {
     private instance: AnyActor | undefined
     private identity: ActorIdentity | undefined
     private readonly schemas: ActorSchemas
+    private serial: Promise<unknown> = Promise.resolve()
+    private sequence = 0
+    private lastCompletedState: JsonObject | undefined
+    private fatal: ActorExecutorReply | undefined
 
     constructor(
         private readonly definition: ActorDefinition,
+        private readonly allowNextInvocation: () => void,
         private readonly publish?: SocketPublisher,
         private readonly connections: SocketSource = async () => {
             throw new Error("actor connection lookup is unavailable")
@@ -35,6 +40,18 @@ class ActorRuntime {
     }
 
     async handle(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): Promise<ActorExecutorReply> {
+        if (command.type === "hydrate") return this.execute(command)
+        const method = command.type === "invoke" ? command.method : lifecycleMethod(command)
+        const reentrant = this.definition.state.reentrantMethods?.includes(method) ?? false
+        const operation = this.serial.then(() => this.execute(command))
+        if (!reentrant) this.serial = operation.catch(() => undefined)
+        return operation
+    }
+
+    private async execute(
+        command: InvokeCommand | WebSocketEventCommand | HydrateCommand
+    ): Promise<ActorExecutorReply> {
+        if (this.fatal !== undefined) return this.fatal
         try {
             if (command.type === "hydrate") {
                 const prepared = this.prepare(command)
@@ -43,8 +60,18 @@ class ActorRuntime {
             return await (command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command))
         } catch (error) {
             this.reset()
-            return failedReply("invalid_actor_state", errorMessage(error))
+            const failure = failedReply("invalid_actor_state", errorMessage(error))
+            if (this.interleaved) this.fatal = failure
+            return failure
         }
+    }
+
+    private get interleaved(): boolean {
+        return (this.definition.state.reentrantMethods?.length ?? 0) > 0
+    }
+
+    private completionOrder(): { sequence?: number } {
+        return this.interleaved ? { sequence: ++this.sequence } : {}
     }
 
     private async invoke(command: InvokeCommand): Promise<ActorExecutorReply> {
@@ -67,6 +94,7 @@ class ActorRuntime {
 
         const before = snapshotActorState(instance, this.definition.state)
         try {
+            this.admitNext(command.method)
             const operation = await runWithActorSockets(
                 instance,
                 this.connections,
@@ -77,15 +105,16 @@ class ActorRuntime {
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             const state = snapshotActorState(instance, this.definition.state)
-            const effects = [...operation.effects, ...stateUpdates(before, state, this.definition.state)]
+            const effects = [...operation.effects, ...this.stateUpdates(before, state)]
             return {
                 type: "invoked",
                 result,
                 state,
+                ...this.completionOrder(),
                 ...(effects.length === 0 ? {} : { effects })
             }
         } catch (error) {
-            this.createInstance(command.actor, before)
+            if (!this.interleaved) this.createInstance(command.actor, before)
             return failedReply("actor_method_failed", errorMessage(error))
         }
     }
@@ -98,6 +127,7 @@ class ActorRuntime {
         const method: unknown = Reflect.get(instance, methodName)
         const before = snapshotActorState(instance, this.definition.state)
         try {
+            this.admitNext(methodName)
             const operation = await runWithActorSockets(
                 instance,
                 command.connections,
@@ -116,22 +146,26 @@ class ActorRuntime {
             const state = snapshotActorState(instance, this.definition.state)
             const effects = [
                 ...operation.effects,
-                ...stateUpdates(
+                ...this.stateUpdates(
                     before,
                     state,
-                    this.definition.state,
                     command.event.type === "connect" ? command.event.connection.id : undefined
                 )
             ]
             return {
                 type: "websocket_handled",
                 state,
+                ...this.completionOrder(),
                 effects: socketEffects(command, state, effects, this.definition.state)
             }
         } catch (error) {
-            this.createInstance(command.actor, before)
+            if (!this.interleaved) this.createInstance(command.actor, before)
             return failedReply("actor_socket_failed", errorMessage(error))
         }
+    }
+
+    private admitNext(method: string): void {
+        if (this.definition.state.reentrantMethods?.includes(method)) this.allowNextInvocation()
     }
 
     private prepare(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): AnyActor | ActorExecutorReply {
@@ -155,6 +189,12 @@ class ActorRuntime {
         return this.createInstance(identity, command.state)
     }
 
+    private stateUpdates(before: JsonObject, state: JsonObject, except?: string): SocketEffect[] {
+        const previous = this.interleaved ? (this.lastCompletedState ?? before) : before
+        if (this.interleaved) this.lastCompletedState = state
+        return stateUpdates(previous, state, this.definition.state, except)
+    }
+
     private reset(): void {
         this.instance = undefined
         this.identity = undefined
@@ -165,6 +205,7 @@ class ActorRuntime {
         bindActorIdentity(instance, identity.actor_id)
         validateActorState(instance, this.definition.state)
         if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
+        if (this.interleaved) this.lastCompletedState = snapshotActorState(instance, this.definition.state)
         this.identity = { ...identity }
         this.instance = instance
         return instance

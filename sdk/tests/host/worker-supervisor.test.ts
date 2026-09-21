@@ -16,6 +16,76 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
+test("correlates overlapping worker replies and socket lookups without idle eviction", { timeout: 10000 }, async () => {
+    const root = await createTypeScriptConsumer("InterleavedWorker")
+    const file = path.join(root, "src/durable-objects.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted, Reentrant } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class InterleavedWorker extends Actor {
+            @Persisted count = 0
+            @Reentrant async hold() {
+                const sockets = await this.getConnections()
+                this.broadcast("started:" + sockets[0]?.id)
+                await new Promise(resolve => setTimeout(resolve, 150))
+                this.broadcast("ended:" + sockets[0]?.id)
+                return ++this.count
+            }
+            async increment() { this.broadcast("increment"); return ++this.count }
+        }`
+    )
+    const entrypoint = pathToFileURL(file).href
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint),
+        actorIdleTimeoutMs: 25
+    })
+    const events: string[] = []
+    let started!: () => void
+    const start = new Promise<void>(resolve => {
+        started = resolve
+    })
+    try {
+        const holding = runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), method: "hold" },
+            () => {},
+            async effects => {
+                for (const effect of effects) if (effect.type === "broadcast") events.push(effect.message.data)
+                started()
+            },
+            async () => [{ id: "one", metadata: {}, tags: [] }]
+        )
+        await start
+        const second = await runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), request_id: "second" },
+            () => {},
+            async effects => {
+                assert.deepEqual(
+                    effects.map(effect => effect.type === "broadcast" && effect.message.data),
+                    ['"increment"']
+                )
+            }
+        )
+        assert.equal("result" in second && second.result, 1)
+        const first = await holding
+        assert.equal("result" in first && first.result, 2)
+        assert.deepEqual(events, ['"started:one"', '"ended:one"'])
+        await new Promise(resolve => setTimeout(resolve, 60))
+        assert.deepEqual(runtime.activeActors(), [])
+        const resumed = await runtime.handle(
+            { ...invokeCommand("one", "InterleavedWorker"), state: { count: 2 } },
+            () => {},
+            async () => {}
+        )
+        assert.ok(resumed.type === "invoked")
+        assert.equal(resumed.result, 3)
+        assert.equal(resumed.sequence, 3)
+    } finally {
+        runtime.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("a generic Bun worker is warm before customer code is assigned", async () => {
     const worker = new ActorWorker()
     try {
@@ -27,10 +97,13 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
             assert.throws(() => worker.load({ moduleUrl, schemas: [] }, () => {}), /already assigned/)
             const command = invokeCommand("one", "WarmCounter")
-            assert.deepEqual(await worker.execute({ type: "hydrate", actor: command.actor, state: { count: 41 } }), {
-                type: "hydrated"
-            })
-            assert.deepEqual(await worker.execute({ ...command, resident_only: true, state: undefined }), {
+            assert.deepEqual(
+                await worker.execute({ type: "hydrate", actor: command.actor, state: { count: 41 } }, () => {}),
+                {
+                    type: "hydrated"
+                }
+            )
+            assert.deepEqual(await worker.execute({ ...command, resident_only: true, state: undefined }, () => {}), {
                 type: "invoked",
                 result: 42,
                 state: { count: 42 }
@@ -52,9 +125,9 @@ test("an executor never accepts a second actor identity, even after eviction", a
     })
     try {
         const first = invokeCommand("first", "BoundCounter")
-        assert.equal((await runtime.handle(first)).type, "invoked")
-        await runtime.handle({ type: "evict", actor: first.actor })
-        const reply = await runtime.handle(invokeCommand("second", "BoundCounter"))
+        assert.equal((await runtime.handle(first, () => {})).type, "invoked")
+        await runtime.handle({ type: "evict", actor: first.actor }, () => {})
+        const reply = await runtime.handle(invokeCommand("second", "BoundCounter"), () => {})
         assert.equal(reply.type, "failed")
         if (reply.type === "failed") assert.equal(reply.code, "actor_identity_mismatch")
     } finally {
@@ -83,7 +156,7 @@ test("reports a new actor only after its Worker is ready", { timeout: 5_000 }, a
         actorSchemas: await prepareActorEntrypoint(entrypoint)
     })
     try {
-        const starting = supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        const starting = supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         assert.deepEqual(supervisor.activeActors(), [])
         assert.equal((await starting).type, "invoked")
         assert.deepEqual(supervisor.activeActors(), [actorIdentity])
@@ -112,7 +185,7 @@ watch(new URL(".", import.meta.url), (_, name) => {
             actorSchemas: await prepareActorEntrypoint(entrypoint)
         })
         try {
-            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
             const changes = new EventEmitter()
             supervisor.onActiveActorsChange(() => changes.emit("change"))
             const stopped = once(changes, "change", { signal: context.signal })
@@ -141,6 +214,7 @@ test("starts one speculative Worker and gives it to the first actor", async () =
                 created.push(created.length + 1)
                 return {
                     state: "ready",
+
                     async ready() {
                         return ["PreloadedCounter"]
                     },
@@ -153,9 +227,9 @@ test("starts one speculative Worker and gives it to the first actor", async () =
         })
 
         assert.equal(created.length, 1)
-        await runtime.handle(invokeCommand("counter-1", "PreloadedCounter"))
+        await runtime.handle(invokeCommand("counter-1", "PreloadedCounter"), () => {})
         assert.equal(created.length, 1)
-        const second = await runtime.handle(invokeCommand("counter-2", "PreloadedCounter"))
+        const second = await runtime.handle(invokeCommand("counter-2", "PreloadedCounter"), () => {})
         assert.equal(second.type, "failed")
         assert.equal(created.length, 1)
         runtime.close()
@@ -175,8 +249,8 @@ test("thrown methods and socket handlers roll back state without restarting the 
     supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
     const command = invokeCommand("counter-1", "SessionCounter")
     try {
-        await supervisor.handle(command)
-        const workerId = await supervisor.handle({ ...command, method: "workerId" })
+        await supervisor.handle(command, () => {})
+        const workerId = await supervisor.handle({ ...command, method: "workerId" }, () => {})
         for (const failure of [
             { ...command, method: "explode", resident_only: true, state: undefined },
             {
@@ -192,18 +266,21 @@ test("thrown methods and socket handlers roll back state without restarting the 
                 connections: [{ id: "socket-1", metadata: { userId: "user-1" }, tags: [] }]
             }
         ]) {
-            assert.equal((await supervisor.handle(failure)).type, "failed")
+            assert.equal((await supervisor.handle(failure, () => {})).type, "failed")
             assert.deepEqual(supervisor.activeActors(), [actorIdentity])
             assert.deepEqual(seen, [1])
             assert.deepEqual(
-                await supervisor.handle({ ...command, method: "getCount", resident_only: true, state: undefined }),
+                await supervisor.handle(
+                    { ...command, method: "getCount", resident_only: true, state: undefined },
+                    () => {}
+                ),
                 {
                     type: "invoked",
                     result: 1,
                     state: { count: 1 }
                 }
             )
-            assert.deepEqual(await supervisor.handle({ ...command, method: "workerId" }), workerId)
+            assert.deepEqual(await supervisor.handle({ ...command, method: "workerId" }, () => {}), workerId)
         }
     } finally {
         supervisor.close()
@@ -230,6 +307,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
             created += 1
             return {
                 state: "starting",
+
                 ready: () => new Promise(() => undefined),
                 async execute() {
                     return { type: "invoked", result: null, state: {} }
@@ -258,17 +336,17 @@ test("eviction during Worker startup settles the invocation and allows recovery"
             actorSchemas: await prepareActorEntrypoint(entrypoint)
         })
         await runtime.ready()
-        const pending = runtime.handle(command)
-        await runtime.handle({ type: "evict", actor: command.actor })
+        const pending = runtime.handle(command, () => {})
+        await runtime.handle({ type: "evict", actor: command.actor }, () => {})
         const reply = await pending
         assert.equal(reply.type, "failed")
         if (reply.type === "failed") assert.equal(reply.code, "actor_worker_terminated")
-        assert.deepEqual(await runtime.handle({ ...command, state: { count: 9 } }), {
+        assert.deepEqual(await runtime.handle({ ...command, state: { count: 9 } }, () => {}), {
             type: "invoked",
             result: 10,
             state: { count: 10 }
         })
-        await runtime.handle({ type: "evict", actor: command.actor })
+        await runtime.handle({ type: "evict", actor: command.actor }, () => {})
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -287,6 +365,7 @@ test("discards a failed preload before accepting the first actor", async () => {
                 const failed = created++ === 0
                 return {
                     state: failed ? "stopped" : "ready",
+
                     ready: () =>
                         failed ? Promise.reject(new Error("preload failed")) : Promise.resolve(["RetryPreloadCounter"]),
                     async execute() {
@@ -301,7 +380,7 @@ test("discards a failed preload before accepting the first actor", async () => {
         })
         await new Promise(resolve => setImmediate(resolve))
         assert.equal(terminated, 1)
-        assert.deepEqual(await runtime.handle(invokeCommand("counter-1", "RetryPreloadCounter")), {
+        assert.deepEqual(await runtime.handle(invokeCommand("counter-1", "RetryPreloadCounter"), () => {}), {
             type: "invoked",
             result: 1,
             state: { count: 1 }
@@ -320,6 +399,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
         actorSchemas: [],
         createWorker: () => ({
             state: "ready",
+
             async ready() {
                 return ["UnusedCounter"]
             },
@@ -334,7 +414,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
     runtime.close()
     runtime.close()
     assert.equal(terminated, 1)
-    const reply = await runtime.handle(invokeCommand("counter-1", "UnusedCounter"))
+    const reply = await runtime.handle(invokeCommand("counter-1", "UnusedCounter"), () => {})
     assert.equal(reply.type, "failed")
     if (reply.type === "failed") assert.equal(reply.code, "actor_worker_terminated")
 })
@@ -351,7 +431,7 @@ test("an actor module that fails inside a Worker returns a failure without hangi
             actorSchemas: await prepareActorEntrypoint(entrypoint)
         })
         try {
-            const reply = await runtime.handle(invokeCommand("counter-1", "FailedImportCounter"))
+            const reply = await runtime.handle(invokeCommand("counter-1", "FailedImportCounter"), () => {})
             assert.equal(reply.type, "failed")
             if (reply.type === "failed") assert.match(reply.message, /worker import failed/)
         } finally {
@@ -370,37 +450,46 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
     assert.deepEqual(await runtime.ready(), ["SessionCounter"])
 
     assert.deepEqual(
-        await runtime.handle({
-            type: "invoke",
-            request_id: "request-1",
-            actor: actorIdentity,
-            method: "increment",
-            args: [2],
-            state: null
-        }),
+        await runtime.handle(
+            {
+                type: "invoke",
+                request_id: "request-1",
+                actor: actorIdentity,
+                method: "increment",
+                args: [2],
+                state: null
+            },
+            () => {}
+        ),
         { type: "invoked", result: 2, state: { count: 2 } }
     )
     assert.deepEqual(
-        await runtime.handle({
-            type: "invoke",
-            request_id: "request-2",
-            actor: actorIdentity,
-            method: "increment",
-            args: [3],
-            state: { count: 0 }
-        }),
+        await runtime.handle(
+            {
+                type: "invoke",
+                request_id: "request-2",
+                actor: actorIdentity,
+                method: "increment",
+                args: [3],
+                state: { count: 0 }
+            },
+            () => {}
+        ),
         { type: "invoked", result: 5, state: { count: 5 } }
     )
-    assert.deepEqual(await runtime.handle({ type: "evict", actor: actorIdentity }), { type: "evicted" })
+    assert.deepEqual(await runtime.handle({ type: "evict", actor: actorIdentity }, () => {}), { type: "evicted" })
     assert.deepEqual(
-        await runtime.handle({
-            type: "invoke",
-            request_id: "request-3",
-            actor: actorIdentity,
-            method: "getCount",
-            args: [],
-            state: { count: 2 }
-        }),
+        await runtime.handle(
+            {
+                type: "invoke",
+                request_id: "request-3",
+                actor: actorIdentity,
+                method: "getCount",
+                args: [],
+                state: { count: 2 }
+            },
+            () => {}
+        ),
         { type: "invoked", result: 2, state: { count: 2 } }
     )
 }
@@ -413,14 +502,17 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
     })
     const connection = { id: "socket-1", metadata: { userId: "user-1" }, tags: [] }
     assert.deepEqual(
-        await runtime.handle({
-            type: "websocket_event",
-            request_id: "socket-request-1",
-            actor: actorIdentity,
-            event: { type: "connect", connection },
-            connections: [connection],
-            state: null
-        }),
+        await runtime.handle(
+            {
+                type: "websocket_event",
+                request_id: "socket-request-1",
+                actor: actorIdentity,
+                event: { type: "connect", connection },
+                connections: [connection],
+                state: null
+            },
+            () => {}
+        ),
         {
             type: "websocket_handled",
             state: { count: 1 },
@@ -445,6 +537,7 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
                 connections: [connection],
                 state: { count: 1 }
             },
+            () => {},
             async effects => {
                 published.push(...effects)
             }
@@ -472,26 +565,32 @@ async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
         actorIdleTimeoutMs: 10
     })
     assert.deepEqual(
-        await runtime.handle({
-            type: "invoke",
-            request_id: "idle-request-1",
-            actor: actorIdentity,
-            method: "increment",
-            args: [2],
-            state: null
-        }),
+        await runtime.handle(
+            {
+                type: "invoke",
+                request_id: "idle-request-1",
+                actor: actorIdentity,
+                method: "increment",
+                args: [2],
+                state: null
+            },
+            () => {}
+        ),
         { type: "invoked", result: 2, state: { count: 2 } }
     )
     await new Promise(resolve => setTimeout(resolve, 30))
     assert.deepEqual(
-        await runtime.handle({
-            type: "invoke",
-            request_id: "idle-request-2",
-            actor: actorIdentity,
-            method: "getCount",
-            args: [],
-            state: { count: 9 }
-        }),
+        await runtime.handle(
+            {
+                type: "invoke",
+                request_id: "idle-request-2",
+                actor: actorIdentity,
+                method: "getCount",
+                args: [],
+                state: { count: 9 }
+            },
+            () => {}
+        ),
         { type: "invoked", result: 9, state: { count: 9 } }
     )
 }
@@ -563,6 +662,7 @@ test("residency reports actual workers and drops evicted and failed instances", 
         actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
+
             ready: async () => ["SessionCounter"],
             execute: async () =>
                 fail
@@ -573,12 +673,12 @@ test("residency reports actual workers and drops evicted and failed instances", 
     })
     try {
         assert.deepEqual(supervisor.activeActors(), [])
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         assert.deepEqual(supervisor.activeActors(), [actorIdentity])
-        await supervisor.handle({ type: "evict", actor: actorIdentity })
+        await supervisor.handle({ type: "evict", actor: actorIdentity }, () => {})
         assert.deepEqual(supervisor.activeActors(), [])
         fail = true
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         assert.deepEqual(supervisor.activeActors(), [])
     } finally {
         supervisor.close()
@@ -591,6 +691,7 @@ test("residency subscribers see worker creation and eviction immediately", async
         actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
+
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -599,11 +700,11 @@ test("residency subscribers see worker creation and eviction immediately", async
     const seen: number[] = []
     try {
         const unsubscribe = supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
-        await supervisor.handle({ type: "evict", actor: actorIdentity })
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
+        await supervisor.handle({ type: "evict", actor: actorIdentity }, () => {})
         assert.deepEqual(seen, [1, 0])
         unsubscribe()
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         assert.deepEqual(seen, [1, 0])
     } finally {
         supervisor.close()
@@ -618,6 +719,7 @@ test("activity resets the idle timeout without publishing dormant residency", as
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",
+
             ready: async () => ["SessionCounter"],
             execute: async () => ({ type: "invoked", result: null, state: {} }),
             terminate() {}
@@ -628,7 +730,7 @@ test("activity resets the idle timeout without publishing dormant residency", as
     try {
         await supervisor.ready()
         for (let request = 0; request < 5; request++) {
-            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
             context.mock.timers.tick(9_000)
             assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         }
@@ -654,6 +756,7 @@ test("a running request stays resident beyond the idle timeout", async context =
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",
+
             ready: async () => ["SessionCounter"],
             async execute() {
                 if (block) await pending
@@ -663,10 +766,10 @@ test("a running request stays resident beyond the idle timeout", async context =
         })
     })
     try {
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         context.mock.timers.tick(9_000)
         block = true
-        const running = supervisor.handle(invokeCommand("counter-1", "SessionCounter"))
+        const running = supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         context.mock.timers.tick(30_000)
         assert.deepEqual(supervisor.activeActors(), [actorIdentity])
         finish!()

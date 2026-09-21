@@ -102,6 +102,7 @@ async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
     let (_activity_sender, mut activity) = tokio::sync::watch::channel(0);
+    let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
     let (sockets, mut socket_activity) = tokio::sync::watch::channel(1);
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
@@ -109,7 +110,7 @@ async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
         &mut javascript,
         shutdown.as_mut(),
         &mut lease,
-        (&mut activity, &mut socket_activity),
+        (&mut activity, &mut socket_activity, &mut actor_stopped),
         Duration::from_millis(10),
     ));
     assert!(
@@ -119,6 +120,43 @@ async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
     );
     sockets.send_replace(0);
     tokio::time::timeout(Duration::from_secs(1), stopped.as_mut()).await??;
+    drop(stopped);
+    javascript.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_activation_stops_host_with_open_sockets() -> Result<()> {
+    let mut server = Box::pin(std::future::pending::<Result<()>>());
+    let mut executor = Box::pin(std::future::pending::<Result<()>>());
+    let mut shutdown = Box::pin(std::future::pending::<()>());
+    let mut javascript = tokio::process::Command::new("sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()?;
+    let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
+    let (_activity_sender, mut activity) = tokio::sync::watch::channel(0);
+    let (stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
+    let (_sockets, mut socket_activity) = tokio::sync::watch::channel(1);
+    let mut stopped = Box::pin(wait_for_host_stop(
+        server.as_mut(),
+        executor.as_mut(),
+        &mut javascript,
+        shutdown.as_mut(),
+        &mut lease,
+        (&mut activity, &mut socket_activity, &mut actor_stopped),
+        Duration::from_millis(10),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), stopped.as_mut())
+            .await
+            .is_err()
+    );
+    stopped_sender.send_replace(true);
+    let error = tokio::time::timeout(Duration::from_secs(1), stopped.as_mut())
+        .await?
+        .unwrap_err();
+    assert!(error.to_string().contains("activation stopped"));
     drop(stopped);
     javascript.kill().await?;
     Ok(())

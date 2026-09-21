@@ -44,7 +44,7 @@ const definition = registerActorClass(ObservableRoom, { actorName: "ObservableRo
 const actor = { project_id: "default", actor_name: "ObservableRoom", actor_id: "room" }
 
 test("initial snapshots expose only emittable fields while still saving all persisted state", async () => {
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const connection = { id: "connection", metadata: {}, tags: [] }
     const reply = await runtime.handle({
         type: "websocket_event",
@@ -73,7 +73,11 @@ test("initial snapshots expose only emittable fields while still saving all pers
 })
 
 test("coalesces nested mutations and removals into one final update without live publication", async () => {
-    const runtime = new ActorRuntime(definition, async () => assert.fail("automatic changes must wait for commit"))
+    const runtime = new ActorRuntime(
+        definition,
+        () => {},
+        async () => assert.fail("automatic changes must wait for commit")
+    )
     const reply = await runtime.handle(invocation("change"))
     assert.equal(reply.type, "invoked")
     if (reply.type !== "invoked") return
@@ -93,7 +97,11 @@ test("coalesces nested mutations and removals into one final update without live
 })
 
 test("does not emit intermediate values, unchanged fields, or failed operations", async () => {
-    const runtime = new ActorRuntime(definition, async () => assert.fail("unexpected live output"))
+    const runtime = new ActorRuntime(
+        definition,
+        () => {},
+        async () => assert.fail("unexpected live output")
+    )
     const unchanged = await runtime.handle(invocation("unchanged"))
     assert.equal(unchanged.type, "invoked")
     if (unchanged.type === "invoked") assert.equal(unchanged.effects, undefined)

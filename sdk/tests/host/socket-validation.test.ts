@@ -94,7 +94,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
             }
         }
     })
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const request = event({
         type: "message",
         connection_id: connection.id,
@@ -136,7 +136,7 @@ test("deployment contracts do not impose runtime AJV validation", async () => {
 
 test("connection metadata is validated before actor hooks run", async () => {
     calls.length = 0
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const invalid = { ...connection, metadata: { userId: 123 } }
     const reply = await runtime.handle(event({ type: "connect", connection: invalid }, [invalid]))
     assert.equal(reply.type, "failed")
@@ -147,7 +147,7 @@ test("connection metadata is validated before actor hooks run", async () => {
 
 test("incoming JSON is validated before onMessage and outgoing values are encoded automatically", async () => {
     calls.length = 0
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const message = (value: unknown) =>
         event({ type: "message", connection_id: connection.id, message: { type: "text", data: JSON.stringify(value) } })
     assert.equal((await runtime.handle(message({ type: "post", text: 123 }))).type, "failed")
@@ -171,6 +171,7 @@ test("invalid actor output, metadata, and tags cannot reach the gateway", async 
     const published: unknown[] = []
     const runtime = new ActorRuntime(
         definition,
+        () => {},
         async effects => {
             published.push(...effects)
         },
@@ -191,7 +192,12 @@ test("invalid actor output, metadata, and tags cannot reach the gateway", async 
 })
 
 test("schema-validated tags persist and select broadcast recipients", async () => {
-    const runtime = new ActorRuntime(definition, undefined, async () => [connection])
+    const runtime = new ActorRuntime(
+        definition,
+        () => {},
+        undefined,
+        async () => [connection]
+    )
     const reply = await runtime.handle({
         type: "invoke",
         request_id: "join",
@@ -217,7 +223,7 @@ test("schema-validated tags persist and select broadcast recipients", async () =
 test("restored connection tags are validated before a hibernated actor resumes", async () => {
     calls.length = 0
     const invalid = { ...connection, tags: ["admin"] }
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const reply = await runtime.handle(
         event(
             {

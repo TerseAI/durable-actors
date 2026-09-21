@@ -8,6 +8,39 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("recognizes aliased reentrant async methods", () => {
+    const result = analyze(`import { Actor, Reentrant as R } from "./sdk.js"
+        export class Room extends Actor { @R async stream() {} async read() {} }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [], reentrantMethods: ["stream"] }])
+})
+
+test("continues compiling undecorated actors against SDKs without reentrancy", () => {
+    const result = analyze(`import { Actor } from "./sdk.js"; export class Room extends Actor { async read() {} }`, {
+        "sdk.ts": `export abstract class Actor { protected constructor() {} }
+            export function Persisted(...args: unknown[]) {}
+            export function Emittable(...args: unknown[]) {}
+            export function Ephemeral(...args: unknown[]) {}`
+    })
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [] }])
+})
+
+test("rejects invalid reentrant declarations", () => {
+    for (const member of [
+        "@Reentrant value = 1",
+        "@Reentrant sync() {}",
+        "@Reentrant static async run() {}",
+        "@Reentrant private async run() {}",
+        "@Reentrant() async run() {}",
+        "@Reentrant @Reentrant async run() {}"
+    ]) {
+        const result = analyze(`import { Actor, Reentrant } from "./sdk.js"
+            export class Room extends Actor { ${member} }`)
+        assert.ok(result.diagnostics.length > 0, member)
+    }
+})
+
 test("retains state visibility and stacked emission annotations", () => {
     const result = analyze(`import { Actor, Persisted, Emittable } from "./sdk.js"
         export class Room extends Actor {
@@ -415,6 +448,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             "sdk.ts": `export abstract class Actor { protected constructor() {} }
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
+            export function Reentrant(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])

@@ -87,6 +87,101 @@ impl ActorRuntime {
         &self.endpoint
     }
 
+    pub(super) fn executor(&self) -> Arc<dyn ActorExecutor> {
+        self.executor.clone()
+    }
+
+    pub(super) async fn prepare_invocation(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        replay: bool,
+        timings: &mut InvocationTimings,
+    ) -> Result<PreparedInvocation> {
+        self.storage.ensure_authority()?;
+        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
+        let mut cached = self
+            .take_or_load_state(&invocation.actor, owner_epoch, timings)
+            .await?;
+        if let Err(error) = self.finish_pending_commit(invocation, &mut cached).await {
+            self.cached_state = Some(cached);
+            warn!(actor = %invocation.actor.storage_key(), %error, "pending actor state commit remains unresolved");
+            return Ok(PreparedInvocation::Completed(
+                ActorExecutionResult::Failed {
+                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                },
+            ));
+        }
+        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
+        let result = if replay {
+            cached.replay(&invocation.request_id)
+        } else {
+            None
+        };
+        let state = cached.state();
+        self.cached_state = Some(cached);
+        Ok(match result {
+            Some(result) => PreparedInvocation::Completed(ActorExecutionResult::Completed {
+                result,
+                effects: vec![],
+            }),
+            None => PreparedInvocation::Execute(state),
+        })
+    }
+
+    pub(super) async fn finish_serial(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        outcome: Result<ActorMethodOutcome>,
+        timings: &mut InvocationTimings,
+    ) -> Result<ActorExecutionResult> {
+        let executed = self.method_result(invocation, outcome).await;
+        self.finish_method(invocation, owner_epoch, executed, timings)
+            .await
+    }
+
+    pub(super) async fn commit_interleaved(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        outcome: crate::actor::ActorInterleavedOutcome,
+        timings: &mut InvocationTimings,
+    ) -> Result<ActorExecutionResult> {
+        self.storage.ensure_authority()?;
+        validate_socket_effects(&outcome.effects)?;
+        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("interleaved activation has no state")?;
+        ensure!(
+            cached.owner_epoch == owner_epoch,
+            "interleaved ownership changed"
+        );
+        let publication = if cached.state.as_deref() != Some(&outcome.state) {
+            self.publish_result(
+                invocation,
+                owner_epoch,
+                &mut cached,
+                outcome.result.clone(),
+                outcome.state,
+            )
+            .await
+        } else {
+            Ok(ActorExecutionResult::Completed {
+                result: outcome.result.clone(),
+                effects: vec![],
+            })
+        };
+        let version = cached.state_version;
+        self.cached_state = Some(cached);
+        publication?;
+        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
+        self.complete_with_state(&invocation.actor, version, outcome.result, outcome.effects)
+            .await
+    }
+
     pub(super) async fn activate_actor(
         &mut self,
         actor: &crate::actor::ActorKey,
@@ -230,39 +325,34 @@ impl ActorRuntime {
         owner_epoch: u64,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
-        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
-        let mut cached = self
-            .take_or_load_state(&invocation.actor, owner_epoch, timings)
-            .await?;
-        if let Err(error) = self.finish_pending_commit(invocation, &mut cached).await {
-            self.cached_state = Some(cached);
-            warn!(
-                actor = %invocation.actor.storage_key(),
-                error = %format!("{error:#}"),
-                "pending actor state commit remains unresolved"
-            );
-            return Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            });
-        }
-        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
-        if let Some(result) = cached.replay(&invocation.request_id) {
-            self.cached_state = Some(cached);
-            return Ok(ActorExecutionResult::Completed {
-                result,
-                effects: Vec::new(),
-            });
-        }
+        let state = match self
+            .prepare_invocation(invocation, owner_epoch, true, timings)
+            .await?
+        {
+            PreparedInvocation::Execute(state) => state,
+            PreparedInvocation::Completed(result) => return Ok(result),
+        };
+        let executed = self.execute_method(invocation, state).await;
+        self.finish_method(invocation, owner_epoch, executed, timings)
+            .await
+    }
 
-        let executed = self.execute_method(invocation, cached.state()).await;
+    async fn finish_method(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        executed: std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult>,
+        timings: &mut InvocationTimings,
+    ) -> Result<ActorExecutionResult> {
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (result, next_state, effects) = match executed {
             Ok(outcome) => outcome,
-            Err(failure) => {
-                self.cached_state = Some(cached);
-                return Ok(failure);
-            }
+            Err(failure) => return Ok(failure),
         };
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("actor invocation has no state")?;
         if cached.state.as_deref() == Some(&next_state) {
             let version = cached.state_version;
             self.cached_state = Some(cached);
@@ -375,7 +465,18 @@ impl ActorRuntime {
                 state,
             )
             .await;
+        self.method_result(invocation, outcome).await
+    }
+
+    async fn method_result(
+        &self,
+        invocation: &ActorInvocation,
+        outcome: Result<ActorMethodOutcome>,
+    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         match outcome {
+            Ok(ActorMethodOutcome::Interleaved(_)) => {
+                Err(failed("actor_error", "unexpected interleaved result"))
+            }
             Ok(ActorMethodOutcome::Completed {
                 result,
                 state,
@@ -391,7 +492,10 @@ impl ActorRuntime {
                 }
             },
             Ok(ActorMethodOutcome::Failed(failure)) => {
-                if failure.code != "actor_method_failed" {
+                if !matches!(
+                    failure.code.as_str(),
+                    "actor_method_failed" | "actor_socket_failed"
+                ) {
                     self.evict(&invocation.actor).await;
                 }
                 let code = match failure.code.as_str() {
@@ -417,6 +521,9 @@ impl ActorRuntime {
     ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
         match self.executor.handle_socket_shared(invocation, state).await {
+            Ok(ActorSocketOutcome::Interleaved(_)) => {
+                Err(failed("actor_error", "unexpected interleaved result"))
+            }
             Ok(ActorSocketOutcome::Handled { state, effects }) => {
                 match validate_socket_effects(&effects) {
                     Ok(()) => Ok((state, effects)),
@@ -713,7 +820,7 @@ impl ActorRuntime {
         );
     }
 
-    async fn evict(&self, actor: &crate::actor::ActorKey) {
+    pub(super) async fn evict(&self, actor: &crate::actor::ActorKey) {
         if let Err(error) = self
             .executor
             .evict(ActorMethodEviction {
@@ -732,6 +839,11 @@ pub(super) fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'sta
         crate::actor::ActorSocketEvent::Message { .. } => "onMessage",
         crate::actor::ActorSocketEvent::Disconnect { .. } => "onDisconnect",
     }
+}
+
+pub(super) enum PreparedInvocation {
+    Execute(Option<Arc<Value>>),
+    Completed(ActorExecutionResult),
 }
 
 struct CachedActorState {

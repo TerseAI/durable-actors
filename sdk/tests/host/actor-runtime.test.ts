@@ -102,18 +102,21 @@ const chatDefinition = registerActorClass(ChatRoom, {
 const rejectingDefinition = registerActorClass(RejectingRoom, { actorName: "RejectingRoom", fields: [] })
 
 test("invocation does not enforce deployment JSON schemas at runtime", async () => {
-    const runtime = new ActorRuntime({
-        ...counterDefinition,
-        state: {
-            ...counterDefinition.state,
-            contract: {
-                version: 1,
-                actorName: "Counter",
-                emittable: [],
-                schema: { definitions: { Metadata: {}, Incoming: {}, Outgoing: {}, State: { type: "string" } } }
+    const runtime = new ActorRuntime(
+        {
+            ...counterDefinition,
+            state: {
+                ...counterDefinition.state,
+                contract: {
+                    version: 1,
+                    actorName: "Counter",
+                    emittable: [],
+                    schema: { definitions: { Metadata: {}, Incoming: {}, Outgoing: {}, State: { type: "string" } } }
+                }
             }
-        }
-    })
+        },
+        () => {}
+    )
     const reply = await runtime.handle({
         type: "invoke",
         request_id: "no-runtime-schema",
@@ -148,7 +151,7 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
             { name: "cache", persistence: Persistence.Ephemeral }
         ]
     })
-    const runtime = new ActorRuntime(definition)
+    const runtime = new ActorRuntime(definition, () => {})
     const command = {
         type: "invoke" as const,
         request_id: "cache",
@@ -171,7 +174,7 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
     const restored = { ...command, state: { count: 2, cache: "stale" } }
     const expected = { type: "invoked", result: { count: 3, calls: 1 }, state: { count: 3 } }
     assert.deepEqual(await runtime.handle({ ...command, resident_only: true, state: undefined }), expected)
-    assert.deepEqual(await new ActorRuntime(definition).handle(restored), expected)
+    assert.deepEqual(await new ActorRuntime(definition, () => {}).handle(restored), expected)
 })
 
 test("failed state recovery reports a fatal error instead of keeping a damaged instance", async () => {
@@ -187,7 +190,10 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
             throw new Error("request failed")
         }
     }
-    const runtime = new ActorRuntime(registerActorClass(RecoveryFailure, { actorName: "RecoveryFailure", fields: [] }))
+    const runtime = new ActorRuntime(
+        registerActorClass(RecoveryFailure, { actorName: "RecoveryFailure", fields: [] }),
+        () => {}
+    )
     const command = {
         type: "invoke" as const,
         actor: { project_id: "default", actor_name: "RecoveryFailure", actor_id: "one" },
@@ -225,6 +231,7 @@ test("streams actor output before execution finishes without replaying it in the
     })
     const runtime = new ActorRuntime(
         registerActorClass(StreamingActor, { actorName: "StreamingActor", fields: [] }),
+        () => {},
         async batch => {
             effects.push(...batch)
             first()
@@ -265,9 +272,13 @@ test("streams actor output before execution finishes without replaying it in the
 })
 
 test("rejecting a connection never publishes live socket effects", async () => {
-    const runtime = new ActorRuntime(rejectingDefinition, async () => {
-        assert.fail("connection effects escaped before acceptance")
-    })
+    const runtime = new ActorRuntime(
+        rejectingDefinition,
+        () => {},
+        async () => {
+            assert.fail("connection effects escaped before acceptance")
+        }
+    )
     const reply = await runtime.handle({
         type: "websocket_event",
         request_id: "connect-1",
@@ -295,25 +306,33 @@ test("batches pending stream output in order and surfaces publish failures", asy
         args: [],
         state: null
     }
-    const runtime = new ActorRuntime(definition, async effects => {
-        batches.push(effects)
-    })
+    const runtime = new ActorRuntime(
+        definition,
+        () => {},
+        async effects => {
+            batches.push(effects)
+        }
+    )
     assert.equal((await runtime.handle(command)).type, "invoked")
     assert.ok(batches.length <= 2, "queued deltas should not each cost a network round trip")
     assert.deepEqual(
         batches.flat().map(effect => effect.type === "broadcast" && effect.message.data),
         Array.from({ length: 10 }, (_, index) => JSON.stringify(String(index)))
     )
-    const failing = new ActorRuntime(definition, async () => {
-        throw new Error("publish denied")
-    })
+    const failing = new ActorRuntime(
+        definition,
+        () => {},
+        async () => {
+            throw new Error("publish denied")
+        }
+    )
     const reply = await failing.handle(command)
     assert.equal(reply.type, "failed")
     if (reply.type === "failed") assert.match(reply.message, /publish denied/)
 })
 
 test("a resident-only command requests hydration before constructing or executing an actor", async () => {
-    const runtime = new ActorRuntime(counterDefinition)
+    const runtime = new ActorRuntime(counterDefinition, () => {})
     const command = {
         type: "invoke" as const,
         request_id: "resident-1",
@@ -333,7 +352,7 @@ test("a resident-only command requests hydration before constructing or executin
 })
 
 test("a resident actor rejects another type or ID without changing its state", async () => {
-    const runtime = new ActorRuntime(counterDefinition)
+    const runtime = new ActorRuntime(counterDefinition, () => {})
     const command = {
         type: "invoke" as const,
         request_id: "identity-1",
@@ -359,7 +378,7 @@ test("a resident actor rejects another type or ID without changing its state", a
 })
 
 test("keeps a successful actor instance resident and restores it after failure", async () => {
-    const runtime = new ActorRuntime(counterDefinition)
+    const runtime = new ActorRuntime(counterDefinition, () => {})
     assert.deepEqual(
         await runtime.handle({
             type: "invoke",
@@ -491,7 +510,7 @@ test("Actor.get connects with typed metadata", async () => {
 })
 
 test("keeps persisted fields off the socket unless they are emittable", async () => {
-    const runtime = new ActorRuntime(counterDefinition)
+    const runtime = new ActorRuntime(counterDefinition, () => {})
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
     assert.deepEqual(
@@ -512,7 +531,7 @@ test("keeps persisted fields off the socket unless they are emittable", async ()
 })
 
 test("does not expose actor properties to a rejected connection", async () => {
-    const runtime = new ActorRuntime(rejectingDefinition)
+    const runtime = new ActorRuntime(rejectingDefinition, () => {})
     const actor = { ...actorIdentity, actor_name: "RejectingRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: {}, tags: [] }
 
@@ -534,7 +553,7 @@ test("does not expose actor properties to a rejected connection", async () => {
 })
 
 test("runs the full socket lifecycle and exposes live actor connections", async () => {
-    const runtime = new ActorRuntime(chatDefinition)
+    const runtime = new ActorRuntime(chatDefinition, () => {})
     const actor = { ...actorIdentity, actor_name: "ChatRoom", actor_id: "room-1" }
     const connection = { id: "connection-1", metadata: { userId: "user-1", connectedAt: 1 }, tags: [] }
 
@@ -640,7 +659,7 @@ test("the injected invoker remains available inside actor unit tests", async () 
             }
         },
         async () => {
-            const runtime = new ActorRuntime(forwarderDefinition)
+            const runtime = new ActorRuntime(forwarderDefinition, () => {})
             assert.deepEqual(
                 await runtime.handle({
                     type: "invoke",
