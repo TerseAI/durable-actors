@@ -69,7 +69,7 @@ export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; to
                     {view === "overview" && <Overview client={client} onSelectActor={selectActor} />}
                     {view === "actors" && <ActorObserver client={client} navigation={{ actorName: actor, onSelectActor: setActor }} />}
                     {view === "requests" && <RequestObserver client={client} />}
-                    {view === "websockets" && <WebSocketObserver client={client} />}
+                    {view === "websockets" && <WebSocketObserver client={client} onSelectActor={selectActor} />}
                 </main>
             </div>
         </div>
