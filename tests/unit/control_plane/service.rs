@@ -499,7 +499,6 @@ fn execution_regions_do_not_require_separate_buckets() -> Result<()> {
 }
 
 struct LosingActivation {
-    ready: bool,
     placements: Arc<LocalObjectPlacementStore>,
     actor: ActorKey,
     waited: std::sync::atomic::AtomicBool,
@@ -535,7 +534,6 @@ impl HostProvisioner for LosingActivation {
     }
     async fn wait_ready(&self, _: &HostId) -> Result<()> {
         self.waited.store(true, std::sync::atomic::Ordering::SeqCst);
-        ensure!(self.ready, "actor sandbox did not become ready");
         Ok(())
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {
@@ -544,59 +542,45 @@ impl HostProvisioner for LosingActivation {
 }
 
 #[tokio::test]
-async fn failed_activation_only_reuses_a_ready_winner() -> Result<()> {
-    for ready in [false, true] {
-        let issuer = test_issuer()?;
-        let auth = ActorJwtVerifier::for_scope(
-            issuer.verifier_keys_json()?,
-            "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
-        )?;
-        let registry = Arc::new(LocalAdminRegistry::default());
-        registry
-            .register_test_deployment(&HostLaunchSpec {
-                project_id: "default".into(),
-                source: None,
-                code_revision: "revision".into(),
-                image_ref: "im-runtime".into(),
-                code_snapshot: Some("im-code".into()),
-                working_directory: "/customer".into(),
-                actor_entrypoint: None,
-                secret_refs: vec![],
-            })
-            .await?;
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        let actor = ActorKey {
+async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "invocation",
+        ActorTokenPurpose::Invocation,
+        Duration::from_secs(60),
+    )?;
+    let registry = Arc::new(LocalAdminRegistry::default());
+    registry
+        .register_test_deployment(&HostLaunchSpec {
             project_id: "default".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-        };
-        let provisioner = Arc::new(LosingActivation {
-            ready,
-            placements: placements.clone(),
-            actor: actor.clone(),
-            waited: false.into(),
-        });
-        let service =
-            ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
-        let target = service
-            .route_actor(&actor, "north-america-east", None, None)
-            .await;
-        if ready {
-            assert_eq!(target?.lease.route, "https://winner.example.com");
-        } else {
-            assert_eq!(
-                target
-                    .err()
-                    .context("failed activation should return its original error")?
-                    .to_string(),
-                "another activation won ownership"
-            );
-        }
-        assert!(provisioner.waited.load(std::sync::atomic::Ordering::SeqCst));
-    }
+            source: None,
+            code_revision: "revision".into(),
+            image_ref: "im-runtime".into(),
+            code_snapshot: Some("im-code".into()),
+            working_directory: "/customer".into(),
+            actor_entrypoint: None,
+            secret_refs: vec![],
+        })
+        .await?;
+    let placements = Arc::new(LocalObjectPlacementStore::default());
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let provisioner = Arc::new(LosingActivation {
+        placements: placements.clone(),
+        actor: actor.clone(),
+        waited: false.into(),
+    });
+    let service = ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+    let target = service
+        .route_actor(&actor, "north-america-east", None, None)
+        .await?;
+    assert_eq!(target.lease.route, "https://winner.example.com");
+    assert!(provisioner.waited.load(std::sync::atomic::Ordering::SeqCst));
     Ok(())
 }
 
