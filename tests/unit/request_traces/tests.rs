@@ -300,6 +300,7 @@ fn trace(id: usize) -> RequestTrace {
         duration_ms: 12.0,
         queue_wait_ms: Some(5.0),
         outcome: RequestOutcome::Completed,
+        metadata: None,
     }
 }
 
@@ -352,4 +353,53 @@ fn backpressure_drops_telemetry_without_blocking_requests() {
     sender.send(trace(1));
     sender.send(trace(2));
     assert_eq!(sender.dropped.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata() {
+    let (sender, mut receiver) = TraceSender::channel(4);
+    let invocation = crate::actor::ActorInvocation {
+        request_id: "request".into(),
+        actor: crate::actor::ActorKey {
+            project_id: "project".into(),
+            actor_name: "Room".into(),
+            actor_id: "one".into(),
+        },
+        method: "onConnect".into(),
+        args: vec![],
+    };
+    let metadata = serde_json::json!({ "name": "Ada" });
+    let oversized = serde_json::json!({ "name": "x".repeat(TRACE_METADATA_LIMIT) });
+    for value in [Some(metadata.clone()), Some(oversized.clone()), None] {
+        RequestSpan::new(
+            sender.clone(),
+            &invocation,
+            RequestKind::Websocket,
+            Some("connection".into()),
+            value,
+            Instant::now(),
+        )
+        .finish(RequestOutcome::Completed);
+    }
+    let recorded: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok())
+        .map(|trace| trace.metadata)
+        .collect();
+    assert_eq!(recorded, vec![Some(metadata.clone()), None, None]);
+
+    assert!(
+        !serde_json::to_value(trace(2))
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("metadata")
+    );
+    let mut labelled = trace(1);
+    labelled.metadata = Some(metadata);
+    labelled.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(&labelled).unwrap()["metadata"]["name"],
+        "Ada"
+    );
+    labelled.metadata = Some(oversized);
+    assert!(labelled.validate().is_err());
 }

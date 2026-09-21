@@ -52,7 +52,8 @@ const rows = [
         closed_at_ms: now - 540_000,
         last_seen_ms: now - 540_000,
         messages: 2,
-        failures: 1
+        failures: 1,
+        connect_event: JSON.stringify({ operation: "onConnect", metadata: { name: "Grace", role: "guest" } })
     },
     {
         connection_id: "lost-connection-1234567890",
@@ -93,9 +94,15 @@ test("the WebSocket page pairs saved sessions with live inventory, filters them,
     assert.deepEqual(statuses, ["Open", "Lost", "Closed"], "open connections lead, then most recent first")
     assert.match(within(table).getByRole("row", { name: /lost-con…7890/u }).textContent!, /≥ 10 s/u)
     assert.match(within(table).getByRole("row", { name: /open-con…7890/u }).textContent!, /"name":"Ada"/u)
+    assert.match(within(table).getByRole("row", { name: /closed-c…7890/u }).textContent!, /"name":"Grace"/u, "closed connections keep the metadata saved with their connect event")
     const timeline = view.getByRole("group", { name: "Connection timeline" })
     assert.equal(within(timeline).getAllByRole("button").length, 3)
     assert.ok(within(timeline).getByRole("button", { name: /^Lost connection lost-con…7890 on Room random, ≥ 10 s$/u }))
+    const closedBar = within(timeline).getByRole("button", { name: "Closed connection closed-c…7890 (name: Grace · role: guest) on Room general, 1m 0s" })
+    fireEvent.mouseEnter(closedBar)
+    assert.match(view.getByRole("tooltip").textContent!, /closed-c…7890name: Grace · role: guestRoom \/ general/u, "hovering a bar shows who the connection belongs to")
+    fireEvent.mouseLeave(timeline)
+    assert.equal(view.queryByRole("tooltip"), null)
     fireEvent.change(view.getByRole("combobox", { name: "Filter by status" }), { target: { value: "closed" } })
     assert.equal(within(timeline).getAllByRole("button").length, 1)
     assert.equal(within(table).getAllByRole("row").length, 2)
@@ -108,6 +115,7 @@ test("the WebSocket page pairs saved sessions with live inventory, filters them,
     assert.match(dialog.textContent!, /Failures1/u)
     assert.match(dialog.textContent!, /host-1/u)
     assert.match(dialog.textContent!, /Duration1m 0s/u)
+    assert.match(dialog.textContent!, /"name": "Grace"/u)
     assert.ok(within(dialog).getByRole("button", { name: "Open Room" }))
 })
 

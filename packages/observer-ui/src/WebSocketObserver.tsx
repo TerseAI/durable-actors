@@ -331,10 +331,12 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
             </td>
             <td>{session.messages.toLocaleString()}</td>
             <td>
-                {session.status === "open" ? (
-                    <code className="socket-metadata">{JSON.stringify(session.metadata) ?? "undefined"}</code>
+                {session.metadata === undefined ? (
+                    <span title="No metadata was recorded for this connection">—</span>
                 ) : (
-                    <span title="Metadata is only reported for open connections">—</span>
+                    <code className="socket-metadata" title={JSON.stringify(session.metadata)}>
+                        {JSON.stringify(session.metadata)}
+                    </code>
                 )}
             </td>
         </tr>
@@ -365,10 +367,10 @@ function SessionDetails({ session, now, onSelectActor }: { session: SocketSessio
                     </div>
                 ))}
             </dl>
-            {session.status === "open" && (
+            {session.metadata !== undefined && (
                 <details className="socket-metadata-details" open>
                     <summary>Metadata</summary>
-                    <pre>{JSON.stringify(session.metadata, null, 2) ?? "undefined"}</pre>
+                    <pre>{JSON.stringify(session.metadata, null, 2)}</pre>
                 </details>
             )}
             {onSelectActor && (

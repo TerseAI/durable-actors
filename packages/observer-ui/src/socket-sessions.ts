@@ -1,4 +1,4 @@
-import type { ActorInventory, ObserverQuery, ObserverQueryResult } from "./client.js"
+import type { ActorInventory, ObserverQuery, ObserverQueryResult, SqlValue } from "./client.js"
 
 export type SocketSessionStatus = "open" | "closed" | "lost"
 
@@ -16,7 +16,7 @@ export interface SocketSession {
     metadata?: unknown
 }
 
-export type SocketSessionRow = Omit<SocketSession, "status" | "metadata">
+export type SocketSessionRow = Omit<SocketSession, "status">
 
 export interface SocketDuration {
     ms: number
@@ -31,6 +31,7 @@ export function sessionsQuery(fromMs?: number): ObserverQuery {
     MIN(CASE WHEN operation = 'onConnect' THEN started_at_ms END) AS opened_at_ms,
     MAX(CASE WHEN operation = 'onDisconnect' THEN started_at_ms END) AS closed_at_ms,
     MAX(started_at_ms) AS last_seen_ms,
+    MAX(CASE WHEN operation = 'onConnect' THEN event END) AS connect_event,
     SUM(operation = 'onMessage') AS messages,
     SUM(outcome NOT IN ('completed', 'rerouted')) AS failures
 FROM request_events
@@ -54,11 +55,18 @@ export function sessionRows(result: ObserverQueryResult): SocketSessionRow[] {
             closedAtMs: row.closed_at_ms ?? null,
             lastSeenMs: row.last_seen_ms ?? null,
             messages: row.messages ?? 0,
-            failures: row.failures ?? 0
+            failures: row.failures ?? 0,
+            metadata: connectMetadata(row.connect_event)
         }
         if (!isSessionRow(session)) throw new Error("Invalid WebSocket session row")
         return session
     })
+}
+
+function connectMetadata(event: SqlValue | undefined): unknown {
+    if (typeof event !== "string") return undefined
+    const parsed: unknown = JSON.parse(event)
+    return parsed && typeof parsed === "object" && "metadata" in parsed ? parsed.metadata : undefined
 }
 
 export function socketSessions(rows: SocketSessionRow[], inventory: ActorInventory | undefined): SocketSession[] {
@@ -126,6 +134,16 @@ export function formatDuration(ms: number): string {
     const hours = Math.floor(minutes / 60)
     if (hours < 24) return `${hours}h ${minutes % 60}m`
     return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
+// A short "which connection is this" label: the top-level metadata entries, most useful first.
+export function metadataSummary(metadata: unknown, limit = 3): string | null {
+    if (metadata === undefined || metadata === null) return null
+    if (typeof metadata !== "object") return String(metadata)
+    const entries = Array.isArray(metadata) ? metadata.map((value, index) => [String(index), value] as const) : Object.entries(metadata)
+    if (!entries.length) return null
+    const shown = entries.slice(0, limit).map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
+    return entries.length > limit ? `${shown.join(" · ")} · +${entries.length - limit}` : shown.join(" · ")
 }
 
 function percentile(values: number[], fraction: number) {

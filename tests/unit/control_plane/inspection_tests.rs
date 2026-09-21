@@ -569,6 +569,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                     duration_ms: 25.0,
                     queue_wait_ms: Some(10.0),
                     outcome: RequestOutcome::Completed,
+                    metadata: None,
                 }],
                 0,
             )

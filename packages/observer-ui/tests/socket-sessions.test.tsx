@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite"
 import { test } from "node:test"
 
 import type { ActorInventory, ObserverQuery, ObserverQueryResult, RequestTrace } from "../src/client.js"
-import { formatDuration, sessionDuration, sessionRows, sessionSummary, sessionsQuery, socketSessions } from "../src/socket-sessions.js"
+import { formatDuration, metadataSummary, sessionDuration, sessionRows, sessionSummary, sessionsQuery, socketSessions } from "../src/socket-sessions.js"
 
 function database() {
     const db = new DatabaseSync(":memory:")
@@ -22,7 +22,7 @@ function database() {
     return db
 }
 let counter = 0
-function append(db: DatabaseSync, trace: Partial<RequestTrace>) {
+function append(db: DatabaseSync, trace: Partial<RequestTrace> & { metadata?: unknown }) {
     counter++
     const event = {
         eventId: `event-${counter}`,
@@ -56,7 +56,7 @@ function execute(db: DatabaseSync, query: ObserverQuery): ObserverQueryResult {
 test("sessions pair connect and disconnect events per connection and count messages", () => {
     const db = database()
     try {
-        append(db, { operation: "onConnect", connectionId: "c1", startedAtMs: 1000 })
+        append(db, { operation: "onConnect", connectionId: "c1", startedAtMs: 1000, metadata: { name: "Ada", role: "moderator" } })
         append(db, { operation: "onMessage", connectionId: "c1", startedAtMs: 1500 })
         append(db, { operation: "onMessage", connectionId: "c1", startedAtMs: 1800, outcome: "failed" })
         append(db, { operation: "onDisconnect", connectionId: "c1", startedAtMs: 4000 })
@@ -65,9 +65,20 @@ test("sessions pair connect and disconnect events per connection and count messa
         append(db, { kind: "method", operation: "post", connectionId: null, startedAtMs: 9000 })
         const rows = sessionRows(execute(db, sessionsQuery()))
         assert.deepEqual(rows, [
-            { connectionId: "c2", actorName: "Room", actorId: "random", hostId: "host-2", openedAtMs: 6000, closedAtMs: null, lastSeenMs: 6000, messages: 0, failures: 0 },
-            { connectionId: "c1", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: 1000, closedAtMs: 4000, lastSeenMs: 4000, messages: 2, failures: 1 },
-            { connectionId: "c3", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: null, closedAtMs: null, lastSeenMs: 500, messages: 1, failures: 0 }
+            { connectionId: "c2", actorName: "Room", actorId: "random", hostId: "host-2", openedAtMs: 6000, closedAtMs: null, lastSeenMs: 6000, messages: 0, failures: 0, metadata: undefined },
+            {
+                connectionId: "c1",
+                actorName: "Room",
+                actorId: "lobby",
+                hostId: "host-1",
+                openedAtMs: 1000,
+                closedAtMs: 4000,
+                lastSeenMs: 4000,
+                messages: 2,
+                failures: 1,
+                metadata: { name: "Ada", role: "moderator" }
+            },
+            { connectionId: "c3", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: null, closedAtMs: null, lastSeenMs: 500, messages: 1, failures: 0, metadata: undefined }
         ])
         assert.deepEqual(
             sessionRows(execute(db, sessionsQuery(4000))).map(row => row.connectionId),
@@ -102,8 +113,8 @@ test("live inventory decides whether unfinished sessions are open or lost and ad
         ]
     }
     const rows = [
-        { connectionId: "c2", actorName: "Room", actorId: "random", hostId: "host-2", openedAtMs: 6000, closedAtMs: null, lastSeenMs: 6000, messages: 0, failures: 0 },
-        { connectionId: "c1", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: 1000, closedAtMs: 4000, lastSeenMs: 4000, messages: 2, failures: 1 },
+        { connectionId: "c2", actorName: "Room", actorId: "random", hostId: "host-2", openedAtMs: 6000, closedAtMs: null, lastSeenMs: 6000, messages: 0, failures: 0, metadata: { name: "Stale" } },
+        { connectionId: "c1", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: 1000, closedAtMs: 4000, lastSeenMs: 4000, messages: 2, failures: 1, metadata: { name: "Grace" } },
         { connectionId: "c0", actorName: "Room", actorId: "lobby", hostId: "host-1", openedAtMs: 100, closedAtMs: null, lastSeenMs: 300, messages: 1, failures: 0 }
     ]
     const sessions = socketSessions(rows, inventory)
@@ -112,9 +123,10 @@ test("live inventory decides whether unfinished sessions are open or lost and ad
         [
             ["c9", "open", null],
             ["c2", "open", { name: "Ada" }],
-            ["c1", "closed", undefined],
+            ["c1", "closed", { name: "Grace" }],
             ["c0", "lost", undefined]
-        ]
+        ],
+        "live inventory metadata wins for open connections; saved connect metadata serves closed ones"
     )
     assert.deepEqual(sessionDuration(sessions[0]!, 10_000), null, "a connection without a retained connect event has no duration")
     assert.deepEqual(sessionDuration(sessions[1]!, 10_000), { ms: 4000, lowerBound: false })
@@ -147,4 +159,10 @@ test("invalid session rows are rejected and durations format by magnitude", () =
     assert.equal(formatDuration(192_000), "3m 12s")
     assert.equal(formatDuration(2 * 3_600_000 + 5 * 60_000), "2h 5m")
     assert.equal(formatDuration(27 * 3_600_000), "1d 3h")
+    assert.equal(metadataSummary({ name: "Ada", role: "moderator", team: "core", seat: 4 }), "name: Ada · role: moderator · team: core · +1")
+    assert.equal(metadataSummary({ user: { id: 7 } }), 'user: {"id":7}')
+    assert.equal(metadataSummary("guest-token"), "guest-token")
+    assert.equal(metadataSummary(null), null)
+    assert.equal(metadataSummary({}), null)
+    assert.equal(metadataSummary(undefined), null)
 })

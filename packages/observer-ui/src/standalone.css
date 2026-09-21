@@ -796,6 +796,14 @@ main {
     color: var(--muted-foreground);
     font-family: var(--console-mono);
 }
+.socket-tooltip-metadata {
+    display: block;
+    margin-top: 6px;
+    font-style: normal;
+    font-size: 12px;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
 .socket-tooltip dl {
     display: grid;
     grid-template-columns: auto 1fr;

@@ -17,6 +17,7 @@ use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;
 pub(crate) const TRACE_BATCH_SIZE: usize = 64;
+pub(crate) const TRACE_METADATA_LIMIT: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +32,8 @@ pub(crate) struct RequestTrace {
     pub duration_ms: f64,
     pub queue_wait_ms: Option<f64>,
     pub outcome: RequestOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl RequestTrace {
@@ -62,8 +65,19 @@ impl RequestTrace {
                 .is_none_or(|ms| ms.is_finite() && ms >= 0.0 && ms <= self.duration_ms),
             "invalid trace queue wait"
         );
+        ensure!(
+            self.metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.to_string().len() <= TRACE_METADATA_LIMIT),
+            "trace metadata exceeds {TRACE_METADATA_LIMIT} bytes"
+        );
         Ok(())
     }
+}
+
+// Connection metadata beyond the limit is omitted rather than failing the trace.
+fn bounded_metadata(metadata: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    metadata.filter(|value| value.to_string().len() <= TRACE_METADATA_LIMIT)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -301,6 +315,7 @@ impl RequestSpan {
         invocation: &crate::actor::ActorInvocation,
         kind: RequestKind,
         connection_id: Option<String>,
+        metadata: Option<serde_json::Value>,
         started: Instant,
     ) -> Self {
         let now = SystemTime::now()
@@ -321,6 +336,7 @@ impl RequestSpan {
                 duration_ms: 0.0,
                 queue_wait_ms: None,
                 outcome: RequestOutcome::Interrupted,
+                metadata: bounded_metadata(metadata),
             }),
         }
     }
