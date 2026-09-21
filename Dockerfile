@@ -14,7 +14,12 @@ COPY .cargo ./.cargo
 COPY migrations ./migrations
 COPY proto ./proto
 COPY src ./src
-RUN cargo build --locked --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --locked --release \
+    && mkdir -p /out \
+    && cp target/release/little-actors /out/little-actors
 
 FROM node:22.19.0-bookworm AS sdk-builder
 WORKDIR /build
@@ -42,7 +47,7 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/little-actors /usr/local/bin/little-actors
+COPY --from=builder /out/little-actors /usr/local/bin/little-actors
 COPY --from=modal-builder /out/little-actors-modal-go /usr/local/bin/little-actors-modal-go
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /build/node_modules /opt/little-actors/node_modules
