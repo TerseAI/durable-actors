@@ -66,8 +66,7 @@ class ActorSession {
                 this.settings.startupTimeoutMs,
                 supervisor.activeActors.bind(supervisor),
                 supervisor.onActiveActorsChange.bind(supervisor),
-                this.socket,
-                supervisor.reentrantActors()
+                this.socket
             )
             void this.connection.closed().then(() => supervisor.close())
         } catch (error) {
@@ -119,19 +118,13 @@ class ActorSessionConnection {
         timeoutMs: number,
         activeActors: () => readonly ActorIdentity[],
         watchActiveActors: (listener: () => void) => () => void,
-        connectedSocket?: Socket,
-        reentrantActors: readonly string[] = []
+        connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
         if (actorNames.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
         const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
-        connection.send({
-            type: "attach",
-            protocol: 17,
-            actor_names: actorNames,
-            ...(reentrantActors.length ? { reentrant_actor_names: reentrantActors } : {})
-        })
+        connection.send({ type: "attach", protocol: 16, actor_names: actorNames })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }

@@ -30,10 +30,7 @@ type ActorCommandHandler = (
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
-) => Pick<
-    ActorWorkerSupervisor,
-    "ready" | "reentrantActors" | "handle" | "close" | "activeActors" | "onActiveActorsChange"
->
+) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close" | "activeActors" | "onActiveActorsChange">
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
@@ -57,7 +54,6 @@ type ActorWorkerState = "starting" | "ready" | "stopping" | "stopped"
 
 interface ActorWorkerHandle {
     readonly state: ActorWorkerState
-    reentrantActors(): readonly string[]
     ready(): Promise<readonly string[]>
     execute(
         command: InvokeCommand | WebSocketEventCommand | HydrateCommand,

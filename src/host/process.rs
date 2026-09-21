@@ -113,7 +113,6 @@ pub(super) async fn serve_assigned_host(
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
-    let mut actor_stopped = host.stopped();
     let mut socket_activity = sockets.registry.activity();
 
     let service = ActorHostGrpcService::new(
@@ -195,7 +194,7 @@ pub(super) async fn serve_assigned_host(
         &mut javascript,
         shutdown.as_mut(),
         &mut lease_lost,
-        (&mut activity, &mut socket_activity, &mut actor_stopped),
+        (&mut activity, &mut socket_activity),
         config.host_idle_timeout,
     )
     .await;
@@ -621,7 +620,6 @@ async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture>(
     activity: (
         &mut tokio::sync::watch::Receiver<usize>,
         &mut tokio::sync::watch::Receiver<usize>,
-        &mut tokio::sync::watch::Receiver<bool>,
     ),
     idle_timeout: Duration,
 ) -> Result<()>
@@ -630,18 +628,10 @@ where
     ExecutorFuture: Future<Output = Result<()>> + ?Sized,
     ShutdownFuture: Future<Output = ()> + ?Sized,
 {
-    let (activity, socket_activity, actor_stopped) = activity;
+    let (activity, socket_activity) = activity;
     let mut idle_deadline = tokio::time::Instant::now() + idle_timeout;
     loop {
-        if *actor_stopped.borrow() {
-            break Err(anyhow::anyhow!(
-                "actor activation stopped; host self-fenced"
-            ));
-        }
         tokio::select! {
-            changed = actor_stopped.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("actor lifecycle tracker stopped")); }
-            }
             result = server.as_mut() => break result.context("serve actor host network endpoints"),
             result = executor.as_mut() => break result.context("run JavaScript actor executor"),
             result = javascript.wait() => break Err(anyhow::anyhow!("JavaScript actor executor exited with {}", result?)),

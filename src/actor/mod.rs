@@ -4,9 +4,9 @@ mod socket;
 
 pub use self::{
     executor_connection::{
-        ActorExecutor, ActorInterleavedOutcome, ActorMethodEviction, ActorMethodInvocation,
-        ActorMethodOutcome, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent,
-        ActorSocketInvocation, ActorSocketMessage, ActorSocketOutcome, ActorSocketTagMatch,
+        ActorExecutor, ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome,
+        ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
+        ActorSocketMessage, ActorSocketOutcome, ActorSocketTagMatch,
     },
     protocol::{ActorExecutionResult, ActorInvocation, ActorInvocationFailure, ActorKey},
 };

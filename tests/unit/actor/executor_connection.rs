@@ -7,12 +7,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":17})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":16})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":17,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":16,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -59,7 +59,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":17, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":16, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -108,12 +108,8 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
     }
     let (host, customer) = UnixStream::pair()?;
     let (reader, writer) = host.into_split();
-    let (executor, running) = JsActorExecutor::start(
-        BufReader::new(reader),
-        writer,
-        vec!["counter".into()],
-        vec![],
-    );
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
     let (requested, mut requests) = mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     executor
@@ -183,12 +179,8 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
 async fn multiplexes_out_of_order_replies_before_peer_disconnect() -> Result<()> {
     let (host, customer) = UnixStream::pair()?;
     let (reader, writer) = host.into_split();
-    let (executor, running) = JsActorExecutor::start(
-        BufReader::new(reader),
-        writer,
-        vec!["counter".into()],
-        vec![],
-    );
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
     let peer = tokio::spawn(async move {
         let mut customer = BufReader::new(customer);
         let first = read_json_line(&mut customer).await?;
@@ -242,7 +234,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":17, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":16, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -363,12 +355,8 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
 async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_request() -> Result<()> {
     let (host, customer) = UnixStream::pair()?;
     let (reader, writer) = host.into_split();
-    let (executor, running) = JsActorExecutor::start(
-        BufReader::new(reader),
-        writer,
-        vec!["counter".into()],
-        vec![],
-    );
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
     let mut reader = BufReader::new(customer);
     let customer = async {
         let first = read_json_line(&mut reader).await?;
@@ -483,11 +471,11 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":17,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 17, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 16, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;
@@ -547,11 +535,11 @@ async fn run_attached_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":17,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":16,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 17, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 16, "supports_residency": true })
     );
     let mut trailing = String::new();
     ensure!(
