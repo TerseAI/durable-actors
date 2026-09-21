@@ -13,7 +13,7 @@ async function runGenericHost(): Promise<never> {
         const settings = parseHostSettings(process.env)
         const socket = await connectSocket(settings.socketPath)
         const assignment = readAssignment(socket)
-        socket.write(`${JSON.stringify({ type: "warm", protocol: 16 })}\n`)
+        socket.write(`${JSON.stringify({ type: "warm", protocol: 17 })}\n`)
         const { entrypoint, actorIdleTimeoutMs } = await assignment
         await waitForCode(entrypoint)
         let available = true

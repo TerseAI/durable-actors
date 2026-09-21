@@ -18,6 +18,7 @@ interface ActorFieldSchema {
 interface ActorSchema {
     readonly actorName: string
     readonly fields: readonly ActorFieldSchema[]
+    readonly reentrantMethods?: readonly string[]
     readonly contract?: SocketContract
 }
 

@@ -26,7 +26,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 16;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 17;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -75,7 +75,7 @@ pub enum ActorSocketEvent {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ActorSocketInvocation {
     pub request_id: String,
     pub actor: ActorKey,
@@ -141,6 +141,7 @@ pub enum ActorSocketEffect {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
+    Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
         state: Value,
@@ -151,6 +152,7 @@ pub enum ActorMethodOutcome {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorSocketOutcome {
+    Interleaved(ActorInterleavedOutcome),
     Handled {
         state: Value,
         effects: Vec<ActorSocketEffect>,
@@ -158,9 +160,21 @@ pub enum ActorSocketOutcome {
     Failed(ActorInvocationFailure),
 }
 
+#[derive(Debug, PartialEq)]
+pub struct ActorInterleavedOutcome {
+    pub sequence: u64,
+    pub result: Value,
+    pub state: Value,
+    pub effects: Vec<ActorSocketEffect>,
+}
+
 #[async_trait]
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_name: &str) -> bool;
+
+    fn allows_reentrancy(&self, _actor_name: &str) -> bool {
+        false
+    }
 
     async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
         Ok(())
@@ -302,10 +316,11 @@ async fn attach_executor(
     mut reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
 ) -> Result<ActorExecutorConnection> {
-    let actor_names = match read_client_message(&mut reader).await? {
+    let (actor_names, reentrant_actor_names) = match read_client_message(&mut reader).await? {
         Some(ActorExecutorClientMessage::Attach {
             protocol,
             actor_names,
+            reentrant_actor_names,
         }) => {
             ensure!(
                 protocol == ACTOR_EXECUTOR_PROTOCOL_VERSION,
@@ -315,11 +330,18 @@ async fn attach_executor(
                 !actor_names.is_empty(),
                 "customer executor advertised no actor names"
             );
-            actor_names
+            ensure!(
+                reentrant_actor_names
+                    .iter()
+                    .all(|name| actor_names.contains(name)),
+                "unknown reentrant actor"
+            );
+            (actor_names, reentrant_actor_names)
         }
         _ => anyhow::bail!("customer executor must attach after loading code"),
     };
-    let (executor, task) = JsActorExecutor::start(reader, writer, actor_names);
+    let (executor, task) =
+        JsActorExecutor::start(reader, writer, actor_names, reentrant_actor_names);
     debug!(actor_names = ?executor.actor_names, "JavaScript executor connected");
     Ok(ActorExecutorConnection { executor, task })
 }
@@ -376,11 +398,16 @@ struct JsActorExecutor {
     changes: watch::Sender<()>,
     residency: Residency,
     actor_names: HashSet<String>,
+    reentrant_actor_names: HashSet<String>,
     commands: mpsc::Sender<ExecutorRequest>,
 }
 
 #[async_trait]
 impl ActorExecutor for JsActorExecutor {
+    fn allows_reentrancy(&self, actor_name: &str) -> bool {
+        self.reentrant_actor_names.contains(actor_name)
+    }
+
     async fn hydrate(&self, actor: ActorKey, state: Option<Arc<Value>>) -> Result<()> {
         match self
             .exchange(
@@ -444,10 +471,19 @@ impl ActorExecutor for JsActorExecutor {
                 result,
                 state,
                 effects,
-            } => Ok(ActorMethodOutcome::Completed {
-                result,
-                state,
-                effects,
+                sequence,
+            } => Ok(match sequence {
+                Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
+                    sequence,
+                    result,
+                    state,
+                    effects,
+                }),
+                None => ActorMethodOutcome::Completed {
+                    result,
+                    state,
+                    effects,
+                },
             }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
@@ -473,9 +509,19 @@ impl ActorExecutor for JsActorExecutor {
             .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
             .await?
         {
-            ExecutorReply::WebsocketHandled { state, effects } => {
-                Ok(ActorSocketOutcome::Handled { state, effects })
-            }
+            ExecutorReply::WebsocketHandled {
+                state,
+                effects,
+                sequence,
+            } => Ok(match sequence {
+                Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
+                    sequence,
+                    result: Value::Null,
+                    state,
+                    effects,
+                }),
+                None => ActorSocketOutcome::Handled { state, effects },
+            }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
                     code,
@@ -515,6 +561,7 @@ impl JsActorExecutor {
         reader: BufReader<OwnedReadHalf>,
         writer: OwnedWriteHalf,
         actor_names: Vec<String>,
+        reentrant_actor_names: Vec<String>,
     ) -> (Arc<Self>, JoinHandle<Result<()>>) {
         let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
         let residency = Arc::new(Mutex::new(None));
@@ -523,6 +570,7 @@ impl JsActorExecutor {
             changes: changes.clone(),
             residency: residency.clone(),
             actor_names: actor_names.into_iter().collect(),
+            reentrant_actor_names: reentrant_actor_names.into_iter().collect(),
             commands,
         });
         let task = tokio::spawn(run_executor_connection(
@@ -1049,6 +1097,8 @@ enum ActorExecutorClientMessage {
     Attach {
         protocol: u32,
         actor_names: Vec<String>,
+        #[serde(default)]
+        reentrant_actor_names: Vec<String>,
     },
     Reply {
         message_id: u64,
@@ -1074,10 +1124,14 @@ enum ExecutorReply {
         result: Value,
         state: Value,
         #[serde(default)]
+        sequence: Option<u64>,
+        #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
         state: Value,
+        #[serde(default)]
+        sequence: Option<u64>,
         effects: Vec<ActorSocketEffect>,
     },
     Failed {
