@@ -7,7 +7,6 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
-import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
 import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
@@ -262,7 +261,6 @@ function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbol
 }
 
 function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: SdkSymbols): DecoratorResult {
-    if (symbol !== undefined && symbol === sdk.Reentrant) return readReentrancy(use)
     switch (symbol) {
         case sdk.Persisted:
             return readPersistence(use, Persistence.Persisted)
@@ -282,13 +280,7 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...actor.diagnostics, ...actor.members.flatMap(member => member.diagnostics))
         const persistence = validatePersistence(actor)
         diagnostics.push(...persistence.diagnostics)
-        const reentrancy = validateReentrancy(actor)
-        diagnostics.push(...reentrancy.diagnostics)
-        schemas.push({
-            actorName: actor.name,
-            fields: persistence.fields,
-            ...(reentrancy.methods.length ? { reentrantMethods: reentrancy.methods } : {})
-        })
+        schemas.push({ actorName: actor.name, fields: persistence.fields })
     }
     return { schemas: diagnostics.length === 0 ? schemas : [], diagnostics }
 }
@@ -301,13 +293,11 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         if (symbol === undefined) throw new ActorDefinitionError(`cannot resolve SDK export ${name}`)
         return canonicalSymbol(checker, symbol)
     }
-    const reentrant = exports.find(symbol => symbol.name === "Reentrant")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
-        Emittable: resolve("Emittable"),
-        ...(reentrant === undefined ? {} : { Reentrant: canonicalSymbol(checker, reentrant) })
+        Emittable: resolve("Emittable")
     }
 }
 

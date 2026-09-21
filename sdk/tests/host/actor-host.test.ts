@@ -23,7 +23,7 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 17 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
             socket.end()
         })
     })
@@ -53,7 +53,6 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
             DURABLE_OBJECT_HOST_STARTUP_MS: "20"
         }),
         () => ({
-            reentrantActors: () => [],
             ready: () => new Promise(() => {}),
             async handle() {
                 return { type: "evicted" }
@@ -143,10 +142,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 17,
+            protocol: 16,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 17 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 16 })}\n`)
         await startup
 
         customerSocket.write(
@@ -288,7 +287,6 @@ test("a failed session connection cleans up the speculative Worker", async () =>
             DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
         }),
         () => ({
-            reentrantActors: () => [],
             async ready() {
                 return ["SessionCounter"]
             },
@@ -338,7 +336,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 17, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 16, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()
@@ -353,7 +351,6 @@ test("reports resident instances when the Rust host advertises support", { timeo
             DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
         }),
         () => ({
-            reentrantActors: () => [],
             ready: async () => ["SessionCounter"],
             handle: async () => ({ type: "evicted" }),
             close() {},

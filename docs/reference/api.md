@@ -192,37 +192,7 @@ Remote method arguments, results, and saved state use JSON serialization:
 
 A method returning `undefined` produces `null` at runtime. TypeScript return annotations do not change JSON behavior. Socket messages and metadata use stricter JSON validation: unsupported values such as `undefined`, `Date`, `BigInt`, non-finite numbers, bytes, and circular references are rejected before sending.
 
-For actors without reentrant methods, when a method or socket lifecycle hook throws, its state changes are not saved. The worker stays alive and reconstructs the actor from its pre-request persisted state before returning the error; ephemeral fields reset. A worker crash or failed reconstruction still requires eviction. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
-
-### Reentrant methods (experimental)
-
-Use `@Reentrant` on a public async method to allow other invocations and socket lifecycle events to run while it awaits:
-
-```ts
-import { Actor, Persisted, Reentrant } from "little-actors"
-
-export class Room extends Actor {
-    @Persisted text = ""
-
-    @Reentrant
-    async generate(url: string): Promise<void> {
-        const response = await fetch(url)
-        this.text += await response.text()
-    }
-
-    async read(): Promise<string> {
-        return this.text
-    }
-}
-```
-
-Reentrant methods use normal JavaScript async interleaving and retain access to the same actor instance. Synchronous execution is never preempted. State may change during any await, so recheck assumptions before using previously read values. An await is an opportunity for interleaving, not a guarantee that another invocation runs.
-
-Undecorated invocations, including socket hooks by default, still serialize with each other. Reentrant invocations can start or resume while an undecorated invocation is awaiting. Multiple reentrant invocations may overlap. Direct `this.method()` calls remain part of the current invocation and inherit its mode; the decorator does not create another invocation for a nested call. Actor-to-actor remote calls remain unsupported.
-
-Declaring any reentrant method changes failure handling for the **whole actor class**: application errors do not restore an earlier snapshot or reconstruct the instance, including errors in undecorated methods and socket hooks. Restoring a snapshot could erase another invocation's successful changes. Mutations from a failed call remain in memory and can be included in a later successful call's saved state.
-
-Persistence still happens at successful invocation completion, not at every assignment or await. A completed read or heartbeat can save shared state containing partial progress from another running call. Snapshots commit in the order they were captured, and successful replies wait for their state publication. Unconfirmed persistence or worker failures stop the activation and can return `outcome_unknown`; they do not release later successful replies. A process restart restores the last durable snapshot, not suspended JavaScript execution. Streamed socket output may precede persistence, so interrupted generation may need to be retried.
+When an actor method or socket lifecycle hook throws, its state changes are not saved. The worker stays alive and reconstructs the actor from its pre-request persisted state before returning the error; ephemeral fields reset. A worker crash or failed reconstruction still requires eviction. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
 Signed browser connections receive automatic snapshots and updates of public `@Emittable` fields, alongside explicit application messages. Private, protected, and non-emittable fields are excluded.
 

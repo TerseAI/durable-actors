@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks"
-
 import { ActorProtocolError } from "../errors.js"
 import type { JsonValue } from "../json.js"
 
@@ -56,7 +54,7 @@ interface ActorConnectionEventMap<Receive = JsonValue, State = JsonValue> {
     readonly error: { readonly type: "error" }
 }
 
-const scopes = new AsyncLocalStorage<{ instance: object; scope: ActorSocketScope; active: boolean }>()
+const scopes = new WeakMap<object, ActorSocketScope>()
 
 async function actorConnections<Metadata, Outgoing, Tag extends string>(
     instance: object
@@ -78,16 +76,14 @@ async function runWithActorSockets<T>(
     const effects: SocketEffect[] = []
     const output = publish === undefined ? undefined : new SocketOutput(publish)
     const scope = new ActorSocketScope(connections, output ?? effects, schemas)
-    const context = { instance, scope, active: true }
-    return scopes.run(context, async () => {
-        try {
-            return { value: await operation(scope), effects }
-        } finally {
-            context.active = false
-            await scope.settle()
-            await output?.flush()
-        }
-    })
+    scopes.set(instance, scope)
+    try {
+        return { value: await operation(scope), effects }
+    } finally {
+        scopes.delete(instance)
+        await scope.settle()
+        await output?.flush()
+    }
 }
 
 class ActorSocketScope {
@@ -258,10 +254,10 @@ class SocketOutput {
 }
 
 function socketScope(instance: object): ActorSocketScope {
-    const context = scopes.getStore()
-    if (context === undefined || context.instance !== instance || !context.active)
+    const scope = scopes.get(instance)
+    if (scope === undefined)
         throw new ActorProtocolError("actor connections are available only during an actor invocation")
-    return context.scope
+    return scope
 }
 
 function socketMessage(message: unknown, schemas: ActorSchemas = {}): SocketMessage {

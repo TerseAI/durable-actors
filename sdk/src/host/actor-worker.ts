@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks"
 import { fileURLToPath } from "node:url"
 import { parentPort, workerData } from "node:worker_threads"
 
@@ -17,12 +16,9 @@ const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
 
 let assigned = false
-const invocation = new AsyncLocalStorage<number>()
-const publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
-const loadingConnections = new Map<
-    number,
-    { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void }
->()
+let publishing: { resolve: () => void; reject: (error: Error) => void } | undefined
+let loadingConnections:
+    { resolve: (connections: readonly SocketConnection[]) => void; reject: (error: Error) => void } | undefined
 if (workerData !== undefined && workerData !== null) void initialize(workerData as ActorWorkerData)
 else {
     post({ type: "warm" })
@@ -42,51 +38,36 @@ async function initialize(data: ActorWorkerData): Promise<void> {
         port!.on("message", (message: ActorWorkerRequest) => {
             if (message.type === "load") throw new Error("customer code already assigned")
             if (message.type === "socket_connections") {
-                const pending = loadingConnections.get(message.messageId)
-                loadingConnections.delete(message.messageId)
+                const pending = loadingConnections
+                loadingConnections = undefined
                 if (message.error === undefined) pending?.resolve(message.connections)
                 else pending?.reject(new Error(message.error))
                 return
             }
             if (message.type === "socket_effects_published") {
-                const pending = publishing.get(message.messageId)
-                publishing.delete(message.messageId)
+                const pending = publishing
+                publishing = undefined
                 if (message.error === undefined) pending?.resolve()
                 else pending?.reject(new Error(message.error))
                 return
             }
             const definition = findActorDefinition(message.command.actor.actor_name)
             if (definition === undefined) {
-                post({
-                    type: "reply",
-                    messageId: message.messageId,
-                    reply: failedReply(
+                post(
+                    failedReply(
                         "actor_name_not_found",
                         `actor entrypoint ${data.moduleUrl} does not export ${message.command.actor.actor_name}`
                     )
-                })
+                )
                 return
             }
             runtime ??= new ActorRuntime(definition, publish, getConnections)
-            invocation.run(message.messageId, () => {
-                void runtime!.handle(message.command).then(
-                    reply => post({ type: "reply", messageId: message.messageId, reply }),
-                    error =>
-                        post({
-                            type: "reply",
-                            messageId: message.messageId,
-                            reply: failedReply("actor_worker_failed", errorMessage(error))
-                        })
-                )
-            })
-        })
-        post({
-            type: "ready",
-            actorNames,
-            reentrantActorNames: actorNames.filter(
-                name => (findActorDefinition(name)?.state.reentrantMethods?.length ?? 0) > 0
+            void runtime.handle(message.command).then(
+                reply => post(reply),
+                error => post(failedReply("actor_worker_failed", errorMessage(error)))
             )
         })
+        post({ type: "ready", actorNames })
     } catch (error) {
         post(failedReply("actor_worker_failed", errorMessage(error)))
     }
@@ -98,21 +79,17 @@ function post(message: ActorWorkerMessage): void {
 
 function publish(effects: readonly SocketEffect[]): Promise<void> {
     return new Promise((resolve, reject) => {
-        const messageId = invocation.getStore()
-        if (messageId === undefined) throw new Error("socket output has no active invocation")
-        if (publishing.has(messageId)) throw new Error("actor socket output is already being published")
-        publishing.set(messageId, { resolve, reject })
-        post({ type: "socket_effects", messageId, effects })
+        if (publishing !== undefined) throw new Error("actor socket output is already being published")
+        publishing = { resolve, reject }
+        post({ type: "socket_effects", effects })
     })
 }
 
 function getConnections(): Promise<readonly SocketConnection[]> {
     return new Promise((resolve, reject) => {
-        const messageId = invocation.getStore()
-        if (messageId === undefined) throw new Error("connection lookup has no active invocation")
-        if (loadingConnections.has(messageId)) throw new Error("actor connections are already being loaded")
-        loadingConnections.set(messageId, { resolve, reject })
-        post({ type: "get_connections", messageId })
+        if (loadingConnections !== undefined) throw new Error("actor connections are already being loaded")
+        loadingConnections = { resolve, reject }
+        post({ type: "get_connections" })
     })
 }
 

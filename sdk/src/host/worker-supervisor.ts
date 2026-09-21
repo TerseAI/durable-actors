@@ -43,9 +43,6 @@ class ActorWorkerSupervisor {
     private identity: string | undefined
     private closed = false
     private actorNames: readonly string[] | undefined
-    private reentrantActorNames: readonly string[] = []
-    private lastSequence = 0
-    private readonly sequenceBases = new WeakMap<ResidentActorWorker, number>()
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
@@ -64,16 +61,11 @@ class ActorWorkerSupervisor {
         const worker = this.speculativeWorker ?? this.preload()
         if (this.speculativeTimer !== undefined) clearTimeout(this.speculativeTimer)
         this.actorNames = await worker.ready()
-        this.reentrantActorNames = worker.reentrantActors()
         if (this.speculativeWorker === worker) {
             this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
             this.speculativeTimer.unref()
         }
         return this.actorNames
-    }
-
-    reentrantActors(): readonly string[] {
-        return this.reentrantActorNames
     }
 
     async handle(
@@ -171,17 +163,8 @@ class ActorWorkerSupervisor {
                 onActiveActorsChange: () => this.notifyActiveActorsChange()
             })
             this.resident = actor
-            this.sequenceBases.set(actor, this.lastSequence)
         }
-        const base = this.sequenceBases.get(actor)!
-        return actor.execute(command, publish, connections).then(reply => {
-            if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
-                const sequence = base + reply.sequence
-                this.lastSequence = Math.max(this.lastSequence, sequence)
-                return { ...reply, sequence }
-            }
-            return reply
-        })
+        return actor.execute(command, publish, connections)
     }
 
     private evict(_command: EvictCommand): ActorExecutorReply {
@@ -216,7 +199,6 @@ class ResidentActorWorker {
     private readonly onActiveActorsChange: () => void
     private worker: ActorWorkerHandle | undefined
     private idleTimer: NodeJS.Timeout | undefined
-    private active = 0
 
     constructor(options: ResidentActorWorkerOptions) {
         this.identity = { ...options.identity }
@@ -242,7 +224,6 @@ class ResidentActorWorker {
             this.onActiveActorsChange
         )
         const worker = this.worker
-        this.active++
         this.onActiveActorsChange()
         let reply: ActorExecutorReply
         try {
@@ -253,25 +234,17 @@ class ResidentActorWorker {
                 errorMessage(error)
             )
         } finally {
-            this.active--
             this.lastCompletedAt = Date.now()
         }
         if (this.worker !== worker)
             return failedReply("actor_worker_terminated", "resident actor was terminated during invocation")
-        if (
-            reply.type === "failed" &&
-            !["actor_method_failed", "actor_socket_failed", "method_not_found", "method_not_callable"].includes(
-                reply.code
-            )
-        ) {
+        if (reply.type === "failed" && reply.code !== "actor_method_failed" && reply.code !== "actor_socket_failed") {
             worker.terminate("actor invocation failed")
             this.worker = undefined
             this.onActiveActorsChange()
         }
-        if (this.active === 0) {
-            this.idleTimer = setTimeout(() => this.onIdle(this), this.idleTimeoutMs)
-            this.idleTimer.unref()
-        }
+        this.idleTimer = setTimeout(() => this.onIdle(this), this.idleTimeoutMs)
+        this.idleTimer.unref()
         return reply
     }
 
@@ -297,19 +270,12 @@ class ActorWorker implements ActorWorkerHandle {
     private readonly readyPromise: Promise<readonly string[]>
     private readyResolve: ((actorNames: readonly string[]) => void) | undefined
     private readyReject: ((error: Error) => void) | undefined
-    private readonly pending = new Map<
-        number,
-        {
-            resolve: (reply: ActorExecutorReply) => void
-            reject: (error: Error) => void
-            publish: SocketPublisher | undefined
-            connections: SocketSource | undefined
-        }
-    >()
-    private nextMessageId = 0
-    private reentrantActorNames: readonly string[] = []
+    private replyResolve: ((reply: ActorExecutorReply) => void) | undefined
+    private replyReject: ((error: Error) => void) | undefined
     private lifecycleState: ActorWorkerState = "starting"
     private terminalError: Error | undefined
+    private publish: SocketPublisher | undefined
+    private connections: SocketSource | undefined
 
     private readonly warmPromise: Promise<void>
     private warmResolve: (() => void) | undefined
@@ -354,16 +320,12 @@ class ActorWorker implements ActorWorkerHandle {
         return this.lifecycleState
     }
 
-    reentrantActors(): readonly string[] {
-        return this.reentrantActorNames
-    }
-
     ready(): Promise<readonly string[]> {
         if (this.lifecycleState === "stopping" || this.lifecycleState === "stopped")
             return Promise.reject(this.terminalError)
         this.worker.ref()
         return this.readyPromise.finally(() => {
-            if (this.pending.size === 0) this.worker.unref()
+            if (this.replyResolve === undefined) this.worker.unref()
         })
     }
 
@@ -374,16 +336,18 @@ class ActorWorker implements ActorWorkerHandle {
     ): Promise<ActorExecutorReply> {
         if (this.terminalError !== undefined) throw this.terminalError
         this.worker.ref()
+        this.publish = publish
+        this.connections = connections
         try {
             await this.readyPromise
             if (this.terminalError !== undefined) throw this.terminalError
             return await new Promise<ActorExecutorReply>((resolve, reject) => {
-                const messageId = ++this.nextMessageId
-                this.pending.set(messageId, { resolve, reject, publish, connections })
-                this.post({ type: "execute", messageId, command })
+                this.replyResolve = resolve
+                this.replyReject = reject
+                this.post({ type: "execute", command })
             })
         } finally {
-            if (this.pending.size === 0) this.worker.unref()
+            if (this.replyResolve === undefined) this.worker.unref()
         }
     }
 
@@ -400,16 +364,15 @@ class ActorWorker implements ActorWorkerHandle {
             return
         }
         if (message.type === "get_connections") {
-            void this.loadConnections(message.messageId)
+            void this.loadConnections()
             return
         }
         if (message.type === "socket_effects") {
-            void this.publishEffects(message.messageId, message.effects)
+            void this.publishEffects(message.effects)
             return
         }
         if (message.type === "ready") {
             if (this.lifecycleState !== "starting") return
-            this.reentrantActorNames = message.reentrantActorNames
             this.lifecycleState = "ready"
             this.readyResolve?.(message.actorNames)
             this.readyResolve = undefined
@@ -425,38 +388,38 @@ class ActorWorker implements ActorWorkerHandle {
             )
             return
         }
-        if (message.type === "failed") this.stop(new Error(message.message))
-        else this.reply(message.messageId, message.reply)
+        this.reply(message)
     }
 
-    private async publishEffects(messageId: number, effects: readonly SocketEffect[]): Promise<void> {
+    private async publishEffects(effects: readonly SocketEffect[]): Promise<void> {
         try {
-            const publish = this.pending.get(messageId)?.publish
-            if (publish === undefined) throw new Error("actor socket publishing is unavailable")
-            await publish(effects)
-            this.post({ type: "socket_effects_published", messageId })
+            if (this.publish === undefined) throw new Error("actor socket publishing is unavailable")
+            await this.publish(effects)
+            this.post({ type: "socket_effects_published" })
         } catch (error) {
-            this.post({ type: "socket_effects_published", messageId, error: errorMessage(error) })
+            this.post({ type: "socket_effects_published", error: errorMessage(error) })
         }
     }
 
-    private async loadConnections(messageId: number): Promise<void> {
+    private async loadConnections(): Promise<void> {
         try {
-            const source = this.pending.get(messageId)?.connections
-            if (source === undefined) throw new Error("actor connection lookup is unavailable")
-            const connections = await source()
-            this.post({ type: "socket_connections", messageId, connections })
+            if (this.connections === undefined) throw new Error("actor connection lookup is unavailable")
+            const connections = await this.connections()
+            this.post({ type: "socket_connections", connections })
         } catch (error) {
-            this.post({ type: "socket_connections", messageId, connections: [], error: errorMessage(error) })
+            this.post({ type: "socket_connections", connections: [], error: errorMessage(error) })
         }
     }
 
-    private reply(messageId: number, reply: ActorExecutorReply): void {
-        const pending = this.pending.get(messageId)
-        if (pending === undefined) return this.stop(new Error("actor replied to an unknown invocation"))
-        this.pending.delete(messageId)
-        pending.resolve(reply)
-        if (this.pending.size === 0) this.worker.unref()
+    private reply(reply: ActorExecutorReply): void {
+        const resolve = this.replyResolve
+        if (resolve === undefined) return
+        this.replyResolve = undefined
+        this.replyReject = undefined
+        this.publish = undefined
+        this.connections = undefined
+        resolve(reply)
+        this.worker.unref()
     }
 
     private post(message: ActorWorkerRequest): void {
@@ -483,8 +446,9 @@ class ActorWorker implements ActorWorkerHandle {
         this.readyReject?.(this.terminalError)
         this.readyResolve = undefined
         this.readyReject = undefined
-        for (const pending of this.pending.values()) pending.reject(this.terminalError)
-        this.pending.clear()
+        this.replyReject?.(this.terminalError)
+        this.replyResolve = undefined
+        this.replyReject = undefined
         this.worker.unref()
     }
 }

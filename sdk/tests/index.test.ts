@@ -21,14 +21,7 @@ test("importing actor definitions does not load remote transports or TypeScript 
 })
 
 test("the package root exposes the complete minimal actor API", () => {
-    assert.deepEqual(Object.keys(api).sort(), [
-        "Actor",
-        "ActorInvocationError",
-        "Emittable",
-        "Ephemeral",
-        "Persisted",
-        "Reentrant"
-    ])
+    assert.deepEqual(Object.keys(api).sort(), ["Actor", "ActorInvocationError", "Emittable", "Ephemeral", "Persisted"])
 })
 
 test("actor calls read environment settings lazily without a setup function", () => {
