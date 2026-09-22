@@ -9,6 +9,7 @@ import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import { socketMetadata } from "../actor/socketValidation.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
+import { actorEnvironment } from "../environment.js"
 import { ActorInvocationError, ActorProtocolError } from "../errors.js"
 import { cloneJson } from "../json.js"
 import type { JsonValue } from "../json.js"
@@ -296,11 +297,12 @@ class RemoteActorClient {
 
     private get settings(): RemoteActorSettings {
         if (this.settingsValue !== undefined) return this.settingsValue
+        const environment = actorEnvironment(this.environment)
         this.settingsValue = configuredSettings({
-            apiKey: this.environment.DURABLE_OBJECT_API_KEY,
-            projectId: this.environment.DURABLE_OBJECT_PROJECT_ID,
-            homeRegion: this.environment.DURABLE_OBJECT_HOME_REGION,
-            controlPlaneUrl: this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100"
+            apiKey: environment.DURABLE_ACTORS_SECRET,
+            projectId: environment.DURABLE_ACTORS_PROJECT_ID,
+            homeRegion: environment.DURABLE_ACTORS_HOME_REGION,
+            controlPlaneUrl: environment.DURABLE_ACTORS_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100"
         })
         return this.settingsValue
     }

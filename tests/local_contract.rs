@@ -1,4 +1,4 @@
-use std::{os::unix::fs::PermissionsExt, path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -127,38 +127,45 @@ impl LocalRuntime {
         let (origin, startup_output) = timeout(Duration::from_secs(5), async {
             let mut line = String::new();
             let mut startup_output = String::new();
+            let mut origin = None;
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
                 startup_output.push_str(&line);
-                if let Some((_, origin)) = line.split_once("  Ready  ") {
-                    return Ok::<_, anyhow::Error>((origin.trim().to_owned(), startup_output));
+                if let Some((_, value)) = line.split_once("  Ready  ") {
+                    origin = Some(value.trim().to_owned());
+                }
+                if line
+                    .trim_start()
+                    .starts_with("export DURABLE_ACTORS_SECRET=")
+                {
+                    return Ok::<_, anyhow::Error>((
+                        origin.context("missing origin")?,
+                        startup_output,
+                    ));
                 }
                 line.clear();
             }
         })
         .await??;
-        let key_file = project.join(".durable-actors/api-key");
-        let api_key = std::fs::read_to_string(&key_file)?;
-        assert_eq!(
-            std::fs::metadata(&key_file)?.permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(!startup_output.contains(&api_key));
         let export = startup_output
             .lines()
-            .find(|line| line.starts_with("export DURABLE_OBJECT_API_KEY="))
-            .context("missing generated API key instruction")?;
+            .find(|line| {
+                line.trim_start()
+                    .starts_with("export DURABLE_ACTORS_SECRET=")
+            })
+            .context("missing generated shared secret instruction")?;
         let loaded = Command::new("sh")
             .arg("-c")
-            .arg(format!("{export}\nprintf '%s' \"$DURABLE_OBJECT_API_KEY\""))
+            .arg(format!("{export}\nprintf '%s' \"$DURABLE_ACTORS_SECRET\""))
             .output()
             .await?;
         assert!(loaded.status.success());
-        assert_eq!(String::from_utf8(loaded.stdout)?, api_key);
-        ensure!(api_key.len() >= 32, "generated API key is too short");
+        let api_key = String::from_utf8(loaded.stdout)?;
+        ensure!(api_key.len() >= 32, "generated shared secret is too short");
+        assert!(!project.join(".durable-actors/api-key").exists());
         assert!(!project.join(".durable-actors/runtime.json").exists());
         Ok(Self {
             child,

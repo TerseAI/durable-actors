@@ -29,36 +29,36 @@ function registerDevCommand(program: Command): void {
         .command("dev")
         .description("Start local actors with persistent file storage")
         .addOption(
-            new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID").makeOptionMandatory()
+            new Option("--project-id <id>", "actor project ID").env("DURABLE_ACTORS_PROJECT_ID").default("local")
         )
         .option("--no-watch", "Disable automatic actor reload when source files change")
         .addOption(
-            new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
-                "DURABLE_OBJECT_API_KEY"
+            new Option("--api-key <key>", "Shared secret for local clients (generated when omitted)").env(
+                "DURABLE_ACTORS_SECRET"
             )
         )
         .addOption(
-            new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
+            new Option("--project <directory>", "actor project directory").env("DURABLE_ACTORS_PROJECT").default(".")
         )
         .addOption(
             new Option("--port <number>", "loopback port (0 selects a free port)")
-                .env("DURABLE_OBJECT_PORT")
+                .env("DURABLE_ACTORS_PORT")
                 .argParser(portNumber)
                 .default(7100)
         )
         .addOption(
             new Option("--entrypoint <file>", "actor source file, relative to the project")
-                .env("DURABLE_OBJECT_ENTRYPOINT")
+                .env("DURABLE_ACTORS_ENTRYPOINT")
                 .default("src/durable-objects.ts")
         )
         .addOption(
             new Option("--data-dir <directory>", "state directory (default: <project>/.durable-actors)").env(
-                "DURABLE_OBJECT_DATA_DIR"
+                "DURABLE_ACTORS_DATA_DIR"
             )
         )
         .addOption(
             new Option("--storage <backend>", "where to save actor state and ownership")
-                .env("DURABLE_OBJECT_STORAGE")
+                .env("DURABLE_ACTORS_STORAGE")
                 .choices(["local", "gcs"])
                 .default("local")
         )

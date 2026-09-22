@@ -92,7 +92,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
 test("init creates a complete chat app using the installed SDK version", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    const { stdout } = await run(process.execPath, [cli, "init", "my chat"], { cwd: directory })
+    const { stdout } = await run(process.execPath, [cli, "init", "my chat", "--template", "chat"], { cwd: directory })
     const project = path.join(directory, "my chat")
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const sdk = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"))
@@ -196,7 +196,7 @@ test("objects uses cloud credentials, and reports API errors", async t => {
         run(process.execPath, [cli, "objects", "list", "--url", origin], {
             env: { ...env, DURABLE_OBJECT_API_KEY: "" }
         }),
-        /API key/u
+        /shared secret/u
     )
     assert.equal(requests.length, 2)
 })
@@ -335,9 +335,21 @@ console.log(JSON.stringify(process.argv.slice(2)))
     assert.equal(args[args.indexOf("--port") + 1], "7300")
     assert.equal(args[args.indexOf("--storage") + 1], "local")
     assert.equal(args[args.indexOf("--api-key") + 1], "flag-key")
+    const branded = await run(process.execPath, [cli, "dev"], {
+        env: {
+            ...env,
+            DURABLE_ACTORS_PROJECT_ID: "branded-project",
+            DURABLE_ACTORS_SECRET: "branded-key",
+            DURABLE_ACTORS_BINARY: binary,
+            DURABLE_OBJECT_BINARY: "/missing/legacy-runtime"
+        }
+    })
+    const brandedArgs: string[] = JSON.parse(branded.stdout)
+    assert.equal(brandedArgs[brandedArgs.indexOf("--project-id") + 1], "branded-project")
+    assert.equal(brandedArgs[brandedArgs.indexOf("--api-key") + 1], "branded-key")
     const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
     const envFile = path.join(project, ".env")
-    await writeFile(envFile, "DURABLE_OBJECT_API_KEY=env-file-key\n")
+    await writeFile(envFile, "DURABLE_ACTORS_SECRET=env-file-key\n")
     const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
     assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)

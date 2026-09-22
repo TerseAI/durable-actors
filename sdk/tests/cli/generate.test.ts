@@ -54,23 +54,42 @@ test("generate uses environment settings and explicit flags without reading disc
     const result = await generate()
     assert.match(result.stdout, /local-revision/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
-    await run(process.execPath, [cli, "generate", "--url", origin, "--api-key", "local-key"], {
+    await run(
+        process.execPath,
+        [cli, "generate", "--url", origin, "--project-id", "selected-project", "--api-key", "local-key"],
+        {
+            cwd: directory,
+            env: {
+                ...localEnv,
+                DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
+                DURABLE_OBJECT_API_KEY: "wrong"
+            }
+        }
+    )
+    assert.deepEqual(requests, [
+        "/v1/projects/default/deployment/contract",
+        "/v1/projects/selected-project/deployment/contract"
+    ])
+    await run(process.execPath, [cli, "generate", "--url"], {
         cwd: directory,
         env: {
             ...localEnv,
-            DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-            DURABLE_OBJECT_API_KEY: "wrong"
+            DURABLE_ACTORS_PROJECT_ID: "branded-project",
+            DURABLE_ACTORS_API_KEY: "local-key",
+            DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+            DURABLE_OBJECT_API_KEY: "wrong",
+            DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid"
         }
     })
-    assert.deepEqual(requests, Array(2).fill("/v1/projects/default/deployment/contract"))
+    assert.equal(requests.at(-1), "/v1/projects/branded-project/deployment/contract")
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--url"], {
             cwd: directory,
             env: { ...localEnv, DURABLE_OBJECT_API_KEY: "" }
         }),
-        /API key/
+        /shared secret/
     )
-    assert.equal(requests.length, 2)
+    assert.equal(requests.length, 3)
 })
 
 test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {
@@ -228,7 +247,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
             cwd: directory,
             env: { ...env, DURABLE_OBJECT_API_KEY: "" }
         }),
-        /API key/
+        /shared secret/
     )
     assert.equal(requests, 0)
     await assert.rejects(generate("--revision", "different"), /revision/)

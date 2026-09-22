@@ -75,7 +75,7 @@ test("deploy registers the source image in one request without local source or M
     )
     await assert.rejects(
         run(process.execPath, args, { cwd: project, env: { ...env, DURABLE_OBJECT_API_KEY: "" } }),
-        /API key/
+        /shared secret/
     )
     assert.equal(requests, 0)
     await assert.rejects(run(process.execPath, args, { cwd: project, env }), /HTTP 409.*different contract/)

@@ -1,17 +1,18 @@
 # Command Line Interface
 
-## Create sample templates
+## Create an actor project
 
 ```sh
-npx durable-actors init chat-example
+npx durable-actors init my-actors
 ```
 
-`init <directory>` creates sample templated projects to get started.
+`init <directory>` creates a standalone TypeScript actor project with a persisted counter, `dev`, `build`, and type-check scripts. Run `pnpm install` and `pnpm exec durable-actors dev` in the new directory to start the actor server. If the CLI is installed globally, run `durable-actors dev` directly. Connect a separate application using the export and generate commands printed by `dev`.
 
-- `--template <name>` — Template to copy. Defaults to `chat`.
+- `--template <name>` — Template to copy. Defaults to `actor`. The other templates are complete sample applications with their backend and actors in one package.
 
 | Template                                | Description                                                                                                                                                                        |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `actor`                                 | Minimal actor service with a persisted counter and no application server or frontend. |
 | `chat`                                  | Express and React chat app with actor definitions, an application authorization route, and native WebSockets.                                                                      |
 | `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
 | `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                     |
@@ -24,12 +25,15 @@ npx durable-actors dev
 
 Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
-- `--api-key <key>` — API key override. `dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one, saves it in `<data-dir>/api-key` with owner-only permissions, and prints an export command that reads the file. The key changes on each restart and is not printed.
+- `--project-id <id>` — Actor project ID. Uses `DURABLE_ACTORS_PROJECT_ID` when set, otherwise defaults to `local`. An explicit flag takes precedence.
+- `--api-key <key>` — Shared secret override. `dev` also reads `DURABLE_ACTORS_SECRET` from `.env`; when neither is set, it mints a fresh secret for that run. The development server prints the secret directly in a copyable export command. Generated secrets change on restart; no secret file is needed.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.durable-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
+
+Once ready, `dev` prints a `generate` command containing its actual URL and project ID. Run that command in the consuming npm project after setting its shared secret using the printed export command. Set the printed project ID in the backend's environment as well; the `local` default applies only to `dev`.
 
 ## Open the observability UI
 
@@ -39,7 +43,7 @@ npx durable-actors observe
 
 Verifies admin access to the control plane, starts a local Web UI on an available loopback port, and opens it in your default browser. The React UI checks connectivity through the local server and offers a check/retry button; it does not yet monitor live activity. Control-plane credentials stay on the local server. The terminal prints the UI URL. Press Ctrl+C to stop the server. Failed connection checks print an error and exit with code `1`.
 
-- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_OBJECT_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_ACTORS_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
 - `--no-open` — Start the UI and print its URL without launching a browser. If automatic opening fails, the server remains available at the printed URL.
 
 The CLI serves the built UI directly from its `durable-actors-observer` runtime dependency. The UI is also available as the embeddable [`durable-actors-observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
@@ -103,17 +107,18 @@ The source entrypoint is a positional argument and defaults to `src/durable-obje
 
 - `--out-dir <directory>` — Output location. Defaults to `generated/`.
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.
-- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_OBJECT_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
+- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_ACTORS_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
+- `--project-id <id>` — Project whose published contract to fetch. Required with `--url` unless `DURABLE_ACTORS_PROJECT_ID` is set.
 - `--revision <id>` — Optional check that the active deployment matches this revision. Defaults to the latest deployment's contract.
 - `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ### Generate from the control plane
 
 ```sh
-npx durable-actors generate --url
+npx durable-actors generate --url http://127.0.0.1:7100 --project-id local
 ```
 
-Set `DURABLE_OBJECT_API_KEY` and optionally `DURABLE_OBJECT_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
+Set `DURABLE_ACTORS_SECRET` and optionally `DURABLE_ACTORS_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
 
 ## Start a hosted server
 

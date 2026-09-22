@@ -4,17 +4,20 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { x } from "tar"
 
+import { actorEnvironment } from "./environment.js"
+
 const executables = ["durable-actors", "durable-actors-modal-go"]
 const maximumBytes = 200 * 1024 * 1024
 
 export async function fetchRuntimeExecutablePath(): Promise<string> {
-    if (process.env.DURABLE_OBJECT_BINARY) return path.resolve(process.env.DURABLE_OBJECT_BINARY)
+    const environment = actorEnvironment(process.env)
+    if (environment.DURABLE_ACTORS_BINARY) return path.resolve(environment.DURABLE_ACTORS_BINARY)
     const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
     return new RuntimeInstaller({
         version,
         platform: process.platform,
         arch: process.arch,
-        cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/durable-actors")
+        cacheDirectory: environment.DURABLE_ACTORS_CACHE_DIR ?? path.join(homedir(), ".cache/durable-actors")
     }).install()
 }
 

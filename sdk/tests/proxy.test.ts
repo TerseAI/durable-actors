@@ -5,6 +5,40 @@ import { SocketProxy } from "../src/proxy.js"
 
 const actors = { Room: {} }
 
+test("socket grants use branded connection exports ahead of legacy values", async t => {
+    const environment = process.env
+    t.after(() => {
+        process.env = environment
+    })
+    process.env = {
+        ...environment,
+        DURABLE_ACTORS_PROJECT_ID: "local",
+        DURABLE_ACTORS_SECRET: "new-key",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: "http://127.0.0.1:8123",
+        DURABLE_OBJECT_PROJECT_ID: "wrong",
+        DURABLE_OBJECT_API_KEY: "wrong",
+        DURABLE_OBJECT_CONTROL_PLANE_URL: "https://wrong.example"
+    }
+    const proxy = new SocketProxy(
+        actors,
+        {},
+        {
+            fetch: async (url, init) => {
+                assert.equal(String(url), "http://127.0.0.1:8123/v1/projects/local/actors/Room/one/connect")
+                assert.equal(new Headers(init?.headers).get("authorization"), "Bearer new-key")
+                return Response.json({
+                    websocketUrl: "ws://127.0.0.1:8123/socket?key=ticket",
+                    transport: "websocket",
+                    homeRegion: "local",
+                    connectByMs: 1000,
+                    authorizedUntilMs: 900000
+                })
+            }
+        }
+    )
+    await proxy.handle({ actorName: "Room", actorId: "one", metadata: {} })
+})
+
 test("socket grants target the configured project as well as the actor", async () => {
     for (const projectId of ["team-a", "team-b"]) {
         const options = { projectId, controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
@@ -120,6 +154,6 @@ test("proxy requires JSON metadata and a backend API key", async () => {
                 controlPlaneUrl: "https://actors.example.com",
                 apiKey: ""
             }),
-        /API key/
+        /shared secret/
     )
 })

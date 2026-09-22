@@ -5,12 +5,42 @@ fn startup_message_has_clear_hierarchy_and_next_step() {
     let message = local_ready_message(
         "http://127.0.0.1:7100",
         Path::new("/projects/chat/.durable-actors"),
+        "local",
     );
 
-    assert_eq!(
-        message,
-        "durable actors / local\n\n  Ready  http://127.0.0.1:7100\n  State  /projects/chat/.durable-actors\n  Next   npx durable-actors generate --url http://127.0.0.1:7100\n\n  State persists between restarts. Delete the state directory to start fresh."
+    assert!(message.starts_with("durable actors / local\n\n  Ready"));
+    assert!(message.contains("Connect your application"));
+    assert!(message.contains("export DURABLE_ACTORS_PROJECT_ID=local"));
+    assert!(message.contains("export DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100"));
+    assert!(message.contains("export DURABLE_ACTORS_SECRET='generated-secret'"));
+    assert!(
+        message
+            .find("1. Set the connection and shared secret")
+            .unwrap()
+            < message.find("2. Generate your client").unwrap()
     );
+    assert!(!message.contains("DURABLE_OBJECT_"));
+    assert!(!message.contains("cat --"));
+    assert!(!message.contains("API key"));
+}
+
+#[test]
+fn startup_command_uses_the_exported_project_and_port() {
+    let message = local_ready_message(
+        "http://127.0.0.1:8123",
+        Path::new("/projects/chat/.durable-actors"),
+        "my-project",
+    );
+    assert!(message.contains("export DURABLE_ACTORS_PROJECT_ID=my-project"));
+    assert!(message.contains("export DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:8123"));
+    assert!(message.contains("     durable-actors generate\n"));
+}
+
+#[test]
+fn credentials_print_a_shell_quoted_shared_secret() {
+    let message = local_credentials_instructions("Sam's-$secret", LocalReadyStyles::default());
+    assert!(message.contains("export DURABLE_ACTORS_SECRET='Sam'\\''s-$secret'"));
+    assert!(message.contains("shared secret is required"));
 }
 
 #[tokio::test]

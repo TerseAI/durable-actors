@@ -18,9 +18,9 @@ function registerDeployCommand(program: Command): void {
         .requiredOption("--image <reference>", "published customer build image reference")
         .option("--working-directory <path>", "project directory inside the build image", "/customer")
         .option("--revision <revision>", "code revision (defaults to a new generated ID)")
-        .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
-        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
-        .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
+        .option("--url <origin>", "control-plane origin (or DURABLE_ACTORS_CONTROL_PLANE_URL)")
+        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_ACTORS_PROJECT_ID"))
+        .option("--api-key <key>", "shared secret (or DURABLE_ACTORS_SECRET)")
         .option(
             "--secret <name>",
             "Modal secret reference (uses an on-demand sandbox)",

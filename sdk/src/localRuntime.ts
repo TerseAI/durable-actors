@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
 import { validateProjectId } from "./actor/identity.js"
+import { actorEnvironment } from "./environment.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
@@ -75,7 +76,7 @@ function launch(executable: string, options: LocalActorOptions) {
         {
             cwd: project,
             env: {
-                ...process.env,
+                ...actorEnvironment(process.env),
                 PATH: `${path.dirname(process.execPath)}${path.delimiter}${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
                 DURABLE_OBJECT_PROCESS_ROLE: "control_plane",
                 DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"

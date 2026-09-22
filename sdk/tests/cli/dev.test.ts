@@ -77,6 +77,19 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
+    for (const [projectId, flags, expected] of [
+        [undefined, [], "local"],
+        ["from-environment", [], "from-environment"],
+        ["from-environment", ["--project-id", "from-flag"], "from-flag"]
+    ] as const) {
+        const { stdout } = await run(process.execPath, [...args, "--no-watch", ...flags], {
+            cwd: directory,
+            env: { ...env, DURABLE_OBJECT_PROJECT_ID: projectId }
+        })
+        const { args: runtimeArgs } = JSON.parse(stdout)
+        assert.equal(runtimeArgs[runtimeArgs.indexOf("--project-id") + 1], expected)
+    }
+
     const failure = await run(process.execPath, args, {
         cwd: directory,
         env: { ...env, TEST_RUNTIME_EXIT_CODE: "7" }

@@ -30,11 +30,25 @@ test("environment and explicit client settings normalize routes and API keys equ
         }
         await new RemoteActorClient(settings, dependencies).connect("Counter", "one", {})
         await new RemoteActorClient(undefined, dependencies).connect("Counter", "one", {})
+        await new RemoteActorClient(undefined, {
+            ...dependencies,
+            environment: {
+                ...environmentFor({
+                    ...settings,
+                    projectId: "wrong",
+                    apiKey: "wrong",
+                    controlPlaneUrl: "https://wrong.example"
+                }),
+                DURABLE_ACTORS_PROJECT_ID: settings.projectId,
+                DURABLE_ACTORS_SECRET: settings.apiKey,
+                DURABLE_ACTORS_CONTROL_PLANE_URL: settings.controlPlaneUrl
+            }
+        }).connect("Counter", "one", {})
         const expected = {
             url: "wss://host.example.com/v1/socket?key=ticket",
             metadata: {}
         }
-        assert.deepEqual(connections, [expected, expected])
+        assert.deepEqual(connections, [expected, expected, expected])
     }
 })
 
@@ -89,7 +103,7 @@ test("clients require explicit credentials even if a discovery file exists", asy
             connectWebSocket: async () => assert.fail('used file credentials')
         });
         await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
-        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /API key/);
+        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /shared secret/);
     `
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))
     await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })

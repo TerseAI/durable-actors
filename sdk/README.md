@@ -6,17 +6,22 @@ Named actors with serial method calls and saved state. Requires Node.js 20.19+ o
 npm install durable-actors
 ```
 
-Start with the [chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/chat) to create and run the Express + React chat app.
+Use `npx durable-actors init my-actors` to create a standalone actor project.
 
 ## Local CLI
 
-Create the bundled chat app in a new directory:
+Create an actor project in a new directory:
 
 ```sh
-npx durable-actors init chat-example
+npx durable-actors init my-actors
+cd my-actors
+pnpm install
+pnpm exec durable-actors dev
 ```
 
-The command copies the template and prints setup instructions. Its dependencies include the same SDK version as the CLI. In an existing application, install `durable-actors` and follow the actor setup below.
+The project contains a persisted counter in `src/durable-objects.ts`, TypeScript configuration, and scripts to run, check, and build your actors. Its dependencies include the same SDK version as the CLI. In your separate application project, install `durable-actors`, run the environment exports printed by the actor server, and run its printed `generate --url … --project-id …` command.
+
+For the combined Express + React [chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/chat), use `npx durable-actors init chat-example --template chat`.
 
 For Vercel AI SDK with durable chat history, use `npx durable-actors init ai-chat-example --template ai-chat`. The [AI chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat) uses `useChat`, HTTP streaming, and backend actor calls; it needs an OpenAI API key and no generated clients.
 
@@ -28,7 +33,7 @@ Export actors from `src/durable-objects.ts`. Annotate every instance field with 
 npx durable-actors dev
 ```
 
-Wait for the `Ready` line. If `dev` generates a key, run its printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
+Wait for the `Ready` line, then copy the connection exports printed under **Connect your application** into your backend terminal. `dev` mints a shared secret by default and prints it directly as `export DURABLE_ACTORS_SECRET='…'`.
 
 Generate source once for your backend and web app:
 
@@ -99,7 +104,7 @@ The launcher downloads the matching runtime and waits for readiness. It defaults
 
 Configure the [remote connection](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/configuration.md) once for your CLI and backend. Local development needs no connection configuration.
 
-Keep the API key on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/durable-actors/blob/main/docs/guides/self-hosting.md#browser-connections).
+Keep the shared secret on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/durable-actors/blob/main/docs/guides/self-hosting.md#browser-connections).
 
 See [self-hosting](https://github.com/TerseAI/durable-actors/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
 
@@ -178,7 +183,7 @@ Messages are application JSON in text frames, with no SDK envelopes, initializat
 
 Open a grant within 60 seconds. Connection authorization defaults to 15 minutes; set `authorizationLifetimeMs` in `prepareWebsocket` to change it, subject to the server's maximum. The server closes expired connections with code `4408`, including while idle or running a handler. Your application decides whether to request a fresh grant and open another socket.
 
-Treat both the URL and key as credentials. Keep the backend API key on the server and omit signed URL query strings from logs. Call `socket.close()` when the view is finished.
+Treat both the URL and key as credentials. Keep the backend shared secret on the server and omit signed URL query strings from logs. Call `socket.close()` when the view is finished.
 
 ## Reference
 
