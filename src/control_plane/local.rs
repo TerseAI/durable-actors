@@ -38,25 +38,25 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
-    #[arg(long, env = "DURABLE_OBJECT_PROJECT_ID", default_value = "local")]
+    #[arg(long, env = "DURABLE_ACTORS_PROJECT_ID", default_value = "local")]
     pub project_id: String,
-    #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
+    #[arg(long, env = "DURABLE_ACTORS_SECRET")]
     pub api_key: Option<String>,
-    #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
+    #[arg(long, env = "DURABLE_ACTORS_PROJECT", default_value = ".")]
     pub project: PathBuf,
-    #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
+    #[arg(long, env = "DURABLE_ACTORS_PORT", default_value_t = 7100)]
     pub port: u16,
-    #[arg(long, env = "DURABLE_OBJECT_DATA_DIR")]
+    #[arg(long, env = "DURABLE_ACTORS_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
     #[arg(
         long,
-        env = "DURABLE_OBJECT_ENTRYPOINT",
+        env = "DURABLE_ACTORS_ENTRYPOINT",
         default_value = "src/durable-objects.ts"
     )]
     pub entrypoint: String,
     #[arg(
         long,
-        env = "DURABLE_OBJECT_STORAGE",
+        env = "DURABLE_ACTORS_STORAGE",
         value_enum,
         default_value = "local"
     )]
@@ -240,8 +240,8 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
             directory: directory.canonicalize()?.join("objects"),
         },
         DevStorage::Gcs => BucketLocation::Gcs {
-            bucket: std::env::var("DURABLE_OBJECT_BUCKET")
-                .context("--storage gcs requires DURABLE_OBJECT_BUCKET")?,
+            bucket: std::env::var("DURABLE_ACTORS_BUCKET")
+                .context("--storage gcs requires DURABLE_ACTORS_BUCKET")?,
         },
     };
     let bucket: Arc<dyn Bucket> = match &location {

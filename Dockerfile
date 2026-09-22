@@ -59,6 +59,6 @@ RUN mkdir -p /customer /node_modules \
     && ln -s /opt/durable-actors/sdk /node_modules/durable-actors
 
 ENV RUST_LOG=warn,durable_actors=info
-ENV DURABLE_OBJECT_SANDBOX_COMMAND=durable-actors-modal-go
-ENV DURABLE_OBJECT_SDK_HOST=/opt/durable-actors/sdk/dist/host.js
+ENV DURABLE_ACTORS_SANDBOX_COMMAND=durable-actors-modal-go
+ENV DURABLE_ACTORS_SDK_HOST=/opt/durable-actors/sdk/dist/host.js
 ENTRYPOINT ["/usr/local/bin/durable-actors"]

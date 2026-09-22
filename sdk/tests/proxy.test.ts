@@ -5,7 +5,7 @@ import { SocketProxy } from "../src/proxy.js"
 
 const actors = { Room: {} }
 
-test("socket grants use branded connection exports ahead of legacy values", async t => {
+test("socket grants use durable actor settings and ignore removed environment names", async t => {
     const environment = process.env
     t.after(() => {
         process.env = environment

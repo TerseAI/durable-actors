@@ -39,11 +39,11 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         host_idle_timeout_ms: 300_000,
     };
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_OBJECT_LOG_MODE"),
+        host_environment(&request, &directory).get("DURABLE_ACTORS_LOG_MODE"),
         Some(&"development".to_owned())
     );
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS"),
+        host_environment(&request, &directory).get("DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS"),
         Some(&"60".to_owned())
     );
     let error = provider.ensure_host(&request).await.unwrap_err();

@@ -59,9 +59,9 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     )
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_BINARY: executable,
-        DURABLE_OBJECT_API_KEY: "test-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_BINARY: executable,
+        DURABLE_ACTORS_SECRET: "test-key"
     }
     const args = [cli, "dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
@@ -84,7 +84,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     ] as const) {
         const { stdout } = await run(process.execPath, [...args, "--no-watch", ...flags], {
             cwd: directory,
-            env: { ...env, DURABLE_OBJECT_PROJECT_ID: projectId }
+            env: { ...env, DURABLE_ACTORS_PROJECT_ID: projectId }
         })
         const { args: runtimeArgs } = JSON.parse(stdout)
         assert.equal(runtimeArgs[runtimeArgs.indexOf("--project-id") + 1], expected)

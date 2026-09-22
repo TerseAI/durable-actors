@@ -12,7 +12,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
-const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "default", DURABLE_OBJECT_API_KEY: "contract-key" }
+const env = { ...process.env, DURABLE_ACTORS_PROJECT_ID: "default", DURABLE_ACTORS_SECRET: "contract-key" }
 
 test("generate uses environment settings and explicit flags without reading discovery files", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-local-"))
@@ -45,9 +45,9 @@ test("generate uses environment settings and explicit flags without reading disc
     )
     const localEnv = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "local-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+        DURABLE_ACTORS_SECRET: "local-key"
     }
     const generate = (...args: string[]) =>
         run(process.execPath, [cli, "generate", "--url", ...args], { cwd: directory, env: localEnv })
@@ -61,8 +61,8 @@ test("generate uses environment settings and explicit flags without reading disc
             cwd: directory,
             env: {
                 ...localEnv,
-                DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-                DURABLE_OBJECT_API_KEY: "wrong"
+                DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid",
+                DURABLE_ACTORS_SECRET: "wrong"
             }
         }
     )
@@ -75,9 +75,9 @@ test("generate uses environment settings and explicit flags without reading disc
         env: {
             ...localEnv,
             DURABLE_ACTORS_PROJECT_ID: "branded-project",
-            DURABLE_ACTORS_API_KEY: "local-key",
+            DURABLE_ACTORS_SECRET: "local-key",
             DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-            DURABLE_OBJECT_API_KEY: "wrong",
+            DURABLE_ACTORS_API_KEY: "wrong",
             DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid"
         }
     })
@@ -98,7 +98,7 @@ test("generate uses environment settings and explicit flags without reading disc
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--url"], {
             cwd: directory,
-            env: { ...localEnv, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...localEnv, DURABLE_ACTORS_SECRET: "" }
         }),
         /shared secret/
     )
@@ -224,7 +224,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
 
     await run(process.execPath, [cli, "generate", "--url", "--out-dir", "active"], {
         cwd: directory,
-        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+        env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin }
     })
     assert.equal(requests[1], "/v1/projects/default/deployment/contract")
 })
@@ -258,7 +258,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--url", origin], {
             cwd: directory,
-            env: { ...env, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...env, DURABLE_ACTORS_SECRET: "" }
         }),
         /shared secret/
     )

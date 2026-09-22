@@ -54,7 +54,7 @@ impl ReplicaScope {
 
 pub fn replica_regions(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Vec<String>> {
     let regions: Vec<String> = serde_json::from_str(
-        &get("DURABLE_OBJECT_REPLICA_REGIONS").unwrap_or_else(|| "[]".into()),
+        &get("DURABLE_ACTORS_REPLICA_REGIONS").unwrap_or_else(|| "[]".into()),
     )?;
     ensure!(
         regions.len() <= MAX_REPLICAS,

@@ -65,7 +65,7 @@ impl LocalSandboxProvider {
         let mut environment = host_environment(request, &directory);
         if let Some(module) = &self.sdk_host {
             environment.insert(
-                "DURABLE_OBJECT_SDK_HOST".into(),
+                "DURABLE_ACTORS_SDK_HOST".into(),
                 module.display().to_string(),
             );
         }
@@ -277,70 +277,70 @@ fn handle(lease: crate::host_leases::HostLease, region: &str, owner_epoch: u64) 
 
 fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap<String, String> {
     let mut environment = std::env::vars()
-        .filter(|(key, _)| !key.starts_with("DURABLE_OBJECT_"))
+        .filter(|(key, _)| !key.starts_with("DURABLE_ACTORS_"))
         .collect::<HashMap<_, _>>();
     if let Some(actor) = &request.actor {
         environment.insert(
-            "DURABLE_OBJECT_ACTOR".into(),
+            "DURABLE_ACTORS_ACTOR".into(),
             serde_json::to_string(actor).expect("actor identity serializable"),
         );
     }
     environment.insert(
-        "DURABLE_OBJECT_ACTOR_IS_NEW".into(),
+        "DURABLE_ACTORS_ACTOR_IS_NEW".into(),
         request.actor_is_new.to_string(),
     );
     for (key, value) in [
-        ("DURABLE_OBJECT_PROCESS_ROLE", "host".to_owned()),
-        ("DURABLE_OBJECT_LOG_MODE", "development".into()),
-        ("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1".into()),
-        ("DURABLE_OBJECT_HOST_BIND", "127.0.0.1:0".into()),
+        ("DURABLE_ACTORS_PROCESS_ROLE", "host".to_owned()),
+        ("DURABLE_ACTORS_LOG_MODE", "development".into()),
+        ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1".into()),
+        ("DURABLE_ACTORS_HOST_BIND", "127.0.0.1:0".into()),
         (
-            "DURABLE_OBJECT_HOST_ID",
+            "DURABLE_ACTORS_HOST_ID",
             request.host_id.as_str().to_owned(),
         ),
-        ("DURABLE_OBJECT_SESSION_ID", request.session_id.clone()),
-        ("DURABLE_OBJECT_HOST_TOKEN", request.host_token.clone()),
+        ("DURABLE_ACTORS_SESSION_ID", request.session_id.clone()),
+        ("DURABLE_ACTORS_HOST_TOKEN", request.host_token.clone()),
         (
-            "DURABLE_OBJECT_JWT_PUBLIC_KEYS",
+            "DURABLE_ACTORS_JWT_PUBLIC_KEYS",
             request.jwt_public_keys.clone(),
         ),
         (
-            "DURABLE_OBJECT_CONTROL_PLANE_URL",
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
             request.control_plane_url.clone(),
         ),
-        ("DURABLE_OBJECT_JWT_ISSUER", request.jwt_issuer.clone()),
+        ("DURABLE_ACTORS_JWT_ISSUER", request.jwt_issuer.clone()),
         (
-            "DURABLE_OBJECT_SOCKET_JWT_AUDIENCE",
+            "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE",
             request.socket_jwt_audience.clone(),
         ),
         (
-            "DURABLE_OBJECT_INVOKE_JWT_AUDIENCE",
+            "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE",
             request.invocation_jwt_audience.clone(),
         ),
         (
-            "DURABLE_OBJECT_EXECUTOR_SOCKET",
+            "DURABLE_ACTORS_EXECUTOR_SOCKET",
             directory.path().join("executor.sock").display().to_string(),
         ),
         (
-            "DURABLE_OBJECT_HOST_READY_FILE",
+            "DURABLE_ACTORS_HOST_READY_FILE",
             directory.path().join("ready").display().to_string(),
         ),
         (
-            "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS",
+            "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS",
             request.actor_idle_timeout_seconds.to_string(),
         ),
         (
-            "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
+            "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
             request.host_idle_timeout_ms.to_string(),
         ),
     ] {
         environment.insert(key.into(), value);
     }
     if let Some(config) = &request.runtime_config {
-        environment.insert("DURABLE_OBJECT_RUNTIME_CONFIG".into(), config.clone());
+        environment.insert("DURABLE_ACTORS_RUNTIME_CONFIG".into(), config.clone());
     }
     if let Some(entrypoint) = &request.actor_entrypoint {
-        environment.insert("DURABLE_OBJECT_ENTRYPOINT".into(), entrypoint.clone());
+        environment.insert("DURABLE_ACTORS_ENTRYPOINT".into(), entrypoint.clone());
     }
     environment
 }

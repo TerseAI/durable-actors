@@ -11,15 +11,15 @@ import { startLocalActors } from "../src/localRuntime.js"
 async function fixture(source: string, run: (binary: string) => Promise<void>) {
     const directory = await mkdtemp(path.join(os.tmpdir(), "local-runtime-"))
     const binary = path.join(directory, "runtime")
-    const previous = process.env.DURABLE_OBJECT_BINARY
+    const previous = process.env.DURABLE_ACTORS_BINARY
     await writeFile(binary, `#!${process.execPath}\n${source}`)
     await chmod(binary, 0o755)
-    process.env.DURABLE_OBJECT_BINARY = binary
+    process.env.DURABLE_ACTORS_BINARY = binary
     try {
         await run(binary)
     } finally {
-        if (previous === undefined) delete process.env.DURABLE_OBJECT_BINARY
-        else process.env.DURABLE_OBJECT_BINARY = previous
+        if (previous === undefined) delete process.env.DURABLE_ACTORS_BINARY
+        else process.env.DURABLE_ACTORS_BINARY = previous
         await rm(directory, { recursive: true, force: true })
     }
 }

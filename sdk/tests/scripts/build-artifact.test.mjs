@@ -65,8 +65,8 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     const connected = once(server, "connection")
     server.listen(socketPath)
     await once(server, "listening")
-    const environment = { ...process.env, DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath }
-    delete environment.DURABLE_OBJECT_ENTRYPOINT
+    const environment = { ...process.env, DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath }
+    delete environment.DURABLE_ACTORS_ENTRYPOINT
     const host = spawn("bun", [bootstrap], {
         cwd: deployed,
         env: environment,

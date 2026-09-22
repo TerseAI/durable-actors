@@ -76,10 +76,10 @@ export class NgrokTunnel {
     }
 
     arguments() {
-        const bind = this.environment.DURABLE_OBJECT_CONTROL_PLANE_BIND || "127.0.0.1:7100"
+        const bind = this.environment.DURABLE_ACTORS_CONTROL_PLANE_BIND || "127.0.0.1:7100"
         const upstream = new URL(`http://${bind}`)
         if (upstream.pathname !== "/" || upstream.search || upstream.hash || upstream.username || upstream.password || !/^[1-9]\d*$/.test(upstream.port || "80")) {
-            throw new Error("DURABLE_OBJECT_CONTROL_PLANE_BIND must be a host:port with a nonzero port")
+            throw new Error("DURABLE_ACTORS_CONTROL_PLANE_BIND must be a host:port with a nonzero port")
         }
         if (upstream.hostname === "0.0.0.0") upstream.hostname = "127.0.0.1"
         if (upstream.hostname === "[::]") upstream.hostname = "[::1]"
@@ -101,11 +101,11 @@ export class NgrokTunnel {
         if (event.msg !== "started tunnel" || !event.url?.startsWith("https://")) return
         const origin = httpsOrigin(event.url)
         if (origin === this.origin) return
-        this.environmentFile.set("DURABLE_OBJECT_CONTROL_PLANE_URL", origin)
-        this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL = origin
+        this.environmentFile.set("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
+        this.environment.DURABLE_ACTORS_CONTROL_PLANE_URL = origin
         this.origin = origin
         const instructions = startRuntime ? "Starting the control plane. Ctrl+C stops both processes." : "Start or restart your control plane to load it. Keep this terminal running."
-        console.log(`\nTunnel ready. Saved DURABLE_OBJECT_CONTROL_PLANE_URL to .env. ${instructions}\n\nFor backends outside this directory:\nexport DURABLE_OBJECT_CONTROL_PLANE_URL=${origin}\n`)
+        console.log(`\nTunnel ready. Saved DURABLE_ACTORS_CONTROL_PLANE_URL to .env. ${instructions}\n\nFor backends outside this directory:\nexport DURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\n`)
     }
 }
 

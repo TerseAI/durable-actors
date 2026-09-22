@@ -90,23 +90,23 @@ func modalCloud(region string) string {
 
 func hostEnvironment(r ensureRequest) map[string]string {
 	env := map[string]string{
-		"DURABLE_OBJECT_PROCESS_ROLE": "host", "DURABLE_OBJECT_HOST_TOKEN": r.HostToken,
-		"DURABLE_OBJECT_JWT_PUBLIC_KEYS":   r.JWTPublicKeys,
-		"DURABLE_OBJECT_CONTROL_PLANE_URL": r.ControlPlaneURL, "DURABLE_OBJECT_JWT_ISSUER": r.JWTIssuer,
-		"DURABLE_OBJECT_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_OBJECT_SOCKET_JWT_AUDIENCE": r.SocketJWTAudience, "DURABLE_OBJECT_HOST_ID": r.HostID,
-		"DURABLE_OBJECT_SESSION_ID": r.SessionID, "DURABLE_OBJECT_REGION": r.CanonicalRegion,
-		"DURABLE_OBJECT_CODE_REVISION": r.CodeRevision, "DURABLE_OBJECT_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
-		"DURABLE_OBJECT_HOST_READY_FILE": readyFile, "DURABLE_OBJECT_HOST_METADATA_FILE": metadataFile,
-		"DURABLE_OBJECT_HOST_BIND":                  "0.0.0.0:7101",
-		"DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS": fmt.Sprint(r.ActorIdleTimeoutSeconds), "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+		"DURABLE_ACTORS_PROCESS_ROLE": "host", "DURABLE_ACTORS_HOST_TOKEN": r.HostToken,
+		"DURABLE_ACTORS_JWT_PUBLIC_KEYS":   r.JWTPublicKeys,
+		"DURABLE_ACTORS_CONTROL_PLANE_URL": r.ControlPlaneURL, "DURABLE_ACTORS_JWT_ISSUER": r.JWTIssuer,
+		"DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE": r.SocketJWTAudience, "DURABLE_ACTORS_HOST_ID": r.HostID,
+		"DURABLE_ACTORS_SESSION_ID": r.SessionID, "DURABLE_ACTORS_REGION": r.CanonicalRegion,
+		"DURABLE_ACTORS_CODE_REVISION": r.CodeRevision, "DURABLE_ACTORS_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
+		"DURABLE_ACTORS_HOST_READY_FILE": readyFile, "DURABLE_ACTORS_HOST_METADATA_FILE": metadataFile,
+		"DURABLE_ACTORS_HOST_BIND":                  "0.0.0.0:7101",
+		"DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS": fmt.Sprint(r.ActorIdleTimeoutSeconds), "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
 	}
-	env["DURABLE_OBJECT_ACTOR"] = string(r.Actor)
-	env["DURABLE_OBJECT_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)
+	env["DURABLE_ACTORS_ACTOR"] = string(r.Actor)
+	env["DURABLE_ACTORS_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)
 	if r.RuntimeConfig != "" {
-		env["DURABLE_OBJECT_RUNTIME_CONFIG"] = r.RuntimeConfig
+		env["DURABLE_ACTORS_RUNTIME_CONFIG"] = r.RuntimeConfig
 	}
 	if r.ActorEntrypoint != "" {
-		env["DURABLE_OBJECT_ENTRYPOINT"] = r.ActorEntrypoint
+		env["DURABLE_ACTORS_ENTRYPOINT"] = r.ActorEntrypoint
 	}
 	return env
 }

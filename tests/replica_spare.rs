@@ -20,12 +20,12 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
     let ready = directory.path().join("ready");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .env_clear()
-        .env("DURABLE_OBJECT_PROCESS_ROLE", "replica")
-        .env("DURABLE_OBJECT_SPARE_TOKEN", token)
-        .env("DURABLE_OBJECT_SPARE_READY_FILE", &ready)
-        .env("DURABLE_OBJECT_REPLICA_DATA", directory.path().join("data"))
-        .env("DURABLE_OBJECT_HOST_BIND", storage_address.to_string())
-        .env("DURABLE_OBJECT_SPARE_BIND", control_address.to_string())
+        .env("DURABLE_ACTORS_PROCESS_ROLE", "replica")
+        .env("DURABLE_ACTORS_SPARE_TOKEN", token)
+        .env("DURABLE_ACTORS_SPARE_READY_FILE", &ready)
+        .env("DURABLE_ACTORS_REPLICA_DATA", directory.path().join("data"))
+        .env("DURABLE_ACTORS_HOST_BIND", storage_address.to_string())
+        .env("DURABLE_ACTORS_SPARE_BIND", control_address.to_string())
         .kill_on_drop(true)
         .spawn()?;
     tokio::time::timeout(Duration::from_secs(5), async {

@@ -6,8 +6,8 @@ function runtimeEnvironment(executable: string): NodeJS.ProcessEnv {
     return {
         ...process.env,
         PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
-        DURABLE_OBJECT_PROCESS_ROLE: process.env.DURABLE_OBJECT_PROCESS_ROLE ?? "control_plane",
-        DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"
+        DURABLE_ACTORS_PROCESS_ROLE: process.env.DURABLE_ACTORS_PROCESS_ROLE ?? "control_plane",
+        DURABLE_ACTORS_PARENT_LIFETIME_STDIN: "1"
     }
 }
 
@@ -29,7 +29,7 @@ function startRustRuntime(
         const parentClosed = () => child.stdin?.end()
         process.on("SIGINT", interrupt)
         process.on("SIGTERM", terminate)
-        if (parentLifetime && process.env.DURABLE_OBJECT_PARENT_LIFETIME_STDIN) {
+        if (parentLifetime && process.env.DURABLE_ACTORS_PARENT_LIFETIME_STDIN) {
             process.stdin.resume()
             process.stdin.on("end", parentClosed)
         }

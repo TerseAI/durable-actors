@@ -28,17 +28,17 @@ test("observe serves a local UI using environment settings or flag overrides", {
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "observe-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+        DURABLE_ACTORS_SECRET: "observe-key"
     }
     for (const args of [[], ["--url", origin, "--api-key", "observe-key"]]) {
         const child = spawn(process.execPath, [cli, "observe", "--no-open", ...args], {
             env: args.length
                 ? {
                       ...env,
-                      DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-                      DURABLE_OBJECT_API_KEY: "wrong"
+                      DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid",
+                      DURABLE_ACTORS_SECRET: "wrong"
                   }
                 : env,
             stdio: ["ignore", "pipe", "pipe"]
@@ -146,9 +146,9 @@ test("objects lists every page locally and inspects committed internal state", a
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env: NodeJS.ProcessEnv = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: "",
-        DURABLE_OBJECT_API_KEY: ""
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: "",
+        DURABLE_ACTORS_SECRET: ""
     }
     const flags = ["--url", origin, "--api-key", "local-key"]
     const listed = await run(process.execPath, [cli, "objects", "list", ...flags, "--all", "--json"], { env })
@@ -180,9 +180,9 @@ test("objects uses cloud credentials, and reports API errors", async t => {
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "cloud-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+        DURABLE_ACTORS_SECRET: "cloud-key"
     }
     const result = await run(process.execPath, [cli, "objects", "list"], { env })
     assert.match(result.stdout, /No saved objects/u)
@@ -194,7 +194,7 @@ test("objects uses cloud credentials, and reports API errors", async t => {
     assert.equal(requests[1], "/v1/projects/default/actors/Room/missing?include=state")
     await assert.rejects(
         run(process.execPath, [cli, "objects", "list", "--url", origin], {
-            env: { ...env, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...env, DURABLE_ACTORS_SECRET: "" }
         }),
         /shared secret/u
     )
@@ -228,9 +228,9 @@ test("objects limits rows by default and resumes a filtered page without fetchin
     await once(server, "listening")
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-        DURABLE_OBJECT_API_KEY: "cloud-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        DURABLE_ACTORS_SECRET: "cloud-key"
     }
     const args = [cli, "objects", "list"]
     const first = await run(process.execPath, args, { env })
@@ -296,23 +296,23 @@ console.log(JSON.stringify(process.argv.slice(2)))
     await chmod(binary, 0o755)
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_BINARY: binary,
-        DURABLE_OBJECT_API_KEY: "dev-key",
-        DURABLE_OBJECT_PROJECT: project,
-        DURABLE_OBJECT_PORT: "7200",
-        DURABLE_OBJECT_ENTRYPOINT: "actors.ts",
-        DURABLE_OBJECT_STORAGE: "gcs",
-        DURABLE_OBJECT_DATA_DIR: "/tmp/actor-state"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_BINARY: binary,
+        DURABLE_ACTORS_SECRET: "dev-key",
+        DURABLE_ACTORS_PROJECT: project,
+        DURABLE_ACTORS_PORT: "7200",
+        DURABLE_ACTORS_ENTRYPOINT: "actors.ts",
+        DURABLE_ACTORS_STORAGE: "gcs",
+        DURABLE_ACTORS_DATA_DIR: "/tmp/actor-state"
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
-    assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
+    assert.doesNotMatch(stdout, /export DURABLE_ACTORS_SECRET=/u)
     assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
         "--project-id",
         "default",
         "--project",
-        env.DURABLE_OBJECT_PROJECT,
+        env.DURABLE_ACTORS_PROJECT,
         "--port",
         "7200",
         "--entrypoint",
@@ -324,7 +324,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "--api-key",
         "dev-key",
         "--data-dir",
-        env.DURABLE_OBJECT_DATA_DIR
+        env.DURABLE_ACTORS_DATA_DIR
     ])
     const overridden = await run(
         process.execPath,
@@ -347,11 +347,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
     const brandedArgs: string[] = JSON.parse(branded.stdout)
     assert.equal(brandedArgs[brandedArgs.indexOf("--project-id") + 1], "branded-project")
     assert.equal(brandedArgs[brandedArgs.indexOf("--api-key") + 1], "branded-key")
-    const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
+    const { DURABLE_ACTORS_SECRET, ...withoutKey } = env
     const envFile = path.join(project, ".env")
     await writeFile(envFile, "DURABLE_ACTORS_SECRET=env-file-key\n")
     const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
-    assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_OBJECT_API_KEY=/u)
+    assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_ACTORS_SECRET=/u)
     assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)
     await rm(envFile)
     const generated = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })

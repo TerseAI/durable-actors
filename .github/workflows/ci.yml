@@ -57,7 +57,7 @@ jobs:
               run: cargo fmt --all -- --check
             - name: Run tests
               env:
-                  DURABLE_OBJECT_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_objects_test?sslmode=disable
+                  DURABLE_ACTORS_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_objects_test?sslmode=disable
               run: cargo test --locked --no-fail-fast
             - uses: pnpm/action-setup@v4
               with:

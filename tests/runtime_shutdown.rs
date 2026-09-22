@@ -41,7 +41,7 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
         .arg("default")
         .arg("--project")
         .arg(project.path())
-        .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
+        .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
         .env("RUST_LOG", "info")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -136,8 +136,8 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before);
         assert.equal(await client.invoke('Counter', 'one', 'increment', []), before + 1);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
-        const origin = process.env.DURABLE_OBJECT_CONTROL_PLANE_URL;
-        const apiKey = process.env.DURABLE_OBJECT_API_KEY;
+        const origin = process.env.DURABLE_ACTORS_CONTROL_PLANE_URL;
+        const apiKey = process.env.DURABLE_ACTORS_SECRET;
         const workingDirectory = (await import('node:url')).fileURLToPath(new URL('.', import.meta.url));
         for (const [projectId, increment] of [['team-a', 1], ['team-b', 2]]) {{
             const response = await fetch(`${{origin}}/v1/projects/${{projectId}}/deployment`, {{
@@ -171,14 +171,14 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             .args(["dev", "--sdk-host"])
             .arg(sdk.join("dist/host.js"))
             .current_dir(shell_directory.path())
-            .env("DURABLE_OBJECT_PROJECT", project.path())
-            .env("DURABLE_OBJECT_ENTRYPOINT", "actors.ts")
-            .env("DURABLE_OBJECT_PORT", "0")
-            .env("DURABLE_OBJECT_DATA_DIR", "state")
-            .env("DURABLE_OBJECT_STORAGE", "local")
-            .env("DURABLE_OBJECT_PROJECT_ID", "default")
-            .env("DURABLE_OBJECT_API_KEY", "local-test-key")
-            .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
+            .env("DURABLE_ACTORS_PROJECT", project.path())
+            .env("DURABLE_ACTORS_ENTRYPOINT", "actors.ts")
+            .env("DURABLE_ACTORS_PORT", "0")
+            .env("DURABLE_ACTORS_DATA_DIR", "state")
+            .env("DURABLE_ACTORS_STORAGE", "local")
+            .env("DURABLE_ACTORS_PROJECT_ID", "default")
+            .env("DURABLE_ACTORS_SECRET", "local-test-key")
+            .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -192,10 +192,10 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             Command::new("node")
                 .arg(&script)
                 .arg(before.to_string())
-                .env("DURABLE_OBJECT_CONTROL_PLANE_URL", origin)
-                .env("DURABLE_OBJECT_PROJECT_ID", "default")
-                .env("DURABLE_OBJECT_API_KEY", "local-test-key")
-                .env("DURABLE_OBJECT_TELEMETRY", "0")
+                .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
+                .env("DURABLE_ACTORS_PROJECT_ID", "default")
+                .env("DURABLE_ACTORS_SECRET", "local-test-key")
+                .env("DURABLE_ACTORS_TELEMETRY", "0")
                 .kill_on_drop(true)
                 .output(),
         )
