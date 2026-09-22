@@ -377,8 +377,13 @@ paths:
             responses:
                 "101": { description: WebSocket upgrade accepted. }
                 "400": { $ref: "#/components/responses/UpgradeError" }
-                "401": { $ref: "#/components/responses/UpgradeError" }
-                "503": { $ref: "#/components/responses/UpgradeError" }
+                "401": { description: Socket authorization rejected. Request a fresh URL. No response body. }
+                "426":
+                    description: Connection cannot be upgraded to a WebSocket.
+                    content:
+                        text/plain:
+                            schema: { type: string }
+                "503": { description: Actor host is stopping. No response body. }
 webhooks:
     socketMessage:
         post:
@@ -525,7 +530,7 @@ components:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
         UpgradeError:
-            description: Connection rejected. Request a fresh URL for 401 responses.
+            description: Invalid WebSocket upgrade request.
             content:
                 text/plain:
                     schema: { type: string }
