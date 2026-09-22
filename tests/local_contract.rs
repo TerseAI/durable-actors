@@ -137,10 +137,7 @@ impl LocalRuntime {
                 if let Some((_, value)) = line.split_once("  Ready  ") {
                     origin = Some(value.trim().to_owned());
                 }
-                if line
-                    .trim_start()
-                    .starts_with("export DURABLE_ACTORS_SECRET=")
-                {
+                if line.trim_start().starts_with("DURABLE_ACTORS_SECRET=") {
                     return Ok::<_, anyhow::Error>((
                         origin.context("missing origin")?,
                         startup_output,
@@ -150,16 +147,11 @@ impl LocalRuntime {
             }
         })
         .await??;
-        let export = startup_output
-            .lines()
-            .find(|line| {
-                line.trim_start()
-                    .starts_with("export DURABLE_ACTORS_SECRET=")
-            })
-            .context("missing generated shared secret instruction")?;
-        let loaded = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{export}\nprintf '%s' \"$DURABLE_ACTORS_SECRET\""))
+        let loaded = Command::new("node")
+            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk"))
+            .arg("--eval")
+            .arg("process.stdout.write(require('dotenv').parse(process.argv[1]).DURABLE_ACTORS_SECRET)")
+            .arg(&startup_output)
             .output()
             .await?;
         assert!(loaded.status.success());

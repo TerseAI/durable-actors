@@ -26,14 +26,14 @@ npx durable-actors dev
 Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
 - `--project-id <id>` — Actor project ID. Uses `DURABLE_ACTORS_PROJECT_ID` when set, otherwise defaults to `local`. An explicit flag takes precedence.
-- `--api-key <key>` — Shared secret override. `dev` also reads `DURABLE_ACTORS_SECRET` from `.env`; when neither is set, it mints a fresh secret for that run. The development server prints the secret directly in a copyable export command. Generated secrets change on restart; no secret file is needed.
+- `--api-key <key>` — Shared secret override. `dev` also reads `DURABLE_ACTORS_SECRET` from `.env`; when neither is set, it mints a fresh secret for that run. The development server prints the secret directly in a copyable `.env` block. Generated secrets change on restart; no secret file is needed.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.durable-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
 
-Once ready, `dev` prints a `generate` command containing its actual URL and project ID. Run that command in the consuming npm project after setting its shared secret using the printed export command. Set the printed project ID in the backend's environment as well; the `local` default applies only to `dev`.
+Once ready, `dev` prints its actual URL, project ID, and shared secret as a `.env` block. Paste it into the consuming npm project’s `.env`, then run `durable-actors generate`. The CLI loads that file automatically. Start the application backend with the same `.env` loaded; the `local` project default applies only to `dev`.
 
 ## Open the observability UI
 
@@ -103,7 +103,7 @@ Checks the actor dependency graph without executing it and writes TypeScript bac
 
 Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import backend helpers from `generated/index.js`. Frontends use native `WebSocket` without generated imports.
 
-The source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
+When `DURABLE_ACTORS_CONTROL_PLANE_URL` is set, `generate` fetches the published contract automatically. Otherwise, the source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
 
 - `--out-dir <directory>` — Output location. Defaults to `generated/`.
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.

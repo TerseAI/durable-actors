@@ -90,7 +90,7 @@ From that directory, run:
   npm install${template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx durable-actors generate"}
   npx durable-actors dev
 
-In another terminal, run any export command printed by durable-actors dev, then:
+Add the connection settings printed by durable-actors dev to .env, then in another terminal:
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`
@@ -117,7 +117,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
     Edit ${styleText("cyan", "src/durable-objects.ts")} to make it your own.
 
   ${styleText("bold", "Connect your app")}
-    Run dev's export and generate commands
+    Follow dev's .env and generate instructions
     in your separate application project.
 `
 }

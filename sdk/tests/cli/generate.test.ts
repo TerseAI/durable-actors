@@ -82,6 +82,19 @@ test("generate uses environment settings and explicit flags without reading disc
         }
     })
     assert.equal(requests.at(-1), "/v1/projects/branded-project/deployment/contract")
+    await writeFile(
+        path.join(directory, ".env"),
+        `DURABLE_ACTORS_PROJECT_ID=client-project\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET='local-key'\n`
+    )
+    const configured = await run(process.execPath, [cli, "generate"], {
+        cwd: directory,
+        env: Object.fromEntries(
+            Object.entries(process.env).filter(([name]) => !/^DURABLE_(ACTORS|OBJECT)_/u.test(name))
+        )
+    })
+    assert.match(configured.stdout, /local-revision/)
+    assert.equal(requests.at(-1), "/v1/projects/client-project/deployment/contract")
+    await rm(path.join(directory, ".env"))
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--url"], {
             cwd: directory,
@@ -89,7 +102,7 @@ test("generate uses environment settings and explicit flags without reading disc
         }),
         /shared secret/
     )
-    assert.equal(requests.length, 3)
+    assert.equal(requests.length, 4)
 })
 
 test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {

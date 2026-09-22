@@ -16,8 +16,8 @@ Define your actors in `src/durable-objects.ts`. The starter contains a counter w
 In your separate application project's directory:
 
 1. Run `pnpm add durable-actors`.
-2. Run the project ID, URL, and shared secret export commands printed by the actor server.
-3. Run its printed `generate --url … --project-id …` command.
+2. Copy the project ID, URL, and shared secret printed by the actor server into your application’s `.env` file.
+3. Run `durable-actors generate`; the CLI loads `.env` automatically.
 
 Your application backend can then use the generated client:
 
@@ -28,6 +28,6 @@ const counter = actors.Counter.get("example")
 console.log(await counter.increment())
 ```
 
-Run the backend with the same project ID, URL, and shared secret. If you change the actor server's URL or port, also set `DURABLE_ACTORS_CONTROL_PLANE_URL` in the backend environment. After changing actor method signatures, rerun the printed generate command in your application.
+Start your backend with that `.env` file loaded. Update its secret after restarting the actor server. If you change the actor server's URL or port, also set `DURABLE_ACTORS_CONTROL_PLANE_URL` in the backend environment. After changing actor method signatures, rerun the printed generate command in your application.
 
 Use `pnpm check` to check types and `pnpm build` to create `dist/actors.mjs` for deployment.

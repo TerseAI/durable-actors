@@ -426,16 +426,16 @@ fn format_local_ready_message(
     } = styles;
     let credentials = local_credentials_instructions(secret, styles);
     format!(
-        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Open a terminal in your application project. Keep this server running.\n\n  {label}1. Set the connection and shared secret{label:#}\n     {command}export DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}export DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend in that same terminal.\n  It needs these environment variables to connect.\n",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
     )
 }
 
 fn local_credentials_instructions(secret: &str, styles: LocalReadyStyles) -> String {
     let command = styles.command;
-    let secret = secret.replace('\'', "'\\''");
+    let quote = if secret.contains('\'') { '"' } else { '\'' };
     format!(
-        "     {command}export DURABLE_ACTORS_SECRET='{secret}'{command:#}\n\n     Copy all three exports above. The shared secret is required.\n     Run them again after restarting this actor server."
+        "     {command}DURABLE_ACTORS_SECRET={quote}{secret}{quote}{command:#}\n\n     Update the secret after restarting this actor server."
     )
 }
 

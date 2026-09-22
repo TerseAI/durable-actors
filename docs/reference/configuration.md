@@ -1,14 +1,14 @@
 # Configuration
 
-For the SDK and `durable-actors` CLI, use the `DURABLE_ACTORS_*` prefix. The older `DURABLE_OBJECT_*` names remain supported; the `DURABLE_ACTORS_*` value wins if both are set. For example:
+For the SDK and `durable-actors` CLI, use the `DURABLE_ACTORS_*` prefix. The older `DURABLE_OBJECT_*` names remain supported; the `DURABLE_ACTORS_*` value wins if both are set. For example, in your application’s `.env`:
 
-```sh
-export DURABLE_ACTORS_PROJECT_ID=local
-export DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
-export DURABLE_ACTORS_SECRET='<secret printed by dev>'
+```dotenv
+DURABLE_ACTORS_PROJECT_ID=local
+DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
+DURABLE_ACTORS_SECRET='<secret printed by dev>'
 ```
 
-`dev` mints a fresh shared secret when none is configured and prints it directly under **Connect your application**. Copy all three exports into your application terminal before generating the client or starting your backend. Repeat the exports after restarting the actor server. Use `DURABLE_ACTORS_BINARY` to select a locally built runtime.
+`dev` mints a fresh shared secret when none is configured and prints it directly under **Connect your application**. Copy all three settings into your application’s `.env` before generating the client. The CLI loads `.env` automatically; start your backend with that file loaded too. Update the secret in `.env` after restarting the actor server. Use `DURABLE_ACTORS_BINARY` to select a locally built runtime.
 
 `DURABLE_ACTORS_SECRET` takes precedence over the older `DURABLE_ACTORS_API_KEY` and `DURABLE_OBJECT_API_KEY` aliases, which remain supported.
 

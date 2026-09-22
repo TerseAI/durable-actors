@@ -19,7 +19,7 @@ pnpm install
 pnpm exec durable-actors dev
 ```
 
-The project contains a persisted counter in `src/durable-objects.ts`, TypeScript configuration, and scripts to run, check, and build your actors. Its dependencies include the same SDK version as the CLI. In your separate application project, install `durable-actors`, run the environment exports printed by the actor server, and run its printed `generate --url … --project-id …` command.
+The project contains a persisted counter in `src/durable-objects.ts`, TypeScript configuration, and scripts to run, check, and build your actors. Its dependencies include the same SDK version as the CLI. In your separate application project, install `durable-actors`, copy the connection settings printed by the actor server into `.env`, and run `durable-actors generate`.
 
 For the combined Express + React [chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/chat), use `npx durable-actors init chat-example --template chat`.
 
@@ -33,7 +33,7 @@ Export actors from `src/durable-objects.ts`. Annotate every instance field with 
 npx durable-actors dev
 ```
 
-Wait for the `Ready` line, then copy the connection exports printed under **Connect your application** into your backend terminal. `dev` mints a shared secret by default and prints it directly as `export DURABLE_ACTORS_SECRET='…'`.
+Wait for the `Ready` line, then copy the connection settings printed under **Connect your application** into your application's `.env` file. The CLI loads `.env` automatically; start your backend with that file loaded too. `dev` mints a shared secret by default, so update it in `.env` after restarting the actor server.
 
 Generate source once for your backend and web app:
 
