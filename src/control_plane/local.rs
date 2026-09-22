@@ -336,10 +336,9 @@ async fn local_routes(
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
             .with_traces(service.traces.clone());
-    let public =
-        public_api::local_router(service.clone(), admin.clone(), options.project_id.clone())
-            .merge(super::inspection::router(inspector, admin))
-            .merge(storage.runtime.clone().router());
+    let public = public_api::router(service.clone(), admin.clone())
+        .merge(super::inspection::router(inspector, admin))
+        .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 

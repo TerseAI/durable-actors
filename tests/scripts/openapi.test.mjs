@@ -20,6 +20,19 @@ test("OpenAPI validates and covers the public HTTP routes", async () => {
     assert.ok(operations.every(operation => operation.operationId))
 })
 
+test("actor discovery documents an explicit project for every operation", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const discoveryPaths = Object.entries(spec.paths).filter(([path]) => /\/actors\/\{actor_name\}\/\{actor_id\}\/find-(actor|websocket)$/u.test(path))
+    assert.ok(discoveryPaths.length > 0)
+    for (const [path, operation] of discoveryPaths) {
+        const project = operation.parameters.find(parameter => parameter.name === "project_id")
+        assert.ok(project, `${path} requires an explicit project`)
+        assert.equal(project.in, "path")
+        assert.equal(project.required, true)
+        assert.ok(path.includes("/projects/{project_id}/"))
+    }
+})
+
 test("OpenAPI examples satisfy their request and response schemas", async () => {
     const spec = await SwaggerParser.dereference(specPath)
     const ajv = new Ajv({ strict: false, validateFormats: false })

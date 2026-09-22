@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -46,71 +46,6 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(contracts)
-}
-
-pub(super) fn local_router(
-    invocations: ControlPlaneService,
-    admin: AdminService,
-    project_id: String,
-) -> Router {
-    let state = PublicApiState {
-        invocations: invocations.clone(),
-        admin: admin.clone(),
-    };
-    router(invocations, admin).merge(
-        Router::new()
-            .route(
-                "/v1/actors/{actor_name}/{actor_id}/find-actor",
-                post(find_local_actor),
-            )
-            .route(
-                "/v1/actors/{actor_name}/{actor_id}/find-websocket",
-                post(find_local_websocket),
-            )
-            .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
-            .layer(Extension(project_id))
-            .with_state(state),
-    )
-}
-
-async fn find_local_actor(
-    state: State<PublicApiState>,
-    Path((actor_name, actor_id)): Path<(String, String)>,
-    Extension(project_id): Extension<String>,
-    headers: HeaderMap,
-    request: Result<Json<FindActorRequest>, JsonRejection>,
-) -> Result<Response, ApiError> {
-    find_actor(
-        state,
-        Path(ActorPath {
-            project_id,
-            actor_name,
-            actor_id,
-        }),
-        headers,
-        request,
-    )
-    .await
-}
-
-async fn find_local_websocket(
-    state: State<PublicApiState>,
-    Path((actor_name, actor_id)): Path<(String, String)>,
-    Extension(project_id): Extension<String>,
-    headers: HeaderMap,
-    request: Result<Json<FindWebSocketRequest>, JsonRejection>,
-) -> Result<Response, ApiError> {
-    find_websocket(
-        state,
-        Path(ActorPath {
-            project_id,
-            actor_name,
-            actor_id,
-        }),
-        headers,
-        request,
-    )
-    .await
 }
 
 async fn openapi() -> impl IntoResponse {

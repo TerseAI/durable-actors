@@ -166,7 +166,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             assert.equal(await scoped.invoke('Counter', 'one', 'read', []), (before + 1) * increment);
         }}
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
-        const response = await fetch(`${{origin}}/v1/actors/Counter/one/find-websocket`, {{
+        const response = await fetch(`${{origin}}/v1/projects/default/actors/Counter/one/find-websocket`, {{
             method: 'POST', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
             body: JSON.stringify({{ metadata: null }})
         }});

@@ -5,8 +5,9 @@ info:
     description: |
         Manage durable-actors deployments, find actor hosts, and inspect activity.
         Authenticate backend requests with a bearer API key; never expose it to browsers.
-        Project-scoped actor routes work in development and production. Local development
-        shortcuts use the server's configured project ID and are available only with `durable-actors dev`.
+        Project-scoped actor routes work in development and production. Run `durable-actors dev`
+        and copy the printed connection settings into your backend's environment. The default
+        local project ID is `local`; use it as `project_id` in requests.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.
@@ -18,8 +19,6 @@ tags:
     - name: Actors
     - name: Observability
     - name: WebSockets
-    - name: Local development
-      description: Shortcuts for the configured local project. Use the project-scoped Actors endpoints for integrations.
 paths:
     /openapi.yaml:
         get:
@@ -150,42 +149,6 @@ paths:
             tags: [Actors]
             summary: Find an authorized WebSocket URL
             description: Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
-            requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
-            responses:
-                "200": { $ref: "#/components/responses/WebSocketGrant" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "409": { $ref: "#/components/responses/Conflict" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
-                "500": { $ref: "#/components/responses/Internal" }
-                "503": { $ref: "#/components/responses/Unavailable" }
-    /v1/actors/{actor_name}/{actor_id}/find-actor:
-        parameters:
-            - { $ref: "#/components/parameters/ActorName" }
-            - { $ref: "#/components/parameters/ActorId" }
-        post:
-            operationId: findLocalActor
-            tags: [Local development]
-            summary: Find a local actor host
-            description: Uses the configured project ID. See findActor for placement and RPC credential behavior.
-            requestBody: { $ref: "#/components/requestBodies/FindActor" }
-            responses:
-                "200": { $ref: "#/components/responses/ActorTarget" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "409": { $ref: "#/components/responses/Conflict" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
-                "500": { $ref: "#/components/responses/Internal" }
-                "503": { $ref: "#/components/responses/Unavailable" }
-    /v1/actors/{actor_name}/{actor_id}/find-websocket:
-        parameters:
-            - { $ref: "#/components/parameters/ActorName" }
-            - { $ref: "#/components/parameters/ActorId" }
-        post:
-            operationId: findLocalWebSocket
-            tags: [Local development]
-            summary: Find a local WebSocket URL
-            description: Uses the configured project ID. See findWebSocket for authorization and connection behavior.
             requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
             responses:
                 "200": { $ref: "#/components/responses/WebSocketGrant" }

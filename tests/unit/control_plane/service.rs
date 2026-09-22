@@ -1514,25 +1514,6 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     let document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
-    for (method, path) in [
-        (reqwest::Method::PUT, "/v1/deployment"),
-        (reqwest::Method::GET, "/v1/deployment/contract"),
-        (
-            reqwest::Method::POST,
-            "/v1/actors/Counter/same/find-websocket",
-        ),
-    ] {
-        assert_eq!(
-            client
-                .request(method, format!("{origin}{path}"))
-                .bearer_auth("api-key")
-                .json(&serde_json::json!({}))
-                .send()
-                .await?
-                .status(),
-            reqwest::StatusCode::NOT_FOUND
-        );
-    }
     for project in ["team-a", "team-b"] {
         client.put(format!("{origin}/v1/projects/{project}/deployment")).bearer_auth("api-key")
             .json(&serde_json::json!({"imageRef":project, "workingDirectory":"/app", "contract":document}))
@@ -1598,7 +1579,7 @@ fn fixture_host(suffix: &str) -> HostId {
 
 #[tokio::test]
 async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
-    for local in [false, true] {
+    for project in ["local", "team-a"] {
         for operation in ["find-actor", "find-websocket"] {
             for existing in [false, true] {
                 let issuer = test_issuer()?;
@@ -1612,7 +1593,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 let registry = Arc::new(LocalAdminRegistry::default());
                 registry
                     .register_test_deployment(&HostLaunchSpec {
-                        project_id: "default".into(),
+                        project_id: project.into(),
                         source: None,
                         code_snapshot: None,
                         image_ref: "image".into(),
@@ -1624,7 +1605,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
                 let placements = Arc::new(LocalObjectPlacementStore::default());
                 let actor = ActorKey {
-                    project_id: "default".into(),
+                    project_id: project.into(),
                     actor_name: "Room".into(),
                     actor_id: "lobby".into(),
                 };
@@ -1647,15 +1628,10 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     provisioner.clone(),
                 );
                 service.region = Some("north-america-west".into());
-                let routes = if local {
-                    super::super::public_api::local_router(service, admin, "default".into())
-                } else {
-                    super::super::public_api::router(service, admin)
-                };
-                let prefix = if local { "/v1" } else { "/v1/projects/default" };
+                let routes = super::super::public_api::router(service, admin);
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
                 let url = format!(
-                    "http://{}{prefix}/actors/Room/lobby/{operation}",
+                    "http://{}/v1/projects/{project}/actors/Room/lobby/{operation}",
                     listener.local_addr()?
                 );
                 let server = tokio::spawn(async { axum::serve(listener, routes).await });
