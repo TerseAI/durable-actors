@@ -16,7 +16,7 @@ import (
 )
 
 const spareReadyFile = "/tmp/durable-object-spare-ready"
-const compiledCodeDirectory = "/tmp/little-actors-code"
+const compiledCodeDirectory = "/tmp/durable-actors-code"
 
 type resourceLimits struct {
 	CPUMillis int `json:"cpuMillis"`
@@ -199,8 +199,8 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 		return nil, err
 	}
 	return &modal.SandboxCreateParams{
-		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/little-actors",
-		Command: []string{"sh", "-c", "exec /usr/local/bin/little-actors 2> /tmp/durable-object-host.stderr"},
+		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
+		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-object-host.stderr"},
 		Env:     map[string]string{"DURABLE_OBJECT_PROCESS_ROLE": role, "DURABLE_OBJECT_SPARE_TOKEN": hex.EncodeToString(token)},
 		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,

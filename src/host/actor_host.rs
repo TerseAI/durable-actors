@@ -194,23 +194,29 @@ impl ActorHost {
 
     fn trace(&self, operation: &ActorOperation, started: Instant) -> Option<RequestSpan> {
         let sender = self.traces.as_ref()?.clone();
-        let (kind, connection) = match operation {
+        let (kind, connection, metadata) = match operation {
             ActorOperation::Activate { .. } => return None,
-            ActorOperation::Method(_) => (RequestKind::Method, None),
-            ActorOperation::Socket(invocation) => (
-                RequestKind::Websocket,
-                Some(match &invocation.event {
-                    ActorSocketEvent::Connect { connection }
-                    | ActorSocketEvent::Disconnect { connection, .. } => connection.id.clone(),
-                    ActorSocketEvent::Message { connection_id, .. } => connection_id.clone(),
-                }),
-            ),
+            ActorOperation::Method(_) => (RequestKind::Method, None, None),
+            ActorOperation::Socket(invocation) => match &invocation.event {
+                ActorSocketEvent::Connect { connection } => (
+                    RequestKind::Websocket,
+                    Some(connection.id.clone()),
+                    Some(connection.metadata.clone()),
+                ),
+                ActorSocketEvent::Disconnect { connection, .. } => {
+                    (RequestKind::Websocket, Some(connection.id.clone()), None)
+                }
+                ActorSocketEvent::Message { connection_id, .. } => {
+                    (RequestKind::Websocket, Some(connection_id.clone()), None)
+                }
+            },
         };
         Some(RequestSpan::new(
             sender,
             &operation.invocation(),
             kind,
             connection,
+            metadata,
             started,
         ))
     }

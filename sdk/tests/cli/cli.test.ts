@@ -88,21 +88,21 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    await run(process.execPath, [cli, "init", "my chat"], { cwd: directory })
+    await run(process.execPath, [cli, "init", "my chat", "--template", "chat"], { cwd: directory })
     const project = path.join(directory, "my chat")
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const sdk = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"))
-    assert.equal(metadata.dependencies["little-actors"], sdk.version)
+    assert.equal(metadata.dependencies["durable-actors"], sdk.version)
     assert.match(await readFile(path.join(project, "src/durable-objects.ts"), "utf8"), /extends Actor/)
     assert.match(await readFile(path.join(project, "src/backend.ts"), "utf8"), /actors\.ChatRoom\.prepareWebsocket/)
     assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /new WebSocket\(websocketUrl\)/)
-    assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.little-actors\//)
+    assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
 })
 
 test("init refuses an existing directory and preserves its contents", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-existing-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-existing-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "chat")
     await mkdir(project)
@@ -112,16 +112,16 @@ test("init refuses an existing directory and preserves its contents", async t =>
     assert.equal(await readFile(file, "utf8"), "existing app")
 })
 
-test("start --dev accepts configured keys without logging the generated key from readiness", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
+test("dev accepts configured keys without logging the generated key from readiness", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor-project")
     await mkdir(path.join(project, "node_modules"), { recursive: true })
-    await symlink(path.resolve(path.dirname(cli), ".."), path.join(project, "node_modules/little-actors"), "dir")
+    await symlink(path.resolve(path.dirname(cli), ".."), path.join(project, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     await writeFile(
         path.join(project, "actors.ts"),
-        'import { Actor } from "little-actors"; export class Room extends Actor {}'
+        'import { Actor } from "durable-actors"; export class Room extends Actor {}'
     )
     const binary = path.join(directory, "runtime")
     await writeFile(
@@ -145,7 +145,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         DURABLE_OBJECT_STORAGE: "gcs",
         DURABLE_OBJECT_DATA_DIR: "/tmp/actor-state"
     }
-    const { stdout } = await run(process.execPath, [cli, "start", "--dev"], { env })
+    const { stdout } = await run(process.execPath, [cli, "dev"], { env })
     assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
@@ -166,7 +166,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "--data-dir",
         env.DURABLE_OBJECT_DATA_DIR
     ])
-    const overridden = await run(process.execPath, [cli, "start", "--dev", "--port", "7300"], { env })
+    const overridden = await run(process.execPath, [cli, "dev", "--port", "7300"], { env })
     const args: string[] = JSON.parse(overridden.stdout)
     assert.equal(args[args.indexOf("--port") + 1], "7300")
     assert.equal(args[args.indexOf("--storage") + 1], "gcs")
@@ -174,11 +174,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
     const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
     const envFile = path.join(project, ".env")
     await writeFile(envFile, "DURABLE_OBJECT_API_KEY=env-file-key\n")
-    const configuredFromFile = await run(process.execPath, [cli, "start", "--dev"], { cwd: project, env: withoutKey })
+    const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
     assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)
     await rm(envFile)
-    const generated = await run(process.execPath, [cli, "start", "--dev"], { cwd: project, env: withoutKey })
+    const generated = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
     const invocation = generated.stdout.split("\n").find(line => line.startsWith("["))
     assert.ok(invocation)
     assert.equal(JSON.parse(invocation).includes("--api-key"), false)

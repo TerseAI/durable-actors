@@ -7,7 +7,7 @@ An Express + React app that streams replies with the Vercel AI SDK and saves con
 Requires Node.js 22.19+, Bun 1.4.2+, and an OpenAI API key.
 
 ```sh
-npx little-actors init ai-chat-example --template ai-chat
+npx durable-actors init ai-chat-example --template ai-chat
 cd ai-chat-example
 npm install
 cp .env.example .env
@@ -32,7 +32,7 @@ Open [localhost:3000](http://127.0.0.1:3000), send a message, and reload after t
 [ChatHistory](src/durable-objects.ts) keeps one conversation per actor ID:
 
 ```ts
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
     @Persisted private messages: ChatMessage[] = []
@@ -64,6 +64,6 @@ The lobby is shared and has no authentication. Add authentication and chat owner
 
 ## Development
 
-Both processes read `.env`; actor state lives in `.little-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. Run one example at a time on the default ports.
+Both processes read `.env`; actor state lives in `.durable-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. Run one example at a time on the default ports.
 
 `npm run build` checks TypeScript and builds the frontend.

@@ -5,3 +5,10 @@ export type { RequestTrace, RequestTracePage, RequestHistoryQuery } from "./clie
 export type { ActorObserverProps } from "./ActorObserver.js"
 export { HttpObserverClient } from "./client.js"
 export type { ActorInventory, ObserverClient } from "./client.js"
+export { TimeRangePicker } from "./TimeRangePicker.js"
+export { defaultTimeRange, rangeLabel, resolveRange } from "./time-range.js"
+export type { TimeRange, ResolvedRange } from "./time-range.js"
+
+export type { OverviewMetrics, ClassMetrics } from "./overview-metrics.js"
+export type { QueueWaitRow } from "./queue-wait.js"
+export type { SocketSessionRow } from "./socket-sessions.js"

@@ -1,6 +1,6 @@
 import { fromBase64, toBase64 } from "lib0/buffer"
-import { Actor, Persisted } from "little-actors"
-import type { ActorSocket } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
+import type { ActorSocket } from "durable-actors"
 import * as Y from "yjs"
 
 export class Workspace extends Actor<null, DocumentInfo, DocumentInfo[]> {

@@ -7,7 +7,7 @@ A Tiptap editor with Yjs for concurrent edits and durable actors for saved docum
 Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
-npx little-actors init documents-example --template documents
+npx durable-actors init documents-example --template documents
 cd documents-example
 npm install
 cp .env.example .env
@@ -48,6 +48,6 @@ Editing pauses while disconnected. Reload to reconnect; unsaved edits are not st
 
 ## Development
 
-Both processes read `.env`; saved state lives in `.little-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
 
 `npm run build` generates clients, checks TypeScript, and builds the frontend.

@@ -19,7 +19,7 @@ test("deployment builds produce code and a contract without executing customer c
     const root = await project(t)
     await writeFile(
         path.join(root, "src/durable-objects.ts"),
-        'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<number> { return 42 } }; throw new Error("customer code executed during build")'
+        'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<number> { return 42 } }; throw new Error("customer code executed during build")'
     )
     const output = path.join(root, "published")
     const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output])
@@ -27,7 +27,7 @@ test("deployment builds produce code and a contract without executing customer c
     assert.equal(contract.actors[0].actorName, "Counter")
     assert.equal(contract.actors[0].rpc.methods[0].name, "get")
     assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
-    await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "little-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
+    await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
     await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output]), /JSON-compatible/)
 })
 
@@ -37,7 +37,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await writeFile(
         path.join(root, "src/durable-objects.ts"),
         `import { isMainThread } from "node:worker_threads"
-        import { Actor, Persisted, Ephemeral, Emittable } from "little-actors"
+        import { Actor, Persisted, Ephemeral, Emittable } from "durable-actors"
         import { increment } from "./increment.js"
         if (isMainThread) throw new Error("actor code must run only inside a Worker")
         export class BuiltCounter extends Actor {
@@ -143,7 +143,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
 
 test("actor builds report invalid persistence annotations before deployment", async t => {
     const root = await project(t)
-    await writeFile(path.join(root, "src/durable-objects.ts"), `import { Actor } from "little-actors"; export class Counter extends Actor { count = 0 }`)
+    await writeFile(path.join(root, "src/durable-objects.ts"), `import { Actor } from "durable-actors"; export class Counter extends Actor { count = 0 }`)
     await assert.rejects(buildActor(path.join(root, "src/durable-objects.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
 })
 
@@ -152,7 +152,7 @@ async function project(t) {
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "src"))
     await mkdir(path.join(root, "node_modules"))
-    await symlink(sdk, path.join(root, "node_modules/little-actors"), "dir")
+    await symlink(sdk, path.join(root, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
         path.join(root, "tsconfig.json"),

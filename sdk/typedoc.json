@@ -2,7 +2,7 @@
     "$schema": "https://typedoc.org/schema.json",
     "entryPoints": ["src/index.ts", "src/backend.ts", "src/proxy.ts", "src/localRuntime.ts"],
     "tsconfig": "tsconfig.build.json",
-    "name": "little-actors",
+    "name": "durable-actors",
     "plugin": ["typedoc-plugin-missing-exports"],
     "collapseInternalModule": true,
     "out": "../.artifacts/api",

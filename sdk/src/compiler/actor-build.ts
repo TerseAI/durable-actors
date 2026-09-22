@@ -24,7 +24,7 @@ async function buildActor(entrypoint: string, outfile: string, options: Compiler
         outfile,
         tsconfig: options.configFile,
         bundle: true,
-        external: ["little-actors", "little-actors/*"],
+        external: ["durable-actors", "durable-actors/*"],
         platform: "node",
         format: "esm",
         target: "esnext",

@@ -1,13 +1,13 @@
-# little-actors
+# durable-actors
 
-little-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
+durable-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
 
 Durable Actors are TypeScript classes that persist their own state.
 
 ## Installation
 
 ```sh
-npm install little-actors
+npm install durable-actors
 ```
 
 See the sample apps:
@@ -21,21 +21,24 @@ See the sample apps:
 Use Node.js 22.19+ and Bun 1.4.2+. Export your actors from `src/durable-objects.ts`, then start the actor server:
 
 ```sh
-DURABLE_OBJECT_PROJECT_ID=my-project npx little-actors start --dev
+npx durable-actors init my-actors
+cd my-actors
+pnpm install
+pnpm exec durable-actors dev
 ```
 
-Set the same `DURABLE_OBJECT_PROJECT_ID` in your application backend. If startup generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your backend terminal. You can also keep these settings in `.env`; make sure your backend loads it.
+The server defaults to project ID `local`. In your application project, install `durable-actors` and copy the printed project ID, URL, and secret into `.env`, then run `npx durable-actors generate --remote`. Load that `.env` when starting your backend.
 
 Actor code reloads automatically, and saved state survives restarts.
 
-For repository builds and local Modal testing, see [Contributing](CONTRIBUTING.md).
+For configuration and API documentation, see [Reference](docs/README.md).
 
 ## Define an Actor
 
 Export a `ChatHistory` actor to save each conversation:
 
 ```ts
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
     @Persisted private messages: ChatMessage[] = []
@@ -149,8 +152,8 @@ A hosted server uses Modal, PostgreSQL, and GCS. See [server configuration](docs
 With an existing server, set its URL, API key, and your project ID in `.env`, then register your published actor image:
 
 ```sh
-npx little-actors deploy --image im-YOUR_IMAGE_ID
-npx little-actors generate --remote
+npx durable-actors deploy --image im-YOUR_IMAGE_ID
+npx durable-actors generate --remote
 ```
 
 Each deployment replaces the current code and restarts actors while keeping saved state. Generated clients use the current deployed API.
@@ -160,7 +163,7 @@ Each deployment replaces the current code and restarts actors while keeping save
 - [Configuration](docs/reference/configuration.md): environment variables and defaults.
 - [HTTP API](docs/reference/openapi.yaml): OpenAPI, also served at `/openapi.yaml`.
 - [TypeScript](docs/README.md): generated TypeDoc and editor hover documentation.
-- CLI: `npx little-actors <command> --help`.
+- CLI: `npx durable-actors <command> --help`.
 
 ## License
 

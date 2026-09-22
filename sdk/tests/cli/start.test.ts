@@ -12,7 +12,7 @@ const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 
 test("start launches the configured runtime without a local actor project and propagates its exit code", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-start-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-start-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const executable = path.join(directory, "runtime.mjs")
     await writeFile(
@@ -38,38 +38,30 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     )
 })
 
-test("start validates development mode before launching the runtime", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-start-options-"))
+test("dev validates its configured storage and port before launching", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-options-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "", DURABLE_OBJECT_BINARY: "missing-runtime" }
-    for (const flags of [["--port", "0"], ["--no-watch"]]) {
-        await assert.rejects(run(process.execPath, [cli, "start", ...flags], { cwd: directory, env }), /requires --dev/)
-    }
-    await assert.rejects(
-        run(process.execPath, [cli, "start", "--dev"], { cwd: directory, env }),
-        /DURABLE_OBJECT_PROJECT_ID/
-    )
-    for (const settings of [{ DURABLE_OBJECT_STORAGE: "invalid" }, { DURABLE_OBJECT_PORT: "65536" }])
+    for (const settings of [{ DURABLE_ACTORS_STORAGE: "invalid" }, { DURABLE_ACTORS_PORT: "65536" }])
         await assert.rejects(
-            run(process.execPath, [cli, "start", "--dev"], {
+            run(process.execPath, [cli, "dev"], {
                 cwd: directory,
-                env: { ...env, DURABLE_OBJECT_PROJECT_ID: "default", ...settings }
+                env: { ...process.env, DURABLE_ACTORS_BINARY: "missing-runtime", ...settings }
             }),
-            /DURABLE_OBJECT_STORAGE|Port must be an integer/
+            /DURABLE_ACTORS_STORAGE|Port must be an integer/
         )
 })
 
-test("start --dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-"))
+test("dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor project")
     await mkdir(path.join(project, "node_modules"), { recursive: true })
-    await symlink(sdk, path.join(project, "node_modules/little-actors"), "dir")
+    await symlink(sdk, path.join(project, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     const source = path.join(project, "actors.ts")
     await writeFile(
         source,
-        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(): Promise<string> { return "hi" } }\nthrow new Error("must not execute actor source")'
+        'import { Actor } from "durable-actors"; export class Room extends Actor { async hello(): Promise<string> { return "hi" } }\nthrow new Error("must not execute actor source")'
     )
     const executable = path.join(directory, "runtime.mjs")
     await writeFile(
@@ -113,7 +105,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         DURABLE_OBJECT_PROJECT: project,
         DURABLE_OBJECT_ENTRYPOINT: "actors.ts"
     }
-    const args = [cli, "start", "--dev", "--port", "0"]
+    const args = [cli, "dev", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)
     assert.equal(result.contract.actors[0].actorName, "Room")
@@ -126,6 +118,13 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     assert.notEqual(sdkHostIndex, -1, "development mode must provide its host module")
     assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
+
+    const { DURABLE_OBJECT_PROJECT_ID, ...withoutProjectId } = env
+    const local = await run(process.execPath, args, { cwd: directory, env: withoutProjectId })
+    const localArgs = JSON.parse(local.stdout).args
+    assert.equal(localArgs[localArgs.indexOf("--project-id") + 1], "local")
+    const configuredArgs = result.args
+    assert.equal(configuredArgs[configuredArgs.indexOf("--project-id") + 1], "default")
 
     const failure = await run(process.execPath, args, {
         cwd: directory,
@@ -152,7 +151,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 
     await writeFile(
         source,
-        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
+        'import { Actor } from "durable-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
     )
     await assert.rejects(run(process.execPath, args, { cwd: directory, env }), /JSON-compatible/)
 })

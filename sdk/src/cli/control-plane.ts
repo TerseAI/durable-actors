@@ -49,6 +49,30 @@ class ControlPlaneClient {
         )
     }
 
+    getMetrics(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson("GET", `/v1/observe/metrics${query.size ? `?${query}` : ""}`, undefined, 30_000, signal)
+    }
+
+    listQueueWaits(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson(
+            "GET",
+            `/v1/observe/queue-waits${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
+    }
+
+    listWebSockets(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson(
+            "GET",
+            `/v1/observe/websockets${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
+    }
+
     private async openStream(path: string, signal: AbortSignal): Promise<Response> {
         const response = await this.request(`${this.connection.controlPlaneUrl}${path}`, {
             signal,

@@ -38,12 +38,15 @@ class Observer {
     private server: PreviewServer | undefined
 
     constructor(
-        private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
+        private readonly client: Pick<
+            ControlPlaneClient,
+            "checkConnection" | "listActors" | "getMetrics" | "listQueueWaits" | "listWebSockets"
+        > &
             Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "listRequests">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL(
             "./",
-            import.meta.resolve("little-actors-observer/standalone/index.html")
+            import.meta.resolve("durable-actors-observer/standalone/index.html")
         )
     ) {}
 
@@ -133,8 +136,14 @@ class Observer {
             )
             return
         }
-        if (pathname === "/api/observe/requests") {
-            await this.requestHistory(request, response, url.searchParams)
+        const history = {
+            "/api/observe/requests": this.client.listRequests,
+            "/api/observe/metrics": this.client.getMetrics,
+            "/api/observe/queue-waits": this.client.listQueueWaits,
+            "/api/observe/websockets": this.client.listWebSockets
+        }[pathname]
+        if (history) {
+            await this.requestHistory(request, response, signal => history.call(this.client, url.searchParams, signal))
             return
         }
         if (pathname === "/api/observe/actors") {
@@ -199,14 +208,13 @@ class Observer {
     private async requestHistory(
         request: IncomingMessage,
         response: ServerResponse,
-        query: URLSearchParams
+        read: (signal: AbortSignal) => Promise<unknown>
     ): Promise<void> {
         const controller = new AbortController()
         const disconnect = () => controller.abort()
         response.once("close", disconnect)
         try {
-            if (!this.client.listRequests) throw new Error("History is unavailable")
-            const result = await this.client.listRequests(query, controller.signal)
+            const result = await read(controller.signal)
             response
                 .writeHead(200, { "content-type": "application/json" })
                 .end(request.method === "HEAD" ? undefined : JSON.stringify(result))

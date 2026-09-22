@@ -13,7 +13,7 @@ const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../../dist/cli.js", import.meta.url))
 
 test("deploy registers the source image in one request without local source or Modal credentials", async t => {
-    const project = await mkdtemp(path.join(tmpdir(), "little-actors-deploy-"))
+    const project = await mkdtemp(path.join(tmpdir(), "durable-actors-deploy-"))
     t.after(() => rm(project, { recursive: true, force: true }))
     let requests = 0
     let status = 400
@@ -61,7 +61,7 @@ test("deploy registers the source image in one request without local source or M
     await assert.rejects(run(process.execPath, [...args, "--image", "bad-image"], { cwd: project, env }), /imageRef/)
     await assert.rejects(
         run(process.execPath, args, { cwd: project, env: { ...env, DURABLE_OBJECT_API_KEY: "" } }),
-        /API key/
+        /shared secret/
     )
     assert.equal(requests, 0)
     await assert.rejects(run(process.execPath, args, { cwd: project, env }), /HTTP 400.*Actor build failed/)

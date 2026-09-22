@@ -335,7 +335,7 @@ fn sandbox_provider_config(
         },
         provider_name,
         command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
-            .unwrap_or_else(|| "little-actors-modal-go".into()),
+            .unwrap_or_else(|| "durable-actors-modal-go".into()),
         environment,
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,

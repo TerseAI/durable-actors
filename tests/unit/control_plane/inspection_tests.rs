@@ -43,6 +43,9 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         "/v1/observe/events",
         "/v1/observe/requests/events",
         "/v1/observe/requests",
+        "/v1/observe/metrics",
+        "/v1/observe/queue-waits",
+        "/v1/observe/websockets",
     ] {
         for credential in ["", "wrong", &token] {
             assert_eq!(
@@ -350,6 +353,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                     duration_ms: 25.0,
                     queue_wait_ms: Some(10.0),
                     outcome: RequestOutcome::Completed,
+                    metadata: None,
                 }],
                 0,
             )
@@ -530,6 +534,7 @@ async fn record_request(
                 duration_ms: 25.0,
                 queue_wait_ms: Some(10.0),
                 outcome,
+                metadata: None,
             }],
             0,
         )
@@ -549,6 +554,47 @@ async fn request_stream_resumes_saved_cursors() -> Result<()> {
     assert_eq!(
         fixture
             .get("/v1/observe/requests/events?after=broken")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_observer_metrics_validate_ranges_and_return_uncached_results() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for path in ["metrics", "queue-waits", "websockets"] {
+        let response = fixture.get(&format!("/v1/observe/{path}")).await?;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body: Value = response.json().await?;
+        if path == "metrics" {
+            assert_eq!(body["total"]["count"], 0);
+            assert_eq!(body["total"]["p95"], Value::Null);
+            assert_eq!(body["classes"], json!([]));
+        } else {
+            assert_eq!(body, json!([]));
+        }
+        for query in [
+            "fromMs=-1",
+            "fromMs=9007199254740992",
+            "fromMs=2&toMs=1",
+            "unknown=true",
+        ] {
+            assert_eq!(
+                fixture
+                    .get(&format!("/v1/observe/{path}?{query}"))
+                    .await?
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "{path}?{query}"
+            );
+        }
+    }
+    assert_eq!(
+        fixture
+            .get("/v1/observe/queue-waits?actorName=")
             .await?
             .status(),
         StatusCode::BAD_REQUEST

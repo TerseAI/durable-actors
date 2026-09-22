@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
-use little_actors::{
+use durable_actors::{
     replication::{FileReplicaStore, ReplicaStore, ReplicatedStateTransport},
     state_transport::{SnapshotWriter, StateTransport, StateWrite},
     storage::WritePlan,
@@ -237,7 +237,7 @@ async fn a_partial_replica_set_cannot_commit_when_the_bucket_fails() -> Result<(
 
 fn ticket() -> WritePlan {
     WritePlan {
-        stream: little_actors::replication::ReplicaStream {
+        stream: durable_actors::replication::ReplicaStream {
             prefix: "snapshots/epoch/".into(),
             session: "session".into(),
             owner_epoch: 1,
@@ -260,7 +260,7 @@ fn ticket() -> WritePlan {
 
 #[tokio::test]
 async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> Result<()> {
-    use little_actors::{
+    use durable_actors::{
         clock::SystemClock,
         replication::{ReplicaAccess, ReplicaGrant, replica_routes},
     };
@@ -269,13 +269,13 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
     let access = ReplicaAccess::new("test-installation-key", Arc::new(SystemClock));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let scope = little_actors::replication::ReplicaScope {
-        actor: little_actors::actor::ActorKey {
+    let scope = durable_actors::replication::ReplicaScope {
+        actor: durable_actors::actor::ActorKey {
             project_id: "default".into(),
             actor_name: "Counter".into(),
             actor_id: "one".into(),
         },
-        host: little_actors::host::HostId::new("primary"),
+        host: durable_actors::host::HostId::new("primary"),
         session: "session".into(),
         region: "us-east".into(),
     };
@@ -293,13 +293,13 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
             })
             .await
     });
-    let object = little_actors::storage::snapshot_object_name(
+    let object = durable_actors::storage::snapshot_object_name(
         &scope.actor,
         1,
         "00000000000000000000000000000001",
     )?;
     store.initialize_session(&scope.identity()).await?;
-    let stream = little_actors::replication::ReplicaStream {
+    let stream = durable_actors::replication::ReplicaStream {
         session: scope.identity(),
         prefix: object.strip_suffix("1.json").unwrap().into(),
         owner_epoch: 1,
@@ -313,7 +313,7 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         host_id: "node-a".into(),
         expires_at_ms: u64::MAX,
     };
-    let bytes = little_actors::state_log::StateSnapshot::new(
+    let bytes = durable_actors::state_log::StateSnapshot::new(
         1,
         1,
         "request".into(),
@@ -321,7 +321,7 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         serde_json::json!(1),
     )?
     .encode()?;
-    let transport = little_actors::state_transport::GrpcStateTransport::new();
+    let transport = durable_actors::state_transport::GrpcStateTransport::new();
     let write = access.url(&origin, &grant)?;
     assert_eq!(
         transport.write(&write, bytes.clone()).await?,
@@ -347,7 +347,7 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
     let wrong_activation = access.url(
         &origin,
         &ReplicaGrant {
-            stream: Some(little_actors::replication::ReplicaStream {
+            stream: Some(durable_actors::replication::ReplicaStream {
                 session: format!("{}other/", scope.identity()),
                 ..stream
             }),
@@ -359,8 +359,8 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
         &ReplicaGrant {
             operation: "GET".into(),
             stream: None,
-            object: little_actors::storage::snapshot_object_name(
-                &little_actors::actor::ActorKey {
+            object: durable_actors::storage::snapshot_object_name(
+                &durable_actors::actor::ActorKey {
                     project_id: "default".into(),
                     actor_name: "Counter".into(),
                     actor_id: "other".into(),

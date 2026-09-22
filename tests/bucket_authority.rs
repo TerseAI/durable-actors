@@ -8,14 +8,14 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
-use little_actors::{
+use durable_actors::{
     bucket::{Bucket, BucketObject},
     clock::Clock,
     host::HostId,
     host_leases::HostLeaseRequest,
 };
 
-use little_actors::{
+use durable_actors::{
     actor::ActorKey,
     bucket::{ReplicaPeers, RuntimeStorage},
     placement::ObjectPlacementStore,
@@ -30,9 +30,9 @@ use little_actors::{
 async fn enable_replicas(
     runtime: &RuntimeStorage,
     actor: &ActorKey,
-    lease: &little_actors::host_leases::HostLease,
+    lease: &durable_actors::host_leases::HostLease,
 ) -> Result<()> {
-    let scope = little_actors::replication::ReplicaScope {
+    let scope = durable_actors::replication::ReplicaScope {
         actor: actor.clone(),
         host: lease.id.clone(),
         session: lease.session_id.clone(),
@@ -44,7 +44,7 @@ async fn enable_replicas(
             &scope,
             targets,
             None,
-            &little_actors::state_transport::GrpcStateTransport::new(),
+            &durable_actors::state_transport::GrpcStateTransport::new(),
         )
         .await?;
     runtime.enable_replication(membership)
@@ -62,7 +62,7 @@ impl ReplicaProvisioner for Fleet {
 
     async fn ensure(
         &self,
-        _: &little_actors::replication::ReplicaScope,
+        _: &durable_actors::replication::ReplicaScope,
     ) -> Result<Vec<ReplicaTarget>> {
         Ok(self.0.clone())
     }
@@ -169,7 +169,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
     for store in peers.stores.values() {
         store.append(stream, &bytes).await?;
     }
-    let scope = little_actors::replication::ReplicaScope {
+    let scope = durable_actors::replication::ReplicaScope {
         actor: actor.clone(),
         host: first.lease.id.clone(),
         session: first.lease.session_id.clone(),
@@ -216,7 +216,7 @@ async fn takeover_recovers_replica_only_writes_and_fences_the_old_epoch() -> Res
         bytes
     );
     assert_eq!(
-        little_actors::storage::SnapshotReader::read_snapshot(
+        durable_actors::storage::SnapshotReader::read_snapshot(
             &runtime,
             "us-east",
             next.state_object.as_ref().unwrap()
@@ -240,7 +240,7 @@ async fn a_new_actor_claims_once_without_waiting_for_replication() -> Result<()>
 
         async fn ensure(
             &self,
-            _: &little_actors::replication::ReplicaScope,
+            _: &durable_actors::replication::ReplicaScope,
         ) -> Result<Vec<ReplicaTarget>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             anyhow::bail!("replica provisioning must not block a cold read")
@@ -432,7 +432,7 @@ async fn simultaneous_claims_from_the_same_observed_generation_have_one_winner()
 
 #[tokio::test]
 async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres() -> Result<()> {
-    use little_actors::{
+    use durable_actors::{
         bucket::GrpcReplicaPeers,
         clock::SystemClock,
         replication::{ReplicatedStateTransport, replica_routes},
@@ -451,7 +451,7 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
         replica.clone(),
         access.clone(),
         "peer".into(),
-        little_actors::replication::ReplicaScope {
+        durable_actors::replication::ReplicaScope {
             actor: ActorKey {
                 project_id: "default".into(),
                 actor_name: "Counter".into(),
@@ -556,7 +556,7 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
     assert_eq!(
         SnapshotWriter::write_snapshot(
             runtime.as_ref(),
-            &little_actors::storage::WritePlan {
+            &durable_actors::storage::WritePlan {
                 state_version: 2,
                 object_name: ticket.stream.object(2),
                 ..ticket.clone()

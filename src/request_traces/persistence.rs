@@ -13,6 +13,8 @@ use serde::Deserialize;
 
 use super::{TraceEvent, TracePage, replay::ReplayQuery};
 mod history;
+mod metrics;
+use super::metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange};
 mod replay;
 use super::history::HistoryQuery;
 
@@ -23,6 +25,10 @@ pub(crate) trait TracePersistence: Send + Sync {
     // Events have stable IDs; repeated appends must not duplicate them.
     async fn append(&self, events: &[TraceEvent]) -> Result<()>;
     async fn history(&self, query: &HistoryQuery) -> Result<TracePage>;
+    async fn metrics(&self, query: &TimeRange) -> Result<OverviewMetrics>;
+    async fn queue_waits(&self, query: &QueueWaitQuery) -> Result<Vec<QueueWaitRow>>;
+    async fn websockets(&self, query: &TimeRange) -> Result<Vec<SocketSession>>;
+
     async fn replay(&self, query: &ReplayQuery) -> Result<TracePage>;
 }
 
@@ -83,6 +89,27 @@ impl TracePersistence for SqliteTracePersistence {
             transaction.commit()?;
             Ok(())
         }).await
+    }
+
+    async fn metrics(&self, query: &TimeRange) -> Result<OverviewMetrics> {
+        query.validate()?;
+        let query = query.clone();
+        self.run(move |connection| metrics::overview(connection, &query))
+            .await
+    }
+
+    async fn queue_waits(&self, query: &QueueWaitQuery) -> Result<Vec<QueueWaitRow>> {
+        query.validate()?;
+        let query = query.clone();
+        self.run(move |connection| metrics::queue_waits(connection, &query))
+            .await
+    }
+
+    async fn websockets(&self, query: &TimeRange) -> Result<Vec<SocketSession>> {
+        query.validate()?;
+        let query = query.clone();
+        self.run(move |connection| metrics::websockets(connection, &query))
+            .await
     }
 
     async fn history(&self, query: &HistoryQuery) -> Result<TracePage> {
@@ -194,3 +221,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/unit/request_traces/persistence/history_tests.rs"]
 mod history_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/request_traces/persistence/metrics_tests.rs"]
+mod metrics_tests;

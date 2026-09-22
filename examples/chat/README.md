@@ -7,7 +7,7 @@ An Express + React chatroom backed by a durable actor. Messages appear in every 
 Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
-npx little-actors init chat-example
+npx durable-actors init chat-example
 cd chat-example
 npm install
 cp .env.example .env
@@ -29,8 +29,8 @@ Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Send a message, then r
 [ChatRoom](src/durable-objects.ts) saves messages and sends the updated history to everyone in the room:
 
 ```ts
-import { Actor, Persisted } from "little-actors"
-import type { ActorSocket } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
+import type { ActorSocket } from "durable-actors"
 
 export class ChatRoom extends Actor<Member, string, ChatMessage[]> {
     @Persisted history: ChatMessage[] = []
@@ -69,6 +69,6 @@ Everyone joins as a guest. Add authentication and room access checks before issu
 
 ## Development
 
-Both processes read `.env`; saved state lives in `.little-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
 
 `npm run build` generates clients, checks TypeScript, and builds the frontend.

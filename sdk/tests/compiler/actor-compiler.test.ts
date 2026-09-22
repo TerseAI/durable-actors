@@ -91,7 +91,7 @@ test("compiles socket validation schemas without importing actor implementation"
         const entrypoint = path.join(root, "src/actors.ts")
         await writeFile(
             entrypoint,
-            `import { Actor, Persisted, Emittable } from "little-actors"
+            `import { Actor, Persisted, Emittable } from "durable-actors"
             type Incoming = { type: "post"; text: string }
             type Outgoing = { type: "posted"; text: string }
             export class Room extends Actor<{ userId: string }, Incoming, Outgoing> {
@@ -128,14 +128,14 @@ test("rejects non-JSON socket types and public state with useful actor diagnosti
         ]) {
             await writeFile(
                 entrypoint,
-                `import { Actor } from "little-actors"
+                `import { Actor } from "durable-actors"
                 export class Room extends Actor<{}, { value: ${type} }, never> {}`
             )
             assert.throws(() => new ActorCompiler().compile(entrypoint), /Room.*JSON/)
         }
         await writeFile(
             entrypoint,
-            `import { Actor, Persisted } from "little-actors"
+            `import { Actor, Persisted } from "durable-actors"
             export class Room extends Actor { @Persisted value: string | undefined = "initial" }`
         )
         assert.throws(() => new ActorCompiler().compile(entrypoint), /Room.*JSON/)
@@ -179,7 +179,7 @@ test("checks actors and rejects invalid fields without executing the module", as
         compiler.check(entrypoint)
         await writeFile(
             entrypoint,
-            'import { Actor } from "little-actors"; export class Counter extends Actor { count = 0 }'
+            'import { Actor } from "durable-actors"; export class Counter extends Actor { count = 0 }'
         )
         assert.throws(() => compiler.check(entrypoint), /must declare exactly one/)
     } finally {
@@ -245,7 +245,7 @@ test("checks private and optional computed fields on re-exported actors", async 
         await writeFile(path.join(root, "src/actors.ts"), 'export { Counter } from "./nested/counter.js"')
         await writeFile(
             path.join(root, "src/nested/counter.ts"),
-            `import { Actor, Persisted, Ephemeral } from "little-actors"
+            `import { Actor, Persisted, Ephemeral } from "durable-actors"
             type Count = { value: number }
             export class Counter extends Actor<{}, never, never> {
                 @Persisted private count: Count = { value: 0 }
@@ -409,7 +409,7 @@ async function createProject() {
     const packageRoot = sdkRoot.endsWith(`${path.sep}.test-dist${path.sep}`)
         ? path.dirname(sdkRoot.slice(0, -1))
         : sdkRoot
-    await symlink(packageRoot, path.join(root, "node_modules/little-actors"), "dir")
+    await symlink(packageRoot, path.join(root, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
         path.join(root, "tsconfig.json"),
@@ -427,7 +427,7 @@ async function createProject() {
     )
     await writeFile(
         path.join(root, "src/actors.ts"),
-        `import { Actor, Persisted, Ephemeral } from "little-actors"
+        `import { Actor, Persisted, Ephemeral } from "durable-actors"
         export const defaultCount = 0
         export function formatCount(value: number) { return String(value) }
         export default { name: "counter" }

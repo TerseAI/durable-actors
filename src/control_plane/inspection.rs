@@ -20,6 +20,9 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
         .route("/v1/observe/actors", get(actor_inventory))
         .route("/v1/observe/events", get(actor_events))
         .route("/v1/observe/requests", get(request_history))
+        .route("/v1/observe/metrics", get(overview_metrics))
+        .route("/v1/observe/queue-waits", get(queue_waits))
+        .route("/v1/observe/websockets", get(websocket_history))
         .route("/v1/observe/requests/events", get(request_events))
         .with_state(InspectionApi { inspector, admin })
 }
@@ -152,6 +155,57 @@ async fn actor_events(
             .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))),
     )
         .into_response())
+}
+
+async fn overview_metrics(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .metrics(&query)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
+}
+
+async fn queue_waits(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::metrics::QueueWaitQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .queue_waits(&query)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
+}
+
+async fn websocket_history(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .websockets(&query)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
 }
 
 async fn request_history(

@@ -117,3 +117,19 @@ test("request history uses bounded filters with server-side credentials", async 
     })
     assert.deepEqual(await client.listRequests(query, controller.signal), { records: [], nextCursor: null })
 })
+
+for (const [method, path] of [
+    ["getMetrics", "metrics"],
+    ["listQueueWaits", "queue-waits"],
+    ["listWebSockets", "websockets"]
+] as const) {
+    test(`${path} reads use typed routes and server-side credentials`, async () => {
+        const client = new ControlPlaneClient(connection, async (url, options) => {
+            assert.equal(url, `https://control.example/v1/observe/${path}?fromMs=10&toMs=20`)
+            assert.equal(options?.method, "GET")
+            assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+            return Response.json({ saved: true })
+        })
+        assert.deepEqual(await client[method](new URLSearchParams({ fromMs: "10", toMs: "20" })), { saved: true })
+    })
+}

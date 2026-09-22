@@ -1,9 +1,11 @@
+import { Command, InvalidArgumentError, Option } from "commander"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
+import { projectIdSchema } from "../actor/identity.js"
 import { configuredSettings } from "../client/clientSettings.js"
 import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
 
@@ -22,10 +24,56 @@ interface DevOptions {
     watch: boolean
 }
 
+export function registerDevCommand(program: Command): void {
+    program
+        .command("dev")
+        .description("Run local actors and reload code changes")
+        .option("--no-watch", "disable automatic code reload")
+        .addOption(
+            new Option("--port <number>", "loopback port (0 selects a free port)")
+                .env("DURABLE_ACTORS_PORT")
+                .argParser(portNumber)
+                .default(7100)
+        )
+        .addHelpText("after", "\nConfigure development in .env; DURABLE_ACTORS_PROJECT_ID defaults to local.")
+        .action(async (options: { watch: boolean; port: number }) => {
+            process.exitCode = await runDev(developmentOptions(options, process.env))
+        })
+}
+
+function developmentOptions(options: { watch: boolean; port: number }, environment: NodeJS.ProcessEnv): DevOptions {
+    const env = developmentEnvironment.parse(environment)
+    return {
+        ...options,
+        projectId: env.DURABLE_ACTORS_PROJECT_ID,
+        apiKey: env.DURABLE_ACTORS_SECRET,
+        project: env.DURABLE_ACTORS_PROJECT,
+        entrypoint: env.DURABLE_ACTORS_ENTRYPOINT,
+        dataDir: env.DURABLE_ACTORS_DATA_DIR,
+        storage: env.DURABLE_ACTORS_STORAGE
+    }
+}
+
+function portNumber(value: string): number {
+    const port = Number(value)
+    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(port) || port < 0 || port > 65535)
+        throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
+    return port
+}
+
+const developmentEnvironment = z.object({
+    DURABLE_ACTORS_PROJECT_ID: projectIdSchema.default("local"),
+    DURABLE_ACTORS_SECRET: z.string().optional(),
+    DURABLE_ACTORS_PROJECT: z.string().min(1).default("."),
+    DURABLE_ACTORS_ENTRYPOINT: z.string().min(1).default("src/durable-objects.ts"),
+    DURABLE_ACTORS_DATA_DIR: z.string().min(1).optional(),
+    DURABLE_ACTORS_STORAGE: z.enum(["local", "gcs"]).default("local")
+})
+
 async function runDev(options: DevOptions): Promise<number> {
     const project = await realpath(options.project)
     const contract = await compileContract(project, options.entrypoint)
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-contract-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-contract-"))
     try {
         const file = path.join(directory, "contract.json")
         await writeFile(file, JSON.stringify(contract))

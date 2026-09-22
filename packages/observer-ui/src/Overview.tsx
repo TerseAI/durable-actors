@@ -2,31 +2,44 @@ import { useEffect, useState } from "react"
 
 import { RefreshCw, Search } from "lucide-react"
 
-import type { ActorInventory, ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
+import { TimeRangePicker } from "./TimeRangePicker.js"
+import type { ActorInventory, ObserverClient, RequestTracePage } from "./client.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
-import { useInventory, useRequests } from "./observer-hooks.js"
-import { inventorySummary, queueP95, requestSummary, tracesInWindow } from "./overview-data.js"
+import { useInventory, usePolledQuery, useRequests } from "./observer-hooks.js"
+import { inventorySummary, tracesInRange } from "./overview-data.js"
+import { liveOverviewMetrics } from "./overview-metrics.js"
+import type { ClassMetrics, OverviewMetrics } from "./overview-metrics.js"
+import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
+import type { TimeRange } from "./time-range.js"
 
 interface OverviewProps {
     client: ObserverClient
     onSelectActor: (actorName: string) => void
+    timeRange?: TimeRange
+    onTimeRangeChange?: (range: TimeRange) => void
 }
 
-export function Overview({ client, onSelectActor }: OverviewProps) {
+export function Overview({ client, onSelectActor, timeRange, onTimeRangeChange }: OverviewProps) {
     const actors = useInventory(client)
-    const requests = useRequests(client)
-    const [minutes, setMinutes] = useState(60)
+    const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
+    const range = timeRange ?? localRange
+    const setRange = onTimeRangeChange ?? setLocalRange
     const [now, setNow] = useState(Date.now)
     useEffect(() => {
         const timer = setInterval(() => setNow(Date.now()), 10_000)
         return () => clearInterval(timer)
     }, [])
-    const records = tracesInWindow(requests.page?.records ?? [], minutes, Math.max(now, Date.now()))
+    const resolved = resolveRange(range, now)
+    const saved = usePolledQuery(client, resolved, client.getMetrics)
+    const requests = useRequests(client, !saved.supported)
+    const live = requests.page ? liveOverviewMetrics(tracesInRange(requests.page.records, resolved, Math.max(now, Date.now()))) : undefined
+    const metrics: OverviewMetrics | undefined = saved.supported ? saved.value : live
+    const failed = saved.supported ? saved.failed : requests.failed
     return (
         <section className="la-observer overview" aria-label="Runtime overview">
             <div className="overview-heading">
-                <h1>little-actors</h1>
+                <h1>Durable Actors</h1>
                 <div className="overview-controls">
                     <span className="overview-updated">
                         {actors.failed ? (
@@ -39,17 +52,14 @@ export function Overview({ client, onSelectActor }: OverviewProps) {
                             "Connecting…"
                         )}
                     </span>
-                    <select aria-label="Time window" value={minutes} onChange={event => setMinutes(Number(event.target.value))}>
-                        <option value={60}>Last hour</option>
-                        <option value={15}>Last 15 minutes</option>
-                        <option value={1440}>Last 24 hours</option>
-                    </select>
+                    <TimeRangePicker value={range} onChange={setRange} className="overview-range" />
                     <Button
                         variant="outline"
                         size="icon"
                         aria-label="Refresh overview"
                         onClick={() => {
                             actors.retry()
+                            saved.retry()
                             requests.retry()
                         }}
                     >
@@ -62,22 +72,23 @@ export function Overview({ client, onSelectActor }: OverviewProps) {
                     Inventory unavailable. {actors.inventory ? "Showing the last received counts; they may be out of date." : "Check your connection and access."} Retrying automatically.
                 </p>
             )}
-            {requests.failed && (
+            {failed && (
                 <p className="overview-alert" role="alert">
-                    Request stream unavailable. {requests.page ? "Showing the last received traces." : "Request metrics are not available yet."} Retrying automatically.
+                    {saved.supported ? "Request history unavailable." : "Request stream unavailable."} {metrics ? "Showing the last received metrics." : "Request metrics are not available yet."}{" "}
+                    Retrying automatically.
                 </p>
             )}
-            <SummaryCards inventory={actors.inventory} records={requests.page ? records : undefined} />
-            <ClassTable inventory={actors.inventory} records={requests.page ? records : undefined} failed={actors.failed} onSelectActor={onSelectActor} />
-            <DataScope page={requests.page} />
+            <SummaryCards inventory={actors.inventory} metrics={metrics} range={range} />
+            <ClassTable inventory={actors.inventory} metrics={metrics} failed={actors.failed} onSelectActor={onSelectActor} />
+            <DataScope page={saved.supported ? undefined : requests.page} range={range} saved={saved.supported} />
         </section>
     )
 }
 
-function SummaryCards({ inventory, records }: { inventory?: ActorInventory; records?: RequestTrace[] }) {
+function SummaryCards({ inventory, metrics, range }: { inventory?: ActorInventory; metrics?: OverviewMetrics; range: TimeRange }) {
     const totals = inventory ? inventorySummary(inventory) : undefined
     const total = totals ? totals.live + totals.dormant + totals.unknown : undefined
-    const metrics = records ? requestSummary(records) : undefined
+    const requests = metrics?.total
     return (
         <div className="overview-metrics">
             <section className="overview-metric">
@@ -109,18 +120,18 @@ function SummaryCards({ inventory, records }: { inventory?: ActorInventory; reco
             <section className="overview-metric">
                 <h2>Requests</h2>
                 <div className="overview-value">
-                    <strong aria-label="Retained requests">{number(metrics?.count)}</strong>
-                    <span>retained in time window</span>
+                    <strong aria-label="Retained requests">{number(requests?.count)}</strong>
+                    <span>{rangePhrase(range)}</span>
                 </div>
                 <div className="overview-health">
                     <span>
-                        <Health value={metrics?.success} kind="success" /> success
+                        <Health value={requests?.success} kind="success" /> success
                     </span>
                     <span>
-                        <Health value={metrics?.p95} kind="latency" /> p95 latency
+                        <Health value={requests?.p95} kind="latency" /> p95 latency
                     </span>
                     <span>
-                        <b>{milliseconds(records ? queueP95(records) : null)}</b> p95 queue wait
+                        <b>{milliseconds(requests?.queueP95)}</b> p95 queue wait
                     </span>
                 </div>
             </section>
@@ -139,7 +150,7 @@ function SummaryCards({ inventory, records }: { inventory?: ActorInventory; reco
     )
 }
 
-function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?: ActorInventory; records?: RequestTrace[]; failed: boolean; onSelectActor: OverviewProps["onSelectActor"] }) {
+function ClassTable({ inventory, metrics, failed, onSelectActor }: { inventory?: ActorInventory; metrics?: OverviewMetrics; failed: boolean; onSelectActor: OverviewProps["onSelectActor"] }) {
     const [query, setQuery] = useState("")
     const [residency, setResidency] = useState("all")
     const actors =
@@ -195,7 +206,12 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
                         </thead>
                         <tbody>
                             {actors.map(actor => (
-                                <ClassRow key={actor.actorName} actor={actor} records={records?.filter(record => record.actorName === actor.actorName)} onSelectActor={onSelectActor} />
+                                <ClassRow
+                                    key={actor.actorName}
+                                    actor={actor}
+                                    metrics={metrics && (metrics.classes.find(row => row.actorName === actor.actorName) ?? empty(actor.actorName))}
+                                    onSelectActor={onSelectActor}
+                                />
                             ))}
                         </tbody>
                     </table>
@@ -222,8 +238,7 @@ function ClassTable({ inventory, records, failed, onSelectActor }: { inventory?:
     )
 }
 
-function ClassRow({ actor, records, onSelectActor }: { actor: ActorInventory["actors"][number]; records?: RequestTrace[]; onSelectActor: OverviewProps["onSelectActor"] }) {
-    const metrics = records ? requestSummary(records) : undefined
+function ClassRow({ actor, metrics, onSelectActor }: { actor: ActorInventory["actors"][number]; metrics?: ClassMetrics; onSelectActor: OverviewProps["onSelectActor"] }) {
     return (
         <tr className="la-clickable-row" onClick={() => onSelectActor(actor.actorName)}>
             <td>
@@ -239,7 +254,7 @@ function ClassRow({ actor, records, onSelectActor }: { actor: ActorInventory["ac
             <td>
                 <Health value={metrics?.p95} kind="latency" />
             </td>
-            <td>{milliseconds(records ? queueP95(records) : null)}</td>
+            <td>{milliseconds(metrics?.queueP95)}</td>
             <td>{number(actor.instances.reduce((sum, instance) => sum + instance.connections.length, 0))}</td>
         </tr>
     )
@@ -277,10 +292,14 @@ function Thresholds() {
     )
 }
 
-function DataScope({ page }: { page?: RequestTracePage }) {
+function DataScope({ page, range, saved }: { page?: RequestTracePage; range: TimeRange; saved: boolean }) {
     return (
         <div className="overview-data-scope">
-            <p>Request metrics cover the latest {page?.capacity ?? 500} retained traces within the selected window. Inventory counts are current snapshots.</p>
+            <p>
+                {saved
+                    ? `Request metrics cover every retained request ${rangePhrase(range)}${range.kind === "relative" ? " (refreshed every 10 seconds)" : ""}. Inventory counts are current snapshots.`
+                    : `Request metrics cover the latest ${page?.capacity ?? 500} retained traces within the selected window. Inventory counts are current snapshots.`}
+            </p>
             {!!page?.dropped && <p role="alert">{number(page.dropped)} traces were not delivered. Request metrics are incomplete.</p>}
             {page?.persistenceFailed && <p role="alert">Some request events could not be saved. This history may be incomplete.</p>}
             {!!page?.evicted && <p>Earlier traces have expired; these metrics do not represent the full time window.</p>}
@@ -288,6 +307,9 @@ function DataScope({ page }: { page?: RequestTracePage }) {
     )
 }
 
+function empty(actorName: string): ClassMetrics {
+    return { actorName, count: 0, success: null, p95: null, queueP95: null }
+}
 function number(value?: number) {
     return value === undefined ? "—" : value.toLocaleString()
 }

@@ -1,4 +1,4 @@
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 class SessionCounter extends Actor {
     @Persisted private count = 0

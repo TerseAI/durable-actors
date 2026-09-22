@@ -1,4 +1,4 @@
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
     @Persisted private messages: ChatMessage[] = []

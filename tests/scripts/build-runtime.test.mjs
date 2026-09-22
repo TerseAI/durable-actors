@@ -15,11 +15,11 @@ test("native builds refresh both local executables and bundle them with a matchi
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
-    await writeFile(path.join(root, "target/release/little-actors-modal-go"), "stale provider", { mode: 0o755 })
+    await writeFile(path.join(root, "target/release/durable-actors-modal-go"), "stale provider", { mode: 0o755 })
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
-            await writeFile(path.join(root, "target/release/little-actors"), "runtime", { mode: 0o755 })
+            await writeFile(path.join(root, "target/release/durable-actors"), "runtime", { mode: 0o755 })
         } else if (command === "go") {
             await writeFile(args[args.indexOf("-o") + 1], "provider", { mode: 0o755 })
         } else {
@@ -27,7 +27,7 @@ test("native builds refresh both local executables and bundle them with a matchi
         }
     }
     const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run).build()
-    assert.equal(path.basename(archive), "little-actors-linux-arm64.tar.gz")
+    assert.equal(path.basename(archive), "durable-actors-linux-arm64.tar.gz")
     const checksum = createHash("sha256")
         .update(await readFile(archive))
         .digest("hex")
@@ -36,8 +36,8 @@ test("native builds refresh both local executables and bundle them with a matchi
     await mkdir(extracted)
     await execute("tar", ["-xzf", archive, "-C", extracted])
     for (const [name, contents] of [
-        ["little-actors", "runtime"],
-        ["little-actors-modal-go", "provider"]
+        ["durable-actors", "runtime"],
+        ["durable-actors-modal-go", "provider"]
     ]) {
         assert.equal(await readFile(path.join(root, "target/release", name), "utf8"), contents)
         await execute("test", ["-x", path.join(root, "target/release", name)])
@@ -53,5 +53,5 @@ test("a compiler failure does not publish a native bundle", async t => {
         throw new Error("compiler failed")
     })
     await assert.rejects(builder.build(), /compiler failed/)
-    await assert.rejects(readFile(path.join(root, `dist-runtime/little-actors-${process.platform}-${process.arch}.tar.gz`)), { code: "ENOENT" })
+    await assert.rejects(readFile(path.join(root, `dist-runtime/durable-actors-${process.platform}-${process.arch}.tar.gz`)), { code: "ENOENT" })
 })

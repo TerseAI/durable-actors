@@ -1,4 +1,4 @@
-/** @module little-actors/backend */
+/** @module durable-actors/backend */
 import { validateActorComponent } from "./actor/identity.js"
 import { actorClient } from "./client/client.js"
 import type { ActorClientTransport } from "./client/client.js"

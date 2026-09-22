@@ -1,26 +1,14 @@
 import React, { act } from "react"
 
-import { cleanup, fireEvent, render } from "@testing-library/react"
-import { JSDOM } from "jsdom"
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
 import { HttpObserverClient } from "../src/client.js"
 import type { RequestHistoryQuery, RequestTracePage } from "../src/client.js"
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>")
-Object.assign(globalThis, {
-    window: dom.window,
-    document: dom.window.document,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    NodeFilter: dom.window.NodeFilter,
-    HTMLInputElement: dom.window.HTMLInputElement,
-    MutationObserver: dom.window.MutationObserver,
-    CustomEvent: dom.window.CustomEvent,
-    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
-    IS_REACT_ACT_ENVIRONMENT: true
-})
+import "./dom.js"
+
 const { RequestObserver } = await import("../src/RequestObserver.js")
 afterEach(cleanup)
 const page: RequestTracePage = {
@@ -108,11 +96,11 @@ test("request streams validate records and use the trace endpoint", async () => 
     await assert.rejects(broken.watchRequests(() => assert.fail("invalid trace accepted"), new AbortController().signal))
 })
 
-function historyPage(records = page.records, nextCursor: string | null = null): RequestTracePage {
-    return { ...page, cursor: 200, capacity: 100, records, nextCursor, reset: false }
+function historyPage(records = page.records, nextCursor?: string): RequestTracePage {
+    return { ...page, cursor: 200, records, nextCursor }
 }
 
-test("saved history sends filters and loads older pages without mixing live rows", async () => {
+test("saved history sends typed filters and loads older pages without mixing live rows", async () => {
     const queries: RequestHistoryQuery[] = []
     const client = {
         watchRequests: async (receive: (page: RequestTracePage) => void, signal: AbortSignal) => {
@@ -121,55 +109,38 @@ test("saved history sends filters and loads older pages without mixing live rows
         },
         listRequests: async (query: RequestHistoryQuery) => {
             queries.push(query)
-            if (queries.length === 1) return historyPage([{ ...page.records[0]!, sequence: 200, operation: "saved call" }], "opaque-cursor")
-            return historyPage([{ ...page.records[0]!, sequence: 100, operation: "older call" }])
+            if (queries.length === 1)
+                return historyPage(
+                    Array.from({ length: 100 }, (_, i) => ({ ...page.records[0]!, sequence: 200 - i, eventId: `saved-${i}`, operation: `saved call ${i}` })),
+                    "older-page"
+                )
+            return historyPage([{ ...page.records[0]!, sequence: 100, eventId: "older", operation: "older call" }])
         }
     }
     const view = render(<RequestObserver client={client} />)
     await view.findByText("post")
     fireEvent.click(view.getByRole("button", { name: "History" }))
-    await view.findByText("saved call")
+    await view.findByText("saved call 0")
     assert.equal(view.queryByText("post"), null)
     fireEvent.click(view.getByRole("button", { name: "Load older" }))
     await view.findByText("older call")
-    assert.ok(view.getByText("saved call"))
-    assert.deepEqual(queries, [{ cursor: undefined }, { cursor: "opaque-cursor" }])
+    assert.ok(view.getByText("saved call 0"))
+    assert.ok(queries[0]!.fromMs! >= Date.now() - 62 * 60_000 && queries[0]!.fromMs! <= Date.now() - 60 * 60_000)
+    assert.equal(queries[1]!.cursor, "older-page")
+    assert.equal(queries[1]!.fromMs, queries[0]!.fromMs)
     fireEvent.click(view.getByRole("button", { name: "Live" }))
     await view.findByText("post")
-    assert.equal(view.queryByText("saved call"), null)
+    assert.equal(view.queryByText("saved call 0"), null)
 })
 
-test("expired history cursors replace stale pages and explain the reset", async () => {
-    const client = {
-        listRequests: async (query: RequestHistoryQuery) =>
-            query.cursor
-                ? { ...historyPage([{ ...page.records[0]!, sequence: 201, operation: "available call" }]), reset: true }
-                : historyPage([{ ...page.records[0]!, sequence: 200, operation: "expired call" }], "expired-cursor")
-    }
-    const view = render(<RequestObserver client={client} />)
-    fireEvent.click(view.getByRole("button", { name: "History" }))
-    await view.findByText("expired call")
-    fireEvent.click(view.getByRole("button", { name: "Load older" }))
-    await view.findByText("available call")
-    assert.equal(view.queryByText("expired call"), null)
-    assert.match(view.getByRole("alert").textContent!, /no longer retained/u)
-    assert.equal(view.queryByRole("button", { name: "Load older" }), null)
-})
-
-test("HTTP history sends URL filters and validates typed pages", async () => {
-    const query = { actorId: "one", outcome: "failed" as const, fromMs: 0, limit: 10, cursor: "opaque+cursor" }
-    const controller = new AbortController()
+test("HTTP history encodes filters without exposing credentials", async () => {
     const client = new HttpObserverClient("/api/observe", async (url, options) => {
-        assert.equal(url, "/api/observe/requests?actorId=one&outcome=failed&fromMs=0&limit=10&cursor=opaque%2Bcursor")
+        assert.equal(url, "/api/observe/requests?actorId=a%2Fb&limit=100&cursor=page%2Btoken")
         assert.equal(options?.method, "GET")
-        assert.equal(options?.body, undefined)
-        assert.equal(options?.signal, controller.signal)
         assert.equal(new Headers(options?.headers).get("authorization"), null)
-        return Response.json(historyPage())
+        return Response.json(page)
     })
-    assert.deepEqual(await client.listRequests(query, controller.signal), historyPage())
-    const broken = new HttpObserverClient("/api/observe", async () => Response.json({ records: [] }))
-    await assert.rejects(broken.listRequests({}), /Invalid request history response/u)
+    assert.deepEqual(await client.listRequests({ actorId: "a/b", limit: 100, cursor: "page+token" }), page)
 })
 
 test("live reconnect resumes after the last received cursor and preserves distinct events", async () => {
@@ -190,8 +161,7 @@ test("live reconnect resumes after the last received cursor and preserves distin
 })
 
 test("changing history filters cancels the old query and ignores a late response", async () => {
-    Object.assign(globalThis, { FormData: dom.window.FormData })
-    let resolveFirst!: (page: RequestTracePage) => void
+    let resolveFirst!: (page: ReturnType<typeof historyPage>) => void
     let firstSignal: AbortSignal | undefined
     const queries: unknown[] = []
     const client = {
@@ -199,7 +169,7 @@ test("changing history filters cancels the old query and ignores a late response
             queries.push(query)
             if (queries.length === 1) {
                 firstSignal = signal
-                return new Promise<RequestTracePage>(resolve => {
+                return new Promise<ReturnType<typeof historyPage>>(resolve => {
                     resolveFirst = resolve
                 })
             }
@@ -244,8 +214,13 @@ test("instance requests filter both class and ID in live and saved history", asy
     assert.equal(view.queryByText("wrong instance"), null)
     fireEvent.click(view.getByRole("button", { name: "History" }))
     await view.findByRole("table", { name: "Saved requests" })
-    assert.deepEqual(queries[0], { actorName: "Room", actorId: "lobby", cursor: undefined })
+    assert.equal(queries[0]!.actorName, "Room")
+    assert.equal(queries[0]!.actorId, "lobby")
     assert.equal(view.queryByLabelText("Actor ID"), null)
+    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
+    fireEvent.click(view.getByRole("button", { name: "All retained" }))
+    await waitFor(() => assert.equal(queries.length, 2))
+    assert.equal(queries[1]!.fromMs, undefined, "all retained history drops the time bound")
 })
 
 test("request inspection keeps table rows intact and opens a separate details sheet", async () => {

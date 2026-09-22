@@ -5,7 +5,7 @@ import { test } from "node:test"
 
 test("the public package bundles into a hosted browser app without a second React or Node runtime", async () => {
     const result = await build({
-        stdin: { contents: 'export { ActorObserver, HttpObserverClient } from "little-actors-observer"; import "little-actors-observer/styles.css"', resolveDir: process.cwd() },
+        stdin: { contents: 'export { ActorObserver, HttpObserverClient } from "durable-actors-observer"; import "durable-actors-observer/styles.css"', resolveDir: process.cwd() },
         outfile: "consumer.js",
         bundle: true,
         platform: "browser",

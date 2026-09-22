@@ -108,3 +108,40 @@ function mergePages(current: RequestTracePage | undefined, incoming: RequestTrac
         records: [...records.values()].sort((a, b) => b.sequence - a.sequence).slice(0, incoming.capacity)
     }
 }
+
+export function usePolledQuery<Q extends object, T>(client: object, query: Q, request: ((query: Q, signal?: AbortSignal) => Promise<T>) | undefined, interval = 10_000) {
+    const key = request ? JSON.stringify(query) : undefined
+    const [attempt, setAttempt] = useState(0)
+    const [result, setResult] = useState<{ client: object; key: string; value: T; updatedAt: number }>()
+    const [failed, setFailed] = useState(false)
+    const [loading, setLoading] = useState(false)
+    useEffect(() => {
+        if (!key) return
+        const controller = new AbortController()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        setFailed(false)
+        setLoading(true)
+        void load()
+        return () => {
+            controller.abort()
+            clearTimeout(timer)
+        }
+        async function load() {
+            try {
+                const value = await request!.call(client, JSON.parse(key!) as Q, controller.signal)
+                if (controller.signal.aborted) return
+                setResult({ client, key: key!, value, updatedAt: Date.now() })
+                setFailed(false)
+            } catch {
+                if (!controller.signal.aborted) setFailed(true)
+            } finally {
+                if (!controller.signal.aborted) {
+                    setLoading(false)
+                    timer = setTimeout(load, interval)
+                }
+            }
+        }
+    }, [client, request, key, attempt, interval])
+    const current = result && result.client === client && result.key === key ? result : undefined
+    return { supported: !!request, value: current?.value, updatedAt: current?.updatedAt, loading, failed, retry: () => setAttempt(value => value + 1) }
+}

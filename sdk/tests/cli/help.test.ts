@@ -13,6 +13,6 @@ test("CLI help explains source defaults without requiring credentials", async ()
             env: { ...process.env, DURABLE_OBJECT_PROJECT_ID: "", DURABLE_OBJECT_API_KEY: "" }
         })
         assert.match(stdout, /src\/durable-objects\.ts/u)
-        assert.match(stdout, /DURABLE_OBJECT_PROJECT_ID/u)
+        assert.match(stdout, /DURABLE_ACTORS_PROJECT_ID/u)
     }
 })

@@ -58,7 +58,7 @@ async fn run_activation(
         format!("ready-{before}")
     });
     let host_id = HostId::new(format!("host.v3.test.{}", uuid::Uuid::new_v4()));
-    let actor_spool = std::env::temp_dir().join(format!("little-actors-{host_id}"));
+    let actor_spool = std::env::temp_dir().join(format!("durable-actors-{host_id}"));
     assert!(!actor_spool.exists());
     let session = uuid::Uuid::new_v4().to_string();
     let token = issuer
@@ -243,7 +243,7 @@ fn issuer() -> Result<ActorJwtIssuer> {
 async fn compile_counter(sdk: &Path, project: &Path) -> Result<Vec<u8>> {
     let source = project.join("actors.ts");
     let compiled = project.join("actors.mjs");
-    tokio::fs::write(&source, "import { Actor, Persisted } from 'little-actors'; export class Counter extends Actor { @Persisted value = 0; async read() { return this.value; } async increment() { return ++this.value; } }").await?;
+    tokio::fs::write(&source, "import { Actor, Persisted } from 'durable-actors'; export class Counter extends Actor { @Persisted value = 0; async read() { return this.value; } async increment() { return ++this.value; } }").await?;
     tokio::fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true},"include":["actors.ts"]}"#).await?;
     let result = Command::new("node").args(["--input-type=module", "--eval", "const { buildActor } = await import(process.argv[1]); await buildActor(process.argv[2], process.argv[3]);"])
         .arg(sdk.join("dist/compiler/actor-build.js")).arg(source).arg(&compiled).output().await?;

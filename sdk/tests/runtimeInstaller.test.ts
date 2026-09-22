@@ -27,7 +27,10 @@ test("installs both executables from a verified release and reuses the cache off
     assert.equal(await readFile(binary, "utf8"), "runtime")
     assert.equal(await readFile(`${binary}-modal-go`, "utf8"), "provider")
     assert.equal(requests.length, 2)
-    assert.ok(requests.every(url => url.includes("/v1.2.3/little-actors-darwin-arm64.tar.gz")))
+    assert.deepEqual(requests, [
+        "https://github.com/TerseAI/durable-actors/releases/download/v1.2.3/durable-actors-darwin-arm64.tar.gz",
+        "https://github.com/TerseAI/durable-actors/releases/download/v1.2.3/durable-actors-darwin-arm64.tar.gz.sha256"
+    ])
     const offline = new RuntimeInstaller(options, async () => {
         throw new Error("offline")
     })
@@ -55,9 +58,9 @@ test("unsupported systems get an actionable error without downloading", async ()
 })
 
 async function fixture(directory: string): Promise<Buffer> {
-    await writeFile(path.join(directory, "little-actors"), "runtime")
-    await writeFile(path.join(directory, "little-actors-modal-go"), "provider")
+    await writeFile(path.join(directory, "durable-actors"), "runtime")
+    await writeFile(path.join(directory, "durable-actors-modal-go"), "provider")
     const archive = path.join(directory, "runtime.tar.gz")
-    await c({ gzip: true, file: archive, cwd: directory }, ["little-actors", "little-actors-modal-go"])
+    await c({ gzip: true, file: archive, cwd: directory }, ["durable-actors", "durable-actors-modal-go"])
     return readFile(archive)
 }

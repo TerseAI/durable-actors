@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-    title: Little Actors HTTP API
+    title: durable-actors control plane API
     version: "1"
-    description: Deploy actors, find actor hosts and WebSocket URLs, and inspect activity.
+    description: Control plane API for durable-actors. Manage deployments, find actor hosts and support observability.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.
@@ -271,6 +271,75 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/metrics:
+        get:
+            operationId: getObserverMetrics
+            tags: [Observability]
+            summary: Get retained request metrics
+            description: Counts include reroutes; success and p95 use non-rerouted attempts. Returns deployment totals and up to 499 actor classes from retained history.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/OverviewMetrics" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/queue-waits:
+        get:
+            operationId: listQueueWaits
+            tags: [Observability]
+            summary: Get queue wait statistics
+            description: Up to 500 actor instances ordered by admitted request count, then actor name and ID. Includes non-rerouted attempts with a queue wait.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+                - name: actorName
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 48, pattern: "^[A-Za-z0-9._-]+$" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/QueueWaitRow" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/websockets:
+        get:
+            operationId: listWebSocketSessions
+            tags: [Observability]
+            summary: Get WebSocket session history
+            description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/SocketSession" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
     /v1/observe/requests/events:
         get:
             operationId: streamRequestHistory
@@ -298,7 +367,7 @@ paths:
             operationId: openWebSocket
             tags: [WebSockets]
             summary: Open a WebSocket
-            description: Pass websocketUrl from the connect response directly to new WebSocket().
+            description: Pass websocketUrl from the find-websocket response directly to new WebSocket().
             servers:
                 - url: https://{actorHost}
                   variables:
@@ -316,7 +385,7 @@ webhooks:
             operationId: receiveSocketMessageEvent
             tags: [WebSockets]
             summary: Receive handled socket messages
-            description: Set DURABLE_OBJECT_SOCKET_EVENT_URL to enable. Verify the bearer API key. Delivery is best effort, without retries.
+            description: Set DURABLE_ACTORS_SOCKET_EVENT_URL to enable. Verify the bearer API key. Delivery is best effort, without retries.
             requestBody:
                 required: true
                 content:
@@ -348,6 +417,16 @@ components:
         NoStore:
             schema: { type: string, const: no-store }
     parameters:
+        FromMs:
+            name: fromMs
+            in: query
+            description: Inclusive lower bound in Unix milliseconds; must not exceed toMs.
+            schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        ToMs:
+            name: toMs
+            in: query
+            description: Inclusive upper bound in Unix milliseconds.
+            schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
         ProjectId:
             name: project_id
             in: path
@@ -451,6 +530,47 @@ components:
                 text/plain:
                     schema: { type: string }
     schemas:
+        OverviewMetrics:
+            type: object
+            required: [total, classes]
+            properties:
+                total: { $ref: "#/components/schemas/ClassMetrics" }
+                classes:
+                    type: array
+                    maxItems: 499
+                    items: { $ref: "#/components/schemas/ClassMetrics" }
+        ClassMetrics:
+            type: object
+            required: [actorName, count, success, p95, queueP95]
+            properties:
+                actorName: { type: string, description: Empty for the deployment total. }
+                count: { type: integer, minimum: 0 }
+                success: { type: [number, "null"], minimum: 0, maximum: 100, description: Completed attempts as a percentage of non-rerouted attempts. }
+                p95: { type: [number, "null"], minimum: 0, description: 95th percentile duration in milliseconds. }
+                queueP95: { type: [number, "null"], minimum: 0, description: 95th percentile queue wait in milliseconds. }
+        QueueWaitRow:
+            type: object
+            required: [actorName, actorId, admitted, averageMs, maxMs]
+            properties:
+                actorName: { type: string }
+                actorId: { type: string }
+                admitted: { type: integer, minimum: 1 }
+                averageMs: { type: number, minimum: 0 }
+                maxMs: { type: number, minimum: 0 }
+        SocketSession:
+            type: object
+            required: [connectionId, actorName, actorId, hostId, openedAtMs, closedAtMs, lastSeenMs, messages, failures]
+            properties:
+                connectionId: { type: string }
+                actorName: { type: string }
+                actorId: { type: string }
+                hostId: { type: [string, "null"] }
+                openedAtMs: { type: [integer, "null"], minimum: 0 }
+                closedAtMs: { type: [integer, "null"], minimum: 0 }
+                lastSeenMs: { type: [integer, "null"], minimum: 0 }
+                messages: { type: integer, minimum: 0 }
+                failures: { type: integer, minimum: 0 }
+                metadata: { description: Metadata saved with a retained onConnect event. }
         Deployment:
             type: object
             additionalProperties: false
@@ -634,6 +754,7 @@ components:
             type: object
             required: [sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
             properties:
+                metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
                 sequence: { type: integer, minimum: 0 }
                 eventId: { type: string, format: uuid }
                 hostId: { type: string }

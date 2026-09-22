@@ -1,0 +1,44 @@
+name: Build native runtimes
+
+on:
+    workflow_call:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Build native runtime (${{ matrix.runner }})
+        strategy:
+            fail-fast: false
+            matrix:
+                runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel]
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 60
+        steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+              with:
+                  ref: ${{ github.sha }}
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+              with:
+                  node-version: "22.19.0"
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.27.1"
+                  cache-dependency-path: providers/modal-go/go.sum
+            - name: Install Rust toolchain
+              run: rustup toolchain install 1.89.0 --profile minimal && rustup default 1.89.0
+            - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+              with:
+                  shared-key: native-${{ matrix.runner }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Build Rust runtime and bundled Go provider
+              run: node scripts/build-runtime.mjs
+            - name: Check the native executable
+              run: target/release/durable-actors --version
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: native-${{ matrix.runner }}
+                  path: dist-runtime/*
+                  if-no-files-found: error
+                  retention-days: 7

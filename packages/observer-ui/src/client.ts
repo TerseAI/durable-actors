@@ -1,5 +1,10 @@
 import { createParser } from "eventsource-parser"
 
+import { type OverviewMetrics, parseOverviewMetrics } from "./overview-metrics.js"
+import { type QueueWaitRow, queueWaitRows } from "./queue-wait.js"
+import { type SocketSessionRow, sessionRows } from "./socket-sessions.js"
+import type { ResolvedRange } from "./time-range.js"
+
 type ActorResidency = "live" | "dormant" | "unknown"
 
 interface ActorInstance {
@@ -19,6 +24,10 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    getMetrics?(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics>
+    listQueueWaits?(query: ResolvedRange & { actorName?: string }, signal?: AbortSignal): Promise<QueueWaitRow[]>
+    listWebSockets?(range: ResolvedRange, signal?: AbortSignal): Promise<SocketSessionRow[]>
+
     listRequests?(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage>
     watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal, after?: string): Promise<void>
     watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
@@ -31,6 +40,18 @@ class HttpObserverClient implements ObserverClient {
         private readonly baseUrl: string = "/api/observe",
         private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)
     ) {}
+
+    async getMetrics(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics> {
+        return parseOverviewMetrics(await this.get(`metrics${queryString(range)}`, signal))
+    }
+
+    async listQueueWaits(query: ResolvedRange & { actorName?: string }, signal?: AbortSignal): Promise<QueueWaitRow[]> {
+        return queueWaitRows(await this.get(`queue-waits${queryString(query)}`, signal))
+    }
+
+    async listWebSockets(range: ResolvedRange, signal?: AbortSignal): Promise<SocketSessionRow[]> {
+        return sessionRows(await this.get(`websockets${queryString(range)}`, signal))
+    }
 
     async listActors(signal?: AbortSignal): Promise<ActorInventory> {
         const result = await this.get("actors", signal)
@@ -48,11 +69,7 @@ class HttpObserverClient implements ObserverClient {
     }
 
     async listRequests(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage> {
-        const params = new URLSearchParams()
-        for (const [key, value] of Object.entries(query)) {
-            if (value !== undefined) params.set(key, String(value))
-        }
-        const result = await this.get(`requests${params.size ? `?${params}` : ""}`, signal)
+        const result = await this.get(`requests${queryString(query)}`, signal)
         if (!isTracePage(result)) throw new Error("Invalid request history response")
         return result
     }
@@ -116,6 +133,12 @@ class HttpObserverClient implements ObserverClient {
     }
 }
 
+function queryString(query: object): string {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value))
+    return params.size ? `?${params}` : ""
+}
+
 function isInventory(value: unknown): value is ActorInventory {
     if (!value || typeof value !== "object" || !("actors" in value) || !Array.isArray(value.actors)) return false
     return value.actors.every(
@@ -154,6 +177,7 @@ export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
 
 export interface RequestTrace {
+    metadata?: unknown
     eventId?: string
     sequence: number
     requestId: string

@@ -267,7 +267,7 @@ import {{ build }} from 'esbuild';
 const directory = {directory};
 await generateClient(new ActorCompiler().compileContract(directory + '/actors.ts'), directory + '/generated');
 await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/backend.mjs',
-    bundle:true,platform:'node',format:'esm',external:['little-actors/generated']}});
+    bundle:true,platform:'node',format:'esm',external:['durable-actors/generated']}});
 const {{ actors }} = await import(directory + '/backend.mjs');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
     {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
