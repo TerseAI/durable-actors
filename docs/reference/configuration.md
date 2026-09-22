@@ -45,13 +45,7 @@ The server also requires the API key and a publicly reachable `DURABLE_ACTORS_CO
 | `MODAL_TOKEN_SECRET`                | Required                                                | Modal token secret.                                                                |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY`    | Required; generated for local development               | Base64-encoded Ed25519 PKCS#8 signing key. Reuse across restarts.                  |
 
-### Storage and protocol upgrade
-
-This breaking release uses `durable_actors_*` PostgreSQL tables, the `durable-actors/v3/` object-storage prefix, and the `durable_actors.v1` gRPC namespace. Use a fresh PostgreSQL schema and local state directory, or migrate existing data explicitly; earlier schemas and stored state are not upgraded automatically. Update the SDK, runtime, and host images together, and restart actor and replica processes because their credential namespaces also changed.
-
 ## Advanced settings
-
-Leave these at their defaults unless you need to change the associated behavior.
 
 ### Capacity and placement
 
@@ -90,5 +84,3 @@ Leave these at their defaults unless you need to change the associated behavior.
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 | `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |
-
-For local tunnel options, run `node scripts/tunnel.mjs --help` from the repository.
