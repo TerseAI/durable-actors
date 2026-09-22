@@ -6,15 +6,17 @@ import { fileURLToPath } from "node:url"
 import open from "open"
 import type { Connect, PreviewServer } from "vite"
 
-import { connection, connectionOptions } from "./connection.js"
-import type { ConnectionOptions } from "./connection.js"
-import { ControlPlaneClient } from "./control-plane.js"
+import { connectionHelp } from "./connection.js"
+import { ControlPlaneClient, createControlPlaneClient } from "./control-plane.js"
 
 function registerObserveCommand(program: Command): void {
-    connectionOptions(program.command("observe").description("Open the local observability UI"))
+    program
+        .command("observe")
+        .description("Open the local observability UI")
         .option("--no-open", "print the UI URL without opening a browser")
-        .action(async (options: ConnectionOptions & { open: boolean }) => {
-            const observer = new Observer(new ControlPlaneClient(connection(options), fetch), open)
+        .addHelpText("after", connectionHelp)
+        .action(async (options: { open: boolean }) => {
+            const observer = new Observer(createControlPlaneClient(process.env, fetch), open)
             const result = await observer.start(options.open)
             const stop = () => {
                 process.exitCode ??= 0

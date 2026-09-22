@@ -9,7 +9,7 @@ fn startup_message_has_clear_hierarchy_and_next_step() {
 
     assert_eq!(
         message,
-        "little actors / local\n\n  Ready  http://127.0.0.1:7100\n  State  /projects/chat/.little-actors\n  Next   npx little-actors generate --url http://127.0.0.1:7100\n\n  State persists between restarts. Delete the state directory to start fresh."
+        "little actors / local\n\n  Ready  http://127.0.0.1:7100\n  State  /projects/chat/.little-actors\n  Next   DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.1:7100 npx little-actors generate --remote\n\n  State persists between restarts. Delete the state directory to start fresh."
     );
 }
 

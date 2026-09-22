@@ -25,10 +25,10 @@ Set your server URL, API key, and project ID in `.env`; see [configuration](conf
 
 ```sh
 npx little-actors deploy src/actors.ts --image im-customer-build
-npx little-actors generate --url
+npx little-actors generate --remote
 ```
 
-Each deploy replaces the current deployment and restarts its actors. `generate --url` uses the current contract.
+Each deploy replaces the current deployment and restarts its actors. `generate --remote` uses the current contract. Without `--remote`, generation uses local source, even when a server URL is configured.
 
 Deployment requires a [published image](../guides/self-hosting.md#4-package-and-deploy-customer-code). Import the generated backend helpers from `generated/index.js`. To generate from local source, use `npx little-actors generate src/actors.ts`.
 

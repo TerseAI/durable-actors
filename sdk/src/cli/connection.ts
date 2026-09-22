@@ -1,27 +1,17 @@
-import { Command, Option } from "commander"
-
 import { configuredSettings } from "../client/clientSettings.js"
 
-export interface ConnectionOptions {
-    projectId: string
-    url: string
-    apiKey?: string
+export function connection(env: NodeJS.ProcessEnv) {
+    if (!env.DURABLE_OBJECT_PROJECT_ID) throw new Error("Set DURABLE_OBJECT_PROJECT_ID to your actor project ID.")
+    if (!env.DURABLE_OBJECT_API_KEY) throw new Error("Set DURABLE_OBJECT_API_KEY to provide an admin API key.")
+    return configuredSettings({
+        projectId: env.DURABLE_OBJECT_PROJECT_ID,
+        controlPlaneUrl: env.DURABLE_OBJECT_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
+        apiKey: env.DURABLE_OBJECT_API_KEY
+    })
 }
 
-export function connectionOptions(command: Command): Command {
-    return command
-        .addOption(
-            new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID").makeOptionMandatory()
-        )
-        .addOption(
-            new Option("--url <origin>", "control-plane URL")
-                .env("DURABLE_OBJECT_CONTROL_PLANE_URL")
-                .default("http://127.0.0.1:7100")
-        )
-        .addOption(new Option("--api-key <key>", "admin API key").env("DURABLE_OBJECT_API_KEY"))
-}
-
-export function connection(options: ConnectionOptions) {
-    if (!options.apiKey) throw new Error("Set --api-key or DURABLE_OBJECT_API_KEY to provide an admin API key.")
-    return configuredSettings({ projectId: options.projectId, controlPlaneUrl: options.url, apiKey: options.apiKey })
-}
+export const connectionHelp = `
+Connection settings (.env or environment):
+  DURABLE_OBJECT_PROJECT_ID
+  DURABLE_OBJECT_CONTROL_PLANE_URL (default: http://127.0.0.1:7100)
+  DURABLE_OBJECT_API_KEY`

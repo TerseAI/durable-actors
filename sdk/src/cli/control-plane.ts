@@ -2,12 +2,6 @@ import { validateProjectId } from "../actor/identity.js"
 
 import { connection } from "./connection.js"
 
-interface ControlPlaneOptions {
-    projectId: string
-    url?: string | true
-    apiKey?: string
-}
-
 interface ControlPlaneConnection {
     projectId: string
     controlPlaneUrl: string
@@ -98,18 +92,8 @@ class ControlPlaneClient {
     }
 }
 
-function createControlPlaneClient(options: ControlPlaneOptions, request: typeof fetch): ControlPlaneClient {
-    return new ControlPlaneClient(
-        connection({
-            projectId: options.projectId,
-            url:
-                typeof options.url === "string"
-                    ? options.url
-                    : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
-            apiKey: options.apiKey || process.env.DURABLE_OBJECT_API_KEY
-        }),
-        request
-    )
+function createControlPlaneClient(env: NodeJS.ProcessEnv, request: typeof fetch): ControlPlaneClient {
+    return new ControlPlaneClient(connection(env), request)
 }
 
 async function readResponse(response: Response): Promise<unknown> {
@@ -132,4 +116,4 @@ function errorMessage(result: unknown): string | undefined {
 }
 
 export { ControlPlaneClient, createControlPlaneClient }
-export type { ControlPlaneConnection, ControlPlaneOptions }
+export type { ControlPlaneConnection }

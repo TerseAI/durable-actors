@@ -21,7 +21,7 @@ See the sample apps:
 Install Node.js 20+ for the CLI and Bun 1.4.2+ for actor execution. Each actor runs in its own Bun/Rust process pair locally and its own Modal sandbox when hosted.
 
 ```sh
-npx little-actors start --dev --project-id my-project
+DURABLE_OBJECT_PROJECT_ID=my-project npx little-actors start --dev
 ```
 
 Set the same `DURABLE_OBJECT_PROJECT_ID` in your application backend. If startup generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.

@@ -1,9 +1,10 @@
-import { Command, Option } from "commander"
+import { Command } from "commander"
 import { z } from "zod"
 
-import { type ControlPlaneOptions, createControlPlaneClient } from "./control-plane.js"
+import { connectionHelp } from "./connection.js"
+import { createControlPlaneClient } from "./control-plane.js"
 
-interface DeployOptions extends ControlPlaneOptions {
+interface DeployOptions {
     image: string
     workingDirectory: string
     secret: string[]
@@ -16,20 +17,18 @@ function registerDeployCommand(program: Command): void {
         .description("Deploy actors")
         .requiredOption("--image <reference>", "published actor image")
         .option("--working-directory <path>", "project directory in the image", "/customer")
-        .option("--url <origin>", "control-plane origin (or DURABLE_OBJECT_CONTROL_PLANE_URL)")
-        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
-        .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
         .option(
             "--secret <name>",
             "Modal secret name (repeat for multiple secrets)",
             (value: string, previous: string[]) => [...previous, value],
             []
         )
+        .addHelpText("after", connectionHelp)
         .action(deploy)
 }
 
 async function deploy(entrypoint = "src/durable-objects.ts", options: DeployOptions): Promise<void> {
-    const client = createControlPlaneClient(options, fetch)
+    const client = createControlPlaneClient(process.env, fetch)
     const specification = deploymentSchema.parse({
         imageRef: options.image,
         workingDirectory: options.workingDirectory,

@@ -42,22 +42,21 @@ test("start validates development mode before launching the runtime", async t =>
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-start-options-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "", DURABLE_OBJECT_BINARY: "missing-runtime" }
-    for (const flags of [
-        ["--project-id", "example"],
-        ["--project", directory],
-        ["--entrypoint", "actors.ts"],
-        ["--port", "0"],
-        ["--storage", "local"],
-        ["--data-dir", directory],
-        ["--api-key", "test-key"],
-        ["--no-watch"]
-    ]) {
+    for (const flags of [["--port", "0"], ["--no-watch"]]) {
         await assert.rejects(run(process.execPath, [cli, "start", ...flags], { cwd: directory, env }), /requires --dev/)
     }
     await assert.rejects(
         run(process.execPath, [cli, "start", "--dev"], { cwd: directory, env }),
-        /--project-id is required/
+        /DURABLE_OBJECT_PROJECT_ID/
     )
+    for (const settings of [{ DURABLE_OBJECT_STORAGE: "invalid" }, { DURABLE_OBJECT_PORT: "65536" }])
+        await assert.rejects(
+            run(process.execPath, [cli, "start", "--dev"], {
+                cwd: directory,
+                env: { ...env, DURABLE_OBJECT_PROJECT_ID: "default", ...settings }
+            }),
+            /DURABLE_OBJECT_STORAGE|Port must be an integer/
+        )
 })
 
 test("start --dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
@@ -110,9 +109,11 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         ...process.env,
         DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_BINARY: executable,
-        DURABLE_OBJECT_API_KEY: "test-key"
+        DURABLE_OBJECT_API_KEY: "test-key",
+        DURABLE_OBJECT_PROJECT: project,
+        DURABLE_OBJECT_ENTRYPOINT: "actors.ts"
     }
-    const args = [cli, "start", "--dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
+    const args = [cli, "start", "--dev", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)
     assert.equal(result.contract.actors[0].actorName, "Room")

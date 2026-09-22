@@ -264,7 +264,7 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         },
         DevStorage::Gcs => BucketLocation::Gcs {
             bucket: std::env::var("DURABLE_OBJECT_BUCKET")
-                .context("--storage gcs requires DURABLE_OBJECT_BUCKET")?,
+                .context("DURABLE_OBJECT_STORAGE=gcs requires DURABLE_OBJECT_BUCKET")?,
         },
     };
     let bucket: Arc<dyn Bucket> = match &location {
@@ -436,7 +436,7 @@ fn format_local_ready_message(
         ""
     };
     format!(
-        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx little-actors generate --url {origin}{command:#}{note}",
+        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}DURABLE_OBJECT_CONTROL_PLANE_URL={origin} npx little-actors generate --remote{command:#}{note}",
         directory.display(),
     )
 }

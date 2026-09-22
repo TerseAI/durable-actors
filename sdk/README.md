@@ -29,7 +29,7 @@ Methods must be async. Mark each field `@Persisted` to save it or `@Ephemeral` f
 ## Run locally
 
 ```sh
-npx little-actors start --dev --project-id my-project
+DURABLE_OBJECT_PROJECT_ID=my-project npx little-actors start --dev
 ```
 
 Wait for `Ready`. In your backend terminal, set `DURABLE_OBJECT_PROJECT_ID=my-project` and run the printed `export DURABLE_OBJECT_API_KEY=…` command. Keep the actor server running; code reloads automatically and state survives restarts.

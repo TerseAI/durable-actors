@@ -14,7 +14,7 @@ const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "default", DURABLE_OBJECT_API_KEY: "contract-key" }
 
-test("generate uses environment settings and explicit flags without reading discovery files", async t => {
+test("generate --remote uses .env settings and exported environment overrides", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-local-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
@@ -33,37 +33,31 @@ test("generate uses environment settings and explicit flags without reading disc
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    await mkdir(path.join(directory, ".little-actors"))
+    const envFile = path.join(directory, ".env")
     await writeFile(
-        path.join(directory, ".little-actors/runtime.json"),
-        JSON.stringify({
-            projectId: "default",
-            controlPlaneUrl: origin,
-            apiKey: "local-key"
-        })
+        envFile,
+        `DURABLE_OBJECT_PROJECT_ID=default\nDURABLE_OBJECT_CONTROL_PLANE_URL=${origin}\nDURABLE_OBJECT_API_KEY=local-key\n`
     )
+    const fileEnv = { ...process.env }
+    for (const key of ["DURABLE_OBJECT_PROJECT_ID", "DURABLE_OBJECT_CONTROL_PLANE_URL", "DURABLE_OBJECT_API_KEY"])
+        delete fileEnv[key]
     const localEnv = {
         ...process.env,
         DURABLE_OBJECT_PROJECT_ID: "default",
         DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
         DURABLE_OBJECT_API_KEY: "local-key"
     }
-    const generate = (...args: string[]) =>
-        run(process.execPath, [cli, "generate", "--url", ...args], { cwd: directory, env: localEnv })
-    const result = await generate()
+    const result = await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
-    await run(process.execPath, [cli, "generate", "--url", origin, "--api-key", "local-key"], {
-        cwd: directory,
-        env: {
-            ...localEnv,
-            DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-            DURABLE_OBJECT_API_KEY: "wrong"
-        }
-    })
+    await writeFile(
+        envFile,
+        "DURABLE_OBJECT_PROJECT_ID=wrong\nDURABLE_OBJECT_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_OBJECT_API_KEY=wrong\n"
+    )
+    await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: localEnv })
     assert.deepEqual(requests, Array(2).fill("/v1/projects/default/deployment/contract"))
     await assert.rejects(
-        run(process.execPath, [cli, "generate", "--url"], {
+        run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
             env: { ...localEnv, DURABLE_OBJECT_API_KEY: "" }
         }),
@@ -112,7 +106,10 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await mkdir(path.join(author, "generated"))
     await writeFile(path.join(author, "generated/contract.json"), "old generated contract")
     await writeFile(path.join(author, "generated/contract-source.json"), "old generated provenance")
-    await run(process.execPath, [cli, "generate"], { cwd: author, env })
+    await run(process.execPath, [cli, "generate"], {
+        cwd: author,
+        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid" }
+    })
     const local = path.join(author, "generated")
     const files = await readdir(local)
     for (const file of ["index.ts"]) assert.ok(files.includes(file), `missing ${file}`)
@@ -159,11 +156,10 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const beforeDeploy = await readdir(author)
-    const deployed = await run(
-        process.execPath,
-        [cli, "deploy", "--url", origin, "--image", "im-chat", "--secret", "chat-secrets"],
-        { cwd: author, env }
-    )
+    const deployed = await run(process.execPath, [cli, "deploy", "--image", "im-chat", "--secret", "chat-secrets"], {
+        cwd: author,
+        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+    })
     assert.match(deployed.stdout, /Deployed actors/)
     assert.deepEqual(await readdir(author), beforeDeploy)
     const { contract } = publication
@@ -177,9 +173,9 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
     await rm(author, { recursive: true })
-    const result = await run(process.execPath, [cli, "generate", "--url", origin], {
+    const result = await run(process.execPath, [cli, "generate", "--remote"], {
         cwd: directory,
-        env
+        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
     })
     assert.deepEqual(requests, ["/v1/projects/default/deployment/contract"])
     for (const [file, content] of expected)
@@ -187,7 +183,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     assert.deepEqual(await readdir(path.join(directory, "generated")), files)
     assert.match(result.stdout, /Generated 1 actor contract/)
 
-    await run(process.execPath, [cli, "generate", "--url", "--out-dir", "active"], {
+    await run(process.execPath, [cli, "generate", "--remote", "--out-dir", "active"], {
         cwd: directory,
         env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
     })
@@ -216,13 +212,16 @@ test("generate rejects remote errors and invalid inputs before changing output",
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
     const generate = (...args: string[]) =>
-        run(process.execPath, [cli, "generate", "--url", origin, ...args], { cwd: directory, env })
+        run(process.execPath, [cli, "generate", "--remote", ...args], {
+            cwd: directory,
+            env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+        })
     await assert.rejects(generate("actors.ts"), /entrypoint/)
     await assert.rejects(generate("--config", "tsconfig.json"), /config/)
     await assert.rejects(
-        run(process.execPath, [cli, "generate", "--url", origin], {
+        run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
-            env: { ...env, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin, DURABLE_OBJECT_API_KEY: "" }
         }),
         /API key/
     )

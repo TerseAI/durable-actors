@@ -13,7 +13,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../../dist/cli.js", import.meta.url))
 
-test("observe serves a local UI using environment settings or flag overrides", { timeout: 10_000 }, async t => {
+test("observe serves a local UI using environment settings", { timeout: 10_000 }, async t => {
     const requests: string[] = []
     const server = createServer((request, response) => {
         requests.push(request.url!)
@@ -32,39 +32,31 @@ test("observe serves a local UI using environment settings or flag overrides", {
         DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
         DURABLE_OBJECT_API_KEY: "observe-key"
     }
-    for (const args of [[], ["--url", origin, "--api-key", "observe-key"]]) {
-        const child = spawn(process.execPath, [cli, "observe", "--no-open", ...args], {
-            env: args.length
-                ? {
-                      ...env,
-                      DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid",
-                      DURABLE_OBJECT_API_KEY: "wrong"
-                  }
-                : env,
-            stdio: ["ignore", "pipe", "pipe"]
-        })
-        t.after(() => child.kill())
-        const exited = once(child, "exit")
-        const lines = createInterface({ input: child.stdout })
-        let url: string | undefined
-        for await (const line of lines) {
-            if (line.startsWith("Observe: ")) {
-                url = line.slice("Observe: ".length)
-                break
-            }
+    const child = spawn(process.execPath, [cli, "observe", "--no-open"], {
+        env,
+        stdio: ["ignore", "pipe", "pipe"]
+    })
+    t.after(() => child.kill())
+    const exited = once(child, "exit")
+    const lines = createInterface({ input: child.stdout })
+    let url: string | undefined
+    for await (const line of lines) {
+        if (line.startsWith("Observe: ")) {
+            url = line.slice("Observe: ".length)
+            break
         }
-        assert.ok(url, "observer should print the local UI URL")
-        assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
-        const response = await fetch(url)
-        assert.equal(response.status, 200)
-        assert.match(await response.text(), /src="\.\/app.js"/u)
-        assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
-        assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
-        child.kill("SIGTERM")
-        assert.deepEqual(await exited, [0, null])
-        await assert.rejects(fetch(url))
     }
-    assert.deepEqual(requests, Array(4).fill("/v1/observe/actors"))
+    assert.ok(url, "observer should print the local UI URL")
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
+    const response = await fetch(url)
+    assert.equal(response.status, 200)
+    assert.match(await response.text(), /src="\.\/app.js"/u)
+    assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
+    assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
+    child.kill("SIGTERM")
+    assert.deepEqual(await exited, [0, null])
+    await assert.rejects(fetch(url))
+    assert.deepEqual(requests, Array(2).fill("/v1/observe/actors"))
 })
 
 test("observe exits unsuccessfully without a greeting when authentication or transport fails", async t => {
@@ -76,7 +68,13 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const args = [cli, "observe", "--project-id", "default", "--url", origin, "--api-key", "wrong"]
+    const args = [cli, "observe"]
+    const env = {
+        ...process.env,
+        DURABLE_OBJECT_PROJECT_ID: "default",
+        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
+        DURABLE_OBJECT_API_KEY: "wrong"
+    }
     const failure = (message: RegExp) => (error: unknown) => {
         const result = error as Error & { code: number; stdout: string; stderr: string }
         assert.equal(result.code, 1)
@@ -84,9 +82,9 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
         assert.match(result.stderr, message)
         return true
     }
-    await assert.rejects(run(process.execPath, args), failure(/HTTP 401.*Unauthorized/u))
+    await assert.rejects(run(process.execPath, args, { env }), failure(/HTTP 401.*Unauthorized/u))
     await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
-    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/observe\/actors/u))
+    await assert.rejects(run(process.execPath, args, { env }), failure(/Cannot complete GET \/v1\/observe\/actors/u))
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
@@ -168,15 +166,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "--data-dir",
         env.DURABLE_OBJECT_DATA_DIR
     ])
-    const overridden = await run(
-        process.execPath,
-        [cli, "start", "--dev", "--port", "7300", "--storage", "local", "--api-key", "flag-key"],
-        { env }
-    )
+    const overridden = await run(process.execPath, [cli, "start", "--dev", "--port", "7300"], { env })
     const args: string[] = JSON.parse(overridden.stdout)
     assert.equal(args[args.indexOf("--port") + 1], "7300")
-    assert.equal(args[args.indexOf("--storage") + 1], "local")
-    assert.equal(args[args.indexOf("--api-key") + 1], "flag-key")
+    assert.equal(args[args.indexOf("--storage") + 1], "gcs")
+    assert.equal(args[args.indexOf("--api-key") + 1], "dev-key")
     const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
     const envFile = path.join(project, ".env")
     await writeFile(envFile, "DURABLE_OBJECT_API_KEY=env-file-key\n")

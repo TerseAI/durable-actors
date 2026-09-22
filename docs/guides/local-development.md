@@ -25,12 +25,12 @@ The backend imports `actors` from `generated/index.js`. The frontend fetches a g
 ## Start the actor server
 
 ```sh
-npx little-actors start --dev --project-id my-project
+DURABLE_OBJECT_PROJECT_ID=my-project npx little-actors start --dev
 ```
 
-Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts. You can also set `DURABLE_OBJECT_PROJECT_ID` in `.env` instead of passing `--project-id`.
+Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts. Set `DURABLE_OBJECT_PROJECT_ID` in `.env` to reuse it across commands.
 
-Startup publishes your actors' current contract. Run `npx little-actors generate --url` to generate clients from it. Source changes restart local actors and update the contract.
+Startup publishes your actors' current contract. Run `npx little-actors generate --remote` to generate clients from it. Source changes restart local actors and update the contract.
 
 The same terminal shows runtime logs and a request log with the method, path, status, and duration when the local control plane responds. Request logs omit query strings, headers, and bodies. Use `RUST_LOG=debug npx little-actors start --dev` for more detail, or `RUST_LOG=warn npx little-actors start --dev` to show only warnings and errors.
 

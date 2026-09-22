@@ -102,7 +102,7 @@ Old code snapshots remain immutable deployment artifacts; retiring hosts does no
 
 Start the application backend with the [client connection](../reference/configuration.md) configured in step 1.
 
-Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url`, and have the frontend fetch a grant from that application route.
+Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --remote`, and have the frontend fetch a grant from that application route.
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session broadcasts the updated history to both sessions. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
@@ -113,7 +113,7 @@ The application backend checks user access and obtains connection credentials. A
 Configure [local GCS storage](../reference/configuration.md), then start the runtime:
 
 ```sh
-npx little-actors start --dev --storage gcs --data-dir .gcs-demo
+DURABLE_OBJECT_STORAGE=gcs DURABLE_OBJECT_DATA_DIR=.gcs-demo npx little-actors start --dev
 ```
 
 Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.
