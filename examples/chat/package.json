@@ -6,12 +6,13 @@
         "node": ">=22.19.0"
     },
     "scripts": {
-        "dev": "tsx src/backend.ts",
-        "build": "tsc --noEmit && vite build"
+        "dev": "little-actors generate && tsx --env-file=.env src/backend.ts",
+        "dev:actors": "little-actors start --dev",
+        "build": "little-actors generate && tsc --noEmit && vite build"
     },
     "dependencies": {
         "express": "^5.2.1",
-        "little-actors": "^0.1.28",
+        "little-actors": "^0.2.3",
         "react": "^19.3.0",
         "react-dom": "^19.3.0"
     },

@@ -141,7 +141,7 @@ There is no public actor-state deletion or individual actor reset API. Expose ap
 
 ## Object inspection
 
-These read-only endpoints require the admin API key. Successful responses use `Cache-Control: no-store`. The [CLI](cli.md#inspect-saved-objects) uses the same endpoints for local and cloud runtimes.
+These read-only endpoints require the admin API key. Successful responses use `Cache-Control: no-store`. The [CLI](cli.md#list-and-inspect-actors) uses the same endpoints for local and cloud runtimes.
 
 ### GET /v1/actors
 
@@ -295,7 +295,7 @@ These are common runtime outcomes; WebSocket protocol and size failures may prod
 
 ## WebSocket callbacks
 
-Enable incoming-message callbacks in the [server configuration](configuration.md). The server makes JSON `POST` requests with `Authorization: Bearer <api-key>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
+Enable incoming-message callbacks in the [server configuration](configuration.md). The server makes JSON `POST` requests with `Authorization: Bearer <api-key>`. Authenticate this header at the callback endpoint. Plain local `start --dev` does not enable this callback.
 
 ### Incoming message events
 

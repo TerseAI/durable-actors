@@ -25,10 +25,10 @@ For a collaborative Tiptap editor, use `npx little-actors init documents-example
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
-npx little-actors dev
+npx little-actors start --dev --project-id my-project
 ```
 
-Wait for the `Ready` line. If `dev` generates a key, run its printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
+Wait for the `Ready` line. Set the same `DURABLE_OBJECT_PROJECT_ID` in your application backend. If `start --dev` generates a key, run its printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
 
 Generate source once for your backend and web app:
 
@@ -74,9 +74,9 @@ npx little-actors generate --url
 
 Deploy assigns a revision automatically, and generation uses the latest deployment. The server stores only its active contract. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment and credentials.
 
-The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. It watches TypeScript files across the actor project and publishes valid source changes to the local control plane; rerun `generate --url` when the public contract changes. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.little-actors/`.
+The npm package installs the `little-actors` CLI. On first use, `start --dev` downloads and caches the matching native runtime automatically. It watches TypeScript files across the actor project and publishes valid source changes to the local control plane; rerun `generate --url` when the public contract changes. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.little-actors/`.
 
-`little-actors dev --help` lists options. There is no CLI client runner; browser applications use native WebSockets as shown below.
+`little-actors start --help` lists both modes and their options. Plain `little-actors start` uses your hosted runtime configuration. There is no CLI client runner; browser applications use native WebSockets as shown below.
 
 ## Test runners
 

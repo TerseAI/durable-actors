@@ -11,7 +11,56 @@ const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 
-test("dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
+test("start launches the configured runtime without a local actor project and propagates its exit code", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-start-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const executable = path.join(directory, "runtime.mjs")
+    await writeFile(
+        executable,
+        `#!/usr/bin/env node
+console.log(JSON.stringify({ args: process.argv.slice(2), role: process.env.DURABLE_OBJECT_PROCESS_ROLE }))
+process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
+`,
+        { mode: 0o755 }
+    )
+    const env = {
+        ...process.env,
+        DURABLE_OBJECT_BINARY: executable,
+        DURABLE_OBJECT_PROJECT_ID: "",
+        DURABLE_OBJECT_PROJECT: path.join(directory, "missing-project"),
+        DURABLE_OBJECT_PROCESS_ROLE: "control_plane"
+    }
+    const { stdout } = await run(process.execPath, [cli, "start"], { cwd: directory, env })
+    assert.deepEqual(JSON.parse(stdout), { args: [], role: "control_plane" })
+    await assert.rejects(
+        run(process.execPath, [cli, "start"], { cwd: directory, env: { ...env, TEST_RUNTIME_EXIT_CODE: "7" } }),
+        { code: 7 }
+    )
+})
+
+test("start validates development mode before launching the runtime", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-start-options-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "", DURABLE_OBJECT_BINARY: "missing-runtime" }
+    for (const flags of [
+        ["--project-id", "example"],
+        ["--project", directory],
+        ["--entrypoint", "actors.ts"],
+        ["--port", "0"],
+        ["--storage", "local"],
+        ["--data-dir", directory],
+        ["--api-key", "test-key"],
+        ["--no-watch"]
+    ]) {
+        await assert.rejects(run(process.execPath, [cli, "start", ...flags], { cwd: directory, env }), /requires --dev/)
+    }
+    await assert.rejects(
+        run(process.execPath, [cli, "start", "--dev"], { cwd: directory, env }),
+        /--project-id is required/
+    )
+})
+
+test("start --dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor project")
@@ -63,7 +112,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         DURABLE_OBJECT_BINARY: executable,
         DURABLE_OBJECT_API_KEY: "test-key"
     }
-    const args = [cli, "dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
+    const args = [cli, "start", "--dev", "--project", project, "--entrypoint", "actors.ts", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)
     assert.equal(result.contract.actors[0].actorName, "Room")
@@ -73,7 +122,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     )
     assert.ok(result.args.includes(project))
     const sdkHostIndex = result.args.indexOf("--sdk-host")
-    assert.notEqual(sdkHostIndex, -1, "dev must provide its host module for projects that depend on a wrapper SDK")
+    assert.notEqual(sdkHostIndex, -1, "development mode must provide its host module")
     assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
@@ -90,7 +139,10 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         cwd: directory,
         env: { ...env, TEST_WATCH_SOURCE: source }
     })
-    assert.ok(JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates > 0, "dev watches sources by default")
+    assert.ok(
+        JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates > 0,
+        "development mode watches sources by default"
+    )
     const notWatching = await run(process.execPath, [...args, "--no-watch"], {
         cwd: directory,
         env: { ...env, TEST_WATCH_SOURCE: source }

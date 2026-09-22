@@ -7,6 +7,7 @@
     },
     "scripts": {
         "dev": "tsx --env-file=.env src/backend.ts",
+        "dev:actors": "little-actors start --dev",
         "build": "tsc --noEmit && vite build"
     },
     "dependencies": {
@@ -14,7 +15,7 @@
         "@ai-sdk/react": "^4.0.100",
         "ai": "^7.0.97",
         "express": "^5.2.1",
-        "little-actors": "^0.1.28",
+        "little-actors": "^0.2.3",
         "react": "^19.3.0",
         "react-dom": "^19.3.0"
     },

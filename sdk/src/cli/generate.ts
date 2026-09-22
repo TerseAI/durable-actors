@@ -17,7 +17,7 @@ interface GenerateOptions {
 function registerGenerateCommand(program: Command): void {
     program
         .command("generate [entrypoint]")
-        .description("Generate backend RPC stubs and WebSocket authorization helpers")
+        .description("Generate typed clients to access actors")
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
         .option("--url [origin]", "fetch a published contract (defaults to the configured or local runtime URL)")

@@ -27,8 +27,8 @@ test("contract and object reads use the active deployment", async () => {
         return Response.json({ received: true })
     })
     assert.deepEqual(await client.getContract("r1"), { received: true })
-    await client.listObjects(new URLSearchParams({ limit: "50" }))
-    await client.inspectObject("Room", "one")
+    await client.listSavedActors(new URLSearchParams({ limit: "50" }))
+    await client.inspectActor("Room", "one")
     assert.deepEqual(requests, [
         "https://control.example/v1/projects/default/deployment/contract?revision=r1",
         "https://control.example/v1/actors?limit=50",

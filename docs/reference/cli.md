@@ -16,20 +16,32 @@ npx little-actors init chat-example
 | `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
 | `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                     |
 
-## Run a development server
+## Start actors
 
 ```sh
-npx little-actors dev
+npx little-actors start
 ```
 
-Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
+Starts the packaged runtime using the [hosted server configuration](configuration.md). Register actor code with `little-actors deploy`.
 
-- `--api-key <key>` — API key override. `dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one, saves it in `<data-dir>/api-key` with owner-only permissions, and prints an export command that reads the file. The key changes on each restart and is not printed.
+### Development mode
+
+```sh
+npx little-actors start --dev --project-id my-project
+```
+
+`--dev` runs actors locally, compiles the actor entrypoint's public contract, and registers it with a fresh local deployment revision. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
+
+The following flags require `--dev`:
+
+- `--project-id <id>` — Required actor project ID. Can also be set with `DURABLE_OBJECT_PROJECT_ID` in `.env`; use the same ID in your application backend.
+- `--api-key <key>` — API key override. `start --dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one, saves it in `<data-dir>/api-key` with owner-only permissions, and prints an export command that reads the file. The key changes on each restart and is not printed.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
 - `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.little-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
+- `--no-watch` — Disable automatic actor reload when source files change.
 
 ## Open the observability UI
 
@@ -44,30 +56,18 @@ Verifies admin access to the control plane, starts a local Web UI on an availabl
 
 The CLI serves the built UI directly from its `little-actors-observer` runtime dependency. The UI is also available as the embeddable [`little-actors-observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
 
-## Inspect saved objects
+## List and inspect actors
 
 ```sh
-npx little-actors objects list
-npx little-actors objects inspect ChatRoom lobby
+npx little-actors actors list
+npx little-actors actors inspect ChatRoom lobby
 ```
 
 - `--limit <rows>` — Page size for `list`, from 1 to 500. Defaults to 50.
-- `--after <cursor>` — Fetch the page following a cursor. Printed to stderr whenever more objects remain.
+- `--after <cursor>` — Fetch the page following a cursor. Printed to stderr whenever more actors remain.
 - `--all` — Fetch every page. Cannot be combined with `--limit` or `--after`.
 - `--json` — Print a JSON array instead of a table, adding snapshot paths and request IDs.
 - `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides.
-
-## Build an actor artifact
-
-```sh
-npx little-actors build
-```
-
-Checks TypeScript and bundles actor code with its generated schemas into `dist/actors.mjs`. Hosted actors load this artifact without compiling source on startup.
-
-- `[entrypoint]` — TypeScript source file, default `src/durable-objects.ts`.
-- `--out-file <file>` — Artifact path, default `dist/actors.mjs`.
-- `--config <file>` — TypeScript configuration.
 
 ## Deploy actors
 
@@ -115,13 +115,7 @@ npx little-actors generate --url
 
 Set `DURABLE_OBJECT_API_KEY` and optionally `DURABLE_OBJECT_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
 
-## Start a hosted server
-
-```sh
-npx little-actors start
-```
-
-Starts the packaged server using the [hosted server configuration](configuration.md). It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
+## Observability details
 
 ### Actor inventory
 

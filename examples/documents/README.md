@@ -1,6 +1,6 @@
 # Shared documents
 
-Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+Requires Node.js 22.19+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
 
 A small Tiptap editor with Yjs for concurrent edits and durable actors for saved documents.
 
@@ -10,11 +10,11 @@ A small Tiptap editor with Yjs for concurrent edits and durable actors for saved
 npx little-actors init documents-example --template documents
 cd documents-example
 npm install
-npx little-actors generate
-npx little-actors dev
+cp .env.example .env
+npm run dev:actors
 ```
 
-Wait for `Local actors ready`. In another terminal, run the printed export command, then:
+Wait for `Ready`. In another terminal in this directory, start the application:
 
 ```sh
 npm run dev
@@ -23,6 +23,12 @@ npm run dev
 Open [the editor](http://127.0.0.1:3000) in two tabs. Type in Welcome, format some text, and edit from both tabs. Add another document and switch between them. Reload after changes arrive in the other tab to see the saved content.
 
 If you already have this directory, start at `npm install`. No external service is needed.
+
+Both processes read the project ID, local development API key, and control-plane URL from `.env`. `dev:actors` runs the actors; `dev` generates the backend client and starts Express and Vite. Run one example at a time with the default ports.
+
+`npm run build` generates the client, checks TypeScript, and builds the frontend.
+
+The actor server watches source changes. After changing the actor's public types, restart `npm run dev` to regenerate the backend client.
 
 ## The code
 

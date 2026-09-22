@@ -14,7 +14,7 @@ interface DeployOptions extends ControlPlaneOptions {
 function registerDeployCommand(program: Command): void {
     program
         .command("deploy [entrypoint]")
-        .description("Deploy actor source from a published customer image")
+        .description("Deploy your actor application to a hosted environment.")
         .requiredOption("--image <reference>", "published customer build image reference")
         .option("--working-directory <path>", "project directory inside the build image", "/customer")
         .option("--revision <revision>", "code revision (defaults to a new generated ID)")

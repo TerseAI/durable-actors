@@ -66,7 +66,7 @@ test("rejects an incompatible built actor artifact", async () => {
     try {
         const entrypoint = path.join(root, "actors.mjs")
         await writeFile(entrypoint, "export const version = 999; export const actors = {}; export const schemas = []")
-        await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href), /rebuild with little-actors build/)
+        await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href), /invalid actor artifact/)
     } finally {
         await rm(root, { recursive: true, force: true })
     }

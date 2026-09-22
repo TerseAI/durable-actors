@@ -10,6 +10,8 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { buildActor } from "../../dist/compiler/actor-build.js"
+
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
 
@@ -48,7 +50,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
             async invalidState() { this.count = "invalid" as never }
         }`
     )
-    await run(process.execPath, [path.join(sdk, "dist/cli.js"), "build"], { cwd: root })
+    await buildActor(path.join(root, "src/durable-objects.ts"), path.join(root, "dist/actors.mjs"))
     assert.match(await readFile(path.join(root, "dist/actors.mjs"), "utf8"), /BuiltCounter/)
 
     const deployed = path.join(root, "deployed")
@@ -142,10 +144,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
 test("actor builds report invalid persistence annotations before deployment", async t => {
     const root = await project(t)
     await writeFile(path.join(root, "src/durable-objects.ts"), `import { Actor } from "little-actors"; export class Counter extends Actor { count = 0 }`)
-    await assert.rejects(run(process.execPath, [path.join(sdk, "dist/cli.js"), "build"], { cwd: root }), error => {
-        assert.match(error.stderr, /must declare exactly one of @Persisted or @Ephemeral/)
-        return true
-    })
+    await assert.rejects(buildActor(path.join(root, "src/durable-objects.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
 })
 
 async function project(t) {

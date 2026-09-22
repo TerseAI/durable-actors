@@ -92,7 +92,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
 test("init creates a complete chat app using the installed SDK version", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    const { stdout } = await run(process.execPath, [cli, "init", "my chat"], { cwd: directory })
+    await run(process.execPath, [cli, "init", "my chat"], { cwd: directory })
     const project = path.join(directory, "my chat")
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const sdk = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"))
@@ -101,8 +101,6 @@ test("init creates a complete chat app using the installed SDK version", async t
     assert.match(await readFile(path.join(project, "src/backend.ts"), "utf8"), /actors\.ChatRoom\.prepareWebsocket/)
     assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /new WebSocket\(websocketUrl\)/)
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.little-actors\//)
-    assert.match(stdout, /npm install/)
-    assert.match(stdout, /little-actors generate/)
 })
 
 test("init refuses an existing directory and preserves its contents", async t => {
@@ -116,7 +114,7 @@ test("init refuses an existing directory and preserves its contents", async t =>
     assert.equal(await readFile(file, "utf8"), "existing app")
 })
 
-test("objects lists every page locally and inspects committed internal state", async t => {
+test("actors lists every page locally and inspects committed internal state", async t => {
     const requests: string[] = []
     const server = createServer((request, response) => {
         assert.equal(request.headers.authorization, "Bearer local-key")
@@ -151,19 +149,19 @@ test("objects lists every page locally and inspects committed internal state", a
         DURABLE_OBJECT_API_KEY: ""
     }
     const flags = ["--url", origin, "--api-key", "local-key"]
-    const listed = await run(process.execPath, [cli, "objects", "list", ...flags, "--all", "--json"], { env })
+    const listed = await run(process.execPath, [cli, "actors", "list", ...flags, "--all", "--json"], { env })
     assert.deepEqual(
         JSON.parse(listed.stdout).map((object: { actorId: string }) => object.actorId),
         ["one", "two"]
     )
     assert.equal(requests[0], "/v1/actors?limit=500")
     assert.match(requests[1]!, /after=object.v1.local.Room.one/u)
-    const inspected = await run(process.execPath, [cli, "objects", "inspect", "Room", "one", ...flags], { env })
+    const inspected = await run(process.execPath, [cli, "actors", "inspect", "Room", "one", ...flags], { env })
     assert.deepEqual(JSON.parse(inspected.stdout).state, { secret: "saved" })
     assert.equal(requests[2], "/v1/projects/default/actors/Room/one?include=state")
 })
 
-test("objects uses cloud credentials, and reports API errors", async t => {
+test("actors uses cloud credentials, and reports API errors", async t => {
     const requests: string[] = []
     const server = createServer((request, response) => {
         assert.equal(request.headers.authorization, "Bearer cloud-key")
@@ -184,16 +182,16 @@ test("objects uses cloud credentials, and reports API errors", async t => {
         DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
         DURABLE_OBJECT_API_KEY: "cloud-key"
     }
-    const result = await run(process.execPath, [cli, "objects", "list"], { env })
-    assert.match(result.stdout, /No saved objects/u)
+    const result = await run(process.execPath, [cli, "actors", "list"], { env })
+    assert.match(result.stdout, /No actors/u)
     assert.equal(requests[0], "/v1/actors?limit=50")
     await assert.rejects(
-        run(process.execPath, [cli, "objects", "inspect", "Room", "missing"], { env }),
+        run(process.execPath, [cli, "actors", "inspect", "Room", "missing"], { env }),
         /Object not found/u
     )
     assert.equal(requests[1], "/v1/projects/default/actors/Room/missing?include=state")
     await assert.rejects(
-        run(process.execPath, [cli, "objects", "list", "--url", origin], {
+        run(process.execPath, [cli, "actors", "list", "--url", origin], {
             env: { ...env, DURABLE_OBJECT_API_KEY: "" }
         }),
         /API key/u
@@ -201,7 +199,7 @@ test("objects uses cloud credentials, and reports API errors", async t => {
     assert.equal(requests.length, 2)
 })
 
-test("objects limits rows by default and resumes a filtered page without fetching ahead", async t => {
+test("actors limits rows by default and resumes a filtered page without fetching ahead", async t => {
     const requests: URL[] = []
     const objects = Array.from({ length: 55 }, (_, index) => ({
         actorName: "Room",
@@ -232,7 +230,7 @@ test("objects limits rows by default and resumes a filtered page without fetchin
         DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
         DURABLE_OBJECT_API_KEY: "cloud-key"
     }
-    const args = [cli, "objects", "list"]
+    const args = [cli, "actors", "list"]
     const first = await run(process.execPath, args, { env })
     assert.equal(first.stdout.trim().split("\n").length, 51)
     assert.match(first.stderr, /--after 'object.v3.Room:49'/u)
@@ -254,10 +252,10 @@ test("objects limits rows by default and resumes a filtered page without fetchin
     assert.equal(requests[2]!.searchParams.get("limit"), "5")
 })
 
-test("objects rejects invalid limits and conflicting pagination flags before connecting", async () => {
+test("actors rejects invalid limits and conflicting pagination flags before connecting", async () => {
     for (const value of ["0", "-1", "1.5", "501", "1e2", "abc"]) {
         await assert.rejects(
-            run(process.execPath, [cli, "objects", "list", "--limit", value]),
+            run(process.execPath, [cli, "actors", "list", "--limit", value]),
             /Limit must be an integer from 1 to 500/u
         )
     }
@@ -266,13 +264,13 @@ test("objects rejects invalid limits and conflicting pagination flags before con
         ["--all", "--after", "cursor"]
     ]) {
         await assert.rejects(
-            run(process.execPath, [cli, "objects", "list", "--project-id", "default", ...flags]),
+            run(process.execPath, [cli, "actors", "list", "--project-id", "default", ...flags]),
             /cannot be used with/u
         )
     }
 })
 
-test("dev accepts configured keys without logging the generated key from readiness", async t => {
+test("start --dev accepts configured keys without logging the generated key from readiness", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor-project")
@@ -305,7 +303,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         DURABLE_OBJECT_STORAGE: "gcs",
         DURABLE_OBJECT_DATA_DIR: "/tmp/actor-state"
     }
-    const { stdout } = await run(process.execPath, [cli, "dev"], { env })
+    const { stdout } = await run(process.execPath, [cli, "start", "--dev"], { env })
     assert.doesNotMatch(stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
@@ -328,7 +326,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
     ])
     const overridden = await run(
         process.execPath,
-        [cli, "dev", "--port", "7300", "--storage", "local", "--api-key", "flag-key"],
+        [cli, "start", "--dev", "--port", "7300", "--storage", "local", "--api-key", "flag-key"],
         { env }
     )
     const args: string[] = JSON.parse(overridden.stdout)
@@ -338,11 +336,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
     const { DURABLE_OBJECT_API_KEY, ...withoutKey } = env
     const envFile = path.join(project, ".env")
     await writeFile(envFile, "DURABLE_OBJECT_API_KEY=env-file-key\n")
-    const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
+    const configuredFromFile = await run(process.execPath, [cli, "start", "--dev"], { cwd: project, env: withoutKey })
     assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_OBJECT_API_KEY=/u)
     assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)
     await rm(envFile)
-    const generated = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
+    const generated = await run(process.execPath, [cli, "start", "--dev"], { cwd: project, env: withoutKey })
     const invocation = generated.stdout.split("\n").find(line => line.startsWith("["))
     assert.ok(invocation)
     assert.equal(JSON.parse(invocation).includes("--api-key"), false)

@@ -10,8 +10,7 @@ async function buildTemplate(template) {
     const destination = new URL(`../dist/templates/${template}/`, import.meta.url)
     await rm(destination, { recursive: true, force: true })
     await mkdir(destination, { recursive: true })
-    const files = ["package.json", "tsconfig.json", "index.html", "README.md", "src"]
-    if (template === "ai-chat") files.push(".env.example")
+    const files = ["package.json", "tsconfig.json", "index.html", "README.md", ".env.example", "src"]
     for (const file of files)
         await cp(new URL(file, source), new URL(file, destination), {
             recursive: true,

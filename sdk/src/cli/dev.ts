@@ -1,4 +1,3 @@
-import { Command, InvalidArgumentError, Option } from "commander"
 import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -22,56 +21,6 @@ interface DevOptions {
     storage: "local" | "gcs"
     dataDir?: string
     watch: boolean
-}
-
-function registerDevCommand(program: Command): void {
-    program
-        .command("dev")
-        .description("Start local actors with persistent file storage")
-        .addOption(
-            new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID").makeOptionMandatory()
-        )
-        .option("--no-watch", "Disable automatic actor reload when source files change")
-        .addOption(
-            new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
-                "DURABLE_OBJECT_API_KEY"
-            )
-        )
-        .addOption(
-            new Option("--project <directory>", "actor project directory").env("DURABLE_OBJECT_PROJECT").default(".")
-        )
-        .addOption(
-            new Option("--port <number>", "loopback port (0 selects a free port)")
-                .env("DURABLE_OBJECT_PORT")
-                .argParser(portNumber)
-                .default(7100)
-        )
-        .addOption(
-            new Option("--entrypoint <file>", "actor source file, relative to the project")
-                .env("DURABLE_OBJECT_ENTRYPOINT")
-                .default("src/durable-objects.ts")
-        )
-        .addOption(
-            new Option("--data-dir <directory>", "state directory (default: <project>/.little-actors)").env(
-                "DURABLE_OBJECT_DATA_DIR"
-            )
-        )
-        .addOption(
-            new Option("--storage <backend>", "where to save actor state and ownership")
-                .env("DURABLE_OBJECT_STORAGE")
-                .choices(["local", "gcs"])
-                .default("local")
-        )
-        .action(async options => {
-            process.exitCode = await runDev(options)
-        })
-}
-
-function portNumber(value: string): number {
-    const port = Number(value)
-    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(port) || port < 0 || port > 65535)
-        throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
-    return port
 }
 
 async function runDev(options: DevOptions): Promise<number> {
@@ -167,4 +116,4 @@ function devArguments(options: DevOptions): string[] {
     return args
 }
 
-export { registerDevCommand }
+export { type DevOptions, runDev }

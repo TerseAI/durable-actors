@@ -9,7 +9,7 @@ Recommended setup:
 - One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
@@ -113,7 +113,7 @@ The application backend checks user access and obtains connection credentials. A
 Configure [local GCS storage](../reference/configuration.md), then start the runtime:
 
 ```sh
-npx little-actors dev --storage gcs --data-dir .gcs-demo
+npx little-actors start --dev --storage gcs --data-dir .gcs-demo
 ```
 
 Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.

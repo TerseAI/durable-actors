@@ -33,7 +33,7 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1
       little-actors:
-        specifier: ^0.1.28
+        specifier: ^0.2.3
         version: link:../../sdk
       react:
         specifier: ^19.3.0
@@ -70,7 +70,7 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1
       little-actors:
-        specifier: ^0.1.28
+        specifier: ^0.2.3
         version: link:../../sdk
       react:
         specifier: ^19.3.0
@@ -128,7 +128,7 @@ importers:
         specifier: ^0.2.117
         version: 0.2.117
       little-actors:
-        specifier: ^0.1.28
+        specifier: ^0.2.3
         version: link:../../sdk
       react:
         specifier: ^19.3.0

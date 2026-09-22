@@ -63,11 +63,11 @@ class ControlPlaneClient {
         return response
     }
 
-    listObjects(query: URLSearchParams): Promise<unknown> {
+    listSavedActors(query: URLSearchParams): Promise<unknown> {
         return this.requestJson("GET", `/v1/actors${query.size ? `?${query}` : ""}`)
     }
 
-    inspectObject(actorName: string, actorId: string): Promise<unknown> {
+    inspectActor(actorName: string, actorId: string): Promise<unknown> {
         return this.requestJson(
             "GET",
             `${projectActorPath(this.connection.projectId, actorName, actorId)}?include=state`
