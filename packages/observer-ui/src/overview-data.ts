@@ -1,4 +1,5 @@
 import type { ActorInventory, RequestTrace } from "./client.js"
+import type { ResolvedRange } from "./time-range.js"
 
 export function requestSummary(records: RequestTrace[]) {
     const attempts = records.filter(record => record.outcome !== "rerouted")
@@ -9,8 +10,8 @@ export function requestSummary(records: RequestTrace[]) {
     }
 }
 
-export function tracesInWindow(records: RequestTrace[], minutes: number, now: number) {
-    return records.filter(record => record.startedAtMs >= now - minutes * 60_000 && record.startedAtMs <= now)
+export function tracesInRange(records: RequestTrace[], range: ResolvedRange, now: number) {
+    return records.filter(record => record.startedAtMs >= (range.fromMs ?? 0) && record.startedAtMs <= (range.toMs ?? now))
 }
 
 export function inventorySummary(inventory: ActorInventory) {

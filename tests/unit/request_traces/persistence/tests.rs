@@ -144,6 +144,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
             duration_ms: 1.0,
             queue_wait_ms: None,
             outcome: RequestOutcome::Completed,
+            metadata: None,
         },
     }
 }

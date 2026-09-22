@@ -11,7 +11,7 @@
     },
     "dependencies": {
         "express": "^5.2.1",
-        "little-actors": "^0.1.28",
+        "little-actors": "workspace:^",
         "react": "^19.3.0",
         "react-dom": "^19.3.0"
     },

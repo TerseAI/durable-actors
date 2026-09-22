@@ -4,6 +4,8 @@
 @source "./components";
 @source "./ActorObserver.tsx";
 @source "./RequestObserver.tsx";
+@source "./TimeRangePicker.tsx";
+@source "./FilterCombobox.tsx";
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -60,17 +62,23 @@
 @layer base {
     .la-observer *,
     .la-observer *::before,
-    .la-observer *::after {
+    .la-observer *::after,
+    [data-slot="popover-content"] *,
+    [data-slot="popover-content"] *::before,
+    [data-slot="popover-content"] *::after {
         box-sizing: border-box;
         border: 0 solid var(--border);
     }
     .la-observer button,
     .la-observer input,
-    .la-observer select {
+    .la-observer select,
+    [data-slot="popover-content"] button,
+    [data-slot="popover-content"] input {
         font-family: inherit;
     }
     .la-observer button,
-    .la-observer select {
+    .la-observer select,
+    [data-slot="popover-content"] button {
         cursor: pointer;
         touch-action: manipulation;
     }
@@ -121,6 +129,13 @@
 .la-observer-toolbar > div {
     min-width: 0;
 }
+.la-observer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+}
 .la-observer-toolbar p {
     margin-top: 8px;
 }
@@ -168,6 +183,39 @@
 }
 .la-observer-summary p {
     font-size: 0.75rem;
+}
+.la-observer-summary-compact {
+    margin: 16px 0 0;
+}
+.la-observer-summary-compact > div {
+    padding: 14px 18px;
+}
+.la-observer-summary-compact dd {
+    font-size: 1.25rem;
+}
+.la-observer-queue-wait-detail {
+    margin-top: 28px;
+}
+.la-observer-queue-wait-detail > p {
+    margin-top: 6px;
+}
+.la-observer-table th.la-observer-wait-cell,
+.la-observer-table td.la-observer-wait-cell,
+.la-observer-instance-table th.la-observer-wait-cell,
+.la-observer-instance-table td.la-observer-wait-cell {
+    width: 150px;
+    text-align: right;
+}
+.la-observer-wait {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    font-variant-numeric: tabular-nums;
+}
+.la-observer-wait small {
+    font-size: 0.6875rem;
+    color: var(--muted-foreground);
 }
 .la-observer-dot {
     display: inline-block;
@@ -340,6 +388,7 @@
     outline: 2px solid var(--ring);
     outline-offset: 2px;
 }
+
 .la-observer-instance-table th:not(:first-child),
 .la-observer-instance-table td:not(:first-child) {
     width: 132px;
@@ -776,6 +825,15 @@
 .la-request-history-filters select {
     width: 100%;
     max-width: none;
+}
+.la-request-history-range {
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted-foreground);
+}
+.la-request-history-range [data-slot="button"] {
+    height: 36px;
 }
 
 .la-request-load-older {

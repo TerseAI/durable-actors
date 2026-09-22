@@ -127,15 +127,23 @@ Starts the packaged server using the [hosted server configuration](configuration
 
 The observe page lists actor names in the connected deployment with live (resident in memory), dormant, and total instance counts. Deployed types with zero instances remain visible. Unknown counts indicate a live host without a fresh residency report.
 
+When request history is available, the actor list, each actor class page, its instance table, and each instance page also show the **average queue wait**: the mean time admitted requests spent waiting to enter the actor over the selected time range, with the longest single wait and the number of admitted requests. It is computed from `queue_wait_ms` in `request_events`, excludes rerouted attempts and requests that never began processing, and weights class-level averages by each instance's admitted count.
+
 Inventory changes stream from the Rust control plane over SSE, with automatic reconnection and stale-data warnings. Worker residency changes trigger an early host report; socket connections and disconnections publish immediately. Updated Rust hosts, control planes, and SDKs are required. The admin-only stream is `GET /v1/observe/events`; `GET /v1/observe/actors` remains available for single reads. Neither activates actors.
 
 A fifteen-second reconciliation catches missed notifications and lease expiry. Notifications are local to a control-plane process. Socket snapshots are persisted with host leases, so other control-plane processes reconcile the same data. Expired or replaced host sessions cannot contribute connection counts.
+
+### Time ranges
+
+Every history-backed view (the overview, actor queue waits, saved requests, and WebSocket sessions) shares one time range, chosen with the range picker in each page's toolbar and kept as you move between pages. Presets cover the last 5 minutes to the last 7 days plus all retained history; a custom range takes explicit from/to timestamps. Relative ranges are aligned to the minute so polling queries stay stable, and overview metrics for any range are computed in SQL over `request_events` (p95 values use `ROW_NUMBER()` window functions), so a range in the past shows the requests actually recorded then rather than the live 500-event window. Without SQL history the overview falls back to the live window filtered to the range.
 
 ### Request timings
 
 The Requests view streams completed method calls and WebSocket lifecycle/message events. Each row shows the actor, operation, request ID, outcome, total duration, and queue wait. Pause freezes the display while collection continues; expand a row to inspect its request, host, and connection IDs.
 
 Total is measured from host submission (or WebSocket message receipt) until actor processing and persistence finish. Queue wait ends when the actor begins processing and includes the per-connection WebSocket message queue. These are host-side timings: they exclude client-side routing, authentication before host submission, and the network round trip. A request rejected or interrupted before processing has no queue-wait value. Retries appear as separate attempts, even when they share a request ID.
+
+`onConnect` events also carry the connection's `metadata` (the value passed to `prepareWebsocket`) when its JSON serialization is at most 4 KiB; larger metadata is omitted from the trace rather than failing it. The WebSockets view pairs each connection's `onConnect` and `onDisconnect` events into a session with its duration, message count, host, and metadata, and marks a session **open** when a host still reports the connection, **closed** when a disconnect was recorded, and **lost** when neither is true (for example after a host restart). Its timeline and table are built from `request_events` through the SQL endpoint below; hovering a connection shows its metadata one field per line so individual users can be told apart, and the filter box suggests actor classes and instance IDs as you type.
 
 Hosts deliver timing records asynchronously; tracing never waits on control-plane delivery in the actor request path. The control plane appends each batch to storage, then wakes the live feed after commit. Each event has a stable UUID, separate from its request ID and the UI's live sequence number. Appending the same retained event again does not duplicate it; distinct attempts sharing a request ID remain distinct events.
 

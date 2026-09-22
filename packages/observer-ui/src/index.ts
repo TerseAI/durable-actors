@@ -5,3 +5,6 @@ export type { RequestTrace, RequestTracePage, ObserverQuery, ObserverQueryResult
 export type { ActorObserverProps } from "./ActorObserver.js"
 export { HttpObserverClient } from "./client.js"
 export type { ActorInventory, ObserverClient } from "./client.js"
+export { TimeRangePicker } from "./TimeRangePicker.js"
+export { defaultTimeRange, rangeLabel, resolveRange } from "./time-range.js"
+export type { TimeRange, ResolvedRange } from "./time-range.js"
