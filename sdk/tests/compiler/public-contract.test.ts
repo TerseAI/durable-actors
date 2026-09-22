@@ -189,13 +189,13 @@ async function createProject(t: { after(fn: () => Promise<void>): void }) {
     await mkdir(path.join(root, "node_modules"))
     const location = fileURLToPath(new URL("../../", import.meta.url))
     const sdk = location.endsWith(`${path.sep}.test-dist${path.sep}`) ? path.dirname(location.slice(0, -1)) : location
-    await symlink(sdk, path.join(root, "node_modules/little-actors"))
+    await symlink(sdk, path.join(root, "node_modules/durable-actors"))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     const entrypoint = path.join(root, "actors.ts")
     return {
         root,
         entrypoint,
         write: (source: string) =>
-            writeFile(entrypoint, `import { Actor, Persisted, Emittable } from "little-actors"\n${source}`)
+            writeFile(entrypoint, `import { Actor, Persisted, Emittable } from "durable-actors"\n${source}`)
     }
 }

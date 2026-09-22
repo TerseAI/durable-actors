@@ -20,9 +20,14 @@ function registerGenerateCommand(program: Command): void {
         .description("Generate backend RPC stubs and WebSocket authorization helpers")
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
-        .option("--url [origin]", "fetch a published contract (defaults to the configured or local runtime URL)")
-        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_OBJECT_PROJECT_ID"))
-        .option("--api-key <key>", "admin API key (or DURABLE_OBJECT_API_KEY)")
+        .addOption(
+            new Option(
+                "--url [origin]",
+                "fetch a published contract (defaults to the configured or local runtime URL)"
+            ).env("DURABLE_ACTORS_CONTROL_PLANE_URL")
+        )
+        .addOption(new Option("--project-id <id>", "actor project ID").env("DURABLE_ACTORS_PROJECT_ID"))
+        .option("--api-key <key>", "shared secret (or DURABLE_ACTORS_SECRET)")
         .option("--revision <revision>", "require this active code revision (defaults to the latest deployment)")
         .action(generate)
 }

@@ -1,5 +1,5 @@
 {
-    "name": "little-actors",
+    "name": "durable-actors",
     "version": "0.2.3",
     "description": "Provider-neutral actors for sandbox compute",
     "type": "module",
@@ -18,12 +18,12 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/TerseAI/little-actors.git",
+        "url": "git+https://github.com/TerseAI/durable-actors.git",
         "directory": "sdk"
     },
-    "homepage": "https://github.com/TerseAI/little-actors#readme",
+    "homepage": "https://github.com/TerseAI/durable-actors#readme",
     "bugs": {
-        "url": "https://github.com/TerseAI/little-actors/issues"
+        "url": "https://github.com/TerseAI/durable-actors/issues"
     },
     "publishConfig": {
         "access": "public"
@@ -31,7 +31,7 @@
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
-        "little-actors": "dist/cli.js"
+        "durable-actors": "dist/cli.js"
     },
     "exports": {
         "./generated": {
@@ -83,7 +83,7 @@
         "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
-        "build:observer": "pnpm --filter little-actors-observer build"
+        "build:observer": "pnpm --filter durable-actors-observer build"
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
@@ -96,7 +96,7 @@
         "dotenv": "^18.0.0",
         "esbuild": "^0.28.2",
         "json-schema-to-typescript": "^16.0.0",
-        "little-actors-observer": "workspace:0.1.0",
+        "durable-actors-observer": "workspace:0.1.0",
         "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",

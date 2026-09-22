@@ -111,8 +111,8 @@ function createControlPlaneClient(options: ControlPlaneOptions, request: typeof 
             url:
                 typeof options.url === "string"
                     ? options.url
-                    : process.env.DURABLE_OBJECT_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
-            apiKey: options.apiKey || process.env.DURABLE_OBJECT_API_KEY
+                    : process.env.DURABLE_ACTORS_CONTROL_PLANE_URL || "http://127.0.0.1:7100",
+            apiKey: options.apiKey || process.env.DURABLE_ACTORS_SECRET
         }),
         request
     )

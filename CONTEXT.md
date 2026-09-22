@@ -1,6 +1,6 @@
-# Little Actors
+# Durable Actors
 
-Little Actors runs stateful actors in regional sandbox hosts while a control plane owns placement, leases, and durable state coordination.
+Durable Actors runs stateful actors in regional sandbox hosts while a control plane owns placement, leases, and durable state coordination.
 
 ## Language
 
@@ -9,7 +9,7 @@ The ordered milestones emitted when one operation completes. Each milestone reco
 _Avoid_: Trace, span, wall-clock timeline
 
 **Provider boot gap**:
-The Modal-owned interval between scheduled sandbox creation and the actor-host process beginning. Little Actors records its surrounding boundaries and the Modal resource identifiers, while Modal's supported dashboard timeline remains the source for scheduled, started, and ready transitions.
+The Modal-owned interval between scheduled sandbox creation and the actor-host process beginning. Durable Actors records its surrounding boundaries and the Modal resource identifiers, while Modal's supported dashboard timeline remains the source for scheduled, started, and ready transitions.
 _Avoid_: Host startup time
 
 **Latency event family**:

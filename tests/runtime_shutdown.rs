@@ -27,7 +27,7 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
 async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
     std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_little-actors"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .args([
             "dev",
             "--port",
@@ -167,7 +167,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
     )?;
 
     for before in 0..2 {
-        let mut runtime = Command::new(env!("CARGO_BIN_EXE_little-actors"))
+        let mut runtime = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
             .args(["dev", "--sdk-host"])
             .arg(sdk.join("dist/host.js"))
             .current_dir(shell_directory.path())

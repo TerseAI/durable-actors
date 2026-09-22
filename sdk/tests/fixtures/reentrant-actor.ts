@@ -1,4 +1,4 @@
-import { Actor, type ActorSocket, Ephemeral, Persisted, Reentrant } from "little-actors"
+import { Actor, type ActorSocket, Ephemeral, Persisted, Reentrant } from "durable-actors"
 
 type Event = { event: string; label?: string; count: number; waiting: number }
 

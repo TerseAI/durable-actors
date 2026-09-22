@@ -1,17 +1,18 @@
 # Command Line Interface
 
-## Create sample templates
+## Create an actor project
 
 ```sh
-npx little-actors init chat-example
+npx durable-actors init my-actors
 ```
 
-`init <directory>` creates sample templated projects to get started.
+`init <directory>` creates a standalone TypeScript actor project with a persisted counter, `dev`, `build`, and type-check scripts. Run `pnpm install` and `pnpm exec durable-actors dev` in the new directory to start the actor server. If the CLI is installed globally, run `durable-actors dev` directly. Connect a separate application using the export and generate commands printed by `dev`.
 
-- `--template <name>` — Template to copy. Defaults to `chat`.
+- `--template <name>` — Template to copy. Defaults to `actor`. The other templates are complete sample applications with their backend and actors in one package.
 
 | Template                                | Description                                                                                                                                                                        |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `actor`                                 | Minimal actor service with a persisted counter and no application server or frontend. |
 | `chat`                                  | Express and React chat app with actor definitions, an application authorization route, and native WebSockets.                                                                      |
 | `[ai-chat](../../examples/ai-chat)`     | Vercel AI SDK `useChat` over HTTP streaming, with backend actor calls for persistence. Requires [model credentials](../../examples/ai-chat/README.md#run-it). Uses HTTP streaming. |
 | `[documents](../../examples/documents)` | Collaborative document editor built on Tiptap and Yjs, with native WebSockets.                                                                                                     |
@@ -19,36 +20,39 @@ npx little-actors init chat-example
 ## Run a development server
 
 ```sh
-npx little-actors dev
+npx durable-actors dev
 ```
 
 Compiles the actor entrypoint's public contract, registers it with a fresh local deployment revision, and starts the development server. While it runs, it watches TypeScript source throughout the actor project, including files imported by the entrypoint. Each valid change publishes a fresh local revision, so a later `generate --url` reads the updated contract. Invalid intermediate edits are reported without replacing the last valid revision. Uses [environment variables or CLI flags](configuration.md).
 
-- `--api-key <key>` — API key override. `dev` also reads `DURABLE_OBJECT_API_KEY` from `.env`; when neither is set, it generates one, saves it in `<data-dir>/api-key` with owner-only permissions, and prints an export command that reads the file. The key changes on each restart and is not printed.
+- `--project-id <id>` — Actor project ID. Uses `DURABLE_ACTORS_PROJECT_ID` when set, otherwise defaults to `local`. An explicit flag takes precedence.
+- `--api-key <key>` — Shared secret override. `dev` also reads `DURABLE_ACTORS_SECRET` from `.env`; when neither is set, it mints a fresh secret for that run. The development server prints the secret directly in a copyable `.env` block. Generated secrets change on restart; no secret file is needed.
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — TypeScript actor source file, relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Port for serving local development server
-- `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.little-actors`.
+- `--data-dir <directory>` — Folder where data is persisted when developing locally. Defaults to `<project>/.durable-actors`.
 - `--storage <backend>` — State and ownership storage, either `local` (default) or `gcs`.
+
+Once ready, `dev` prints its actual URL, project ID, and shared secret as a `.env` block. Paste it into the consuming npm project’s `.env`, then run `durable-actors generate`. The CLI loads that file automatically. Start the application backend with the same `.env` loaded; the `local` project default applies only to `dev`.
 
 ## Open the observability UI
 
 ```sh
-npx little-actors observe
+npx durable-actors observe
 ```
 
 Verifies admin access to the control plane, starts a local Web UI on an available loopback port, and opens it in your default browser. The React UI checks connectivity through the local server and offers a check/retry button; it does not yet monitor live activity. Control-plane credentials stay on the local server. The terminal prints the UI URL. Press Ctrl+C to stop the server. Failed connection checks print an error and exit with code `1`.
 
-- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_OBJECT_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
+- `--url <origin>`, `--api-key <key>` — [Connection](configuration.md) overrides. Uses `DURABLE_ACTORS_CONTROL_PLANE_URL` when set, otherwise `http://127.0.0.1:7100`.
 - `--no-open` — Start the UI and print its URL without launching a browser. If automatic opening fails, the server remains available at the printed URL.
 
-The CLI serves the built UI directly from its `little-actors-observer` runtime dependency. The UI is also available as the embeddable [`little-actors-observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
+The CLI serves the built UI directly from its `durable-actors-observer` runtime dependency. The UI is also available as the embeddable [`durable-actors-observer` package](../../packages/observer-ui) for hosted and self-hosted applications.
 
 ## Inspect saved objects
 
 ```sh
-npx little-actors objects list
-npx little-actors objects inspect ChatRoom lobby
+npx durable-actors objects list
+npx durable-actors objects inspect ChatRoom lobby
 ```
 
 - `--limit <rows>` — Page size for `list`, from 1 to 500. Defaults to 50.
@@ -60,7 +64,7 @@ npx little-actors objects inspect ChatRoom lobby
 ## Build an actor artifact
 
 ```sh
-npx little-actors build
+npx durable-actors build
 ```
 
 Checks TypeScript and bundles actor code with its generated schemas into `dist/actors.mjs`. Hosted actors load this artifact without compiling source on startup.
@@ -72,7 +76,7 @@ Checks TypeScript and bundles actor code with its generated schemas into `dist/a
 ## Deploy actors
 
 ```sh
-npx little-actors deploy src/actors.ts --image im-customer-build
+npx durable-actors deploy src/actors.ts --image im-customer-build
 ```
 
 Sends one deployment request containing the customer build image and source entrypoint. The control plane compiles and publishes the code internally; the deployment terminal needs only the control-plane URL and API key. See [image packaging](../guides/self-hosting.md#4-package-and-deploy-customer-code).
@@ -87,7 +91,7 @@ Sends one deployment request containing the customer build image and source entr
 ## Generate a client and proxy
 
 ```sh
-npx little-actors generate
+npx durable-actors generate
 ```
 
 Checks the actor dependency graph without executing it and writes TypeScript backend helpers.
@@ -99,26 +103,27 @@ Checks the actor dependency graph without executing it and writes TypeScript bac
 
 Regeneration removes the old per-actor files and frontend, backend, and proxy entrypoints. Import backend helpers from `generated/index.js`. Frontends use native `WebSocket` without generated imports.
 
-The source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
+When `DURABLE_ACTORS_CONTROL_PLANE_URL` is set, `generate` fetches the published contract automatically. Otherwise, the source entrypoint is a positional argument and defaults to `src/durable-objects.ts`.
 
 - `--out-dir <directory>` — Output location. Defaults to `generated/`.
 - `--config <file>` — TypeScript configuration. Cannot be combined with `--url`.
-- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_OBJECT_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
+- `--url [origin]` — Generate from a published contract instead of local source. With no value, uses `DURABLE_ACTORS_CONTROL_PLANE_URL` or `http://127.0.0.1:7100`. Cannot be combined with a source entrypoint or `--config`.
+- `--project-id <id>` — Project whose published contract to fetch. Required with `--url` unless `DURABLE_ACTORS_PROJECT_ID` is set.
 - `--revision <id>` — Optional check that the active deployment matches this revision. Defaults to the latest deployment's contract.
 - `--api-key <key>` — [Connection](configuration.md) overrides.
 
 ### Generate from the control plane
 
 ```sh
-npx little-actors generate --url
+npx durable-actors generate --url http://127.0.0.1:7100 --project-id local
 ```
 
-Set `DURABLE_OBJECT_API_KEY` and optionally `DURABLE_OBJECT_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
+Set `DURABLE_ACTORS_SECRET` and optionally `DURABLE_ACTORS_CONTROL_PLANE_URL` in the generation terminal. Generation from a published contract writes the same files as source generation and prints the active revision. The server keeps only the latest deployment and its contract. An explicit `--revision` fails if that revision is no longer active.
 
 ## Start a hosted server
 
 ```sh
-npx little-actors start
+npx durable-actors start
 ```
 
 Starts the packaged server using the [hosted server configuration](configuration.md). It takes no positional arguments or command-specific options, initializes no local project, registers no actor code, and supplies no development credentials. Register code through the [deployment API](http.md#deployments).
@@ -147,7 +152,7 @@ Total is measured from host submission (or WebSocket message receipt) until acto
 
 Hosts deliver timing records asynchronously; tracing never waits on control-plane delivery in the actor request path. The control plane appends each batch to storage, then wakes the live feed after commit. Each event has a stable UUID, separate from its request ID and the UI's live sequence number. Appending the same retained event again does not duplicate it; distinct attempts sharing a request ID remain distinct events.
 
-The local runtime uses SQLite at `request-traces.sqlite3` inside its state directory (by default `.little-actors`, overridden with `--data-dir`), including with `--storage gcs`. It retains the latest 10,000 events independently of the 500-event live UI window. Event IDs and replay cursors survive restart. Delivery-loss counters describe the current process and reset on restart. Earlier SQLite schemas and `request-traces.json` snapshots are migrated on open; the original JSON file is preserved. Invalid or unsupported storage fails startup instead of being silently overwritten.
+The local runtime uses SQLite at `request-traces.sqlite3` inside its state directory (by default `.durable-actors`, overridden with `--data-dir`), including with `--storage gcs`. It retains the latest 10,000 events independently of the 500-event live UI window. Event IDs and replay cursors survive restart. Delivery-loss counters describe the current process and reset on restart. Earlier SQLite schemas and `request-traces.json` snapshots are migrated on open; the original JSON file is preserved. Invalid or unsupported storage fails startup instead of being silently overwritten.
 
 Persistence is injected through the Rust `TracePersistence` trait: `append(events)` commits events, `query({ sql, params })` returns SQL rows, and `replay(...)` supplies the live stream's saved-event cursor. Historical filtering and pagination are owned by the observer UI. The adapter owns SQL execution, retention, deduplication, and live replay. Hosted servers currently use an in-memory SQLite adapter; shared durable cloud storage is not configured yet. A hosted replacement must preserve the public SQL schema and support the UI's SQL dialect and parameter syntax (or adapt those explicitly).
 

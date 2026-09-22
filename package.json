@@ -1,5 +1,5 @@
 {
-    "name": "little-actors",
+    "name": "durable-actors",
     "private": true,
     "license": "MIT",
     "scripts": {

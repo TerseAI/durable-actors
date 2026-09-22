@@ -38,7 +38,7 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
-    #[arg(long, env = "DURABLE_OBJECT_PROJECT_ID")]
+    #[arg(long, env = "DURABLE_OBJECT_PROJECT_ID", default_value = "local")]
     pub project_id: String,
     #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
     pub api_key: Option<String>,
@@ -92,13 +92,12 @@ pub async fn serve_local(
     let directory = options
         .data_dir
         .clone()
-        .unwrap_or_else(|| project.join(".little-actors"));
+        .unwrap_or_else(|| project.join(".durable-actors"));
     let _lock = prepare_directory(&directory)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, options.port))
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let generated_api_key = options.api_key.is_none();
     let api_key = options
         .api_key
         .clone()
@@ -119,11 +118,7 @@ pub async fn serve_local(
         &api_key,
     )
     .await?;
-    let key_file = generated_api_key
-        .then(|| save_generated_api_key(&directory, &api_key))
-        .transpose()?;
     let server = LocalServer::start(listener, routes, provider);
-    println!("export DURABLE_OBJECT_PROJECT_ID={}", options.project_id);
     let ready = notify_launcher(
         &origin,
         &api_key,
@@ -132,30 +127,12 @@ pub async fn serve_local(
         options.ready_fd,
     );
     if ready.is_ok() {
-        if let Some(key_file) = key_file {
-            let path = key_file.to_string_lossy().replace('\'', "'\\''");
-            println!(
-                "Set this in the terminal running your application backend:\nexport DURABLE_OBJECT_API_KEY=\"$(cat -- '{path}')\""
-            );
-        }
         anstream::println!(
             "{}",
-            styled_local_ready_message(
-                &origin,
-                &directory,
-                matches!(options.storage, DevStorage::Local)
-            )
+            styled_local_ready_message(&origin, &directory, &options.project_id, &api_key)
         );
     }
     server.run_until(shutdown, ready).await
-}
-
-fn save_generated_api_key(directory: &Path, api_key: &str) -> Result<PathBuf> {
-    let path = directory.join("api-key");
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
-    file.write_all(api_key.as_bytes())?;
-    file.persist(&path)?;
-    Ok(path.canonicalize()?)
 }
 
 struct LocalServer {
@@ -217,7 +194,7 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
         TraceLayer::new_for_http()
             .make_span_with(|request: &Request| {
                 info_span!(
-                    target: "little_actors::dev",
+                    target: "durable_actors::dev",
                     "control_plane_request",
                     method = %request.method(),
                     path = %request.uri().path(),
@@ -225,7 +202,7 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
             })
             .on_response(|response: &Response, latency: Duration, span: &Span| {
                 info!(
-                    target: "little_actors::dev",
+                    target: "durable_actors::dev",
                     parent: span,
                     status = response.status().as_u16(),
                     latency_ms = %format_args!("{:.1}", latency.as_secs_f64() * 1_000.0),
@@ -406,7 +383,12 @@ fn notify_launcher(
     Ok(())
 }
 
-fn styled_local_ready_message(origin: &str, directory: &Path, local_storage: bool) -> String {
+fn styled_local_ready_message(
+    origin: &str,
+    directory: &Path,
+    project_id: &str,
+    secret: &str,
+) -> String {
     let styles = LocalReadyStyles {
         title: Style::new().bold().fg_color(Some(AnsiColor::Cyan.into())),
         context: Style::new().fg_color(Some(AnsiColor::BrightBlack.into())),
@@ -414,18 +396,25 @@ fn styled_local_ready_message(origin: &str, directory: &Path, local_storage: boo
         label: Style::new().bold(),
         command: Style::new().fg_color(Some(AnsiColor::Cyan.into())),
     };
-    format_local_ready_message(origin, directory, local_storage, styles)
+    format_local_ready_message(origin, directory, project_id, secret, styles)
 }
 
 #[cfg(test)]
-fn local_ready_message(origin: &str, directory: &Path) -> String {
-    format_local_ready_message(origin, directory, true, LocalReadyStyles::default())
+fn local_ready_message(origin: &str, directory: &Path, project_id: &str) -> String {
+    format_local_ready_message(
+        origin,
+        directory,
+        project_id,
+        "generated-secret",
+        LocalReadyStyles::default(),
+    )
 }
 
 fn format_local_ready_message(
     origin: &str,
     directory: &Path,
-    local_storage: bool,
+    project_id: &str,
+    secret: &str,
     styles: LocalReadyStyles,
 ) -> String {
     let LocalReadyStyles {
@@ -435,14 +424,18 @@ fn format_local_ready_message(
         label,
         command,
     } = styles;
-    let note = if local_storage {
-        "\n\n  State persists between restarts. Delete the state directory to start fresh."
-    } else {
-        ""
-    };
+    let credentials = local_credentials_instructions(secret, styles);
     format!(
-        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx little-actors generate --url {origin}{command:#}{note}",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
+    )
+}
+
+fn local_credentials_instructions(secret: &str, styles: LocalReadyStyles) -> String {
+    let command = styles.command;
+    let quote = if secret.contains('\'') { '"' } else { '\'' };
+    format!(
+        "     {command}DURABLE_ACTORS_SECRET={quote}{secret}{quote}{command:#}\n\n     Update the secret after restarting this actor server."
     )
 }
 

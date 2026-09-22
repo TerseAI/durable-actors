@@ -1,5 +1,5 @@
 use anyhow::Result;
-use little_actors::{
+use durable_actors::{
     actor::ActorKey, host::HostId, host_leases::HostLeaseRequest, placement::ObjectPlacementStore,
     state_transport::SnapshotWriter,
 };
@@ -7,40 +7,40 @@ use little_actors::{
 #[tokio::test]
 async fn bucket_lists_committed_snapshots_with_pagination() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let bucket = std::sync::Arc::new(little_actors::bucket::FileBucket::new(
+    let bucket = std::sync::Arc::new(durable_actors::bucket::FileBucket::new(
         directory.path().into(),
     )?);
-    let clock = std::sync::Arc::new(little_actors::clock::SystemClock);
-    let access = little_actors::replication::ReplicaAccess::new("test", clock);
-    let store = little_actors::bucket::RuntimeStorage::new(
+    let clock = std::sync::Arc::new(durable_actors::clock::SystemClock);
+    let access = durable_actors::replication::ReplicaAccess::new("test", clock);
+    let store = durable_actors::bucket::RuntimeStorage::new(
         bucket,
         std::sync::Arc::new(EmptyFleet),
-        std::sync::Arc::new(little_actors::bucket::GrpcReplicaPeers::new(
+        std::sync::Arc::new(durable_actors::bucket::GrpcReplicaPeers::new(
             access.clone(),
         )?),
         access,
         "http://unused".into(),
-        std::sync::Arc::new(little_actors::clock::SystemClock),
+        std::sync::Arc::new(durable_actors::clock::SystemClock),
     )?;
     check_listing(&store).await
 }
 
 struct EmptyFleet;
 #[async_trait::async_trait]
-impl little_actors::replication::ReplicaProvisioner for EmptyFleet {
+impl durable_actors::replication::ReplicaProvisioner for EmptyFleet {
     fn replica_regions(&self) -> Vec<String> {
         Vec::new()
     }
 
     async fn ensure(
         &self,
-        _: &little_actors::replication::ReplicaScope,
-    ) -> Result<Vec<little_actors::replication::ReplicaTarget>> {
+        _: &durable_actors::replication::ReplicaScope,
+    ) -> Result<Vec<durable_actors::replication::ReplicaTarget>> {
         Ok(vec![])
     }
 }
 
-async fn check_listing(store: &little_actors::bucket::RuntimeStorage) -> Result<()> {
+async fn check_listing(store: &durable_actors::bucket::RuntimeStorage) -> Result<()> {
     for (id, committed) in [("a", true), ("b.with.dots", true), ("uncommitted", false)] {
         let actor = ActorKey {
             project_id: "default".into(),
@@ -61,7 +61,7 @@ async fn check_listing(store: &little_actors::bucket::RuntimeStorage) -> Result<
             let plan = store
                 .prepare_actor_write(&actor, &placement.lease, placement.owner_epoch, 1)
                 .await?;
-            let snapshot = little_actors::state_log::StateSnapshot::new(
+            let snapshot = durable_actors::state_log::StateSnapshot::new(
                 1,
                 1,
                 id.into(),

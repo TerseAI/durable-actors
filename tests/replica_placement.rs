@@ -1,5 +1,5 @@
 use anyhow::Result;
-use little_actors::replication::replica_regions;
+use durable_actors::replication::replica_regions;
 
 #[test]
 fn replica_placement_is_one_explicit_list_with_count_derived_from_it() -> Result<()> {

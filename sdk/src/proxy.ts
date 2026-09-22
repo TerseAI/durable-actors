@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { projectActorPath, validateActorComponent, validateProjectId } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
+import { actorEnvironment } from "./environment.js"
 
 interface SocketProxyOptions {
     readonly projectId?: string
@@ -67,8 +68,8 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.origin = url.origin
         this.apiKey = settings.apiKey ?? ""
         if (typeof this.apiKey !== "string" || !this.apiKey || this.apiKey.trim() !== this.apiKey)
-            throw new Error("A backend API key is required; set DURABLE_OBJECT_API_KEY or pass apiKey")
-        this.projectId = validateProjectId(options.projectId ?? process.env.DURABLE_OBJECT_PROJECT_ID)
+            throw new Error("A backend shared secret is required; set DURABLE_ACTORS_SECRET or pass apiKey")
+        this.projectId = validateProjectId(settings.projectId)
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
@@ -103,9 +104,11 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
 }
 
 function proxySettings(options: SocketProxyOptions) {
-    const controlPlaneUrl = options.controlPlaneUrl ?? process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
-    const apiKey = options.apiKey ?? process.env.DURABLE_OBJECT_API_KEY
+    const environment = actorEnvironment(process.env)
+    const controlPlaneUrl = options.controlPlaneUrl ?? environment.DURABLE_ACTORS_CONTROL_PLANE_URL
+    const apiKey = options.apiKey ?? environment.DURABLE_ACTORS_SECRET
     return {
+        projectId: options.projectId ?? environment.DURABLE_ACTORS_PROJECT_ID,
         controlPlaneUrl: controlPlaneUrl ?? "http://127.0.0.1:7100",
         apiKey
     }

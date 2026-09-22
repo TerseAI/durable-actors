@@ -11,7 +11,7 @@ import { defaultTimeRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
 const views = [
-    { id: "overview", label: "little-actors", icon: LayoutGrid },
+    { id: "overview", label: "Durable Actors", icon: LayoutGrid },
     { id: "actors", label: "Actors", icon: Box },
     { id: "requests", label: "Requests", icon: Activity },
     { id: "websockets", label: "WebSockets", icon: Cable }
@@ -64,7 +64,7 @@ export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; to
                     <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label="Toggle color theme">
                         <SunMoon aria-hidden="true" />
                     </button>
-                    <a href="https://github.com/TerseAI/little-actors#readme" target="_blank" rel="noopener noreferrer">
+                    <a href="https://github.com/TerseAI/durable-actors#readme" target="_blank" rel="noopener noreferrer">
                         Docs
                         <ArrowRight aria-hidden="true" />
                     </a>

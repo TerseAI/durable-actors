@@ -1,4 +1,4 @@
-use std::{os::unix::fs::PermissionsExt, path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -73,7 +73,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
     std::fs::write(&file, r#"{"version":99,"actors":[]}"#)?;
     let output = timeout(
         Duration::from_secs(5),
-        Command::new(env!("CARGO_BIN_EXE_little-actors"))
+        Command::new(env!("CARGO_BIN_EXE_durable-actors"))
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .env("DURABLE_OBJECT_PROJECT_ID", "default")
             .env("DURABLE_OBJECT_API_KEY", "test-key")
@@ -93,7 +93,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
         logs.contains("unsupported public actor contract version"),
         "{logs}"
     );
-    assert!(!project.path().join(".little-actors/runtime.json").exists());
+    assert!(!project.path().join(".durable-actors/runtime.json").exists());
     Ok(())
 }
 
@@ -106,7 +106,7 @@ struct LocalRuntime {
 
 impl LocalRuntime {
     async fn start(project: &Path, contract: Option<&Path>) -> Result<Self> {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .arg("--project-id")
@@ -127,39 +127,38 @@ impl LocalRuntime {
         let (origin, startup_output) = timeout(Duration::from_secs(5), async {
             let mut line = String::new();
             let mut startup_output = String::new();
+            let mut origin = None;
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
                 startup_output.push_str(&line);
-                if let Some((_, origin)) = line.split_once("  Ready  ") {
-                    return Ok::<_, anyhow::Error>((origin.trim().to_owned(), startup_output));
+                if let Some((_, value)) = line.split_once("  Ready  ") {
+                    origin = Some(value.trim().to_owned());
+                }
+                if line.trim_start().starts_with("DURABLE_ACTORS_SECRET=") {
+                    return Ok::<_, anyhow::Error>((
+                        origin.context("missing origin")?,
+                        startup_output,
+                    ));
                 }
                 line.clear();
             }
         })
         .await??;
-        let key_file = project.join(".little-actors/api-key");
-        let api_key = std::fs::read_to_string(&key_file)?;
-        assert_eq!(
-            std::fs::metadata(&key_file)?.permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(!startup_output.contains(&api_key));
-        let export = startup_output
+        let api_key = startup_output
             .lines()
-            .find(|line| line.starts_with("export DURABLE_OBJECT_API_KEY="))
-            .context("missing generated API key instruction")?;
-        let loaded = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{export}\nprintf '%s' \"$DURABLE_OBJECT_API_KEY\""))
-            .output()
-            .await?;
-        assert!(loaded.status.success());
-        assert_eq!(String::from_utf8(loaded.stdout)?, api_key);
-        ensure!(api_key.len() >= 32, "generated API key is too short");
-        assert!(!project.join(".little-actors/runtime.json").exists());
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("DURABLE_ACTORS_SECRET='")?
+                    .strip_suffix('\'')
+            })
+            .context("missing generated shared secret in .env output")?
+            .to_owned();
+        ensure!(api_key.len() >= 32, "generated shared secret is too short");
+        assert!(!project.join(".durable-actors/api-key").exists());
+        assert!(!project.join(".durable-actors/runtime.json").exists());
         Ok(Self {
             child,
             output,

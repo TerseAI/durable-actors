@@ -35,7 +35,7 @@ jobs:
             - name: Build Rust runtime and bundled Go provider
               run: node scripts/build-runtime.mjs
             - name: Check the native executable
-              run: target/release/little-actors --version
+              run: target/release/durable-actors --version
             - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
               with:
                   name: native-${{ matrix.runner }}

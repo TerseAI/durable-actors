@@ -60,7 +60,7 @@ Builds and registers actor code from a published customer image in one request. 
 **JSON parameters**
 
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
-- `imageRef` (`string`, required) — Published Modal customer build image ID (`im-...`). The image contains the project source, installed dependencies, Bun, and the matching SDK at `/opt/little-actors/sdk`. Base it on the matching runtime image; this endpoint does not build Docker images.
+- `imageRef` (`string`, required) — Published Modal customer build image ID (`im-...`). The image contains the project source, installed dependencies, Bun, and the matching SDK at `/opt/durable-actors/sdk`. Base it on the matching runtime image; this endpoint does not build Docker images.
 - `workingDirectory` (`string`, required) — Absolute project directory inside the build image, at most 1024 bytes.
 - `actorEntrypoint` (`string | null`, default `null`) — Source entrypoint inside that image, at most 1024 bytes; defaults to `src/durable-objects.ts` relative to the project directory.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`. Secrets are attached to actor sandboxes, not the temporary compiler sandbox.
@@ -105,7 +105,7 @@ Omit `revision` to get the latest deployment's contract. The optional `revision`
 
 The example represents an empty actor API; a missing contract returns `404` with error code `not_found`. The hash identifies the contract content: SHA-256 of compact JSON with object keys sorted recursively and array order preserved. The contract contains public RPC signatures and socket schemas, without actor implementation code or credentials.
 
-`little-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the published code snapshot. Registration validates the contract format and local type references; it does not introspect the code snapshot to verify its API.
+`durable-actors deploy` extracts and includes the contract automatically. Custom deployment integrations can call `ActorCompiler.compileContract()` and pass the returned object directly as `contract`. Use the same source revision as the published code snapshot. Registration validates the contract format and local type references; it does not introspect the code snapshot to verify its API.
 
 **Errors:** `400` for an invalid revision or query; `401` for a rejected admin credential; `404` when the active deployment has no published contract or the requested revision is not active.
 

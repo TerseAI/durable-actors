@@ -82,7 +82,7 @@ async fn local_request_logs_respect_rust_log() -> Result<()> {
 
 #[tokio::test]
 async fn service_process_logs_remain_structured() -> Result<()> {
-    let output = Command::new(env!("CARGO_BIN_EXE_little-actors"))
+    let output = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .env("DURABLE_OBJECT_PROCESS_ROLE", "invalid")
         .env_remove("DURABLE_OBJECT_LOG_MODE")
         .env_remove("RUST_LOG")
@@ -114,7 +114,7 @@ impl LocalRuntime {
     async fn start(filter: Option<&str>) -> Result<Self> {
         let project = tempfile::tempdir()?;
         std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
-        let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args([
                 "dev",

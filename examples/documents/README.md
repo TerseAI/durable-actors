@@ -7,11 +7,11 @@ A small Tiptap editor with Yjs for concurrent edits and durable actors for saved
 ## Run it
 
 ```sh
-npx little-actors init documents-example --template documents
+npx durable-actors init documents-example --template documents
 cd documents-example
 npm install
-npx little-actors generate
-npx little-actors dev
+npx durable-actors generate
+npx durable-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, run the printed export command, then:
@@ -33,6 +33,6 @@ If you already have this directory, start at `npm install`. No external service 
 
 Yjs updates are encoded as base64 strings to fit the SDK’s JSON protocol. The actor saves the Yjs state, preserving the information needed to merge concurrent edits. Clients receive the complete merged document after each edit; this keeps the sample small rather than optimizing for large documents.
 
-Editing pauses while disconnected. Reload to request a fresh connection. There is no automatic reconnect or browser storage for unsaved edits. Keep `.little-actors/` and restart both servers to restore saved documents.
+Editing pauses while disconnected. Reload to request a fresh connection. There is no automatic reconnect or browser storage for unsaved edits. Keep `.durable-actors/` and restart both servers to restore saved documents.
 
 This demo has one shared workspace and no authentication. In an application, authenticate the proxy route and authorize access to the requested workspace or document. Presence cursors, document deletion, and permissions UI are left out.

@@ -1,5 +1,5 @@
 {
-    "name": "little-actors-example-ai-chat",
+    "name": "durable-actors-example-ai-chat",
     "private": true,
     "type": "module",
     "engines": {
@@ -14,7 +14,7 @@
         "@ai-sdk/react": "^4.0.100",
         "ai": "^7.0.97",
         "express": "^5.2.1",
-        "little-actors": "workspace:^",
+        "durable-actors": "workspace:^",
         "react": "^19.3.0",
         "react-dom": "^19.3.0"
     },

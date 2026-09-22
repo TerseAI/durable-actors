@@ -30,11 +30,25 @@ test("environment and explicit client settings normalize routes and API keys equ
         }
         await new RemoteActorClient(settings, dependencies).connect("Counter", "one", {})
         await new RemoteActorClient(undefined, dependencies).connect("Counter", "one", {})
+        await new RemoteActorClient(undefined, {
+            ...dependencies,
+            environment: {
+                ...environmentFor({
+                    ...settings,
+                    projectId: "wrong",
+                    apiKey: "wrong",
+                    controlPlaneUrl: "https://wrong.example"
+                }),
+                DURABLE_ACTORS_PROJECT_ID: settings.projectId,
+                DURABLE_ACTORS_SECRET: settings.apiKey,
+                DURABLE_ACTORS_CONTROL_PLANE_URL: settings.controlPlaneUrl
+            }
+        }).connect("Counter", "one", {})
         const expected = {
             url: "wss://host.example.com/v1/socket?key=ticket",
             metadata: {}
         }
-        assert.deepEqual(connections, [expected, expected])
+        assert.deepEqual(connections, [expected, expected, expected])
     }
 })
 
@@ -72,9 +86,9 @@ function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEn
 test("clients require explicit credentials even if a discovery file exists", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actors-no-discovery-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    await mkdir(path.join(directory, ".little-actors"))
+    await mkdir(path.join(directory, ".durable-actors"))
     await writeFile(
-        path.join(directory, ".little-actors/runtime.json"),
+        path.join(directory, ".durable-actors/runtime.json"),
         JSON.stringify({
             controlPlaneUrl: "http://localhost:7100",
             apiKey: "stale-key"
@@ -89,7 +103,7 @@ test("clients require explicit credentials even if a discovery file exists", asy
             connectWebSocket: async () => assert.fail('used file credentials')
         });
         await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
-        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /API key/);
+        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /shared secret/);
     `
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))
     await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })
