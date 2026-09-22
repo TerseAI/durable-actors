@@ -2,44 +2,61 @@
 
 Named actors with serial method calls and saved state. Requires Node.js 20.19+ or 22.12+ (matching Vite's runtime requirement). The CLI uses Node.js; actor execution requires Bun 1.4.2+.
 
+## Local development
+
+Install the CLI once with pnpm:
+
 ```sh
-npm install durable-actors
+pnpm add --global durable-actors
 ```
 
-Use `npx durable-actors init my-actors` to create a standalone actor project.
-
-## Local CLI
-
-Create an actor project in a new directory:
+Create a standalone actor project and start its server:
 
 ```sh
-npx durable-actors init my-actors
+durable-actors init my-actors
 cd my-actors
 pnpm install
-pnpm exec durable-actors dev
+durable-actors dev
 ```
 
-The project contains a persisted counter in `src/durable-objects.ts`, TypeScript configuration, and scripts to run, check, and build your actors. Its dependencies include the same SDK version as the CLI. In your separate application project, install `durable-actors`, copy the connection settings printed by the actor server into `.env`, and run `durable-actors generate`.
+The project contains a persisted counter in `src/durable-objects.ts`, TypeScript configuration, and scripts to check and build your actors. Keep the actor server running.
 
-For the combined Express + React [chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/chat), use `npx durable-actors init chat-example --template chat`.
-
-For Vercel AI SDK with durable chat history, use `npx durable-actors init ai-chat-example --template ai-chat`. The [AI chat example](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat) uses `useChat`, HTTP streaming, and backend actor calls; it needs an OpenAI API key and no generated clients.
-
-For a collaborative Tiptap editor, use `npx durable-actors init documents-example --template documents`. The [documents example](https://github.com/TerseAI/durable-actors/tree/main/examples/documents) uses Yjs, native WebSockets, and one durable actor per document.
-
-Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `durable-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
+In your separate application project's directory, install the SDK:
 
 ```sh
-npx durable-actors dev
+pnpm add durable-actors
 ```
 
-Wait for the `Ready` line, then copy the connection settings printed under **Connect your application** into your application's `.env` file. The CLI loads `.env` automatically; start your backend with that file loaded too. `dev` mints a shared secret by default, so update it in `.env` after restarting the actor server.
+Copy the settings printed under **Connect your application** into that application's `.env` file:
 
-Generate source once for your backend and web app:
+```dotenv
+DURABLE_ACTORS_PROJECT_ID=local
+DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
+DURABLE_ACTORS_SECRET='<paste the secret printed by dev>'
+```
+
+Generate the client from your application directory:
 
 ```sh
-npx durable-actors generate
+durable-actors generate
 ```
+
+The CLI loads `.env` automatically and fetches the contract from your actor server. Use the generated client in your backend:
+
+```ts
+import { actors } from "./generated/index.js"
+
+const counter = actors.Counter.get("example")
+console.log(await counter.increment())
+```
+
+Start your backend with that `.env` loaded, using your usual development command. Generated clients contain public types without importing actor source or its private dependencies.
+
+Edit actors in the actor project's `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `durable-actors`. Rerun `durable-actors generate` in your application when actor method signatures change. `dev` mints a fresh shared secret on restart unless one is configured, so update your application's `.env` and restart its backend too.
+
+For complete application templates, use `durable-actors init <directory> --template chat`, `--template ai-chat`, or `--template documents`. See the [chat](https://github.com/TerseAI/durable-actors/tree/main/examples/chat), [AI chat](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat), and [documents](https://github.com/TerseAI/durable-actors/tree/main/examples/documents) examples.
+
+## Generate clients programmatically
 
 Build tools can generate the same files in memory through the public compiler and codegen APIs:
 
@@ -54,32 +71,23 @@ const files = await generateTypeScript(contract)
 
 The caller chooses where to write the files. Generation does not execute actor code. The CLI writes only generated TypeScript clients.
 
-Generated `index.ts` exposes typed RPC stubs that work in a separate backend repository:
-
-```ts
-import { actors } from "./generated/index.js"
-
-const room = actors.ChatRoom.get("lobby")
-await room.sendMessage({ text: "Hello" }) // Arguments and return types come from your actor API.
-```
-
-The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
+## Deploy and generate remote clients
 
 For a hosted deployment, configure the [remote connection](#hosted-backends), then supply your published customer build image. The control plane compiles the code and public contract, publishes the snapshot, and registers the deployment in one request:
 
 ```sh
-npx durable-actors deploy --image im-customer-build
+durable-actors deploy --image im-customer-build
 ```
 
 Then generate clients in another repository using the same environment settings:
 
 ```sh
-npx durable-actors generate --url
+durable-actors generate
 ```
 
 Deploy assigns a revision automatically, and generation uses the latest deployment. The server stores only its active contract. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment and credentials.
 
-The npm package installs the `durable-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. It watches TypeScript files across the actor project and publishes valid source changes to the local control plane; rerun `generate --url` when the public contract changes. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.durable-actors/`.
+The npm package installs the `durable-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. It watches TypeScript files across the actor project and publishes valid source changes to the local control plane; rerun `durable-actors generate` when the public contract changes. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.durable-actors/`.
 
 `durable-actors dev --help` lists options. There is no CLI client runner; browser applications use native WebSockets as shown below.
 
@@ -102,7 +110,7 @@ The launcher downloads the matching runtime and waits for readiness. It defaults
 
 ## Hosted backends
 
-Configure the [remote connection](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/configuration.md) once for your CLI and backend. Local development needs no connection configuration.
+Configure the [remote connection](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/configuration.md) once for your CLI and backend. Local development uses the connection settings printed by `dev`.
 
 Keep the shared secret on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/durable-actors/blob/main/docs/guides/self-hosting.md#browser-connections).
 
