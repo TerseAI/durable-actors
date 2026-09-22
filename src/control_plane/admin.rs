@@ -172,7 +172,7 @@ impl AdminService {
         }
         url.query_pairs_mut().append_pair("key", &key);
         Ok(
-            serde_json::json!({ "transport": "websocket", "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
+            serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
         )
     }
 

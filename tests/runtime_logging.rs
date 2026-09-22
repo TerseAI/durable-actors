@@ -15,7 +15,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
         (reqwest::Method::GET, "/healthz", 200),
         (
             reqwest::Method::POST,
-            "/v1/projects/default/actors/Counter/one/connect",
+            "/v1/projects/default/actors/Counter/one/find-actor",
             401,
         ),
         (reqwest::Method::GET, "/v1/observe/actors", 401),
@@ -41,7 +41,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
         ("GET", "/healthz", 200),
         (
             "POST",
-            "/v1/projects/default/actors/Counter/one/connect",
+            "/v1/projects/default/actors/Counter/one/find-actor",
             401,
         ),
         ("GET", "/v1/observe/actors", 401),

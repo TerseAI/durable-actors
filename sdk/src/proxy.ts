@@ -34,7 +34,6 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
 
 const socketGrantSchema = z.object({
     websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol)),
-    transport: z.literal("websocket"),
     homeRegion: z.string().min(1),
     connectByMs: z.number().int(),
     authorizedUntilMs: z.number().int()
@@ -99,11 +98,11 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
                 ? undefined
                 : validateActorComponent("home region", authorization.homeRegion)
         const response = await this.fetchRequest(
-            `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/connect`,
+            `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/find-websocket`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-                body: JSON.stringify({ transport: "websocket", metadata, authorizationLifetimeMs, homeRegion }),
+                body: JSON.stringify({ metadata, authorizationLifetimeMs, homeRegion }),
                 signal: AbortSignal.timeout(this.setupTimeoutMs)
             }
         )

@@ -19,7 +19,10 @@ test("environment and explicit client settings normalize routes and API keys equ
         const dependencies = {
             environment: environmentFor(settings),
             fetch: async (url: string | URL | Request, init?: RequestInit) => {
-                assert.equal(String(url), "https://control.example.com/v1/projects/default/actors/Counter/one/connect")
+                assert.equal(
+                    String(url),
+                    "https://control.example.com/v1/projects/default/actors/Counter/one/find-websocket"
+                )
                 assert.equal(new Headers(init?.headers).get("authorization"), "Bearer key")
                 return Response.json({ websocketUrl: "wss://host.example.com/v1/socket?key=ticket", key: "ticket" })
             },

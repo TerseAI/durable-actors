@@ -810,8 +810,8 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
     let requests = [(
-        "actors/Room/lobby/connect",
-        serde_json::json!({"transport":"websocket", "metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
+        "actors/Room/lobby/find-websocket",
+        serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
     )];
     for (path, body) in requests {
         let response = client
@@ -835,7 +835,6 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
         let ticket = issuer.verify_socket(&key)?;
         assert_eq!(ticket.actor.actor_id, "lobby");
         assert_eq!(ticket.metadata, body["metadata"]);
-        assert_eq!(issued["transport"], "websocket");
         assert_eq!(issued["homeRegion"], "north-america-east");
         assert!(issued.get("key").is_none());
     }
@@ -904,8 +903,8 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let url = format!("{origin}/v1/projects/default/actors/Room/lobby/connect");
-    let body = serde_json::json!({"transport":"websocket", "metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000,"homeRegion":"north-america-east"});
+    let url = format!("{origin}/v1/projects/default/actors/Room/lobby/find-websocket");
+    let body = serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000,"homeRegion":"north-america-east"});
     let host_token = issuer
         .issue_host(
             &fixture_host("fixture"),
@@ -934,17 +933,19 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         .send()
         .await?
         .error_for_status()?;
-    for operation in ["websocket", "grpc"] {
+    for operation in ["find-websocket", "find-actor"] {
         let response = client
-                .post(&url)
-                .bearer_auth("api-key")
-                .json(&if operation == "websocket" {
-                    serde_json::json!({"transport":"websocket", "metadata":{},"homeRegion":"north-america-west"})
-                } else {
-                    serde_json::json!({"transport":"grpc", "homeRegion":"north-america-west"})
-                })
-                .send()
-                .await?;
+            .post(format!(
+                "{origin}/v1/projects/default/actors/Room/lobby/{operation}"
+            ))
+            .bearer_auth("api-key")
+            .json(&if operation == "find-websocket" {
+                serde_json::json!({"metadata":{},"homeRegion":"north-america-west"})
+            } else {
+                serde_json::json!({"homeRegion":"north-america-west"})
+            })
+            .send()
+            .await?;
         assert_eq!(
             response.status(),
             reqwest::StatusCode::CONFLICT,
@@ -988,7 +989,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     assert_eq!(
         client
             .post(format!(
-                "{origin}/v1/projects/default/actors/Room/lobby/connect"
+                "{origin}/v1/projects/default/actors/Room/lobby/find-actor"
             ))
             .bearer_auth(&key)
             .json(&serde_json::json!({}))
@@ -1002,7 +1003,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
 }
 
 #[tokio::test]
-async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Result<()> {
+async fn actor_discovery_authenticates_and_validates_each_request_contract() -> Result<()> {
     let issuer = test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -1063,7 +1064,7 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         .send()
         .await?;
     assert_eq!(registered.status(), reqwest::StatusCode::OK);
-    for suffix in ["connect"] {
+    for suffix in ["find-actor", "find-websocket"] {
         let url = format!("{origin}/v1/projects/default/actors/Counter/one/{suffix}");
         for key in ["", "wrong-key"] {
             assert_eq!(
@@ -1078,30 +1079,46 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
             );
         }
     }
-    let target: serde_json::Value = client
+    let response = client
         .post(format!(
-            "{origin}/v1/projects/default/actors/Counter/one/connect"
+            "{origin}/v1/projects/default/actors/Counter/one/find-actor"
         ))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"transport":"grpc"}))
+        .json(&serde_json::json!({}))
         .send()
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(target["transport"], "grpc");
+        .error_for_status()?;
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let target: serde_json::Value = response.json().await?;
     assert_eq!(target["homeRegion"], "north-america-east");
     assert_eq!(target["route"], "https://host.example.com");
-    for body in [
-        serde_json::json!({}),
-        serde_json::json!({"transport":"http"}),
-        serde_json::json!({"transport":"grpc","metadata":{}}),
-        serde_json::json!({"transport":"websocket"}),
-        serde_json::json!({"transport":"websocket","metadata":{},"unknown":true}),
+    assert!(target["ownerEpoch"].is_u64());
+    assert!(target["expiresAtMs"].is_i64());
+    assert!(
+        target["token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty())
+    );
+    for (suffix, body) in [
+        ("find-actor", serde_json::json!({"metadata":{}})),
+        ("find-actor", serde_json::json!({"homeRegion":42})),
+        ("find-websocket", serde_json::json!({})),
+        (
+            "find-websocket",
+            serde_json::json!({"metadata":{},"unknown":true}),
+        ),
+        (
+            "find-websocket",
+            serde_json::json!({"metadata":null,"authorizationLifetimeMs":999}),
+        ),
+        (
+            "find-websocket",
+            serde_json::json!({"metadata":null,"authorizationLifetimeMs":86400001}),
+        ),
     ] {
         let reply = client
             .post(format!(
-                "{origin}/v1/projects/default/actors/Counter/one/connect"
+                "{origin}/v1/projects/default/actors/Counter/one/{suffix}"
             ))
             .bearer_auth("api-key")
             .json(&body)
@@ -1114,18 +1131,6 @@ async fn api_key_access_connects_directly_without_an_http_socket_relay() -> Resu
         );
     }
     assert_ne!(target["token"], "api-key");
-    assert_eq!(
-        client
-            .post(format!(
-                "{origin}/v1/projects/default/actors/Counter/one/socket-effects"
-            ))
-            .bearer_auth("api-key")
-            .json(&serde_json::json!({"effects":[]}))
-            .send()
-            .await?
-            .status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
     server.abort();
     Ok(())
 }
@@ -1512,7 +1517,10 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     for (method, path) in [
         (reqwest::Method::PUT, "/v1/deployment"),
         (reqwest::Method::GET, "/v1/deployment/contract"),
-        (reqwest::Method::POST, "/v1/actors/Counter/same/connect"),
+        (
+            reqwest::Method::POST,
+            "/v1/actors/Counter/same/find-websocket",
+        ),
     ] {
         assert_eq!(
             client
@@ -1589,114 +1597,109 @@ fn fixture_host(suffix: &str) -> HostId {
 }
 
 #[tokio::test]
-async fn regional_connections_allow_omitted_home_region() -> Result<()> {
-    for transport in ["grpc", "websocket"] {
-        for existing in [false, true] {
-            let issuer = test_issuer()?;
-            let auth = ActorJwtVerifier::for_scope(
-                issuer.verifier_keys_json()?,
-                "issuer",
-                "authority",
-                ActorTokenPurpose::ControlPlane,
-                Duration::from_secs(60),
-            )?;
-            let registry = Arc::new(LocalAdminRegistry::default());
-            registry
-                .register_test_deployment(&HostLaunchSpec {
-                    project_id: "default".into(),
-                    source: None,
-                    code_snapshot: None,
-                    image_ref: "image".into(),
-                    working_directory: "/app".into(),
-                    actor_entrypoint: None,
-                    secret_refs: vec![],
-                })
-                .await?;
-            let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
-            let placements = Arc::new(LocalObjectPlacementStore::default());
-            let actor = ActorKey {
-                project_id: "default".into(),
-                actor_name: "Room".into(),
-                actor_id: "lobby".into(),
-            };
-            if existing {
-                placements.set_owner(
-                    &actor.storage_key(),
-                    test_lease(&HostId::new("old-host")),
-                    "north-america-east",
+async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
+    for local in [false, true] {
+        for operation in ["find-actor", "find-websocket"] {
+            for existing in [false, true] {
+                let issuer = test_issuer()?;
+                let auth = ActorJwtVerifier::for_scope(
+                    issuer.verifier_keys_json()?,
+                    "issuer",
+                    "authority",
+                    ActorTokenPurpose::ControlPlane,
+                    Duration::from_secs(60),
                 )?;
-            }
-            let provisioner = Arc::new(FakeRoutingProvisioner {
-                failed_regions: vec![],
-                calls: Mutex::new(vec![]),
-            });
-            let mut service = ControlPlaneService::new(
-                placements,
-                auth,
-                registry,
-                issuer.clone(),
-                provisioner.clone(),
-            );
-            service.region = Some("north-america-west".into());
-            let routes = super::super::public_api::router(service, admin);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-            let url = format!(
-                "http://{}/v1/projects/default/actors/Room/lobby/connect",
-                listener.local_addr()?
-            );
-            let server = tokio::spawn(async { axum::serve(listener, routes).await });
-            let client = reqwest::Client::new();
-            let mut body = serde_json::json!({"transport": transport});
-            if transport == "websocket" {
-                body["metadata"] = serde_json::json!({"userId":"trusted"});
-            }
-            let response = client
-                .post(&url)
-                .bearer_auth("api-key")
-                .json(&body)
-                .send()
-                .await?;
-            let status = response.status();
-            let grant: serde_json::Value = response.json().await?;
-            assert_eq!(
-                status,
-                reqwest::StatusCode::OK,
-                "{transport}, existing={existing}: {grant}"
-            );
-            let expected_region = if existing {
-                "north-america-east"
-            } else {
-                "north-america-west"
-            };
-            assert_eq!(grant["homeRegion"], expected_region);
-            assert_eq!(*provisioner.calls.lock().unwrap(), vec![expected_region]);
-            if transport == "websocket" {
-                let url = reqwest::Url::parse(grant["websocketUrl"].as_str().unwrap())?;
-                assert_eq!(url.scheme(), "wss");
-                let key = url
-                    .query_pairs()
-                    .find(|(name, _)| name == "key")
-                    .unwrap()
-                    .1
-                    .into_owned();
-                let ticket = issuer.verify_socket(&key)?;
-                assert_eq!(ticket.region, expected_region);
-                assert_eq!(ticket.actor, actor);
-                assert_eq!(ticket.metadata, body["metadata"]);
-            }
-            body["homeRegion"] = "north-america-east".into();
-            assert_eq!(
-                client
+                let registry = Arc::new(LocalAdminRegistry::default());
+                registry
+                    .register_test_deployment(&HostLaunchSpec {
+                        project_id: "default".into(),
+                        source: None,
+                        code_snapshot: None,
+                        image_ref: "image".into(),
+                        working_directory: "/app".into(),
+                        actor_entrypoint: None,
+                        secret_refs: vec![],
+                    })
+                    .await?;
+                let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+                let placements = Arc::new(LocalObjectPlacementStore::default());
+                let actor = ActorKey {
+                    project_id: "default".into(),
+                    actor_name: "Room".into(),
+                    actor_id: "lobby".into(),
+                };
+                if existing {
+                    placements.set_owner(
+                        &actor.storage_key(),
+                        test_lease(&HostId::new("old-host")),
+                        "north-america-east",
+                    )?;
+                }
+                let provisioner = Arc::new(FakeRoutingProvisioner {
+                    failed_regions: vec![],
+                    calls: Mutex::new(vec![]),
+                });
+                let mut service = ControlPlaneService::new(
+                    placements,
+                    auth,
+                    registry,
+                    issuer.clone(),
+                    provisioner.clone(),
+                );
+                service.region = Some("north-america-west".into());
+                let routes = if local {
+                    super::super::public_api::local_router(service, admin, "default".into())
+                } else {
+                    super::super::public_api::router(service, admin)
+                };
+                let prefix = if local { "/v1" } else { "/v1/projects/default" };
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let url = format!(
+                    "http://{}{prefix}/actors/Room/lobby/{operation}",
+                    listener.local_addr()?
+                );
+                let server = tokio::spawn(async { axum::serve(listener, routes).await });
+                let client = reqwest::Client::new();
+                let mut body = serde_json::json!({});
+                if operation == "find-websocket" {
+                    body["metadata"] = serde_json::json!({"userId":"trusted"});
+                }
+                let response = client
                     .post(&url)
                     .bearer_auth("api-key")
                     .json(&body)
                     .send()
-                    .await?
-                    .status(),
-                reqwest::StatusCode::CONFLICT
-            );
-            if existing {
-                body["homeRegion"] = "north-america-west".into();
+                    .await?;
+                assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+                let status = response.status();
+                let grant: serde_json::Value = response.json().await?;
+                assert_eq!(
+                    status,
+                    reqwest::StatusCode::OK,
+                    "{operation}, existing={existing}: {grant}"
+                );
+                let expected_region = if existing {
+                    "north-america-east"
+                } else {
+                    "north-america-west"
+                };
+                assert_eq!(grant["homeRegion"], expected_region);
+                assert_eq!(*provisioner.calls.lock().unwrap(), vec![expected_region]);
+                if operation == "find-websocket" {
+                    let url = reqwest::Url::parse(grant["websocketUrl"].as_str().unwrap())?;
+                    assert_eq!(url.scheme(), "wss");
+                    let key = url
+                        .query_pairs()
+                        .find(|(name, _)| name == "key")
+                        .unwrap()
+                        .1
+                        .into_owned();
+                    let ticket = issuer.verify_socket(&key)?;
+                    assert_eq!(ticket.region, expected_region);
+                    assert_eq!(ticket.actor, actor);
+                    assert_eq!(ticket.metadata, body["metadata"]);
+                }
+                body["homeRegion"] = "north-america-east".into();
                 assert_eq!(
                     client
                         .post(&url)
@@ -1707,8 +1710,21 @@ async fn regional_connections_allow_omitted_home_region() -> Result<()> {
                         .status(),
                     reqwest::StatusCode::CONFLICT
                 );
+                if existing {
+                    body["homeRegion"] = "north-america-west".into();
+                    assert_eq!(
+                        client
+                            .post(&url)
+                            .bearer_auth("api-key")
+                            .json(&body)
+                            .send()
+                            .await?
+                            .status(),
+                        reqwest::StatusCode::CONFLICT
+                    );
+                }
+                server.abort();
             }
-            server.abort();
         }
     }
     Ok(())

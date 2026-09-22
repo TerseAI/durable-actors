@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
     title: Little Actors HTTP API
     version: "1"
-    description: Deploy actors, create connections, and inspect activity.
+    description: Deploy actors, find actor hosts and WebSocket URLs, and inspect activity.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.
@@ -115,37 +115,74 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/connect:
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
             - { $ref: "#/components/parameters/ActorName" }
             - { $ref: "#/components/parameters/ActorId" }
         post:
-            operationId: connectActor
+            operationId: findActor
             tags: [Actors]
-            summary: Prepare a gRPC or WebSocket connection
-            description: Requires an active deployment. Authorize the user before issuing a WebSocket URL.
-            requestBody: { $ref: "#/components/requestBodies/Connect" }
+            summary: Find an actor host
+            description: Resolves placement, starts a host if needed, and issues credentials for direct gRPC calls. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
-                "200": { $ref: "#/components/responses/Connection" }
+                "200": { $ref: "#/components/responses/ActorTarget" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "409": { $ref: "#/components/responses/Conflict" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
-    /v1/actors/{actor_name}/{actor_id}/connect:
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: findWebSocket
+            tags: [Actors]
+            summary: Find an authorized WebSocket URL
+            description: Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
+            responses:
+                "200": { $ref: "#/components/responses/WebSocketGrant" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/actors/{actor_name}/{actor_id}/find-actor:
         parameters:
             - { $ref: "#/components/parameters/ActorName" }
             - { $ref: "#/components/parameters/ActorId" }
         post:
-            operationId: connectLocalActor
+            operationId: findLocalActor
             tags: [Actors]
-            summary: Prepare a local connection
-            description: Local development only. Uses the configured project ID.
-            requestBody: { $ref: "#/components/requestBodies/Connect" }
+            summary: Find an actor host
+            description: Local development only. Uses the configured project ID. Resolves placement, starts a host if needed, and issues credentials for direct gRPC calls. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
-                "200": { $ref: "#/components/responses/Connection" }
+                "200": { $ref: "#/components/responses/ActorTarget" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/actors/{actor_name}/{actor_id}/find-websocket:
+        parameters:
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: findLocalWebSocket
+            tags: [Actors]
+            summary: Find an authorized WebSocket URL
+            description: Local development only. Uses the configured project ID. Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
+            responses:
+                "200": { $ref: "#/components/responses/WebSocketGrant" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "409": { $ref: "#/components/responses/Conflict" }
@@ -327,14 +364,21 @@ components:
             required: true
             schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
     requestBodies:
-        Connect:
+        FindActor:
             required: true
             content:
                 application/json:
-                    schema: { $ref: "#/components/schemas/ConnectRequest" }
+                    schema: { $ref: "#/components/schemas/FindActorRequest" }
                     examples:
-                        grpc: { value: { transport: grpc, homeRegion: north-america-west } }
-                        websocket: { value: { transport: websocket, metadata: { userId: alice }, authorizationLifetimeMs: 900000 } }
+                        default: { value: {} }
+                        regional: { value: { homeRegion: north-america-west } }
+        FindWebSocket:
+            required: true
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/FindWebSocketRequest" }
+                    examples:
+                        socket: { value: { metadata: { userId: alice }, authorizationLifetimeMs: 900000 } }
     responses:
         Changed:
             description: Whether the deployment changed.
@@ -345,15 +389,20 @@ components:
                         required: [changed]
                         properties:
                             changed: { type: boolean }
-        Connection:
-            description: Connection credentials. Timestamps use Unix milliseconds.
+        ActorTarget:
+            description: Owning host and RPC credentials. Timestamps use Unix milliseconds.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
             content:
                 application/json:
-                    schema:
-                        oneOf:
-                            - { $ref: "#/components/schemas/GrpcConnection" }
-                            - { $ref: "#/components/schemas/WebSocketGrant" }
-                        discriminator: { propertyName: transport }
+                    schema: { $ref: "#/components/schemas/ActorTarget" }
+        WebSocketGrant:
+            description: Authorized WebSocket URL and deadlines. Timestamps use Unix milliseconds.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/WebSocketGrant" }
         EventStream:
             description: Server-sent events.
             headers:
@@ -499,38 +548,32 @@ components:
             required: ["$ref"]
             properties:
                 $ref: { type: string, description: Reference into rpc.schema. }
-        ConnectRequest:
-            oneOf:
-                - type: object
-                  additionalProperties: false
-                  required: [transport]
-                  properties:
-                      transport: { type: string, const: grpc }
-                      homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
-                - type: object
-                  additionalProperties: false
-                  required: [transport, metadata]
-                  properties:
-                      transport: { type: string, const: websocket }
-                      homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
-                      metadata: { description: Connection metadata. Maximum 64 KiB of JSON. }
-                      authorizationLifetimeMs: { type: integer, minimum: 1000, maximum: 86400000, default: 900000 }
-            discriminator: { propertyName: transport }
-        GrpcConnection:
+        FindActorRequest:
             type: object
-            required: [transport, homeRegion, route, token, ownerEpoch, expiresAtMs]
+            additionalProperties: false
             properties:
-                transport: { type: string, const: grpc }
+                homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
+        FindWebSocketRequest:
+            type: object
+            additionalProperties: false
+            required: [metadata]
+            properties:
+                homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
+                metadata: { description: Required connection metadata; may be null. Maximum 64 KiB of JSON. }
+                authorizationLifetimeMs: { type: integer, minimum: 1000, maximum: 86400000, default: 900000 }
+        ActorTarget:
+            type: object
+            required: [homeRegion, route, token, ownerEpoch, expiresAtMs]
+            properties:
                 homeRegion: { type: string }
-                route: { type: string, format: uri }
+                route: { type: string, format: uri, description: HTTP(S) origin of the actor gRPC host. }
                 token: { type: string, description: Bearer token for actor RPCs. }
                 ownerEpoch: { type: integer, minimum: 0 }
                 expiresAtMs: { type: integer, format: int64 }
         WebSocketGrant:
             type: object
-            required: [transport, homeRegion, websocketUrl, connectByMs, authorizedUntilMs]
+            required: [homeRegion, websocketUrl, connectByMs, authorizedUntilMs]
             properties:
-                transport: { type: string, const: websocket }
                 homeRegion: { type: string }
                 websocketUrl: { type: string, format: uri }
                 connectByMs: { type: integer, format: int64, description: Connect before this time. }

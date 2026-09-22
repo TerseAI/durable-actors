@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -36,8 +36,12 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
                 .delete(delete_deployment),
         )
         .route(
-            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/connect",
-            post(connect_actor),
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor",
+            post(find_actor),
+        )
+        .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
+            post(find_websocket),
         )
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
@@ -53,12 +57,60 @@ pub(super) fn local_router(
         invocations: invocations.clone(),
         admin: admin.clone(),
     };
-    router(invocations, admin).merge(Router::new().route(
-        "/v1/actors/{actor_name}/{actor_id}/connect",
-        post(move |Path((actor_name, actor_id)): Path<(String, String)>, headers: HeaderMap, request: Result<Json<ConnectRequest>, JsonRejection>| {
-            connect_actor(State(state.clone()), Path(ActorPath { project_id: project_id.clone(), actor_name, actor_id }), headers, request)
+    router(invocations, admin).merge(
+        Router::new()
+            .route(
+                "/v1/actors/{actor_name}/{actor_id}/find-actor",
+                post(find_local_actor),
+            )
+            .route(
+                "/v1/actors/{actor_name}/{actor_id}/find-websocket",
+                post(find_local_websocket),
+            )
+            .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
+            .layer(Extension(project_id))
+            .with_state(state),
+    )
+}
+
+async fn find_local_actor(
+    state: State<PublicApiState>,
+    Path((actor_name, actor_id)): Path<(String, String)>,
+    Extension(project_id): Extension<String>,
+    headers: HeaderMap,
+    request: Result<Json<FindActorRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    find_actor(
+        state,
+        Path(ActorPath {
+            project_id,
+            actor_name,
+            actor_id,
         }),
-    ).layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES)))
+        headers,
+        request,
+    )
+    .await
+}
+
+async fn find_local_websocket(
+    state: State<PublicApiState>,
+    Path((actor_name, actor_id)): Path<(String, String)>,
+    Extension(project_id): Extension<String>,
+    headers: HeaderMap,
+    request: Result<Json<FindWebSocketRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    find_websocket(
+        state,
+        Path(ActorPath {
+            project_id,
+            actor_name,
+            actor_id,
+        }),
+        headers,
+        request,
+    )
+    .await
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -68,70 +120,14 @@ async fn openapi() -> impl IntoResponse {
     )
 }
 
-async fn connect_actor(
+async fn find_websocket(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,
     headers: HeaderMap,
-    request: Result<Json<ConnectRequest>, JsonRejection>,
+    request: Result<Json<FindWebSocketRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
-    match request {
-        ConnectRequest::Grpc { home_region } => {
-            resolve_actor_target(
-                State(state),
-                Path(path),
-                headers,
-                TargetRequest { home_region },
-            )
-            .await
-        }
-        ConnectRequest::Websocket {
-            home_region,
-            metadata,
-            authorization_lifetime_ms,
-        } => {
-            issue_socket_ticket(
-                State(state),
-                Path(path),
-                headers,
-                Json(IssueSocketTicketRequest {
-                    home_region,
-                    metadata,
-                    authorization_lifetime_ms,
-                }),
-            )
-            .await
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "transport", rename_all = "lowercase", deny_unknown_fields)]
-enum ConnectRequest {
-    Grpc {
-        #[serde(default, rename = "homeRegion")]
-        home_region: Option<String>,
-    },
-    Websocket {
-        #[serde(default, rename = "homeRegion")]
-        home_region: Option<String>,
-        metadata: Value,
-        #[serde(
-            default = "socket_authorization_lifetime",
-            rename = "authorizationLifetimeMs"
-        )]
-        authorization_lifetime_ms: i64,
-    },
-}
-
-async fn issue_socket_ticket(
-    State(state): State<PublicApiState>,
-    Path(path): Path<ActorPath>,
-    headers: HeaderMap,
-    Json(request): Json<IssueSocketTicketRequest>,
-) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     state
         .invocations
         .validate_home_region(request.home_region.as_deref())
@@ -163,7 +159,7 @@ async fn issue_socket_ticket(
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct IssueSocketTicketRequest {
+struct FindWebSocketRequest {
     #[serde(default)]
     home_region: Option<String>,
     metadata: Value,
@@ -249,11 +245,11 @@ async fn register_deployment(
     Ok(Json(DeploymentReply { changed }))
 }
 
-async fn resolve_actor_target(
+async fn find_actor(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,
     headers: HeaderMap,
-    request: TargetRequest,
+    request: Result<Json<FindActorRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let mut timings = TargetResolutionTimings::new();
     let request_id = headers
@@ -262,6 +258,7 @@ async fn resolve_actor_target(
         .unwrap_or("")
         .to_owned();
     authorized_admin(&state.admin, &headers)?;
+    let Json(request) = request.map_err(ApiError::json)?;
     let actor = path.into_actor();
     actor.validate().map_err(ApiError::bad_request)?;
     state
@@ -278,7 +275,6 @@ async fn resolve_actor_target(
             .await
             .map_err(ApiError::routing)?;
         Ok(Json(ActorTargetReply {
-            transport: "grpc",
             home_region: target.home_region,
             route: target.route,
             token: target.token,
@@ -333,12 +329,12 @@ async fn resolve_actor_target(
             "actor target resolution failed"
         ),
     }
-    result.map(IntoResponse::into_response)
+    result.map(|target| ([(header::CACHE_CONTROL, "no-store")], target).into_response())
 }
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TargetRequest {
+struct FindActorRequest {
     home_region: Option<String>,
 }
 
@@ -410,7 +406,6 @@ struct DeploymentReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorTargetReply {
-    transport: &'static str,
     home_region: String,
     route: String,
     token: String,

@@ -12,11 +12,10 @@ test("socket grants target the configured project as well as the actor", async (
             fetch: async url => {
                 assert.equal(
                     String(url),
-                    `https://actors.example.com/v1/projects/${projectId}/actors/Room/shared/connect`
+                    `https://actors.example.com/v1/projects/${projectId}/actors/Room/shared/find-websocket`
                 )
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
-                    transport: "websocket",
                     homeRegion: "us-east",
                     connectByMs: 1000,
                     authorizedUntilMs: 900000
@@ -36,7 +35,6 @@ test("socket setup accepts an explicit home region and validates its timeout", a
                 assert.equal(JSON.parse(init!.body as string).homeRegion, "north-america-west")
                 return Response.json({
                     websocketUrl: "wss://modal.example/v1/socket?_modal_connect_token=modal&key=actor",
-                    transport: "websocket",
                     homeRegion: "north-america-east",
                     connectByMs: 1000,
                     authorizedUntilMs: 900000
@@ -71,7 +69,6 @@ test("proxy issues socket authorization using only server-selected target and me
                 })
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
-                    transport: "websocket",
                     homeRegion: "north-america-east",
                     connectByMs: 1000,
                     authorizedUntilMs: 900000
@@ -86,15 +83,13 @@ test("proxy issues socket authorization using only server-selected target and me
     })
     assert.deepEqual(grant, {
         websocketUrl: "wss://actors.example.com/v1/socket?key=socket-ticket",
-        transport: "websocket",
         homeRegion: "north-america-east",
         connectByMs: 1000,
         authorizedUntilMs: 900000
     })
     assert.equal(requests[0]!.headers.get("authorization"), "Bearer backend-secret")
-    assert.equal(requests[0]!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/connect")
+    assert.equal(requests[0]!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/find-websocket")
     assert.deepEqual(requests[0]!.body, {
-        transport: "websocket",
         metadata: { userId: "trusted" },
         authorizationLifetimeMs: 900000
     })

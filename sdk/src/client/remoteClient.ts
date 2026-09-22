@@ -95,12 +95,11 @@ class RemoteActorClient {
         }
         const attachment = socketMetadata(metadata, schemas)
         const response = await this.fetchRequest(
-            `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/connect`,
+            `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/find-websocket`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.settings.credential}`, "content-type": "application/json" },
                 body: JSON.stringify({
-                    transport: "websocket",
                     metadata: attachment,
                     homeRegion: this.settings.homeRegion
                 }),
@@ -240,7 +239,7 @@ class RemoteActorClient {
                     "x-request-id": invocation.requestId,
                     "content-type": "application/json"
                 },
-                body: JSON.stringify({ transport: "grpc", homeRegion: this.settings.homeRegion })
+                body: JSON.stringify({ homeRegion: this.settings.homeRegion })
             })
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -315,7 +314,7 @@ class RemoteActorClient {
 function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: string): string {
     const actor = validateActorComponent("actor name", actorName)
     const id = validateActorComponent("actor ID", actorId)
-    return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/connect`
+    return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/find-actor`
 }
 
 function openWebSocket(url: string, schemas: ActorSchemas): Promise<ActorConnection> {

@@ -40,18 +40,19 @@ test("OpenAPI examples satisfy their request and response schemas", async () => 
     }
 })
 
-test("connection schemas distinguish transports and enforce grant limits", async () => {
+test("actor discovery accepts an optional placement region", async () => {
     const spec = await SwaggerParser.dereference(specPath)
-    const validate = new Ajv({ strict: false }).compile(spec.components.schemas.ConnectRequest)
-    assert.ok(validate({ transport: "grpc" }))
-    assert.ok(validate({ transport: "websocket", metadata: null }))
-    for (const request of [
-        { transport: "grpc", metadata: {} },
-        { transport: "websocket" },
-        { transport: "websocket", metadata: {}, authorizationLifetimeMs: 999 },
-        { transport: "websocket", metadata: {}, authorizationLifetimeMs: 86400001 },
-        { transport: "http" }
-    ])
+    const validate = new Ajv({ strict: false }).compile(spec.components.schemas.FindActorRequest)
+    for (const request of [{}, { homeRegion: null }, { homeRegion: "north-america-west" }]) assert.ok(validate(request), JSON.stringify(request))
+    for (const request of [{ metadata: {} }, { homeRegion: 42 }]) assert.equal(validate(request), false, JSON.stringify(request))
+})
+
+test("websocket discovery requires metadata and enforces grant limits", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const validate = new Ajv({ strict: false }).compile(spec.components.schemas.FindWebSocketRequest)
+    for (const request of [{ metadata: null }, { metadata: {}, homeRegion: null }, { metadata: {}, authorizationLifetimeMs: 1000 }, { metadata: {}, authorizationLifetimeMs: 86400000 }])
+        assert.ok(validate(request), JSON.stringify(request))
+    for (const request of [{}, { metadata: {}, unknown: true }, { metadata: {}, authorizationLifetimeMs: 999 }, { metadata: {}, authorizationLifetimeMs: 86400001 }])
         assert.equal(validate(request), false, JSON.stringify(request))
 })
 
