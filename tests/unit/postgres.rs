@@ -56,15 +56,15 @@ async fn contract_schema_keeps_one_contract_per_project() -> Result<()> {
         let client = database.pool.get().await?;
         client
             .batch_execute(
-                "INSERT INTO durable_object_deployment (project_id, image_ref, working_directory)
+                "INSERT INTO durable_actors_deployment (project_id, image_ref, working_directory)
              VALUES ('team-a', 'image', '/app'), ('team-b', 'image', '/app');
-             INSERT INTO durable_object_contracts (project_id, contract_hash, contract_json)
+             INSERT INTO durable_actors_contracts (project_id, contract_hash, contract_json)
              VALUES ('team-a', 'hash', '{}'), ('team-b', 'hash', '{}');",
             )
             .await?;
         let duplicate = client
             .execute(
-                "INSERT INTO durable_object_contracts (project_id, contract_hash, contract_json)
+                "INSERT INTO durable_actors_contracts (project_id, contract_hash, contract_json)
              VALUES ('team-a', 'other-hash', '{}')",
                 &[],
             )
@@ -76,12 +76,12 @@ async fn contract_schema_keeps_one_contract_per_project() -> Result<()> {
         );
         client
             .execute(
-                "DELETE FROM durable_object_deployment WHERE project_id = 'team-a'",
+                "DELETE FROM durable_actors_deployment WHERE project_id = 'team-a'",
                 &[],
             )
             .await?;
         let project: String = client
-            .query_one("SELECT project_id FROM durable_object_contracts", &[])
+            .query_one("SELECT project_id FROM durable_actors_contracts", &[])
             .await?
             .get(0);
         assert_eq!(project, "team-b");
@@ -131,10 +131,10 @@ async fn check_isolated_rows(
     first: &tokio_postgres::Client,
     second: &tokio_postgres::Client,
 ) -> Result<()> {
-    let insert = "INSERT INTO durable_object_deployment (project_id, image_ref, working_directory) VALUES ('project', 'image', '/app')";
+    let insert = "INSERT INTO durable_actors_deployment (project_id, image_ref, working_directory) VALUES ('project', 'image', '/app')";
     first.execute(insert, &[]).await?;
     let count: i64 = second
-        .query_one("SELECT count(*) FROM durable_object_deployment", &[])
+        .query_one("SELECT count(*) FROM durable_actors_deployment", &[])
         .await?
         .get(0);
     assert_eq!(count, 0);
@@ -165,7 +165,7 @@ async fn check_reconnected_fixture(url: &str, expected_schema: &str) -> Result<(
     let client = reopened.connection().await?;
     assert_eq!(current_schema(&client).await?, expected_schema);
     let count: i64 = client
-        .query_one("SELECT count(*) FROM durable_object_deployment", &[])
+        .query_one("SELECT count(*) FROM durable_actors_deployment", &[])
         .await?
         .get(0);
     assert_eq!(count, 1);

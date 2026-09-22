@@ -33,7 +33,7 @@ pub async fn with_postgres(test: impl AsyncFnOnce(&TestDatabase) -> Result<()>) 
 pub async fn with_postgres_schema(
     test: impl AsyncFnOnce(&TestDatabase) -> Result<()>,
 ) -> Result<()> {
-    let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
+    let Ok(url) = std::env::var("DURABLE_ACTORS_TEST_POSTGRES_URL") else {
         return Ok(());
     };
     let database = TestDatabase::create(&url).await?;

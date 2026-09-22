@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const spareReadyFile = "/tmp/durable-object-spare-ready"
+const spareReadyFile = "/tmp/durable-actors-spare-ready"
 const compiledCodeDirectory = "/tmp/durable-actors-code"
 
 type resourceLimits struct {
@@ -72,8 +72,8 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		return hostHandle{}, err
 	}
 	environment := hostEnvironment(request)
-	environment["DURABLE_OBJECT_HOST_ROUTE"] = spare.Route
-	environment["DURABLE_OBJECT_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
+	environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
+	environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 	group, assignmentContext := errgroup.WithContext(ctx)
 	group.Go(func() error { return sb.Mount(assignmentContext, code) })
 	var handle hostHandle
@@ -148,7 +148,7 @@ func (p *provider) startSpare(ctx context.Context, request spareRequest, secrets
 		return nil, spareHandle{}, fmt.Errorf("spare control route unavailable: %v", err)
 	}
 	ready = true
-	return sb, spareHandle{Name: request.Name, ResourceID: sb.ID(), Route: route, CanonicalRegion: request.CanonicalRegion, ControlRoute: controlRoute, ControlToken: params.Env["DURABLE_OBJECT_SPARE_TOKEN"]}, nil
+	return sb, spareHandle{Name: request.Name, ResourceID: sb.ID(), Route: route, CanonicalRegion: request.CanonicalRegion, ControlRoute: controlRoute, ControlToken: params.Env["DURABLE_ACTORS_SPARE_TOKEN"]}, nil
 }
 
 func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {
@@ -200,8 +200,8 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
-		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-object-host.stderr"},
-		Env:     map[string]string{"DURABLE_OBJECT_PROCESS_ROLE": role, "DURABLE_OBJECT_SPARE_TOKEN": hex.EncodeToString(token)},
+		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
+		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
 		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,
 		MemoryMiB: limits.MemoryMiB, MemoryLimitMiB: limits.MemoryMiB,

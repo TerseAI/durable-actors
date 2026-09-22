@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url"
 import { parseSocketEffects } from "../actor/socketProtocol.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
-import type { ProtoGrpcType } from "../generated/durable_object.js"
-import type { ActorHostServiceClient } from "../generated/durable_object/v1/ActorHostService.js"
-import type { HostInvokeActorRequest } from "../generated/durable_object/v1/HostInvokeActorRequest.js"
-import type { InvokeActorReply__Output } from "../generated/durable_object/v1/InvokeActorReply.js"
+import type { ProtoGrpcType } from "../generated/durable_actors.js"
+import type { ActorHostServiceClient } from "../generated/durable_actors/v1/ActorHostService.js"
+import type { HostInvokeActorRequest } from "../generated/durable_actors/v1/HostInvokeActorRequest.js"
+import type { InvokeActorReply__Output } from "../generated/durable_actors/v1/InvokeActorReply.js"
 import type { JsonValue } from "../json.js"
 
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -161,13 +161,13 @@ function actorHostUrl(route: string): URL {
 }
 
 const definition = loadPackageDefinition(
-    loadSync(fileURLToPath(new URL("../generated/durable_object.proto", import.meta.url)), {
+    loadSync(fileURLToPath(new URL("../generated/durable_actors.proto", import.meta.url)), {
         defaults: true,
         longs: Number,
         oneofs: true
     })
 ) as unknown as ProtoGrpcType
-const ActorHostClient = definition.durable_object.v1.ActorHostService
+const ActorHostClient = definition.durable_actors.v1.ActorHostService
 
 export { GrpcActorHostTransport }
 export type { ActorHostReply, ActorHostTarget, ActorHostTransport, DirectActorInvocation }

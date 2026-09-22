@@ -37,7 +37,7 @@ COPY proto ./proto
 RUN pnpm --dir packages/observer-ui build \
     && pnpm --dir sdk generate:proto \
     && pnpm --dir sdk exec tsc -p tsconfig.build.json \
-    && cp proto/durable_object.proto sdk/dist/generated/durable_object.proto
+    && cp proto/durable_actors.proto sdk/dist/generated/durable_actors.proto
 
 FROM oven/bun:1.4.2 AS bun
 
@@ -59,6 +59,6 @@ RUN mkdir -p /customer /node_modules \
     && ln -s /opt/durable-actors/sdk /node_modules/durable-actors
 
 ENV RUST_LOG=warn,durable_actors=info
-ENV DURABLE_OBJECT_SANDBOX_COMMAND=durable-actors-modal-go
-ENV DURABLE_OBJECT_SDK_HOST=/opt/durable-actors/sdk/dist/host.js
+ENV DURABLE_ACTORS_SANDBOX_COMMAND=durable-actors-modal-go
+ENV DURABLE_ACTORS_SDK_HOST=/opt/durable-actors/sdk/dist/host.js
 ENTRYPOINT ["/usr/local/bin/durable-actors"]

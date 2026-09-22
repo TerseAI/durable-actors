@@ -5,7 +5,6 @@ import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import { styleText } from "node:util"
 
-import { registerDeployCommand } from "./cli/deploy.js"
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObserveCommand } from "./cli/observe.js"
@@ -24,7 +23,7 @@ try {
         .showHelpAfterError()
     program
         .command("init <directory>")
-        .description("Create a standalone actor project")
+        .description("Create a sample actor project")
         .addOption(
             new Option("--template <name>", "project template")
                 .choices(["actor", "chat", "ai-chat", "documents"])
@@ -35,7 +34,6 @@ try {
     registerGenerateCommand(program)
     registerObserveCommand(program)
     registerStartCommand(program)
-    registerDeployCommand(program)
     if (process.argv.length === 2) program.help()
     await program.parseAsync(process.argv)
 } catch (error) {
@@ -96,7 +94,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.
-    Edit ${styleText("cyan", "src/durable-objects.ts")} to make it your own.
+    Edit ${styleText("cyan", "src/actors.ts")} to make it your own.
 
   ${styleText("bold", "Connect your app")}
     Follow dev's .env and generate instructions

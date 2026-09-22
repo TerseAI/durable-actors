@@ -1,4 +1,4 @@
-CREATE TABLE durable_object_deployment (
+CREATE TABLE durable_actors_deployment (
     project_id TEXT PRIMARY KEY,
     code_revision TEXT NOT NULL,
     image_ref TEXT NOT NULL,

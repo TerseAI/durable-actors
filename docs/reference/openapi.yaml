@@ -2,7 +2,11 @@ openapi: 3.1.0
 info:
     title: durable-actors control plane API
     version: "1"
-    description: Control plane API for durable-actors. Manage deployments, find actor hosts and support observability.
+    description: |
+        Manage durable-actors deployments, find actor hosts, and inspect activity.
+        Authenticate backend requests with a bearer API key; never expose it to browsers.
+        Project-scoped actor routes work in development and production. Local development
+        shortcuts use the server's configured project ID and are available only with `durable-actors dev`.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.
@@ -14,6 +18,8 @@ tags:
     - name: Actors
     - name: Observability
     - name: WebSockets
+    - name: Local development
+      description: Shortcuts for the configured local project. Use the project-scoped Actors endpoints for integrations.
 paths:
     /openapi.yaml:
         get:
@@ -46,7 +52,7 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Replaces the current deployment and restarts its actors.
+            description: Builds the supplied source image, replaces the current deployment, and restarts its actors while preserving saved state. Local development registers source from the filesystem with imageRef set to local.
             requestBody:
                 required: true
                 content:
@@ -73,7 +79,7 @@ paths:
                     description: Active deployment, without the contract.
                     content:
                         application/json:
-                            schema: { $ref: "#/components/schemas/Deployment" }
+                            schema: { $ref: "#/components/schemas/CurrentDeployment" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "404": { $ref: "#/components/responses/NotFound" }
@@ -159,9 +165,9 @@ paths:
             - { $ref: "#/components/parameters/ActorId" }
         post:
             operationId: findLocalActor
-            tags: [Actors]
-            summary: Find an actor host
-            description: Local development only. Uses the configured project ID. Resolves placement, starts a host if needed, and issues credentials for direct gRPC calls. Requires an active deployment.
+            tags: [Local development]
+            summary: Find a local actor host
+            description: Uses the configured project ID. See findActor for placement and RPC credential behavior.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
@@ -177,9 +183,9 @@ paths:
             - { $ref: "#/components/parameters/ActorId" }
         post:
             operationId: findLocalWebSocket
-            tags: [Actors]
-            summary: Find an authorized WebSocket URL
-            description: Local development only. Uses the configured project ID. Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
+            tags: [Local development]
+            summary: Find a local WebSocket URL
+            description: Uses the configured project ID. See findWebSocket for authorization and connection behavior.
             requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
             responses:
                 "200": { $ref: "#/components/responses/WebSocketGrant" }
@@ -230,14 +236,8 @@ paths:
                 - name: outcome
                   in: query
                   schema: { type: string, enum: [completed, failed, rejected, rerouted, interrupted] }
-                - name: fromMs
-                  in: query
-                  description: Inclusive start time in Unix milliseconds.
-                  schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
-                - name: toMs
-                  in: query
-                  description: Inclusive end time in Unix milliseconds; must be at least fromMs.
-                  schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
                 - name: limit
                   in: query
                   schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
@@ -352,11 +352,11 @@ paths:
                 - name: after
                   in: query
                   description: resumeCursor; overrides Last-Event-ID.
-                  schema: { type: string }
+                  schema: { type: string, maxLength: 4096 }
                 - name: Last-Event-ID
                   in: header
                   description: Previous SSE event ID.
-                  schema: { type: string }
+                  schema: { type: string, maxLength: 4096 }
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
@@ -578,9 +578,9 @@ components:
             properties:
                 imageRef:
                     type: string
-                    pattern: "^im-"
+                    minLength: 1
                     maxLength: 255
-                    description: Published Modal image ID.
+                    description: Published Modal source image ID (im-...) for hosted deployments; local for development. Maximum 255 UTF-8 bytes.
                 workingDirectory:
                     type: string
                     pattern: "^/"
@@ -589,7 +589,7 @@ components:
                     type: [string, "null"]
                     minLength: 1
                     default: null
-                    description: Source path; null uses src/durable-objects.ts. Maximum 1024 UTF-8 bytes.
+                    description: Source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
                 secretRefs:
                     type: array
                     maxItems: 16
@@ -602,6 +602,15 @@ components:
                         - { type: "null" }
                     default: null
                     description: Optional; generated for hosted deployments. Maximum 4 MiB.
+        CurrentDeployment:
+            type: object
+            additionalProperties: false
+            required: [imageRef, workingDirectory, actorEntrypoint, secretRefs]
+            properties:
+                imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
+                workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
+                actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }
+                secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
         PublicActorContract:
             type: object
             additionalProperties: false
@@ -672,15 +681,19 @@ components:
             type: object
             additionalProperties: false
             properties:
-                homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
+                homeRegion: { $ref: "#/components/schemas/HomeRegion" }
         FindWebSocketRequest:
             type: object
             additionalProperties: false
             required: [metadata]
             properties:
-                homeRegion: { type: [string, "null"], description: Region for new actors; cannot change an existing actor's region. }
+                homeRegion: { $ref: "#/components/schemas/HomeRegion" }
                 metadata: { description: Required connection metadata; may be null. Maximum 64 KiB of JSON. }
                 authorizationLifetimeMs: { type: integer, minimum: 1000, maximum: 86400000, default: 900000 }
+        HomeRegion:
+            type: [string, "null"]
+            pattern: "^[a-z0-9._-]{1,64}$"
+            description: Region for new actors; cannot change an existing actor's region. Omit or use null for automatic placement.
         ActorTarget:
             type: object
             required: [homeRegion, route, token, ownerEpoch, expiresAtMs]

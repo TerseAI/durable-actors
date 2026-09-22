@@ -4,7 +4,7 @@ The CLI reads `.env` in the current directory. Exported variables take precedenc
 
 ## Application connection
 
-Used by backend clients, `deploy`, `generate --remote`, and `observe`. Local startup also uses the project ID and API key.
+Used by backend clients, `generate --remote`, and `observe`. Local startup also uses the project ID and API key.
 
 | Variable                           | Default                                             | Meaning                                                                                           |
 | ---------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -21,7 +21,7 @@ Used by `dev`.
 | Variable                    | Default                     | Meaning                                                                                                               |
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_PROJECT`    | `.`                         | Actor project directory.                                                                                              |
-| `DURABLE_ACTORS_ENTRYPOINT` | `src/durable-objects.ts`    | Actor source file, relative to the project.                                                                           |
+| `DURABLE_ACTORS_ENTRYPOINT` | `src/actors.ts`             | Actor source file, relative to the project.                                                                           |
 | `DURABLE_ACTORS_PORT`       | `7100`                      | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors` | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                     | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
@@ -29,6 +29,8 @@ Used by `dev`.
 ## Server hosting
 
 The server also requires the API key and a publicly reachable `DURABLE_ACTORS_CONTROL_PLANE_URL` from the connection section.
+
+`durable-actors start` passes `DURABLE_ACTORS_SECRET` to the runtime as `DURABLE_ACTORS_API_KEY`. When launching the native executable or container directly, set `DURABLE_ACTORS_API_KEY` yourself.
 
 | Variable                            | Default                                                 | Meaning                                                                            |
 | ----------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -42,6 +44,10 @@ The server also requires the API key and a publicly reachable `DURABLE_ACTORS_CO
 | `MODAL_TOKEN_ID`                    | Required                                                | Token ID for the Modal workspace containing your images.                           |
 | `MODAL_TOKEN_SECRET`                | Required                                                | Modal token secret.                                                                |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY`    | Required; generated for local development               | Base64-encoded Ed25519 PKCS#8 signing key. Reuse across restarts.                  |
+
+### Storage and protocol upgrade
+
+This breaking release uses `durable_actors_*` PostgreSQL tables, the `durable-actors/v3/` object-storage prefix, and the `durable_actors.v1` gRPC namespace. Use a fresh PostgreSQL schema and local state directory, or migrate existing data explicitly; earlier schemas and stored state are not upgraded automatically. Update the SDK, runtime, and host images together, and restart actor and replica processes because their credential namespaces also changed.
 
 ## Advanced settings
 
@@ -68,10 +74,10 @@ Leave these at their defaults unless you need to change the associated behavior.
 | Variable                                | Default                              | Meaning                                                                                |
 | --------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_JWT_KEY_ID`             | `primary`                            | Signing key identifier.                                                                |
-| `DURABLE_ACTORS_JWT_ISSUER`             | `durable-object-control-plane`       | Token issuer.                                                                          |
-| `DURABLE_ACTORS_AUTHORITY_JWT_AUDIENCE` | `durable-object-authority`           | Server authentication audience.                                                        |
-| `DURABLE_ACTORS_INVOKE_JWT_AUDIENCE`    | `durable-object-invoke`              | Actor-call audience.                                                                   |
-| `DURABLE_ACTORS_SOCKET_JWT_AUDIENCE`    | `durable-object-authority:websocket` | Socket audience for manual hosts; must match the authority audience plus `:websocket`. |
+| `DURABLE_ACTORS_JWT_ISSUER`             | `durable-actors-control-plane`       | Token issuer.                                                                          |
+| `DURABLE_ACTORS_AUTHORITY_JWT_AUDIENCE` | `durable-actors-authority`           | Server authentication audience.                                                        |
+| `DURABLE_ACTORS_INVOKE_JWT_AUDIENCE`    | `durable-actors-invoke`              | Actor-call audience.                                                                   |
+| `DURABLE_ACTORS_SOCKET_JWT_AUDIENCE`    | `durable-actors-authority:websocket` | Socket audience for manual hosts; must match the authority audience plus `:websocket`. |
 | `DURABLE_ACTORS_JWT_MAX_TTL_SECONDS`    | `86400`                              | Positive maximum credential lifetime in seconds.                                       |
 | `DURABLE_ACTORS_SOCKET_EVENT_URL`       | Disabled                             | Incoming-message callback URL; see [OpenAPI](openapi.yaml).                            |
 

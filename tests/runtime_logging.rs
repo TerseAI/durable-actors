@@ -83,15 +83,15 @@ async fn local_request_logs_respect_rust_log() -> Result<()> {
 #[tokio::test]
 async fn service_process_logs_remain_structured() -> Result<()> {
     let output = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
-        .env("DURABLE_OBJECT_PROCESS_ROLE", "invalid")
-        .env_remove("DURABLE_OBJECT_LOG_MODE")
+        .env("DURABLE_ACTORS_PROCESS_ROLE", "invalid")
+        .env_remove("DURABLE_ACTORS_LOG_MODE")
         .env_remove("RUST_LOG")
         .output()
         .await?;
     assert!(!output.status.success());
     let log: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(log["level"], "ERROR");
-    assert_eq!(log["message"], "durable-object process failed");
+    assert_eq!(log["message"], "durable-actors process failed");
     assert!(log["error"].as_str().unwrap().contains("unsupported"));
     Ok(())
 }
@@ -127,8 +127,8 @@ impl LocalRuntime {
             ])
             .arg("--project")
             .arg(project.path())
-            .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
-            .env("DURABLE_OBJECT_API_KEY", "test-key")
+            .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
+            .env("DURABLE_ACTORS_API_KEY", "test-key")
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

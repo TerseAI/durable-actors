@@ -26,7 +26,7 @@ Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Edit **Welcome** from 
 
 ## Save and share documents
 
-[src/durable-objects.ts](src/durable-objects.ts) defines two actors:
+[src/actors.ts](src/actors.ts) defines two actors:
 
 - `Workspace` saves the document list.
 - `Document` merges Yjs updates, saves the merged content, and broadcasts it to connected editors. Each document ID has its own actor.

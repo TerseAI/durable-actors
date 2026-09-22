@@ -29,7 +29,7 @@ Open [localhost:3000](http://127.0.0.1:3000), send a message, and reload after t
 
 ## Save the conversation
 
-[ChatHistory](src/durable-objects.ts) keeps one conversation per actor ID:
+[ChatHistory](src/actors.ts) keeps one conversation per actor ID:
 
 ```ts
 import { Actor, Persisted } from "durable-actors"

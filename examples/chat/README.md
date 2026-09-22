@@ -26,7 +26,7 @@ Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Send a message, then r
 
 ## Define the actor
 
-[ChatRoom](src/durable-objects.ts) saves messages and sends the updated history to everyone in the room:
+[ChatRoom](src/actors.ts) saves messages and sends the updated history to everyone in the room:
 
 ```ts
 import { Actor, Persisted } from "durable-actors"

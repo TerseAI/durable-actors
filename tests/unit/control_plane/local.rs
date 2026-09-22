@@ -17,7 +17,6 @@ fn startup_message_has_clear_hierarchy_and_next_step() {
         message.find("1. Configure your client").unwrap()
             < message.find("2. Generate your client").unwrap()
     );
-    assert!(!message.contains("DURABLE_OBJECT_"));
     assert!(!message.contains("cat --"));
     assert!(!message.contains("API key"));
     assert!(!message.contains("export "));

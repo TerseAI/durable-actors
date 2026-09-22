@@ -10,7 +10,7 @@ async fn reentrant_rpc_sockets_and_recovery_work_end_to_end() -> anyhow::Result<
             .arg("sdk/tests/scripts/reentrant.test.mjs")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .env(
-                "DURABLE_OBJECT_BINARY",
+                "DURABLE_ACTORS_BINARY",
                 env!("CARGO_BIN_EXE_durable-actors"),
             )
             .kill_on_drop(true)

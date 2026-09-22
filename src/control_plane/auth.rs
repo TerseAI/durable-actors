@@ -258,10 +258,10 @@ impl ActorJwtVerifier {
 
 fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, DecodingKey>> {
     let keys: JwkSet = serde_json::from_str(public_keys_json)
-        .context("parse durable-object JWT public keys as a JWK set")?;
+        .context("parse durable-actors JWT public keys as a JWK set")?;
     ensure!(
         !keys.keys.is_empty(),
-        "durable-object JWT public keys must contain at least one key"
+        "durable-actors JWT public keys must contain at least one key"
     );
     keys.keys
         .into_iter()

@@ -8,7 +8,7 @@ import { promisify } from "node:util"
 
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
-import type { DurableObjectsClientOptions } from "../../src/client/remoteClient.js"
+import type { DurableActorsClientOptions } from "../../src/client/remoteClient.js"
 
 const options = { projectId: "default", apiKey: " key ", controlPlaneUrl: "https://CONTROL.example.com:443/" }
 
@@ -77,12 +77,12 @@ test("environment and explicit client settings report the same validation errors
     }
 })
 
-function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEnv {
+function environmentFor(settings: DurableActorsClientOptions): NodeJS.ProcessEnv {
     return {
-        DURABLE_OBJECT_PROJECT_ID: settings.projectId,
-        DURABLE_OBJECT_API_KEY: settings.apiKey,
-        DURABLE_OBJECT_HOME_REGION: settings.homeRegion,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: settings.controlPlaneUrl
+        DURABLE_ACTORS_PROJECT_ID: settings.projectId,
+        DURABLE_ACTORS_API_KEY: settings.apiKey,
+        DURABLE_ACTORS_HOME_REGION: settings.homeRegion,
+        DURABLE_ACTORS_CONTROL_PLANE_URL: settings.controlPlaneUrl
     }
 }
 
@@ -108,6 +108,6 @@ test("clients require explicit credentials even if a discovery file exists", asy
         await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
         assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /shared secret/);
     `
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_OBJECT_")))
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_")))
     await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })
 })

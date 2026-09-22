@@ -18,17 +18,17 @@ test("start launches the configured runtime without a local actor project and pr
     await writeFile(
         executable,
         `#!/usr/bin/env node
-console.log(JSON.stringify({ args: process.argv.slice(2), role: process.env.DURABLE_OBJECT_PROCESS_ROLE }))
+console.log(JSON.stringify({ args: process.argv.slice(2), role: process.env.DURABLE_ACTORS_PROCESS_ROLE }))
 process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
         { mode: 0o755 }
     )
     const env = {
         ...process.env,
-        DURABLE_OBJECT_BINARY: executable,
-        DURABLE_OBJECT_PROJECT_ID: "",
-        DURABLE_OBJECT_PROJECT: path.join(directory, "missing-project"),
-        DURABLE_OBJECT_PROCESS_ROLE: "control_plane"
+        DURABLE_ACTORS_BINARY: executable,
+        DURABLE_ACTORS_PROJECT_ID: "",
+        DURABLE_ACTORS_PROJECT: path.join(directory, "missing-project"),
+        DURABLE_ACTORS_PROCESS_ROLE: "control_plane"
     }
     const { stdout } = await run(process.execPath, [cli, "start"], { cwd: directory, env })
     assert.deepEqual(JSON.parse(stdout), { args: [], role: "control_plane" })
@@ -99,11 +99,11 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     )
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_BINARY: executable,
-        DURABLE_OBJECT_API_KEY: "test-key",
-        DURABLE_OBJECT_PROJECT: project,
-        DURABLE_OBJECT_ENTRYPOINT: "actors.ts"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_BINARY: executable,
+        DURABLE_ACTORS_API_KEY: "test-key",
+        DURABLE_ACTORS_PROJECT: project,
+        DURABLE_ACTORS_ENTRYPOINT: "actors.ts"
     }
     const args = [cli, "dev", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
@@ -119,7 +119,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
     await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
-    const { DURABLE_OBJECT_PROJECT_ID, ...withoutProjectId } = env
+    const { DURABLE_ACTORS_PROJECT_ID, ...withoutProjectId } = env
     const local = await run(process.execPath, args, { cwd: directory, env: withoutProjectId })
     const localArgs = JSON.parse(local.stdout).args
     assert.equal(localArgs[localArgs.indexOf("--project-id") + 1], "local")

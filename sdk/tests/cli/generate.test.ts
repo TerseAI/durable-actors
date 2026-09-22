@@ -12,7 +12,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
-const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "default", DURABLE_OBJECT_API_KEY: "contract-key" }
+const env = { ...process.env, DURABLE_ACTORS_PROJECT_ID: "default", DURABLE_ACTORS_API_KEY: "contract-key" }
 
 test("generate --remote uses .env settings and exported environment overrides", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-local-"))
@@ -36,37 +36,37 @@ test("generate --remote uses .env settings and exported environment overrides", 
     const envFile = path.join(directory, ".env")
     await writeFile(
         envFile,
-        `DURABLE_OBJECT_PROJECT_ID=default\nDURABLE_OBJECT_CONTROL_PLANE_URL=${origin}\nDURABLE_OBJECT_API_KEY=local-key\n`
+        `DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_API_KEY=local-key\n`
     )
     const fileEnv = { ...process.env }
-    for (const key of ["DURABLE_OBJECT_PROJECT_ID", "DURABLE_OBJECT_CONTROL_PLANE_URL", "DURABLE_OBJECT_API_KEY"])
+    for (const key of ["DURABLE_ACTORS_PROJECT_ID", "DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_API_KEY"])
         delete fileEnv[key]
     const localEnv = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "local-key"
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+        DURABLE_ACTORS_API_KEY: "local-key"
     }
     const result = await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
     await writeFile(
         envFile,
-        "DURABLE_OBJECT_PROJECT_ID=wrong\nDURABLE_OBJECT_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_OBJECT_API_KEY=wrong\n"
+        "DURABLE_ACTORS_PROJECT_ID=wrong\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_API_KEY=wrong\n"
     )
     await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: localEnv })
     assert.deepEqual(requests, Array(2).fill("/v1/projects/default/deployment/contract"))
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
-            env: { ...localEnv, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...localEnv, DURABLE_ACTORS_API_KEY: "" }
         }),
         /DURABLE_ACTORS_SECRET/
     )
     assert.equal(requests.length, 2)
 })
 
-test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {
+test("a separate consumer generates identical clients from the deployed contract without local actor source", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const author = path.join(directory, "author")
@@ -93,7 +93,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
         })
     )
     await writeFile(
-        path.join(author, "src/durable-objects.ts"),
+        path.join(author, "src/actors.ts"),
         `
         import { Actor } from "durable-actors"
         import type { Message } from "private-data"
@@ -108,7 +108,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await writeFile(path.join(author, "generated/contract-source.json"), "old generated provenance")
     await run(process.execPath, [cli, "generate"], {
         cwd: author,
-        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: "http://unreachable.invalid" }
+        env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid" }
     })
     const local = path.join(author, "generated")
     const files = await readdir(local)
@@ -117,7 +117,6 @@ test("deploy publishes the inferred API directly and a separate consumer generat
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
     assert.ok(files.every(file => file.endsWith(".ts")))
-    let deployment: any
     const requests: string[] = []
     const publication = {
         contractHash: `sha256:${"a".repeat(64)}`,
@@ -128,7 +127,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
                     [
                         path.join(sdk, "dist/compiler/deployment-build.js"),
                         author,
-                        "src/durable-objects.ts",
+                        "src/actors.ts",
                         path.join(author, "build")
                     ],
                     { env }
@@ -136,16 +135,8 @@ test("deploy publishes the inferred API directly and a separate consumer generat
             ).stdout
         )
     }
-    const server = createServer(async (request, response) => {
+    const server = createServer((request, response) => {
         assert.equal(request.headers.authorization, "Bearer contract-key")
-        if (request.method === "PUT") {
-            assert.equal(request.url, "/v1/projects/default/deployment")
-            const chunks: Buffer[] = []
-            for await (const chunk of request) chunks.push(Buffer.from(chunk))
-            deployment = JSON.parse(Buffer.concat(chunks).toString())
-            response.end(JSON.stringify({ changed: true }))
-            return
-        }
         assert.equal(request.method, "GET")
         requests.push(request.url!)
         response.setHeader("content-type", "application/json")
@@ -155,27 +146,14 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const beforeDeploy = await readdir(author)
-    const deployed = await run(process.execPath, [cli, "deploy", "--image", "im-chat", "--secret", "chat-secrets"], {
-        cwd: author,
-        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
-    })
-    assert.match(deployed.stdout, /Deployed actors/)
-    assert.deepEqual(await readdir(author), beforeDeploy)
     const { contract } = publication
-    assert.deepEqual(deployment, {
-        imageRef: "im-chat",
-        workingDirectory: "/customer",
-        actorEntrypoint: "src/durable-objects.ts",
-        secretRefs: ["chat-secrets"]
-    })
     assert.equal(contract.version, 1)
     assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
     await rm(author, { recursive: true })
     const result = await run(process.execPath, [cli, "generate", "--remote"], {
         cwd: directory,
-        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+        env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin }
     })
     assert.deepEqual(requests, ["/v1/projects/default/deployment/contract"])
     for (const [file, content] of expected)
@@ -185,7 +163,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
 
     await run(process.execPath, [cli, "generate", "--remote", "--out-dir", "active"], {
         cwd: directory,
-        env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+        env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin }
     })
     assert.equal(requests[1], "/v1/projects/default/deployment/contract")
 })
@@ -214,14 +192,14 @@ test("generate rejects remote errors and invalid inputs before changing output",
     const generate = (...args: string[]) =>
         run(process.execPath, [cli, "generate", "--remote", ...args], {
             cwd: directory,
-            env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin }
+            env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin }
         })
     await assert.rejects(generate("actors.ts"), /entrypoint/)
     await assert.rejects(generate("--config", "tsconfig.json"), /config/)
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
-            env: { ...env, DURABLE_OBJECT_CONTROL_PLANE_URL: origin, DURABLE_OBJECT_API_KEY: "" }
+            env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin, DURABLE_ACTORS_API_KEY: "" }
         }),
         /DURABLE_ACTORS_SECRET/
     )

@@ -4,8 +4,8 @@ import type { UIMessage } from "ai"
 import express from "express"
 import { createServer } from "vite"
 
-import { ChatHistory } from "./durable-objects.js"
-import type { ChatMessage } from "./durable-objects.js"
+import { ChatHistory } from "./actors.js"
+import type { ChatMessage } from "./actors.js"
 
 const app = express()
 app.use(express.json())
@@ -37,7 +37,7 @@ app.post("/api/chat", async (request, response) => {
 })
 
 const vite = await createServer({
-    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.little-actors/**", "**/.git/**"] } }
+    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
 })
 app.use(vite.middlewares)
 app.listen(3000, "127.0.0.1", () => console.log("AI chat: http://127.0.0.1:3000"))

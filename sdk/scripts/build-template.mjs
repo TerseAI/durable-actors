@@ -19,10 +19,7 @@ async function buildTemplate(template) {
     for (const file of files)
         await cp(new URL(file, source), new URL(file, destination), {
             recursive: true,
-            filter: file =>
-                !["generated", "node_modules", ".durable-actors", ".little-actors", "dist"].includes(
-                    path.basename(file)
-                )
+            filter: file => !["generated", "node_modules", ".durable-actors", "dist"].includes(path.basename(file))
         })
     // npm excludes .gitignore; init restores its name after copying the template.
     await copyFile(new URL(".gitignore", source), new URL("gitignore", destination))

@@ -2,7 +2,7 @@
 import { validateActorComponent } from "./actor/identity.js"
 import { actorClient } from "./client/client.js"
 import type { ActorClientTransport } from "./client/client.js"
-import type { DurableObjectsClientOptions } from "./client/remoteClient.js"
+import type { DurableActorsClientOptions } from "./client/remoteClient.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
 
 type ActorRpcTransport = Pick<ActorClientTransport, "invoke">
@@ -54,7 +54,7 @@ export { createActorStub }
 export type { ActorRpcMethod, ActorRpcTransport }
 
 /** Connects backend clients using explicit settings. Keep the API key on the server. */
-export function createActorTransport(options: DurableObjectsClientOptions): ActorRpcTransport {
+export function createActorTransport(options: DurableActorsClientOptions): ActorRpcTransport {
     let client: Promise<ActorRpcTransport> | undefined
     return {
         async invoke(...args) {
@@ -65,4 +65,4 @@ export function createActorTransport(options: DurableObjectsClientOptions): Acto
         }
     }
 }
-export type { DurableObjectsClientOptions }
+export type { DurableActorsClientOptions }

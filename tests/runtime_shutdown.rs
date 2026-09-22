@@ -41,7 +41,7 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
         .arg("default")
         .arg("--project")
         .arg(project.path())
-        .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
+        .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
         .env("RUST_LOG", "info")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -137,8 +137,8 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before);
         assert.equal(await client.invoke('Counter', 'one', 'increment', []), before + 1);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
-        const origin = process.env.DURABLE_OBJECT_CONTROL_PLANE_URL;
-        const apiKey = process.env.DURABLE_OBJECT_API_KEY;
+        const origin = process.env.DURABLE_ACTORS_CONTROL_PLANE_URL;
+        const apiKey = process.env.DURABLE_ACTORS_API_KEY;
         const workingDirectory = (await import('node:path')).dirname((await import('node:url')).fileURLToPath(import.meta.url));
         assert.equal(await client.invoke('Counter', 'one', 'label', []), 'before');
         const fs = await import('node:fs/promises');
@@ -186,14 +186,14 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             .args(["dev", "--sdk-host"])
             .arg(sdk.join("dist/host.js"))
             .current_dir(shell_directory.path())
-            .env("DURABLE_OBJECT_PROJECT", project.path())
-            .env("DURABLE_OBJECT_ENTRYPOINT", "actors.ts")
-            .env("DURABLE_OBJECT_PORT", "0")
-            .env("DURABLE_OBJECT_DATA_DIR", "state")
-            .env("DURABLE_OBJECT_STORAGE", "local")
-            .env("DURABLE_OBJECT_PROJECT_ID", "default")
-            .env("DURABLE_OBJECT_API_KEY", "local-test-key")
-            .env("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1")
+            .env("DURABLE_ACTORS_PROJECT", project.path())
+            .env("DURABLE_ACTORS_ENTRYPOINT", "actors.ts")
+            .env("DURABLE_ACTORS_PORT", "0")
+            .env("DURABLE_ACTORS_DATA_DIR", "state")
+            .env("DURABLE_ACTORS_STORAGE", "local")
+            .env("DURABLE_ACTORS_PROJECT_ID", "default")
+            .env("DURABLE_ACTORS_API_KEY", "local-test-key")
+            .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -207,10 +207,10 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             Command::new("node")
                 .arg(&script)
                 .arg(before.to_string())
-                .env("DURABLE_OBJECT_CONTROL_PLANE_URL", origin)
-                .env("DURABLE_OBJECT_PROJECT_ID", "default")
-                .env("DURABLE_OBJECT_API_KEY", "local-test-key")
-                .env("DURABLE_OBJECT_TELEMETRY", "0")
+                .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
+                .env("DURABLE_ACTORS_PROJECT_ID", "default")
+                .env("DURABLE_ACTORS_API_KEY", "local-test-key")
+                .env("DURABLE_ACTORS_TELEMETRY", "0")
                 .kill_on_drop(true)
                 .output(),
         )
@@ -228,7 +228,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
     assert!(
         shell_directory
             .path()
-            .join("state/objects/little-actors/v3")
+            .join("state/objects/durable-actors/v3")
             .is_dir()
     );
     Ok(())

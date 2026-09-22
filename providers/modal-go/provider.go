@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	appName      = "durable-object-hosts"
-	metadataFile = "/tmp/durable-object-host.json"
-	readyFile    = "/tmp/durable-object-ready"
+	appName      = "durable-actors-hosts"
+	metadataFile = "/tmp/durable-actors-host.json"
+	readyFile    = "/tmp/durable-actors-ready"
 )
 
 type modalAPI interface {

@@ -811,7 +811,7 @@ impl HostProvisioner for SandboxHostProvisioner {
                 actor_entrypoint: input
                     .actor_entrypoint
                     .clone()
-                    .unwrap_or_else(|| "src/durable-objects.ts".into()),
+                    .unwrap_or_else(|| "src/actors.ts".into()),
                 canonical_region: region.into(),
             })
             .await?;

@@ -65,7 +65,7 @@ const developmentEnvironment = z.object({
     DURABLE_ACTORS_PROJECT_ID: projectIdSchema.default("local"),
     DURABLE_ACTORS_SECRET: z.string().optional(),
     DURABLE_ACTORS_PROJECT: z.string().min(1).default("."),
-    DURABLE_ACTORS_ENTRYPOINT: z.string().min(1).default("src/durable-objects.ts"),
+    DURABLE_ACTORS_ENTRYPOINT: z.string().min(1).default("src/actors.ts"),
     DURABLE_ACTORS_DATA_DIR: z.string().min(1).optional(),
     DURABLE_ACTORS_STORAGE: z.enum(["local", "gcs"]).default("local")
 })

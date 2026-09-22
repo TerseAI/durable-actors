@@ -10,7 +10,7 @@ fn actor_idle_timeout_uses_bounded_seconds() -> Result<()> {
     assert_eq!(actor_idle_timeout_seconds(&mut |_| None)?, 60);
     for value in ["1", "10", "86400"] {
         let parsed = actor_idle_timeout_seconds(&mut |name| {
-            assert_eq!(name, "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS");
+            assert_eq!(name, "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS");
             Some(value.into())
         })?;
         assert_eq!(parsed, value.parse::<u64>()?);
@@ -46,19 +46,19 @@ async fn server_carries_websocket_upgrades() -> Result<()> {
 #[test]
 fn parses_the_minimal_storage_configuration() -> Result<()> {
     let values = HashMap::from([
-        ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-        ("DURABLE_OBJECT_API_KEY", "api-key"),
-        ("DURABLE_OBJECT_BUCKET", "actor-state-test"),
-        ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_OBJECT_RUNTIME_IMAGE", "im-runtime"),
+        ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
+        ("DURABLE_ACTORS_API_KEY", "api-key"),
+        ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
+        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
         (
-            "DURABLE_OBJECT_CONTROL_PLANE_URL",
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
             "https://objects.example.com",
         ),
         ("MODAL_TOKEN_ID", "modal-token-id"),
         ("MODAL_TOKEN_SECRET", "modal-token-secret"),
         (
-            "DURABLE_OBJECT_POSTGRES_URL",
+            "DURABLE_ACTORS_POSTGRES_URL",
             "postgresql://localhost/actors",
         ),
     ]);
@@ -73,10 +73,10 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 #[test]
 fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
     let mut values = HashMap::from([
-        ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_OBJECT_RUNTIME_IMAGE", "im-runtime"),
+        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
         (
-            "DURABLE_OBJECT_CONTROL_PLANE_URL",
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
             "https://control.example",
         ),
         ("MODAL_TOKEN_ID", "id"),
@@ -92,14 +92,14 @@ fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()>
     assert!(
         !configure(&values)?
             .environment
-            .contains_key("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK")
+            .contains_key("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK")
     );
-    values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "true");
+    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "true");
     assert_eq!(
-        configure(&values)?.environment["DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"],
+        configure(&values)?.environment["DURABLE_ACTORS_MODAL_MUTABLE_NETWORK"],
         "true"
     );
-    values.insert("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK", "yes");
+    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "yes");
     assert!(configure(&values).is_err());
     Ok(())
 }
@@ -107,14 +107,14 @@ fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()>
 #[test]
 fn configures_socket_events_without_a_separate_key() -> Result<()> {
     let mut complete = HashMap::from([(
-        "DURABLE_OBJECT_SOCKET_EVENT_URL",
+        "DURABLE_ACTORS_SOCKET_EVENT_URL",
         "https://api.example.com/events",
     )]);
     let sink =
         socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
             .context("socket event sink was not configured")?;
     assert_eq!(sink.url, "https://api.example.com/events");
-    complete.remove("DURABLE_OBJECT_SOCKET_EVENT_URL");
+    complete.remove("DURABLE_ACTORS_SOCKET_EVENT_URL");
     assert!(
         socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
             .is_none()

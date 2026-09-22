@@ -65,7 +65,7 @@ impl SparePool {
 
     pub async fn reserve_host(&self, session: &str, host: &str, config_key: &str) -> Result<()> {
         let name = format!("do-actor-{session}");
-        self.store.0.execute("INSERT INTO durable_object_spares (name, pool_key, status, host_id, host_config_key, expires_at) VALUES ($1, '', 'claimed', $2, $3, clock_timestamp() + interval '120 seconds')", &[&name, &host, &config_key]).await?;
+        self.store.0.execute("INSERT INTO durable_actors_spares (name, pool_key, status, host_id, host_config_key, expires_at) VALUES ($1, '', 'claimed', $2, $3, clock_timestamp() + interval '120 seconds')", &[&name, &host, &config_key]).await?;
         Ok(())
     }
 
@@ -76,7 +76,7 @@ impl SparePool {
                     .store
                     .0
                     .query_opt(
-                        "SELECT status FROM durable_object_spares WHERE host_id = $1",
+                        "SELECT status FROM durable_actors_spares WHERE host_id = $1",
                         &[&host],
                     )
                     .await?;
@@ -93,7 +93,7 @@ impl SparePool {
 
     pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
         let updated = self.store.0.execute(
-            "UPDATE durable_object_spares SET status = 'active', handle = $2, expires_at = created_at + interval '24 hours' \
+            "UPDATE durable_actors_spares SET status = 'active', handle = $2, expires_at = created_at + interval '24 hours' \
              WHERE name = $1 AND host_id = $3 AND host_config_key = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
             &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
         ).await?;
@@ -105,7 +105,7 @@ impl SparePool {
         self.store
             .0
             .query_opt(
-                "SELECT handle FROM durable_object_spares WHERE host_id = $1 AND status = 'active'",
+                "SELECT handle FROM durable_actors_spares WHERE host_id = $1 AND status = 'active'",
                 &[&host],
             )
             .await?
@@ -117,7 +117,7 @@ impl SparePool {
         self.store
             .0
             .execute(
-                "UPDATE durable_object_spares SET status = 'retiring' WHERE host_id = $1",
+                "UPDATE durable_actors_spares SET status = 'retiring' WHERE host_id = $1",
                 &[&host],
             )
             .await?;
@@ -127,7 +127,7 @@ impl SparePool {
 
     pub async fn retire_config(&self, config_key: &str) -> Result<Vec<String>> {
         let client = self.store.0.connection().await?;
-        let rows = client.query("UPDATE durable_object_spares SET status = 'retiring' WHERE host_config_key = $1 RETURNING handle", &[&config_key]).await?;
+        let rows = client.query("UPDATE durable_actors_spares SET status = 'retiring' WHERE host_config_key = $1 RETURNING handle", &[&config_key]).await?;
         let mut ids = Vec::new();
         for row in rows {
             if let Some(handle) = row.get::<_, Option<String>>(0) {
@@ -212,7 +212,7 @@ impl SparePool {
                 self.store
                     .0
                     .execute(
-                        "UPDATE durable_object_spares SET status = 'retiring' WHERE name = $1",
+                        "UPDATE durable_actors_spares SET status = 'retiring' WHERE name = $1",
                         &[&name],
                     )
                     .await?;
@@ -250,7 +250,7 @@ impl SparePool {
             self.store
                 .0
                 .execute(
-                    "DELETE FROM durable_object_spares WHERE name = $1 AND status = 'retiring'",
+                    "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
                     &[&handle.name],
                 )
                 .await?;
@@ -280,20 +280,20 @@ impl PoolStore {
             )
             .await?;
         let count: i64 = transaction.query_one(
-            "SELECT count(*) FROM durable_object_spares WHERE pool_key = $1 AND status IN ('ready', 'starting') AND expires_at > clock_timestamp()", &[&key],
+            "SELECT count(*) FROM durable_actors_spares WHERE pool_key = $1 AND status IN ('ready', 'starting') AND expires_at > clock_timestamp()", &[&key],
         ).await?.get(0);
         if count >= i64::from(target) {
             return Ok(None);
         }
         let name = format!("do-spare-{}", uuid::Uuid::new_v4().simple());
-        transaction.execute("INSERT INTO durable_object_spares (name, pool_key, status, expires_at, kind) VALUES ($1, $2, 'starting', clock_timestamp() + interval '120 seconds', $3)", &[&name, &key, &self.1.as_str()]).await?;
+        transaction.execute("INSERT INTO durable_actors_spares (name, pool_key, status, expires_at, kind) VALUES ($1, $2, 'starting', clock_timestamp() + interval '120 seconds', $3)", &[&name, &key, &self.1.as_str()]).await?;
         transaction.commit().await?;
         Ok(Some(name))
     }
 
     async fn publish(&self, key: &str, handle: &SpareHandle, ttl: u32) -> Result<bool> {
         Ok(self.0.execute(
-            "UPDATE durable_object_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \
+            "UPDATE durable_actors_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \
              WHERE name = $1 AND pool_key = $2 AND status = 'starting' AND expires_at > clock_timestamp()",
             &[&handle.name, &key, &serde_json::to_string(handle)?, &f64::from(ttl)],
         ).await? == 1)
@@ -301,22 +301,22 @@ impl PoolStore {
 
     async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
         self.0.query_opt(
-            "UPDATE durable_object_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
-             WHERE name = (SELECT name FROM durable_object_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
+            "UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
+             WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
             &[&key, &host, &config_key],
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
     }
 
     async fn retire_unwanted(&self, keys: &[String], target: u32) -> Result<()> {
         self.0.execute(
-            "UPDATE durable_object_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND (kind = 'actor' OR status != 'active')) \
+            "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND (kind = 'actor' OR status != 'active')) \
              OR (status IN ('ready', 'starting') AND (NOT (pool_key = ANY($1)) OR $2::bigint = 0)))",
             &[&keys, &(target as i64), &self.1.as_str()],
         ).await?;
         self.0.execute(
-            "UPDATE durable_object_spares SET status = 'retiring' WHERE name IN \
+            "UPDATE durable_actors_spares SET status = 'retiring' WHERE name IN \
              (SELECT name FROM (SELECT name, row_number() OVER (PARTITION BY pool_key ORDER BY created_at) AS n \
-             FROM durable_object_spares WHERE kind = $2 AND status IN ('ready', 'starting')) ranked WHERE n > $1)",
+             FROM durable_actors_spares WHERE kind = $2 AND status IN ('ready', 'starting')) ranked WHERE n > $1)",
             &[&(target as i64), &self.1.as_str()],
         ).await?;
         Ok(())
@@ -326,7 +326,7 @@ impl PoolStore {
         let client = self.0.connection().await?;
         client
             .query(
-                "SELECT name, handle FROM durable_object_spares WHERE status = 'retiring' AND kind = $1",
+                "SELECT name, handle FROM durable_actors_spares WHERE status = 'retiring' AND kind = $1",
                 &[&self.1.as_str()],
             )
             .await?

@@ -12,9 +12,9 @@ test("API-key clients invoke, connect, and broadcast", async () => {
     const requests: string[] = []
     const client = new RemoteActorClient(undefined, {
         environment: {
-            DURABLE_OBJECT_PROJECT_ID: "default",
-            DURABLE_OBJECT_API_KEY: "backend-key",
-            DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
+            DURABLE_ACTORS_PROJECT_ID: "default",
+            DURABLE_ACTORS_API_KEY: "backend-key",
+            DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
         },
         telemetry: () => {},
         fetch: async (url, options) => {

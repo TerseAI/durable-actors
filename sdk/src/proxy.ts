@@ -5,7 +5,7 @@ import { projectActorPath, validateActorComponent, validateProjectId } from "./a
 import { socketMetadata } from "./actor/socketValidation.js"
 import { actorEnvironment } from "./environment.js"
 
-/** Overrides for the backend's DURABLE_OBJECT environment settings. */
+/** Overrides for the backend's DURABLE_ACTORS environment settings. */
 interface SocketProxyOptions {
     readonly projectId?: string
     readonly controlPlaneUrl?: string

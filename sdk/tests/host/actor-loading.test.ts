@@ -13,7 +13,7 @@ import { resolveActorEntrypoint } from "../../src/host/actor-host.js"
 import type { ActorWorkerMessage } from "../../src/host/protocol.js"
 
 test("resolves the conventional built actor entrypoint", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-entrypoint-"))
     const previousDirectory = process.cwd()
     try {
         await mkdir(path.join(root, "dist"))
@@ -28,16 +28,16 @@ test("resolves the conventional built actor entrypoint", async () => {
 })
 
 test("rejects a configured actor entrypoint that does not exist", async () => {
-    await assert.rejects(resolveActorEntrypoint("./missing-durable-objects.ts"), ActorConfigurationError)
+    await assert.rejects(resolveActorEntrypoint("./missing-actors.ts"), ActorConfigurationError)
 })
 
 test("uses the built entrypoint by default even when TypeScript source is present", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-compiled-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-compiled-"))
     const previousDirectory = process.cwd()
     try {
         await mkdir(path.join(root, "src"))
         await mkdir(path.join(root, "dist"))
-        await writeFile(path.join(root, "src/durable-objects.ts"), "export {}\n")
+        await writeFile(path.join(root, "src/actors.ts"), "export {}\n")
         await writeFile(path.join(root, "dist/actors.mjs"), "export {}\n")
         process.chdir(root)
         assert.equal(
@@ -51,7 +51,7 @@ test("uses the built entrypoint by default even when TypeScript source is presen
 })
 
 test("rejects configured JavaScript actor entrypoints", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-javascript-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-javascript-entrypoint-"))
     try {
         const entrypoint = path.join(root, "actors.js")
         await writeFile(entrypoint, "export {}\n")
@@ -62,7 +62,7 @@ test("rejects configured JavaScript actor entrypoints", async () => {
 })
 
 test("rejects an incompatible built actor artifact", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-artifact-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-artifact-"))
     try {
         const entrypoint = path.join(root, "actors.mjs")
         await writeFile(entrypoint, "export const version = 999; export const actors = {}; export const schemas = []")
@@ -73,7 +73,7 @@ test("rejects an incompatible built actor artifact", async () => {
 })
 
 test("loads only actors from an entrypoint with mixed exports", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-mixed-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-mixed-entrypoint-"))
     try {
         const entrypoint = path.join(root, "mixed.mts")
         const sdk = new URL("../../src/index.js", import.meta.url).href
@@ -98,7 +98,7 @@ test("loads only actors from an entrypoint with mixed exports", async () => {
 })
 
 test("rejects invalid actor exports while ignoring unrelated exports", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-invalid-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-invalid-entrypoint-"))
     try {
         const sdk = new URL("../../src/index.js", import.meta.url).href
         for (const [name, declaration, message] of [

@@ -14,13 +14,13 @@ use tracing_subscriber::EnvFilter;
 async fn main() {
     let cli = Cli::parse();
     let development_logs = cli.command.is_some()
-        || std::env::var("DURABLE_OBJECT_LOG_MODE").as_deref() == Ok("development");
+        || std::env::var("DURABLE_ACTORS_LOG_MODE").as_deref() == Ok("development");
     init_logging(development_logs);
     if let Err(error) = run(cli).await {
         if development_logs {
             error!(error = %format!("{error:#}"), "local actor runtime failed");
         } else {
-            error!(error = %format!("{error:#}"), "durable-object process failed");
+            error!(error = %format!("{error:#}"), "durable-actors process failed");
         }
         std::process::exit(1);
     }
@@ -56,7 +56,7 @@ async fn run(cli: Cli) -> Result<()> {
         return serve_local(options, shutdown_signal()).await;
     }
     let shutdown = shutdown_signal();
-    match std::env::var("DURABLE_OBJECT_PROCESS_ROLE")
+    match std::env::var("DURABLE_ACTORS_PROCESS_ROLE")
         .as_deref()
         .unwrap_or("host")
     {
@@ -66,7 +66,7 @@ async fn run(cli: Cli) -> Result<()> {
         "spare" => durable_actors::host::serve_spare(shutdown).await,
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
         "replica" => durable_actors::replication::serve_replica_host(shutdown).await,
-        role => anyhow::bail!("unsupported DURABLE_OBJECT_PROCESS_ROLE {role:?}"),
+        role => anyhow::bail!("unsupported DURABLE_ACTORS_PROCESS_ROLE {role:?}"),
     }
 }
 
@@ -87,7 +87,7 @@ enum Commands {
 }
 
 async fn shutdown_signal() {
-    if std::env::var_os("DURABLE_OBJECT_PARENT_LIFETIME_STDIN").is_none() {
+    if std::env::var_os("DURABLE_ACTORS_PARENT_LIFETIME_STDIN").is_none() {
         wait_for_signal().await;
         info!("shutdown signal received");
         return;

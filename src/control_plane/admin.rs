@@ -305,7 +305,7 @@ impl AdminRegistry for PostgresAdminRegistry {
     async fn remove_deployment(&self, project_id: &str) -> Result<()> {
         self.database
             .execute(
-                "DELETE FROM durable_object_deployment WHERE project_id = $1",
+                "DELETE FROM durable_actors_deployment WHERE project_id = $1",
                 &[&project_id],
             )
             .await?;
@@ -321,7 +321,7 @@ impl AdminRegistry for PostgresAdminRegistry {
         let mut client = self.database.connection().await?;
         let transaction = client.transaction().await?;
         let changed = transaction.execute(
-            "INSERT INTO durable_object_deployment
+            "INSERT INTO durable_actors_deployment
                 (project_id, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (project_id) DO UPDATE SET
@@ -329,9 +329,9 @@ impl AdminRegistry for PostgresAdminRegistry {
                 actor_entrypoint = EXCLUDED.actor_entrypoint, secret_refs = EXCLUDED.secret_refs,
                 code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json,
                 updated_at = clock_timestamp()
-             WHERE (durable_object_deployment.image_ref, durable_object_deployment.working_directory,
-                    durable_object_deployment.actor_entrypoint, durable_object_deployment.secret_refs,
-                    durable_object_deployment.code_snapshot, durable_object_deployment.source_json)
+             WHERE (durable_actors_deployment.image_ref, durable_actors_deployment.working_directory,
+                    durable_actors_deployment.actor_entrypoint, durable_actors_deployment.secret_refs,
+                    durable_actors_deployment.code_snapshot, durable_actors_deployment.source_json)
                 IS DISTINCT FROM (EXCLUDED.image_ref, EXCLUDED.working_directory, EXCLUDED.actor_entrypoint,
                                   EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json)",
             &[&spec.project_id, &spec.image_ref, &spec.working_directory, &spec.actor_entrypoint,
@@ -344,7 +344,7 @@ impl AdminRegistry for PostgresAdminRegistry {
 
     async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>> {
         let row = self.database.query_opt(
-            "SELECT contract_hash, contract_json FROM durable_object_contracts WHERE project_id = $1",
+            "SELECT contract_hash, contract_json FROM durable_actors_contracts WHERE project_id = $1",
             &[&project_id]
         ).await?;
         row.map(|row| {
@@ -358,7 +358,7 @@ impl AdminRegistry for PostgresAdminRegistry {
 
     async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
         self.database.connection().await?.query(
-            "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_object_deployment",
+            "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_actors_deployment",
             &[],
         ).await.context("load PostgreSQL host launch specs")?
             .iter().map(launch_spec_from_row).collect()
@@ -369,7 +369,7 @@ impl AdminRegistry for PostgresAdminRegistry {
             .database
             .query_opt(
                 "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id \
-                 FROM durable_object_deployment WHERE project_id = $1",
+                 FROM durable_actors_deployment WHERE project_id = $1",
                 &[&project_id],
             )
             .await
@@ -386,12 +386,12 @@ async fn publish_contract(
 ) -> Result<bool> {
     let updated = match contract {
         Some(contract) => transaction.execute(
-            "INSERT INTO durable_object_contracts (project_id, contract_hash, contract_json) VALUES ($1, $2, $3)
+            "INSERT INTO durable_actors_contracts (project_id, contract_hash, contract_json) VALUES ($1, $2, $3)
              ON CONFLICT (project_id) DO UPDATE SET contract_hash = EXCLUDED.contract_hash, contract_json = EXCLUDED.contract_json
-             WHERE durable_object_contracts.contract_hash IS DISTINCT FROM EXCLUDED.contract_hash",
+             WHERE durable_actors_contracts.contract_hash IS DISTINCT FROM EXCLUDED.contract_hash",
             &[&project_id, &contract.hash(), &serde_json::to_string(contract.document())?]
         ).await?,
-        None => transaction.execute("DELETE FROM durable_object_contracts WHERE project_id = $1", &[&project_id]).await?,
+        None => transaction.execute("DELETE FROM durable_actors_contracts WHERE project_id = $1", &[&project_id]).await?,
     };
     Ok(updated > 0)
 }

@@ -7,7 +7,7 @@ pnpm install
 pnpm exec durable-actors dev
 ```
 
-Define your actors in `src/durable-objects.ts`. The starter contains a counter with persisted state and `read()` and `increment()` methods. Each counter ID has its own saved value.
+Define your actors in `src/actors.ts`. The starter contains a counter with persisted state and `read()` and `increment()` methods. Each counter ID has its own saved value.
 
 `durable-actors dev` watches your actor source and stores local state in `.durable-actors/`. It defaults to project ID `local`; choose another with `DURABLE_ACTORS_PROJECT_ID=my-project pnpm exec durable-actors dev`. If the CLI is installed globally, you can run `durable-actors dev` directly.
 
@@ -30,4 +30,4 @@ console.log(await counter.increment())
 
 Start your backend with that `.env` file loaded. Update its secret after restarting the actor server. If you change the actor server's URL or port, also set `DURABLE_ACTORS_CONTROL_PLANE_URL` in the backend environment. After changing actor method signatures, rerun the printed generate command in your application.
 
-Use `pnpm check` to check types. After publishing your actor source image and configuring the server connection, run `pnpm exec durable-actors deploy --image im-YOUR_IMAGE_ID`. The server builds and deploys your actors.
+Use `pnpm check` to check types. Production deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.yaml).

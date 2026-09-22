@@ -59,13 +59,13 @@ jobs:
             postgres:
                 image: postgres:16
                 env:
-                    POSTGRES_DB: durable_objects_test
+                    POSTGRES_DB: durable_actors_test
                     POSTGRES_PASSWORD: postgres
                     POSTGRES_USER: postgres
                 ports:
                     - 5432:5432
                 options: >-
-                    --health-cmd "pg_isready -U postgres -d durable_objects_test"
+                    --health-cmd "pg_isready -U postgres -d durable_actors_test"
                     --health-interval 5s
                     --health-timeout 5s
                     --health-retries 10
@@ -88,7 +88,7 @@ jobs:
 
             - name: Run tests
               env:
-                  DURABLE_OBJECT_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_objects_test?sslmode=disable
+                  DURABLE_ACTORS_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_actors_test?sslmode=disable
               run: cargo test --locked --no-fail-fast
 
             - name: Verify crate package
@@ -220,10 +220,10 @@ jobs:
             - run: pnpm install --frozen-lockfile
             - name: Check the packaged SDK and native bundle
               env:
-                  DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
+                  DURABLE_ACTORS_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
               run: |
                   node --test tests/scripts/build-runtime.test.mjs
-                  pnpm --dir examples/chat add --ignore-scripts "$DURABLE_OBJECT_TEST_PACKAGE"
+                  pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
                   pnpm --dir examples/chat exec durable-actors generate
                   pnpm --dir examples/chat build
             - name: Upload native bundles and checksums

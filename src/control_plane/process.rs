@@ -11,9 +11,9 @@ use crate::{
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
-const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
-const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
-const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
+const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
+const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
+const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 const DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -67,10 +67,10 @@ pub async fn serve_control_plane(
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
     let routes = control_plane_routes(config, stop).await?;
-    info!(bind = %bind, "durable-object control plane is ready");
+    info!(bind = %bind, "durable-actors control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
-        .context("bind durable-object control plane")?;
+        .context("bind durable-actors control plane")?;
     serve_routes(listener, routes, shutdown).await
 }
 
@@ -82,7 +82,7 @@ async fn serve_routes(
     axum::serve(listener, routes.into_axum_router())
         .with_graceful_shutdown(shutdown)
         .await
-        .context("serve durable-object control plane")
+        .context("serve durable-actors control plane")
 }
 
 async fn control_plane_routes(
@@ -200,44 +200,44 @@ fn sandbox_provisioner(
 
 impl ControlPlaneProcessConfig {
     fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
-        let bind = get("DURABLE_OBJECT_CONTROL_PLANE_BIND")
+        let bind = get("DURABLE_ACTORS_CONTROL_PLANE_BIND")
             .unwrap_or_else(|| "127.0.0.1:7100".into())
             .parse()
-            .context("DURABLE_OBJECT_CONTROL_PLANE_BIND must be a socket address")?;
-        let jwt_signing_key = required(&mut get, "DURABLE_OBJECT_JWT_SIGNING_KEY")?;
-        let jwt_key_id = get("DURABLE_OBJECT_JWT_KEY_ID").unwrap_or_else(|| "primary".into());
+            .context("DURABLE_ACTORS_CONTROL_PLANE_BIND must be a socket address")?;
+        let jwt_signing_key = required(&mut get, "DURABLE_ACTORS_JWT_SIGNING_KEY")?;
+        let jwt_key_id = get("DURABLE_ACTORS_JWT_KEY_ID").unwrap_or_else(|| "primary".into());
         let jwt_issuer =
-            get("DURABLE_OBJECT_JWT_ISSUER").unwrap_or_else(|| DEFAULT_JWT_ISSUER.into());
-        let authority_audience = get("DURABLE_OBJECT_AUTHORITY_JWT_AUDIENCE")
+            get("DURABLE_ACTORS_JWT_ISSUER").unwrap_or_else(|| DEFAULT_JWT_ISSUER.into());
+        let authority_audience = get("DURABLE_ACTORS_AUTHORITY_JWT_AUDIENCE")
             .unwrap_or_else(|| DEFAULT_AUTHORITY_AUDIENCE.into());
-        let invocation_audience = get("DURABLE_OBJECT_INVOKE_JWT_AUDIENCE")
+        let invocation_audience = get("DURABLE_ACTORS_INVOKE_JWT_AUDIENCE")
             .unwrap_or_else(|| DEFAULT_INVOCATION_AUDIENCE.into());
         let jwt_max_lifetime = Duration::from_secs(
-            get("DURABLE_OBJECT_JWT_MAX_TTL_SECONDS")
+            get("DURABLE_ACTORS_JWT_MAX_TTL_SECONDS")
                 .map(|value| value.parse())
                 .transpose()
-                .context("DURABLE_OBJECT_JWT_MAX_TTL_SECONDS must be an integer")?
+                .context("DURABLE_ACTORS_JWT_MAX_TTL_SECONDS must be an integer")?
                 .unwrap_or(DEFAULT_JWT_TTL_SECONDS),
         );
         ensure!(
             !jwt_max_lifetime.is_zero(),
-            "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS must be positive"
+            "DURABLE_ACTORS_JWT_MAX_TTL_SECONDS must be positive"
         );
-        let api_key = required(&mut get, "DURABLE_OBJECT_API_KEY")?;
+        let api_key = required(&mut get, "DURABLE_ACTORS_API_KEY")?;
         ensure!(
             api_key.trim() == api_key,
-            "DURABLE_OBJECT_API_KEY has surrounding whitespace"
+            "DURABLE_ACTORS_API_KEY has surrounding whitespace"
         );
-        let bucket = required(&mut get, "DURABLE_OBJECT_BUCKET")?;
+        let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
         let replica_regions = crate::replication::replica_regions(&mut get)?;
-        let region = get("DURABLE_OBJECT_REGION");
+        let region = get("DURABLE_ACTORS_REGION");
         if let Some(region) = &region {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
             replica_regions,
-            postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
+            postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             bucket,
         };
         let sandbox_provider =
@@ -263,10 +263,10 @@ impl ControlPlaneProcessConfig {
 fn socket_event_sink_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketEventSinkConfig>> {
-    get("DURABLE_OBJECT_SOCKET_EVENT_URL")
+    get("DURABLE_ACTORS_SOCKET_EVENT_URL")
         .map(|url| {
             Ok(SocketEventSinkConfig {
-                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_EVENT_URL")?,
+                url: validated_http_url(&url, "DURABLE_ACTORS_SOCKET_EVENT_URL")?,
             })
         })
         .transpose()
@@ -277,7 +277,7 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let provider_name = required(get, "DURABLE_OBJECT_SANDBOX_PROVIDER")?;
+    let provider_name = required(get, "DURABLE_ACTORS_SANDBOX_PROVIDER")?;
     ensure!(
         provider_name == "modal",
         "unsupported sandbox provider {provider_name:?}"
@@ -292,21 +292,21 @@ fn sandbox_provider_config(
             provider_credential(get, "MODAL_TOKEN_SECRET")?,
         ),
     ]);
-    if let Some(value) = get("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK") {
+    if let Some(value) = get("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK") {
         let enabled: bool = value
             .parse()
-            .context("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK must be true or false")?;
+            .context("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK must be true or false")?;
         environment.insert(
-            "DURABLE_OBJECT_MODAL_MUTABLE_NETWORK".into(),
+            "DURABLE_ACTORS_MODAL_MUTABLE_NETWORK".into(),
             enabled.to_string(),
         );
     }
     let control_plane_url = validated_http_url(
-        &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
-        "DURABLE_OBJECT_CONTROL_PLANE_URL",
+        &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
+        "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
-    let idle = pool_number(get, "DURABLE_OBJECT_SPARE_IDLE", 5, 0, 32)?;
-    let regions = get("DURABLE_OBJECT_SPARE_REGIONS")
+    let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 5, 0, 32)?;
+    let regions = get("DURABLE_ACTORS_SPARE_REGIONS")
         .unwrap_or_else(|| "north-america-east".into())
         .split(',')
         .map(|region| region.trim().to_owned())
@@ -316,25 +316,25 @@ fn sandbox_provider_config(
     }
     Ok(SandboxProviderConfig {
         runtime_image: {
-            let image = required(get, "DURABLE_OBJECT_RUNTIME_IMAGE")?;
+            let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
             ensure!(
                 image.starts_with("im-") && image.len() > 3 && image.len() <= 255,
-                "DURABLE_OBJECT_RUNTIME_IMAGE must be a published Modal runtime image ID"
+                "DURABLE_ACTORS_RUNTIME_IMAGE must be a published Modal runtime image ID"
             );
             image
         },
         pool: crate::sandbox::pool::PoolConfig {
             kind: crate::sandbox::SpareKind::Actor,
             idle,
-            idle_ttl_seconds: pool_number(get, "DURABLE_OBJECT_SPARE_TTL_SECONDS", 600, 30, 3600)?,
+            idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_OBJECT_HOST_CPU_MILLIS", 1000, 100, 64000)?,
-                memory_mib: pool_number(get, "DURABLE_OBJECT_HOST_MEMORY_MIB", 1024, 128, 262144)?,
+                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 1000, 100, 64000)?,
+                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 1024, 128, 262144)?,
             },
         },
         provider_name,
-        command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
+        command: get("DURABLE_ACTORS_SANDBOX_COMMAND")
             .unwrap_or_else(|| "durable-actors-modal-go".into()),
         environment,
         runtime: HostSandboxRuntimeConfig {
@@ -344,7 +344,7 @@ fn sandbox_provider_config(
             actor_idle_timeout_seconds: actor_idle_timeout_seconds(get)?,
             host_idle_timeout_ms: idle_timeout(
                 get,
-                "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
+                "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
                 DEFAULT_HOST_IDLE_TIMEOUT_MS,
                 MAX_IDLE_TIMEOUT_MS,
             )?,
@@ -397,7 +397,7 @@ pub(crate) fn actor_idle_timeout_seconds(
 ) -> Result<u64> {
     idle_timeout(
         get,
-        "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS",
+        "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS",
         DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS,
         86_400,
     )

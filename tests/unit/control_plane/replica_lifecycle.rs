@@ -169,7 +169,7 @@ async fn repair_survives_controller_restart_and_cleanup_waits_for_membership_swi
         assert!(restarted.store.retire(&scope.identity()).await.is_err(), "provisioning grace prevents cleanup racing an in-flight provider call");
 
         storage.release_activation(&scope.actor, &scope.host, &scope.session).await?;
-        db.execute("UPDATE durable_object_replica_groups SET updated_at = clock_timestamp() - interval '121 seconds'", &[]).await?;
+        db.execute("UPDATE durable_actors_replica_groups SET updated_at = clock_timestamp() - interval '121 seconds'", &[]).await?;
         provider.reject_retirement.store(true, Ordering::SeqCst);
         restarted.reconcile(&storage).await?;
         assert_eq!(restarted.store.candidates().await?.len(), 1, "failed provider cleanup must remain retryable after controller restart");

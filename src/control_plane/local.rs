@@ -38,25 +38,25 @@ use super::{
 
 #[derive(Args)]
 pub struct DevOptions {
-    #[arg(long, env = "DURABLE_OBJECT_PROJECT_ID", default_value = "local")]
+    #[arg(long, env = "DURABLE_ACTORS_PROJECT_ID", default_value = "local")]
     pub project_id: String,
-    #[arg(long, env = "DURABLE_OBJECT_API_KEY")]
+    #[arg(long, env = "DURABLE_ACTORS_API_KEY")]
     pub api_key: Option<String>,
-    #[arg(long, env = "DURABLE_OBJECT_PROJECT", default_value = ".")]
+    #[arg(long, env = "DURABLE_ACTORS_PROJECT", default_value = ".")]
     pub project: PathBuf,
-    #[arg(long, env = "DURABLE_OBJECT_PORT", default_value_t = 7100)]
+    #[arg(long, env = "DURABLE_ACTORS_PORT", default_value_t = 7100)]
     pub port: u16,
-    #[arg(long, env = "DURABLE_OBJECT_DATA_DIR")]
+    #[arg(long, env = "DURABLE_ACTORS_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
     #[arg(
         long,
-        env = "DURABLE_OBJECT_ENTRYPOINT",
-        default_value = "src/durable-objects.ts"
+        env = "DURABLE_ACTORS_ENTRYPOINT",
+        default_value = "src/actors.ts"
     )]
     pub entrypoint: String,
     #[arg(
         long,
-        env = "DURABLE_OBJECT_STORAGE",
+        env = "DURABLE_ACTORS_STORAGE",
         value_enum,
         default_value = "local"
     )]
@@ -240,7 +240,7 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
             directory: directory.canonicalize()?.join("objects"),
         },
         DevStorage::Gcs => BucketLocation::Gcs {
-            bucket: std::env::var("DURABLE_OBJECT_BUCKET")
+            bucket: std::env::var("DURABLE_ACTORS_BUCKET")
                 .context("DURABLE_ACTORS_STORAGE=gcs requires DURABLE_ACTORS_BUCKET")?,
         },
     };
@@ -292,8 +292,8 @@ async fn local_routes(
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
-        "durable-object-control-plane",
-        "durable-object-authority",
+        "durable-actors-control-plane",
+        "durable-actors-authority",
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(86_400),
     )?;
@@ -312,8 +312,8 @@ async fn local_routes(
         .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
-        jwt_issuer: "durable-object-control-plane".into(),
-        invocation_jwt_audience: "durable-object-invoke".into(),
+        jwt_issuer: "durable-actors-control-plane".into(),
+        invocation_jwt_audience: "durable-actors-invoke".into(),
         actor_idle_timeout_seconds: super::process::actor_idle_timeout_seconds(&mut |name| {
             std::env::var(name).ok()
         })?,
@@ -354,9 +354,9 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     ActorJwtIssuer::from_base64_pkcs8(
         &STANDARD.encode(key.as_ref()),
         "local",
-        "durable-object-control-plane",
-        "durable-object-authority",
-        "durable-object-invoke",
+        "durable-actors-control-plane",
+        "durable-actors-authority",
+        "durable-actors-invoke",
         Duration::from_secs(86_400),
     )
 }

@@ -44,7 +44,26 @@ test("actor discovery accepts an optional placement region", async () => {
     const spec = await SwaggerParser.dereference(specPath)
     const validate = new Ajv({ strict: false }).compile(spec.components.schemas.FindActorRequest)
     for (const request of [{}, { homeRegion: null }, { homeRegion: "north-america-west" }]) assert.ok(validate(request), JSON.stringify(request))
-    for (const request of [{ metadata: {} }, { homeRegion: 42 }]) assert.equal(validate(request), false, JSON.stringify(request))
+    for (const request of [{ metadata: {} }, { homeRegion: 42 }, { homeRegion: "" }, { homeRegion: "bad/region" }, { homeRegion: "Uppercase" }, { homeRegion: "a".repeat(65) }])
+        assert.equal(validate(request), false, JSON.stringify(request))
+})
+
+test("deployment schemas describe both hosted and local registration and the complete read response", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const deployment = spec.paths["/v1/projects/{project_id}/deployment"]
+    const ajv = new Ajv({ strict: false })
+    const register = ajv.compile(deployment.put.requestBody.content["application/json"].schema)
+    const read = ajv.compile(deployment.get.responses["200"].content["application/json"].schema)
+    for (const imageRef of ["im-source", "local"]) {
+        const value = { imageRef, workingDirectory: "/customer", actorEntrypoint: null, secretRefs: [] }
+        assert.ok(register({ imageRef, workingDirectory: "/customer" }), ajv.errorsText(register.errors))
+        assert.ok(read(value), ajv.errorsText(read.errors))
+        for (const field of Object.keys(value)) {
+            const incomplete = { ...value }
+            delete incomplete[field]
+            assert.equal(read(incomplete), false, `deployment response requires ${field}`)
+        }
+    }
 })
 
 test("websocket discovery requires metadata and enforces grant limits", async () => {

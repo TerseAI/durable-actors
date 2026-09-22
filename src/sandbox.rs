@@ -231,7 +231,7 @@ impl CommandSandboxProvider {
         );
         ensure!(
             !command.is_empty() && command.trim() == command,
-            "DURABLE_OBJECT_SANDBOX_COMMAND must be non-empty without surrounding whitespace"
+            "DURABLE_ACTORS_SANDBOX_COMMAND must be non-empty without surrounding whitespace"
         );
         if let Ok(path) = std::env::var("PATH") {
             environment.entry("PATH".into()).or_insert(path);

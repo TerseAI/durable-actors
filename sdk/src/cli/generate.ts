@@ -15,8 +15,8 @@ interface GenerateOptions {
 function registerGenerateCommand(program: Command): void {
     program
         .command("generate")
-        .argument("[entrypoint]", "actor source file (default: src/durable-objects.ts)")
-        .description("Generate TypeScript clients")
+        .argument("[entrypoint]", "actor source file (default: src/actors.ts)")
+        .description("Generate clients to reach durable actors in your own project")
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
         .option("--remote", "generate from the configured server")
@@ -42,7 +42,7 @@ function validateOptions(entrypoint: string | undefined, options: GenerateOption
 
 async function localContract(entrypoint: string | undefined, configFile?: string) {
     const { ActorCompiler } = await import("../compiler/actor-compiler.js")
-    return new ActorCompiler().compileContract(entrypoint ?? "src/durable-objects.ts", { configFile })
+    return new ActorCompiler().compileContract(entrypoint ?? "src/actors.ts", { configFile })
 }
 
 async function remoteContract() {

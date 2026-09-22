@@ -49,7 +49,7 @@ impl ActorJwtIssuer {
         let key_id = key_id.into();
         ensure!(
             !key_id.is_empty(),
-            "DURABLE_OBJECT_JWT_KEY_ID must not be empty"
+            "DURABLE_ACTORS_JWT_KEY_ID must not be empty"
         );
         ensure!(
             !max_lifetime.is_zero(),
@@ -69,9 +69,9 @@ impl ActorJwtIssuer {
         );
         let pkcs8 = STANDARD
             .decode(encoded_key)
-            .context("DURABLE_OBJECT_JWT_SIGNING_KEY must be base64-encoded PKCS#8")?;
+            .context("DURABLE_ACTORS_JWT_SIGNING_KEY must be base64-encoded PKCS#8")?;
         let key_pair = Ed25519KeyPair::from_pkcs8(&pkcs8)
-            .context("DURABLE_OBJECT_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
+            .context("DURABLE_ACTORS_JWT_SIGNING_KEY is not an Ed25519 PKCS#8 key")?;
         let encoding_key = EncodingKey::from_ed_der(&pkcs8);
         let mut public_key: Jwk = serde_json::from_value(serde_json::json!({
             "alg": "EdDSA",

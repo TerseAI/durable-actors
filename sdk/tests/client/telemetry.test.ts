@@ -6,8 +6,8 @@ import { promisify } from "node:util"
 for (const enabled of [true, false]) {
     test(`client telemetry is ${enabled ? "enabled by default" : "disabled by environment"}`, async () => {
         const env = { ...process.env }
-        delete env.DURABLE_OBJECT_TELEMETRY
-        if (!enabled) env.DURABLE_OBJECT_TELEMETRY = "0"
+        delete env.DURABLE_ACTORS_TELEMETRY
+        if (!enabled) env.DURABLE_ACTORS_TELEMETRY = "0"
         const source = `
             import { stderrTelemetry } from ${JSON.stringify(new URL("../../src/client/telemetry.js", import.meta.url).href)};
             stderrTelemetry({ event: "actor_client_invocation" });

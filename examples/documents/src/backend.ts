@@ -12,7 +12,7 @@ app.post("/api/socket/:actorName/:actorId", async (request, response) => {
 })
 
 const vite = await createServer({
-    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.little-actors/**", "**/.git/**"] } }
+    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
 })
 app.use(vite.middlewares)
 app.listen(3000, "127.0.0.1", () => console.log("Documents: http://127.0.0.1:3000"))

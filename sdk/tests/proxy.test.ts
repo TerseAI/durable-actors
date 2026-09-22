@@ -5,7 +5,7 @@ import { SocketProxy } from "../src/proxy.js"
 
 const actors = { Room: {} }
 
-test("socket grants use branded connection exports ahead of legacy values", async t => {
+test("socket grants use environment settings and prefer the shared secret over the API key", async t => {
     const environment = process.env
     t.after(() => {
         process.env = environment
@@ -15,9 +15,7 @@ test("socket grants use branded connection exports ahead of legacy values", asyn
         DURABLE_ACTORS_PROJECT_ID: "local",
         DURABLE_ACTORS_SECRET: "new-key",
         DURABLE_ACTORS_CONTROL_PLANE_URL: "http://127.0.0.1:8123",
-        DURABLE_OBJECT_PROJECT_ID: "wrong",
-        DURABLE_OBJECT_API_KEY: "wrong",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: "https://wrong.example"
+        DURABLE_ACTORS_API_KEY: "wrong"
     }
     const proxy = new SocketProxy(
         actors,

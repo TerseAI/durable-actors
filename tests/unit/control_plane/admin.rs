@@ -77,7 +77,7 @@ fn spec(image: &str) -> HostLaunchSpec {
         code_snapshot: None,
         image_ref: image.into(),
         working_directory: "/workspace".into(),
-        actor_entrypoint: Some("src/durable-objects.ts".into()),
+        actor_entrypoint: Some("src/actors.ts".into()),
         secret_refs: vec![],
     }
 }

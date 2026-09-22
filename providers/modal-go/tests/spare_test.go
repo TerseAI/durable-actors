@@ -23,10 +23,10 @@ func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 	if api.params.CPU != 2 || api.params.CPULimit != 2 || api.params.MemoryMiB != 2048 || api.params.MemoryLimitMiB != 2048 {
 		t.Fatal("missing Modal hard limits")
 	}
-	if api.params.Env["DURABLE_OBJECT_HOST_TOKEN"] != "" || api.params.Env["DURABLE_OBJECT_ENTRYPOINT"] != "" || len(api.params.Secrets) != 0 {
+	if api.params.Env["DURABLE_ACTORS_HOST_TOKEN"] != "" || api.params.Env["DURABLE_ACTORS_ENTRYPOINT"] != "" || len(api.params.Secrets) != 0 {
 		t.Fatal("spare is customer-bound before claim")
 	}
-	if api.params.Env["DURABLE_OBJECT_PROCESS_ROLE"] != "spare" {
+	if api.params.Env["DURABLE_ACTORS_PROCESS_ROLE"] != "spare" {
 		t.Fatal("runtime is not initialized")
 	}
 }
@@ -45,16 +45,16 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_OBJECT_ACTOR_IS_NEW"] != "true" {
+	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_ACTORS_ACTOR_IS_NEW"] != "true" {
 		t.Fatal("ownership epoch missing")
 	}
 	if api.creates != 0 {
 		t.Fatal("claimed spare was replaced by a new sandbox")
 	}
-	if sb.mounted != "im-code" || sb.assignment["DURABLE_OBJECT_ACTOR"] != string(request.Actor) {
+	if sb.mounted != "im-code" || sb.assignment["DURABLE_ACTORS_ACTOR"] != string(request.Actor) {
 		t.Fatal("missing code or actor binding")
 	}
-	if sb.assignment["DURABLE_OBJECT_ENTRYPOINT"] != "/customer/actors.mjs" {
+	if sb.assignment["DURABLE_ACTORS_ENTRYPOINT"] != "/customer/actors.mjs" {
 		t.Fatal(sb.assignment)
 	}
 }

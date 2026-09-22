@@ -35,7 +35,7 @@ class RemoteActorClient {
     private readonly targets = new Map<string, Promise<ActorHostTarget>>()
     private readonly connectWebSocket: WebSocketConnector
 
-    constructor(options?: DurableObjectsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
+    constructor(options?: DurableActorsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
         this.environment = dependencies.environment ?? process.env
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
@@ -263,7 +263,7 @@ class RemoteActorClient {
             throw new ActorInvocationError(
                 "unauthenticated",
                 requestId,
-                "the durable-object application credential was rejected"
+                "the durable-actors application credential was rejected"
             )
         }
         const failure = errorDocumentSchema.safeParse(document)
@@ -364,7 +364,7 @@ interface RemoteActorSettings {
     readonly controlPlaneUrl: string
 }
 
-interface DurableObjectsClientOptions {
+interface DurableActorsClientOptions {
     readonly projectId: string
     readonly apiKey: string
     readonly homeRegion?: string
@@ -401,4 +401,4 @@ const actorHostTargetSchema = z.object({
 })
 
 export { RemoteActorClient }
-export type { DurableObjectsClientOptions, RemoteActorClientDependencies }
+export type { DurableActorsClientOptions, RemoteActorClientDependencies }

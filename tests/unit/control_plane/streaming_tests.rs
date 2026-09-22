@@ -832,14 +832,14 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     std::fs::write(
         &bootstrap,
         format!(
-            "import {{ runDurableObjectHost }} from {}; await runDurableObjectHost();",
+            "import {{ runActorHost }} from {}; await runActorHost();",
             serde_json::to_string(&format!("file://{}", sdk.join("host.js").display()))?
         ),
     )?;
     let child = tokio::process::Command::new("bun")
         .arg(bootstrap)
-        .env("DURABLE_OBJECT_ENTRYPOINT", entrypoint)
-        .env("DURABLE_OBJECT_EXECUTOR_SOCKET", socket)
+        .env("DURABLE_ACTORS_ENTRYPOINT", entrypoint)
+        .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env("TEST_ACTOR_SECRET", "injected")
         .kill_on_drop(true)
         .stdout(Stdio::null())

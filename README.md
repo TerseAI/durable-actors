@@ -18,7 +18,7 @@ See the sample apps:
 
 ## Run locally
 
-Use Node.js 22.19+ and Bun 1.4.2+. Export your actors from `src/durable-objects.ts`, then start the actor server:
+Use Node.js 22.19+ and Bun 1.4.2+. Export your actors from `src/actors.ts`, then start the actor server:
 
 ```sh
 npx durable-actors init my-actors
@@ -70,8 +70,8 @@ import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, stre
 import type { UIMessage } from "ai"
 import express from "express"
 
-import { ChatHistory } from "./durable-objects.js"
-import type { ChatMessage } from "./durable-objects.js"
+import { ChatHistory } from "./actors.js"
+import type { ChatMessage } from "./actors.js"
 
 const app = express()
 app.use(express.json())
@@ -149,10 +149,9 @@ The [AI chat example](examples/ai-chat) includes the complete Express and React 
 
 A hosted server uses Modal, PostgreSQL, and GCS. See [server configuration](docs/reference/configuration.md#server-hosting) for the required settings.
 
-With an existing server, set its URL, API key, and your project ID in `.env`, then register your published actor image:
+Deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](docs/reference/openapi.yaml). After deployment, set the server URL, API key, and your project ID in `.env`, then generate your client:
 
 ```sh
-npx durable-actors deploy --image im-YOUR_IMAGE_ID
 npx durable-actors generate --remote
 ```
 

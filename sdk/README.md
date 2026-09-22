@@ -14,7 +14,7 @@ For a complete app, try [chat](https://github.com/TerseAI/durable-actors/tree/ma
 
 ## Define an actor
 
-Export actors from `src/durable-objects.ts`:
+Export actors from `src/actors.ts`:
 
 ```ts
 import { Actor, Persisted } from "durable-actors"
@@ -51,7 +51,7 @@ Wait for `Ready`. Actor code reloads automatically, and state is saved in `.dura
 Load the same environment in your backend, then call an actor by ID:
 
 ```ts
-import { Counter } from "./durable-objects.js"
+import { Counter } from "./actors.js"
 
 const count = await Counter.get("visits").increment()
 ```
@@ -66,16 +66,15 @@ Run `npx durable-actors generate` to create backend helpers. Your backend authen
 
 See the [chat backend](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/src/backend.ts) and [React client](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/src/Chat.tsx) for a working example. Keep the API key on your backend; your app handles reconnecting when a connection closes or expires.
 
-## Deploy
+## Connect to deployed actors
 
-Set your server URL, API key, and project ID in `.env`. With a published actor image:
+Deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.yaml). Set your server URL, API key, and project ID in `.env`, then generate your client:
 
 ```sh
-npx durable-actors deploy --image im-YOUR_IMAGE_ID
 npx durable-actors generate --remote
 ```
 
-Deploy replaces the current code and restarts actors while keeping saved state. Import `actors` from `generated/index.js` in a separate backend project; regenerate when the deployed API changes.
+Deployments replace the current code and restart actors while keeping saved state. Import `actors` from `generated/index.js` in a separate backend project; regenerate when the deployed API changes.
 
 ## Reference
 

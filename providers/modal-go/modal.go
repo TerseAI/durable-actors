@@ -17,7 +17,7 @@ type sdkAPI struct{ client *modal.Client }
 
 func newModalAPI() (modalAPI, func(), error) {
 	mutable := false
-	if value := os.Getenv("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"); value != "" {
+	if value := os.Getenv("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK"); value != "" {
 		var err error
 		mutable, err = strconv.ParseBool(value)
 		if err != nil {
@@ -100,7 +100,7 @@ func (s *sdkSandbox) route(ctx context.Context, port int) (string, error) {
 	if tunnel := tunnels[port]; tunnel != nil {
 		return tunnel.URL(), nil
 	}
-	return "", fmt.Errorf("Modal did not create the durable-object HTTP/2 tunnel")
+	return "", fmt.Errorf("Modal did not create the durable-actors HTTP/2 tunnel")
 }
 
 func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {
