@@ -1,7 +1,5 @@
 # Durable Actors
 
-Previously Little Actors. See the [upgrade guide](https://github.com/TerseAI/durable-actors/blob/main/docs/guides/renaming.md) for migrating imports and existing local state.
-
 Named actors with serial method calls and saved state. Requires Node.js 20.19+ or 22.12+ (matching Vite's runtime requirement). The CLI uses Node.js; actor execution requires Bun 1.4.2+.
 
 ```sh

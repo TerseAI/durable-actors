@@ -10,8 +10,6 @@ Durable Actors are TypeScript classes that persist their own state.
 npm install durable-actors
 ```
 
-Upgrading from Little Actors? See the [rename guide](docs/guides/renaming.md) for imports, local state, and self-hosted deployments.
-
 See the sample apps:
 
 - [AI Chat](examples/ai-chat)
