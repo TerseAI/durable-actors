@@ -147,15 +147,15 @@ impl LocalRuntime {
             }
         })
         .await??;
-        let loaded = Command::new("node")
-            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk"))
-            .arg("--eval")
-            .arg("process.stdout.write(require('dotenv').parse(process.argv[1]).DURABLE_ACTORS_SECRET)")
-            .arg(&startup_output)
-            .output()
-            .await?;
-        assert!(loaded.status.success());
-        let api_key = String::from_utf8(loaded.stdout)?;
+        let api_key = startup_output
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("DURABLE_ACTORS_SECRET='")?
+                    .strip_suffix('\'')
+            })
+            .context("missing generated shared secret in .env output")?
+            .to_owned();
         ensure!(api_key.len() >= 32, "generated shared secret is too short");
         assert!(!project.join(".durable-actors/api-key").exists());
         assert!(!project.join(".durable-actors/runtime.json").exists());
