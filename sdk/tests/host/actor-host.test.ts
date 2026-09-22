@@ -31,8 +31,8 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
     await once(server, "listening")
     const session = new ActorSession(
         parseHostSettings({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `${root}/executor.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: entrypoint
+            DURABLE_ACTORS_EXECUTOR_SOCKET: `${root}/executor.sock`,
+            DURABLE_ACTORS_ENTRYPOINT: entrypoint
         })
     )
     try {
@@ -48,9 +48,9 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
     let closed = 0
     const session = new ActorSession(
         parseHostSettings({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url)),
-            DURABLE_OBJECT_HOST_STARTUP_MS: "20"
+            DURABLE_ACTORS_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
+            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url)),
+            DURABLE_ACTORS_HOST_STARTUP_MS: "20"
         }),
         () => ({
             ready: () => new Promise(() => {}),
@@ -120,8 +120,8 @@ test("the actor session carries only owned execution commands", async t => {
     let closed = 0
     const session = new ActorSession(
         parseHostSettings({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath,
+            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
         }),
         options => {
             const supervisor = new ActorWorkerSupervisor(options)
@@ -283,8 +283,8 @@ test("a failed session connection cleans up the speculative Worker", async () =>
     let closed = 0
     const session = new ActorSession(
         parseHostSettings({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
+            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
         }),
         () => ({
             async ready() {
@@ -347,8 +347,8 @@ test("reports resident instances when the Rust host advertises support", { timeo
     await once(server, "listening")
     const session = new ActorSession(
         parseHostSettings({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `${root}/executor.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_EXECUTOR_SOCKET: `${root}/executor.sock`,
+            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
         }),
         () => ({
             ready: async () => ["SessionCounter"],

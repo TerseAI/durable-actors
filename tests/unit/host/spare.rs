@@ -70,10 +70,10 @@ async fn run_activation(
     let javascript = Command::new("bun")
         .args([
             "--eval",
-            "await import(process.env.DURABLE_OBJECT_SDK_HOST).then(m => m.runGenericHost())",
+            "await import(process.env.DURABLE_ACTORS_SDK_HOST).then(m => m.runGenericHost())",
         ])
-        .env("DURABLE_OBJECT_SDK_HOST", sdk.join("dist/host.js"))
-        .env("DURABLE_OBJECT_EXECUTOR_SOCKET", &socket)
+        .env("DURABLE_ACTORS_SDK_HOST", sdk.join("dist/host.js"))
+        .env("DURABLE_ACTORS_EXECUTOR_SOCKET", &socket)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -85,17 +85,17 @@ async fn run_activation(
         "generic executor must warm without customer code"
     );
     let environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
-        "DURABLE_OBJECT_CONTROL_PLANE_URL": "http://127.0.0.1:1",
-        "DURABLE_OBJECT_HOST_TOKEN": token,
-        "DURABLE_OBJECT_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
-        "DURABLE_OBJECT_HOST_ID": host_id.as_str(), "DURABLE_OBJECT_SESSION_ID": session,
-        "DURABLE_OBJECT_HOST_ROUTE": route, "DURABLE_OBJECT_JWT_ISSUER": "issuer",
-        "DURABLE_OBJECT_INVOKE_JWT_AUDIENCE": "invocation",
-        "DURABLE_OBJECT_SOCKET_JWT_AUDIENCE": "authority:websocket",
-        "DURABLE_OBJECT_HOST_READY_FILE": ready.to_str().unwrap(),
-        "DURABLE_OBJECT_ACTOR": serde_json::to_string(actor)?,
-        "DURABLE_OBJECT_ACTOR_IS_NEW": (before < 0).to_string(),
-        "DURABLE_OBJECT_RUNTIME_CONFIG": serde_json::json!({
+        "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:1",
+        "DURABLE_ACTORS_HOST_TOKEN": token,
+        "DURABLE_ACTORS_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
+        "DURABLE_ACTORS_HOST_ID": host_id.as_str(), "DURABLE_ACTORS_SESSION_ID": session,
+        "DURABLE_ACTORS_HOST_ROUTE": route, "DURABLE_ACTORS_JWT_ISSUER": "issuer",
+        "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": "invocation",
+        "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE": "authority:websocket",
+        "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
+        "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
+        "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
+        "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
             "bucket": {"type": "file", "directory": data}, "region": "north-america-east",
             "replicaSecret": "test-secret", "replicaRegions": [], "token": null
         }).to_string()

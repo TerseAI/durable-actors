@@ -19,7 +19,7 @@ Backend operations require:
 Authorization: Bearer <api-key>
 ```
 
-Configure the SDK and CLI with `DURABLE_OBJECT_API_KEY` or an explicit API key. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped connection URLs from your authenticated backend and use native WebSockets.
+Configure the SDK and CLI with `DURABLE_ACTORS_SECRET` or an explicit API key. Direct HTTP callers must include the server API key in the header above; see [configuration](configuration.md) for credentials and server settings. Browser apps fetch actor-scoped connection URLs from your authenticated backend and use native WebSockets.
 
 | Operation                      | Method and path                                      | Credential                    |
 | ------------------------------ | ---------------------------------------------------- | ----------------------------- |
@@ -183,7 +183,7 @@ Inspection does not start a host or invoke actor code. When state is requested, 
 
 The deployment router chooses and persists the nearest enabled region for a new actor. It sends `homeRegion` to the selected regional control plane in `/connect` requests. The runtime does not select a region from caller location or query a routing database.
 
-When `homeRegion` is omitted, new actors use `DURABLE_OBJECT_REGION`, or `north-america-central` if the control plane is unpinned. Existing actors keep their persisted home. An explicit assignment must match the control plane's configured region and any existing actor placement; a conflict returns `409`. A failed provisioning attempt does not move an actor elsewhere.
+When `homeRegion` is omitted, new actors use `DURABLE_ACTORS_REGION`, or `north-america-central` if the control plane is unpinned. Existing actors keep their persisted home. An explicit assignment must match the control plane's configured region and any existing actor placement; a conflict returns `409`. A failed provisioning attempt does not move an actor elsewhere.
 
 ### POST /v1/projects/{projectId}/actors/{actorName}/{actorId}/connect
 
@@ -245,7 +245,7 @@ Content-Type: application/json
 { "transport": "websocket", "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_OBJECT_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Setup accepts the optional `homeRegion` assignment described above. The response has `Cache-Control: no-store`:
+Grants require the backend API key. The helper resolves `projectId` from its options or `DURABLE_ACTORS_PROJECT_ID`. The current admin key has installation-wide authority; project routing and actor-bound tickets do not replace tenant-scoped issuance authorization. A hosted service must restrict which projects each issuing credential can access. Your application proxy authenticates the customer and decides which actor they may access. An existing deployment is required; issuing a grant can provision and activate its actor host. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. Setup accepts the optional `homeRegion` assignment described above. The response has `Cache-Control: no-store`:
 
 ```json
 {

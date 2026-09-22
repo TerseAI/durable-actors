@@ -416,10 +416,10 @@ function parseHostSettings(environment: NodeJS.ProcessEnv): ActorHostSettings {
     if (!result.success)
         throw new ActorConfigurationError(`actor-host session settings are invalid: ${result.error.message}`)
     return {
-        socketPath: result.data.DURABLE_OBJECT_EXECUTOR_SOCKET,
-        actorEntrypoint: result.data.DURABLE_OBJECT_ENTRYPOINT,
-        startupTimeoutMs: parseStartupTimeout(environment.DURABLE_OBJECT_HOST_STARTUP_MS),
-        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS)
+        socketPath: result.data.DURABLE_ACTORS_EXECUTOR_SOCKET,
+        actorEntrypoint: result.data.DURABLE_ACTORS_ENTRYPOINT,
+        startupTimeoutMs: parseStartupTimeout(environment.DURABLE_ACTORS_HOST_STARTUP_MS),
+        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS)
     }
 }
 
@@ -427,7 +427,7 @@ function parseStartupTimeout(value: string | undefined): number {
     if (value === undefined) return DEFAULT_ACTOR_STARTUP_TIMEOUT_MS
     const parsed = Number(value)
     if (!Number.isInteger(parsed) || parsed <= 0)
-        throw new ActorConfigurationError("DURABLE_OBJECT_HOST_STARTUP_MS must be a positive integer")
+        throw new ActorConfigurationError("DURABLE_ACTORS_HOST_STARTUP_MS must be a positive integer")
     return parsed
 }
 
@@ -436,7 +436,7 @@ function parseActorIdleTimeout(value: string | undefined): number {
     const parsed = Number(value)
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_ACTOR_IDLE_TIMEOUT_SECONDS) {
         throw new ActorConfigurationError(
-            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_SECONDS must be an integer between 1 and ${MAX_ACTOR_IDLE_TIMEOUT_SECONDS}`
+            `DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS must be an integer between 1 and ${MAX_ACTOR_IDLE_TIMEOUT_SECONDS}`
         )
     }
     return parsed * 1_000
@@ -446,8 +446,8 @@ const DEFAULT_ACTOR_STARTUP_TIMEOUT_MS = 10_000
 const MAX_ACTOR_IDLE_TIMEOUT_SECONDS = 86_400
 
 const actorSessionSettingsSchema = z.object({
-    DURABLE_OBJECT_EXECUTOR_SOCKET: z.string().trim().min(1),
-    DURABLE_OBJECT_ENTRYPOINT: z.string().trim().min(1).optional()
+    DURABLE_ACTORS_EXECUTOR_SOCKET: z.string().trim().min(1),
+    DURABLE_ACTORS_ENTRYPOINT: z.string().trim().min(1).optional()
 })
 
 const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"

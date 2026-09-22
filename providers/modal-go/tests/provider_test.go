@@ -23,7 +23,7 @@ func TestNamedSecretsUseANewGenericSandbox(t *testing.T) {
 	if len(api.params.Secrets) != 1 || api.params.Secrets[0].Name != "project-secrets" {
 		t.Fatal("missing secret")
 	}
-	if api.params.Env["DURABLE_OBJECT_PROCESS_ROLE"] != "spare" {
+	if api.params.Env["DURABLE_ACTORS_PROCESS_ROLE"] != "spare" {
 		t.Fatal("not generic execution")
 	}
 }
@@ -252,7 +252,7 @@ func (a fakeAssigner) Assign(ctx context.Context, spare spareHandle, environment
 		err := json.Unmarshal([]byte(fake.metadata), &handle)
 		return handle, err
 	}
-	return hostHandle{Lease: &activationLease{ID: environment["DURABLE_OBJECT_HOST_ID"], SessionID: environment["DURABLE_OBJECT_SESSION_ID"], Route: environment["DURABLE_OBJECT_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_OBJECT_HOST_ID"], SessionID: environment["DURABLE_OBJECT_SESSION_ID"], Route: environment["DURABLE_OBJECT_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_OBJECT_REGION"], OwnerEpoch: 42}, nil
+	return hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42}, nil
 }
 
 func assignmentServer(t *testing.T) *httptest.Server {
@@ -264,7 +264,7 @@ func assignmentServer(t *testing.T) *httptest.Server {
 			w.WriteHeader(400)
 			return
 		}
-		json.NewEncoder(w).Encode(hostHandle{Lease: &activationLease{ID: environment["DURABLE_OBJECT_HOST_ID"], SessionID: environment["DURABLE_OBJECT_SESSION_ID"], Route: environment["DURABLE_OBJECT_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_OBJECT_HOST_ID"], SessionID: environment["DURABLE_OBJECT_SESSION_ID"], Route: environment["DURABLE_OBJECT_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_OBJECT_REGION"], OwnerEpoch: 42})
+		json.NewEncoder(w).Encode(hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42})
 	}))
 	t.Cleanup(server.Close)
 	return server

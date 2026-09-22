@@ -175,8 +175,8 @@ Reserve a dedicated ngrok domain for your control plane. Substitute your domain 
 
 ```dotenv
 NGROK_DOMAIN=YOUR_DOMAIN.ngrok.app
-DURABLE_OBJECT_CONTROL_PLANE_URL=https://YOUR_DOMAIN.ngrok.app
-DURABLE_OBJECT_CONTROL_PLANE_BIND=127.0.0.1:7200
+DURABLE_ACTORS_CONTROL_PLANE_URL=https://YOUR_DOMAIN.ngrok.app
+DURABLE_ACTORS_CONTROL_PLANE_BIND=127.0.0.1:7200
 ```
 
 ```sh

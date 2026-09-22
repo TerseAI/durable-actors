@@ -17,7 +17,7 @@ type sdkAPI struct{ client *modal.Client }
 
 func newModalAPI() (modalAPI, func(), error) {
 	mutable := false
-	if value := os.Getenv("DURABLE_OBJECT_MODAL_MUTABLE_NETWORK"); value != "" {
+	if value := os.Getenv("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK"); value != "" {
 		var err error
 		mutable, err = strconv.ParseBool(value)
 		if err != nil {

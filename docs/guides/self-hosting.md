@@ -116,7 +116,7 @@ Configure [local GCS storage](../reference/configuration.md), then start the run
 npx durable-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.
+Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_ACTORS_SECRET` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
 ## Browser connections
 
@@ -124,6 +124,6 @@ See the [browser example](../../sdk/README.md#browser-clients) and [wire protoco
 
 ## Regional installations
 
-Regional control planes share one active code deployment in PostgreSQL, one state bucket, and the same signing key and API key. Set `DURABLE_OBJECT_REGION` on each regional instance. The production deployment repository owns the load balancer, persistent actor-home directory, geographic selection, and forwarding setup requests with an assigned `homeRegion`.
+Regional control planes share one active code deployment in PostgreSQL, one state bucket, and the same signing key and API key. Set `DURABLE_ACTORS_REGION` on each regional instance. The production deployment repository owns the load balancer, persistent actor-home directory, geographic selection, and forwarding setup requests with an assigned `homeRegion`.
 
 Each `(actor name, actor ID)` has its own state and permanent home. Customer proxies authenticate users and enforce access before requesting actor capabilities. WebSockets connect directly to the owning Modal host using the returned URL. Independent installations require separate databases, buckets, credentials, and Modal resources.

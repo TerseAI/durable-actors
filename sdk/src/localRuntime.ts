@@ -78,8 +78,8 @@ function launch(executable: string, options: LocalActorOptions) {
             env: {
                 ...actorEnvironment(process.env),
                 PATH: `${path.dirname(process.execPath)}${path.delimiter}${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
-                DURABLE_OBJECT_PROCESS_ROLE: "control_plane",
-                DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"
+                DURABLE_ACTORS_PROCESS_ROLE: "control_plane",
+                DURABLE_ACTORS_PARENT_LIFETIME_STDIN: "1"
             },
             stdio: ["pipe", options.quiet ? "ignore" : "inherit", options.quiet ? "ignore" : "inherit", "pipe"]
         }

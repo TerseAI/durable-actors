@@ -51,10 +51,10 @@ test("deploy registers the source image in one request without local source or M
     await once(server, "listening")
     const env = {
         ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_API_KEY: "test-key",
-        DURABLE_OBJECT_SANDBOX_COMMAND: "/does-not-exist",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_SECRET: "test-key",
+        DURABLE_ACTORS_SANDBOX_COMMAND: "/does-not-exist",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`
     }
     const args = [
         cli,
@@ -74,7 +74,7 @@ test("deploy registers the source image in one request without local source or M
         /codeRevision/
     )
     await assert.rejects(
-        run(process.execPath, args, { cwd: project, env: { ...env, DURABLE_OBJECT_API_KEY: "" } }),
+        run(process.execPath, args, { cwd: project, env: { ...env, DURABLE_ACTORS_SECRET: "" } }),
         /shared secret/
     )
     assert.equal(requests, 0)

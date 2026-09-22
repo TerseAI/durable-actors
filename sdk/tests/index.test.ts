@@ -39,12 +39,12 @@ test("actor calls read environment settings lazily without a setup function", ()
             "--eval",
             `
             import assert from "node:assert/strict";
-            for (const key of ["DURABLE_OBJECT_API_KEY", "DURABLE_OBJECT_HOME_REGION", "DURABLE_OBJECT_CONTROL_PLANE_URL"]) delete process.env[key];
+            for (const key of ["DURABLE_ACTORS_SECRET", "DURABLE_ACTORS_HOME_REGION", "DURABLE_ACTORS_CONTROL_PLANE_URL"]) delete process.env[key];
             const { Actor, ActorInvocationError } = await import(${JSON.stringify(entrypoint)});
             Object.assign(process.env, {
-                DURABLE_OBJECT_PROJECT_ID: "default",
-                DURABLE_OBJECT_API_KEY: "backend-key",
-                DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
+                DURABLE_ACTORS_PROJECT_ID: "default",
+                DURABLE_ACTORS_SECRET: "backend-key",
+                DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
             });
             const requests = [];
             globalThis.fetch = async (url, options) => {

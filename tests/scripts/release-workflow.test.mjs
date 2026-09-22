@@ -28,7 +28,7 @@ test("runtime images include the one-shot Go provider", () => {
     assert.match(dockerfile, /COPY providers\/modal-go\/ /)
     assert.match(dockerfile, /CGO_ENABLED=0 go build -mod=readonly -trimpath/)
     assert.match(dockerfile, /COPY --from=modal-builder .* \/usr\/local\/bin\/durable-actors-modal-go/)
-    assert.match(dockerfile, /DURABLE_OBJECT_SANDBOX_COMMAND=durable-actors-modal-go/)
+    assert.match(dockerfile, /DURABLE_ACTORS_SANDBOX_COMMAND=durable-actors-modal-go/)
     assert.match(read(".dockerignore"), /!providers\/modal-go\/\*\*/)
 })
 
@@ -69,7 +69,7 @@ test("the SDK is packed once after validation and reused by native tests and npm
         assert.match(releaseJob(job), /actions\/download-artifact@[\s\S]*name: sdk-package/)
         assert.doesNotMatch(releaseJob(job), /pnpm (build|--dir sdk (build|pack))/)
     }
-    assert.match(releaseJob("native-publish"), /DURABLE_OBJECT_TEST_PACKAGE:[\s\S]*examples\/chat build/)
+    assert.match(releaseJob("native-publish"), /DURABLE_ACTORS_TEST_PACKAGE:[\s\S]*examples\/chat build/)
 })
 
 test("release publishes the observer dependency before the SDK", () => {

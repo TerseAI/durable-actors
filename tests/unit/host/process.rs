@@ -19,14 +19,14 @@ async fn host_publishes_complete_metadata_before_dependencies_are_ready() -> Res
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("host.json");
     let mut values = values();
-    values.insert("DURABLE_OBJECT_HOST_BIND".into(), "127.0.0.1:0".into());
+    values.insert("DURABLE_ACTORS_HOST_BIND".into(), "127.0.0.1:0".into());
     values.insert(
-        "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+        "DURABLE_ACTORS_HOST_METADATA_FILE".into(),
         path.display().to_string(),
     );
-    values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
+    values.insert("DURABLE_ACTORS_REGION".into(), "north-america-east".into());
     values.insert(
-        "DURABLE_OBJECT_HOST_ROUTE".into(),
+        "DURABLE_ACTORS_HOST_ROUTE".into(),
         "https://host.example.com".into(),
     );
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
@@ -52,14 +52,14 @@ async fn metadata_publication_failure_prevents_host_readiness() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let mut values = values();
     values.insert(
-        "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+        "DURABLE_ACTORS_HOST_METADATA_FILE".into(),
         directory
             .path()
             .join("missing/host.json")
             .display()
             .to_string(),
     );
-    values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
+    values.insert("DURABLE_ACTORS_REGION".into(), "north-america-east".into());
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
     assert!(bind_host_listener(&config, None).await.is_err());
     Ok(())
@@ -70,11 +70,11 @@ fn host_metadata_requires_a_valid_region() {
     for region in [None, Some(""), Some("bad/region")] {
         let mut values = values();
         values.insert(
-            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+            "DURABLE_ACTORS_HOST_METADATA_FILE".into(),
             "/tmp/host.json".into(),
         );
         if let Some(region) = region {
-            values.insert("DURABLE_OBJECT_REGION".into(), region.into());
+            values.insert("DURABLE_ACTORS_REGION".into(), region.into());
         }
         assert!(ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err());
     }
@@ -165,7 +165,7 @@ async fn failed_activation_stops_host_with_open_sockets() -> Result<()> {
 fn values() -> HashMap<String, String> {
     HashMap::from([
         (
-            "DURABLE_OBJECT_RUNTIME_CONFIG".into(),
+            "DURABLE_ACTORS_RUNTIME_CONFIG".into(),
             serde_json::json!({
                 "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
                 "region":"north-america-east", "replicaSecret":"secret", "replicaRegions":[],
@@ -174,17 +174,17 @@ fn values() -> HashMap<String, String> {
             .to_string(),
         ),
         (
-            "DURABLE_OBJECT_CONTROL_PLANE_URL".into(),
+            "DURABLE_ACTORS_CONTROL_PLANE_URL".into(),
             "http://127.0.0.1:7100".into(),
         ),
-        ("DURABLE_OBJECT_HOST_TOKEN".into(), "host-jwt".into()),
-        ("DURABLE_OBJECT_JWT_PUBLIC_KEYS".into(), "{}".into()),
+        ("DURABLE_ACTORS_HOST_TOKEN".into(), "host-jwt".into()),
+        ("DURABLE_ACTORS_JWT_PUBLIC_KEYS".into(), "{}".into()),
         (
-            "DURABLE_OBJECT_HOST_ID".into(),
+            "DURABLE_ACTORS_HOST_ID".into(),
             "host.v3.revision-1.host-1".into(),
         ),
         (
-            "DURABLE_OBJECT_SESSION_ID".into(),
+            "DURABLE_ACTORS_SESSION_ID".into(),
             "00000000-0000-4000-8000-000000000001".into(),
         ),
     ])
