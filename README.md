@@ -1,8 +1,16 @@
 # Durable Actors
 
-Durable Actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
+Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
 
-Durable Actors are TypeScript classes that persist their own state.
+Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
+
+Durable Actors is a primitive to help developers build the next generation of collaborative software. We provide a mechanism to serve shared, concurrency safe state to your app.
+
+Based on the Actor principle from Erlang, all state is durably persisted for you. Only one Agent/person can be in the actor at a time, protecting you from race conditions. 
+
+We are fully horizontally scalable, and instances go dormant when not in use. Only pay for what your users are using.
+
+We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
 
 ## Local development
 
@@ -12,20 +20,20 @@ Install Node.js 22.19+, pnpm, and Bun 1.4.2+. Install the CLI once:
 pnpm add --global durable-actors
 ```
 
-### Create your actor project
+### Create your actor project in your directory of choice
 
 ```sh
 durable-actors init my-actors
 cd my-actors
 pnpm install
-durable-actors dev
+durable-actors dev // this will run the server locally on your machine
 ```
 
-`init` creates a standalone actor project with a persisted counter in `src/durable-objects.ts`. `dev` starts the actor server, watches your source, and downloads the matching native runtime on first use. Keep it running while you develop your application.
+Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
 
 ### Connect your application
 
-In your separate application project's directory, install the SDK:
+In your separate application project's directory (ex: node server), install the SDK:
 
 ```sh
 pnpm add durable-actors
@@ -45,7 +53,9 @@ Then generate your client from the same application directory:
 durable-actors generate
 ```
 
-The CLI loads `.env` automatically and fetches the actor contract from the running server. Your backend imports the generated client:
+This contract will match perfectly the actor you have defined!
+
+Now you may call your actor and access the state.
 
 ```ts
 import { actors } from "./generated/index.js"
@@ -53,10 +63,6 @@ import { actors } from "./generated/index.js"
 const counter = actors.Counter.get("example")
 console.log(await counter.increment())
 ```
-
-Start your application backend with its `.env` loaded, using your usual development command. Actor source stays in the actor project; your application uses the generated client.
-
-Edit `src/durable-objects.ts` in the actor project while `dev` is running. Rerun `durable-actors generate` in your application when actor method signatures change. Restarting `dev` mints a new secret unless one is configured, so update your application's `.env` and restart its backend too.
 
 For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
 
