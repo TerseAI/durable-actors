@@ -8,8 +8,8 @@ async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> 
     struct RecordingPersistence(Mutex<Vec<Vec<TraceEvent>>>);
     #[async_trait::async_trait]
     impl TracePersistence for RecordingPersistence {
-        async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-            SqliteTracePersistence::in_memory().query(query).await
+        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory().history(query).await
         }
         async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
             SqliteTracePersistence::in_memory().replay(query).await
@@ -37,8 +37,8 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     struct BlockedPersistence(tokio::sync::Semaphore);
     #[async_trait::async_trait]
     impl TracePersistence for BlockedPersistence {
-        async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-            SqliteTracePersistence::in_memory().query(query).await
+        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory().history(query).await
         }
         async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
             SqliteTracePersistence::in_memory().replay(query).await
@@ -148,8 +148,8 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
     struct FailingPersistence;
     #[async_trait::async_trait]
     impl TracePersistence for FailingPersistence {
-        async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-            SqliteTracePersistence::in_memory().query(query).await
+        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory().history(query).await
         }
         async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
             SqliteTracePersistence::in_memory().replay(query).await
@@ -240,8 +240,8 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     }
     #[async_trait::async_trait]
     impl TracePersistence for PausedPersistence {
-        async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-            SqliteTracePersistence::in_memory().query(query).await
+        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory().history(query).await
         }
         async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
             self.file.replay(query).await

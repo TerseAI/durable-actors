@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
 import { HttpObserverClient } from "../src/client.js"
-import type { RequestTracePage } from "../src/client.js"
+import type { RequestHistoryQuery, RequestTracePage } from "../src/client.js"
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>")
 Object.assign(globalThis, {
@@ -108,49 +108,68 @@ test("request streams validate records and use the trace endpoint", async () => 
     await assert.rejects(broken.watchRequests(() => assert.fail("invalid trace accepted"), new AbortController().signal))
 })
 
-function sqlRows(records = page.records) {
-    return { rows: records.map(record => ({ generation: "one", watermark: 200, pruned: 0, total: 200, sequence: record.sequence, event: JSON.stringify(record) })), truncated: false }
+function historyPage(records = page.records, nextCursor: string | null = null): RequestTracePage {
+    return { ...page, cursor: 200, capacity: 100, records, nextCursor, reset: false }
 }
 
-test("saved history sends SQL and loads older pages without mixing live rows", async () => {
-    const queries: { sql: string; params: unknown[] }[] = []
+test("saved history sends filters and loads older pages without mixing live rows", async () => {
+    const queries: RequestHistoryQuery[] = []
     const client = {
         watchRequests: async (receive: (page: RequestTracePage) => void, signal: AbortSignal) => {
             receive(page)
             await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
         },
-        query: async (query: { sql: string; params: unknown[] }) => {
+        listRequests: async (query: RequestHistoryQuery) => {
             queries.push(query)
-            if (queries.length === 1) return sqlRows(Array.from({ length: 101 }, (_, i) => ({ ...page.records[0]!, sequence: 200 - i, eventId: `saved-${i}`, operation: `saved call ${i}` })))
-            return sqlRows([{ ...page.records[0]!, sequence: 100, eventId: "older", operation: "older call" }])
+            if (queries.length === 1) return historyPage([{ ...page.records[0]!, sequence: 200, operation: "saved call" }], "opaque-cursor")
+            return historyPage([{ ...page.records[0]!, sequence: 100, operation: "older call" }])
         }
     }
     const view = render(<RequestObserver client={client} />)
     await view.findByText("post")
     fireEvent.click(view.getByRole("button", { name: "History" }))
-    await view.findByText("saved call 0")
+    await view.findByText("saved call")
     assert.equal(view.queryByText("post"), null)
     fireEvent.click(view.getByRole("button", { name: "Load older" }))
     await view.findByText("older call")
-    assert.ok(view.getByText("saved call 0"))
-    assert.match(queries[0]!.sql, /FROM request_events/u)
-    assert.match(queries[1]!.sql, /sequence <= \?/u)
-    assert.deepEqual(queries[1]!.params, [200, 1000, 101])
+    assert.ok(view.getByText("saved call"))
+    assert.deepEqual(queries, [{ cursor: undefined }, { cursor: "opaque-cursor" }])
     fireEvent.click(view.getByRole("button", { name: "Live" }))
     await view.findByText("post")
-    assert.equal(view.queryByText("saved call 0"), null)
+    assert.equal(view.queryByText("saved call"), null)
 })
 
-test("HTTP query sends SQL and parameters in JSON without exposing credentials", async () => {
-    const query = { sql: "SELECT COUNT(*) AS count FROM request_events WHERE actor_id = ?", params: ["a/b"] }
+test("expired history cursors replace stale pages and explain the reset", async () => {
+    const client = {
+        listRequests: async (query: RequestHistoryQuery) =>
+            query.cursor
+                ? { ...historyPage([{ ...page.records[0]!, sequence: 201, operation: "available call" }]), reset: true }
+                : historyPage([{ ...page.records[0]!, sequence: 200, operation: "expired call" }], "expired-cursor")
+    }
+    const view = render(<RequestObserver client={client} />)
+    fireEvent.click(view.getByRole("button", { name: "History" }))
+    await view.findByText("expired call")
+    fireEvent.click(view.getByRole("button", { name: "Load older" }))
+    await view.findByText("available call")
+    assert.equal(view.queryByText("expired call"), null)
+    assert.match(view.getByRole("alert").textContent!, /no longer retained/u)
+    assert.equal(view.queryByRole("button", { name: "Load older" }), null)
+})
+
+test("HTTP history sends URL filters and validates typed pages", async () => {
+    const query = { actorId: "one", outcome: "failed" as const, fromMs: 0, limit: 10, cursor: "opaque+cursor" }
+    const controller = new AbortController()
     const client = new HttpObserverClient("/api/observe", async (url, options) => {
-        assert.equal(url, "/api/observe/query")
-        assert.equal(options?.method, "POST")
-        assert.deepEqual(JSON.parse(String(options?.body)), query)
+        assert.equal(url, "/api/observe/requests?actorId=one&outcome=failed&fromMs=0&limit=10&cursor=opaque%2Bcursor")
+        assert.equal(options?.method, "GET")
+        assert.equal(options?.body, undefined)
+        assert.equal(options?.signal, controller.signal)
         assert.equal(new Headers(options?.headers).get("authorization"), null)
-        return Response.json({ rows: [{ count: 2 }], truncated: false })
+        return Response.json(historyPage())
     })
-    assert.deepEqual(await client.query(query), { rows: [{ count: 2 }], truncated: false })
+    assert.deepEqual(await client.listRequests(query, controller.signal), historyPage())
+    const broken = new HttpObserverClient("/api/observe", async () => Response.json({ records: [] }))
+    await assert.rejects(broken.listRequests({}), /Invalid request history response/u)
 })
 
 test("live reconnect resumes after the last received cursor and preserves distinct events", async () => {
@@ -172,19 +191,19 @@ test("live reconnect resumes after the last received cursor and preserves distin
 
 test("changing history filters cancels the old query and ignores a late response", async () => {
     Object.assign(globalThis, { FormData: dom.window.FormData })
-    let resolveFirst!: (page: ReturnType<typeof sqlRows>) => void
+    let resolveFirst!: (page: RequestTracePage) => void
     let firstSignal: AbortSignal | undefined
     const queries: unknown[] = []
     const client = {
-        query: async (query: unknown, signal?: AbortSignal) => {
+        listRequests: async (query: unknown, signal?: AbortSignal) => {
             queries.push(query)
             if (queries.length === 1) {
                 firstSignal = signal
-                return new Promise<ReturnType<typeof sqlRows>>(resolve => {
+                return new Promise<RequestTracePage>(resolve => {
                     resolveFirst = resolve
                 })
             }
-            return sqlRows([{ ...page.records[0]!, operation: "filtered call" }])
+            return historyPage([{ ...page.records[0]!, operation: "filtered call" }])
         }
     }
     const view = render(<RequestObserver client={client} />)
@@ -195,13 +214,13 @@ test("changing history filters cancels the old query and ignores a late response
     fireEvent.submit(actor.closest("form")!)
     await view.findByText("filtered call")
     assert.equal(firstSignal?.aborted, true)
-    assert.deepEqual((queries[1] as { params: string[] }).params, ["lobby"])
-    await act(async () => resolveFirst(sqlRows()))
+    assert.equal((queries[1] as RequestHistoryQuery).actorId, "lobby")
+    await act(async () => resolveFirst(historyPage()))
     assert.equal(view.queryByText("post"), null)
 })
 
 test("instance requests filter both class and ID in live and saved history", async () => {
-    const queries: { sql: string; params: unknown[] }[] = []
+    const queries: RequestHistoryQuery[] = []
     const client = {
         watchRequests: async (receive: (value: RequestTracePage) => void, signal: AbortSignal) => {
             receive({
@@ -214,9 +233,9 @@ test("instance requests filter both class and ID in live and saved history", asy
             })
             await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
         },
-        query: async (query: { sql: string; params: unknown[] }) => {
+        listRequests: async (query: RequestHistoryQuery) => {
             queries.push(query)
-            return sqlRows()
+            return historyPage()
         }
     }
     const view = render(<RequestObserver client={client} actor={{ actorName: "Room", actorId: "lobby" }} />)
@@ -225,9 +244,7 @@ test("instance requests filter both class and ID in live and saved history", asy
     assert.equal(view.queryByText("wrong instance"), null)
     fireEvent.click(view.getByRole("button", { name: "History" }))
     await view.findByRole("table", { name: "Saved requests" })
-    assert.match(queries[0]!.sql, /actor_name = \?/u)
-    assert.match(queries[0]!.sql, /actor_id = \?/u)
-    assert.deepEqual(queries[0]!.params, ["Room", "lobby"])
+    assert.deepEqual(queries[0], { actorName: "Room", actorId: "lobby", cursor: undefined })
     assert.equal(view.queryByLabelText("Actor ID"), null)
 })
 

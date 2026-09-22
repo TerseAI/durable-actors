@@ -1,145 +1,54 @@
 # little-actors
 
-Named actors with serial method calls and saved state. Requires Node.js 20.19+ or 22.12+ (matching Vite's runtime requirement). The CLI uses Node.js; actor execution requires Bun 1.4.2+.
+Named actors with saved state. Requires Node.js ^20.19.0 or >=22.12.0 and Bun 1.4.2+.
 
 ```sh
 npm install little-actors
 ```
 
-Start with the [chat example](https://github.com/TerseAI/little-actors/tree/main/examples/chat) to create and run the Express + React chat app.
+For a complete app, run `npx little-actors init my-app` and follow its README. See [CLI workflows](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md) for deployment and other commands.
 
-## Local CLI
+## Define an actor
 
-Create the bundled chat app in a new directory:
+Export actors from `src/durable-objects.ts`:
 
-```sh
-npx little-actors init chat-example
+```ts
+import { Actor, Persisted } from "little-actors"
+
+export class Counter extends Actor {
+    @Persisted count = 0
+
+    async increment(): Promise<number> {
+        return ++this.count
+    }
+}
 ```
 
-The command copies the template and prints setup instructions. Its dependencies include the same SDK version as the CLI. In an existing application, install `little-actors` and follow the actor setup below.
+Methods must be async. Mark each field `@Persisted` to save it or `@Ephemeral` for temporary values. Calls run sequentially by default. See the [TypeScript API](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md) for behavior and the generated reference.
 
-For Vercel AI SDK with durable chat history, use `npx little-actors init ai-chat-example --template ai-chat`. The [AI chat example](https://github.com/TerseAI/little-actors/tree/main/examples/ai-chat) uses `useChat`, HTTP streaming, and backend actor calls; it needs an OpenAI API key and no generated clients.
-
-For a collaborative Tiptap editor, use `npx little-actors init documents-example --template documents`. The [documents example](https://github.com/TerseAI/little-actors/tree/main/examples/documents) uses Yjs, native WebSockets, and one durable actor per document.
-
-Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
+## Run locally
 
 ```sh
 npx little-actors start --dev --project-id my-project
 ```
 
-Wait for the `Ready` line. Set the same `DURABLE_OBJECT_PROJECT_ID` in your application backend. If `start --dev` generates a key, run its printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
+Wait for `Ready`. In your backend terminal, set `DURABLE_OBJECT_PROJECT_ID=my-project` and run the printed `export DURABLE_OBJECT_API_KEY=…` command. Keep the actor server running; code reloads automatically and state survives restarts.
 
-Generate source once for your backend and web app:
-
-```sh
-npx little-actors generate
-```
-
-Build tools can generate the same files in memory through the public compiler and codegen APIs:
+Call an actor from your backend:
 
 ```ts
-import { generateTypeScript } from "little-actors/codegen"
-import { ActorCompiler } from "little-actors/compiler"
+import { Counter } from "./src/durable-objects.js"
 
-const contract = new ActorCompiler().compileContract("src/durable-objects.ts")
-const files = await generateTypeScript(contract)
-// files is a ReadonlyMap<string, string> of relative filenames to TypeScript source.
+const count = await Counter.get("visits").increment()
 ```
 
-The caller chooses where to write the files. Generation does not execute actor code. The CLI writes only generated TypeScript clients.
+For a separate backend project, generate typed helpers with `npx little-actors generate` and import `actors` from `generated/index.js`.
 
-Generated `index.ts` exposes typed RPC stubs that work in a separate backend repository:
-
-```ts
-import { actors } from "./generated/index.js"
-
-const room = actors.ChatRoom.get("lobby")
-await room.sendMessage({ text: "Hello" }) // Arguments and return types come from your actor API.
-```
-
-The methods above assume your actor defines `sendMessage(input: { text: string })`. The generated stub uses the SDK's normal backend connection settings. Generated clients contain public types without importing the actor implementation or its private dependencies, so you can publish them as a separate npm package.
-
-For a hosted deployment, configure the [remote connection](#hosted-backends), then supply your published customer build image. The control plane compiles the code and public contract, publishes the snapshot, and registers the deployment in one request:
-
-```sh
-npx little-actors deploy --image im-customer-build
-```
-
-Then generate clients in another repository using the same environment settings:
-
-```sh
-npx little-actors generate --url
-```
-
-Deploy assigns a revision automatically, and generation uses the latest deployment. The server stores only its active contract. See the [CLI reference](../docs/reference/cli.md#generate-from-the-control-plane) for deployment and credentials.
-
-The npm package installs the `little-actors` CLI. On first use, `start --dev` downloads and caches the matching native runtime automatically. It watches TypeScript files across the actor project and publishes valid source changes to the local control plane; rerun `generate --url` when the public contract changes. Start your frontend and application backend with their usual tooling. Restart the application backend after restarting the actor runtime to reload cached settings. State survives restarts in `.little-actors/`.
-
-`little-actors start --help` lists both modes and their options. Plain `little-actors start` uses your hosted runtime configuration. There is no CLI client runner; browser applications use native WebSockets as shown below.
-
-## Test runners
-
-Start a local server programmatically and pass its connection settings to your test runner:
-
-```ts
-import { startLocalActors } from "little-actors/dev"
-
-const runtime = await startLocalActors({ entrypoint: "src/actors.ts" })
-try {
-    await runTests(runtime.connection)
-} finally {
-    await runtime.stop()
-}
-```
-
-The launcher downloads the matching runtime and waits for readiness. It defaults to a free loopback port and `.little-actors/`; set `project`, `dataDir`, or `port` to override them. `stop()` preserves state and waits for shutdown. `connection` exposes the server settings; `closed` rejects on process failure.
-
-## Hosted backends
-
-Configure the [remote connection](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) once for your CLI and backend. Local development needs no connection configuration.
-
-Keep the API key on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md#browser-connections).
-
-See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
-
-## WebSocket API
-
-The gateway keeps connections while actors hibernate. Actors use `onConnect`, `onMessage`, and `onDisconnect` to manage application messages. Browser connections receive explicit actor messages plus automatic snapshots and committed updates of public `@Persisted @Emittable` fields. Private, protected, and non-emittable fields are excluded.
-
-For long-running async methods, import the experimental `Reentrant` decorator and apply `@Reentrant` to allow other calls and socket hooks to run while the method awaits. The method retains actor state access, but state can change across awaits. Undecorated calls block all new invocations until completion and persistence; already-running reentrant continuations may still resume during their awaits. Direct `this.method()` calls inherit the current invocation's mode.
-
-Declaring any reentrant method disables application-error rollback for the whole actor class. Failed-call mutations remain in memory and may be saved by another successful call. Persistence still occurs on successful completion, so this does not make streamed progress immediately durable. See the [scheduling and persistence contract](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#reentrant-methods-experimental) before opting in.
-
-Inside actor hooks and backend SDK connections, send JSON values with `socket.send({ type: "chat", text: "Hello" })`. The backend SDK encodes and parses these values. Native browser sockets use `JSON.stringify` and `JSON.parse`.
-
-`Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Generated JSON schemas are checked at deployment and are not enforced with AJV during execution. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).
-
-| API                                  | Behavior                                             |
-| ------------------------------------ | ---------------------------------------------------- |
-| `Actor.get(id).connect(metadata)`    | Opens a connection with JSON-serializable metadata.  |
-| `onMessage(socket, message)`         | Handles incoming messages on the actor.              |
-| `onDisconnect(socket)`               | Handles a closed connection.                         |
-| `this.broadcast(message)`            | Sends to connected clients.                          |
-| `socket.send(message)`               | Sends to one client.                                 |
-| `socket.setTags(...tags)`            | Tags a connection for filtered broadcasts.           |
-| `socket.close()` / `socket.reject()` | Closes a connection / rejects it during `onConnect`. |
-
-`await this.getConnections()` fetches connections on demand and caches the result for that invocation. Ordinary methods that do not enumerate connections skip the gateway lookup. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
-
-For a separate WebSocket gateway, see [gateway configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md).
+See [configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) for remote servers and credentials.
 
 ## Browser clients
 
-Generate backend helpers from your actor entrypoint:
-
-```sh
-npx little-actors generate
-```
-
-The generated `index.ts` exposes typed backend RPC stubs and WebSocket grants under `actors`. Your frontend uses the browser's native `WebSocket`; it needs no generated client or SDK import.
-
-Your backend authenticates the user and checks actor access before issuing a grant:
+Generate backend helpers with `npx little-actors generate`. Authenticate the user and check actor access before issuing a WebSocket URL. For a `ChatRoom` actor:
 
 ```ts
 import { actors } from "./generated/index.js"
@@ -156,11 +65,7 @@ export async function POST(request: Request) {
 }
 ```
 
-`prepareWebsocket` returns `{ websocketUrl, key }`. The URL already includes the signed key and can be passed directly to `new WebSocket()`. The key grants socket access to one actor; it cannot invoke backend RPC methods or issue other keys. Metadata comes from your backend and is validated by the actor host.
-
-The helper reads connection settings from environment variables. For overrides or an injected transport, use `actors.ChatRoom.prepareWebsocket(authorization, options, { fetch })`. `ActorProxy.handle({ actorName, actorId, metadata })` remains available for dynamic actor selection.
-
-The frontend fetches your application endpoint and opens the returned URL:
+The browser connects using native WebSockets:
 
 ```js
 const response = await fetch("/api/socket/ChatRoom/lobby", { method: "POST" })
@@ -170,23 +75,24 @@ const socket = new WebSocket(websocketUrl)
 
 socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }))
 socket.onmessage = event => renderMessage(JSON.parse(event.data))
-socket.onclose = event => showDisconnected(event.code)
-socket.onerror = () => showConnectionError()
 ```
 
-Messages are application JSON in text frames, with no SDK envelopes, initialization frames, or special subprotocol. Actors send initial application data explicitly from `onConnect` and use `socket.send()` or `this.broadcast()` for updates. Public `@Persisted @Emittable` fields also send automatic `state` snapshots and committed `state_update` messages. Actors without emittable fields send only application messages. Reconnection, message replay, and ticket renewal remain application responsibilities.
+Keep the API key on your backend and treat the returned URL as a credential. See [WebSockets](https://github.com/TerseAI/little-actors/blob/main/docs/guides/websockets.md) for state updates, expiration, and reconnecting.
 
-Open a grant within 60 seconds. Connection authorization defaults to 15 minutes; set `authorizationLifetimeMs` in `prepareWebsocket` to change it, subject to the server's maximum. The server closes expired connections with code `4408`, including while idle or running a handler. Your application decides whether to request a fresh grant and open another socket.
+## Test runners
 
-Treat both the URL and key as credentials. Keep the backend API key on the server and omit signed URL query strings from logs. Call `socket.close()` when the view is finished.
+```ts
+import { startLocalActors } from "little-actors/dev"
 
-## Reference
+const runtime = await startLocalActors({ projectId: "my-project", entrypoint: "src/durable-objects.ts" })
+try {
+    await runTests(runtime.connection)
+} finally {
+    await runtime.stop()
+}
+```
 
-- [Configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md): local defaults, environment variables, credentials, and server settings.
-- [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands and options.
-- [TypeScript API reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
-- [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, backend access, connections, and callbacks.
-- [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): install from npm and run actors locally.
+`stop()` preserves saved state. Set `dataDir` to isolate test runs.
 
 ## License
 

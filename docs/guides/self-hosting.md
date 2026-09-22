@@ -9,7 +9,7 @@ Recommended setup:
 - One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [configuration](../reference/configuration.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
@@ -61,10 +61,10 @@ Port `7100` serves the HTTP and gRPC control-plane APIs. Use an HTTPS proxy that
 From the configured deployment terminal, check the public endpoint:
 
 ```sh
-curl --fail --silent --show-error https://objects.example.com/.well-known/jwks.json
+curl --fail --silent --show-error https://objects.example.com/healthz
 ```
 
-Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
+Expect `ok`. Your first actor call will also exercise host provisioning and storage.
 
 ## 4. Package and deploy customer code
 
@@ -94,7 +94,7 @@ Spare sandboxes initialize Rust, Bun, the SDK worker, and IPC before admission. 
 
 Configure spare capacity, regions, lifetimes, and resource limits using the [configuration table](../reference/configuration.md).
 
-Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses; see [replica lifecycle](replication.md#repair-and-lifecycle). Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
+Each actor activation claims dedicated Rust-only replica listeners in parallel with its primary. These spares start without an actor identity or state, then accept an authenticated assignment. Initial writes confirm through GCS while replicas initialize and catch up independently. The primary enables replica acknowledgments after a conditional membership change and a local state-version check. Failed replicas are replaced through the same pool, while writes continue through GCS. Catch-up and cleanup preserve recovery witnesses. Hosts reuse gRPC connections for replica initialization, recovery, and writes, with credentials supplied per request.
 
 Old code snapshots remain immutable deployment artifacts; retiring hosts does not delete snapshots. Snapshot retention is managed separately from actor lifecycle; deployment replacement and deletion currently retain these artifacts.
 
@@ -120,7 +120,7 @@ Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DU
 
 ## Browser connections
 
-See the [browser example](../../sdk/README.md#browser-clients) and [wire protocol](../reference/http.md#external-connections). The optional incoming-message event callback remains independent of authorization.
+See the [browser example](../../sdk/README.md#browser-clients) and [wire protocol](websockets.md). The optional incoming-message event callback remains independent of authorization.
 
 ## Regional installations
 

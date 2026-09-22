@@ -553,13 +553,13 @@ impl Stack {
             source: None,
             code_snapshot: None,
             project_id: "default".into(),
-            code_revision: "revision".into(),
+
             image_ref: "test-image".into(),
             working_directory: "/app".into(),
             actor_entrypoint: None,
             secret_refs: vec![],
         };
-        let revision = spec.host_revision();
+        let revision = spec.host_config_key();
         let host_id = HostId::new(format!("host.v3.{revision}.session"));
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);

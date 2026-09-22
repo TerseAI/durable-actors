@@ -152,7 +152,7 @@ fn rest_parameters_require_array_schemas_without_tuple_items() -> Result<()> {
 }
 
 #[tokio::test]
-async fn in_memory_contract_keeps_only_the_active_revision() -> Result<()> {
+async fn in_memory_contract_replaces_the_current_deployment_atomically() -> Result<()> {
     registry_behavior(Arc::new(LocalAdminRegistry::default())).await
 }
 
@@ -173,7 +173,7 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
             PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
         assert_eq!(
             reopened
-                .deployment_contract("default", None)
+                .deployment_contract("default")
                 .await?
                 .unwrap()
                 .contract,
@@ -190,12 +190,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     let full = PublicActorContract::new(serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?)?;
-    assert!(
-        registry
-            .deployment_contract("default", None)
-            .await?
-            .is_none()
-    );
+    assert!(registry.deployment_contract("default").await?.is_none());
     assert!(
         registry
             .register_deployment(&deployment, Some(&empty))
@@ -206,98 +201,65 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
             .register_deployment(&deployment, Some(&empty))
             .await?
     );
-    let first = registry
-        .deployment_contract("default", None)
-        .await?
-        .unwrap();
-    assert_eq!(first.code_revision, "revision-1");
+    let first = registry.deployment_contract("default").await?.unwrap();
     assert_eq!(first.contract_hash, empty.hash());
     assert_eq!(first.contract, *empty.document());
-    let mut conflicting = deployment.clone();
-    conflicting.image_ref = "rejected-image".into();
-    assert!(
-        registry
-            .register_deployment(&conflicting, Some(&full))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        registry.launch_spec("default").await?,
-        Some(deployment.clone())
-    );
-    assert!(!registry.register_deployment(&deployment, None).await?);
-    assert_eq!(
-        registry.deployment_contract("default", None).await?,
-        Some(first.clone())
-    );
-    deployment.code_revision = "revision-2".into();
+
+    deployment.image_ref = "updated-image".into();
     assert!(
         registry
             .register_deployment(&deployment, Some(&full))
             .await?
     );
     assert_eq!(
+        registry.launch_spec("default").await?,
+        Some(deployment.clone())
+    );
+    assert_eq!(
         registry
-            .deployment_contract("default", None)
+            .deployment_contract("default")
             .await?
             .unwrap()
             .contract,
         *full.document()
     );
-    assert_eq!(
-        registry
-            .deployment_contract("default", Some("revision-1"))
-            .await?,
-        None
-    );
     assert!(
         registry
-            .deployment_contract("default", Some("revision-1"))
+            .register_deployment(&deployment, Some(&empty))
             .await?
-            .is_none()
-    );
-    deployment.code_revision = "revision-3".into();
-    registry.register_deployment(&deployment, None).await?;
-    assert!(
-        registry
-            .deployment_contract("default", None)
-            .await?
-            .is_none()
-    );
-    deployment.code_revision = "revision-1".into();
-    registry.register_deployment(&deployment, None).await?;
-    assert_eq!(registry.deployment_contract("default", None).await?, None);
-    registry
-        .register_deployment(&deployment, Some(&full))
-        .await?;
-    registry.remove_deployment("default").await?;
-    assert!(
-        registry
-            .deployment_contract("default", None)
-            .await?
-            .is_none()
     );
     assert_eq!(
         registry
-            .deployment_contract("default", Some("revision-1"))
-            .await?,
-        None
-    );
-    deployment.code_revision = "race".into();
-    let (left, right) = tokio::join!(
-        registry.register_deployment(&deployment, Some(&empty)),
-        registry.register_deployment(&deployment, Some(&full))
-    );
-    assert_ne!(left.is_ok(), right.is_ok());
-    let winner = if left.is_ok() { empty } else { full };
-    assert_eq!(
-        registry
-            .deployment_contract("default", None)
+            .deployment_contract("default")
             .await?
             .unwrap()
             .contract,
-        *winner.document()
+        *empty.document()
     );
+    assert!(registry.register_deployment(&deployment, None).await?);
+    assert!(registry.deployment_contract("default").await?.is_none());
+
+    let mut other = deployment.clone();
+    other.image_ref = "other-image".into();
+    let (left, right) = tokio::join!(
+        registry.register_deployment(&deployment, Some(&empty)),
+        registry.register_deployment(&other, Some(&full))
+    );
+    left?;
+    right?;
+    let active = registry.launch_spec("default").await?.unwrap();
+    let expected = if active == deployment { empty } else { full };
+    assert_eq!(
+        registry
+            .deployment_contract("default")
+            .await?
+            .unwrap()
+            .contract,
+        *expected.document()
+    );
+    registry.remove_deployment("default").await?;
+    assert!(registry.launch_spec("default").await?.is_none());
+    assert!(registry.deployment_contract("default").await?.is_none());
     Ok(())
 }
 
@@ -306,7 +268,6 @@ fn spec() -> HostLaunchSpec {
         project_id: "default".into(),
         source: None,
         code_snapshot: None,
-        code_revision: "revision-1".into(),
         image_ref: "image".into(),
         working_directory: "/app".into(),
         actor_entrypoint: None,

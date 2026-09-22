@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -77,16 +76,14 @@ async function publishLocalContract(
     client: Pick<ControlPlaneClient, "registerDeployment">
 ): Promise<void> {
     const contract = await compileContract(project, options.entrypoint)
-    const codeRevision = randomUUID()
     await client.registerDeployment({
-        codeRevision,
         imageRef: "local",
         workingDirectory: project,
         actorEntrypoint: options.entrypoint,
         secretRefs: [],
         contract
     })
-    console.log(`Updated local actor revision ${codeRevision}.`)
+    console.log("Updated local actors.")
 }
 
 async function compileContract(project: string, entrypoint: string) {

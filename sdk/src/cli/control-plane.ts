@@ -1,4 +1,4 @@
-import { projectActorPath, validateProjectId } from "../actor/identity.js"
+import { validateProjectId } from "../actor/identity.js"
 
 import { connection } from "./connection.js"
 
@@ -21,16 +21,15 @@ class ControlPlaneClient {
     ) {}
 
     async checkConnection(): Promise<void> {
-        await this.requestJson("GET", "/v1/actors?limit=1", undefined, 10_000)
+        await this.requestJson("GET", "/v1/observe/actors", undefined, 10_000)
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
         return this.requestJson("PUT", `${this.projectPath()}/deployment`, deployment, 150_000)
     }
 
-    getContract(revision?: string): Promise<unknown> {
-        const query = revision ? `?${new URLSearchParams({ revision })}` : ""
-        return this.requestJson("GET", `${this.projectPath()}/deployment/contract${query}`)
+    getContract(): Promise<unknown> {
+        return this.requestJson("GET", `${this.projectPath()}/deployment/contract`)
     }
 
     listActors(): Promise<unknown> {
@@ -46,8 +45,14 @@ class ControlPlaneClient {
         return this.openStream(`/v1/observe/requests/events${query}`, signal)
     }
 
-    query(query: { sql: string; params?: unknown[] }, signal?: AbortSignal): Promise<unknown> {
-        return this.requestJson("POST", "/v1/observe/query", query, 30_000, signal)
+    listRequests(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+        return this.requestJson(
+            "GET",
+            `/v1/observe/requests${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
     }
 
     private async openStream(path: string, signal: AbortSignal): Promise<Response> {
@@ -63,23 +68,12 @@ class ControlPlaneClient {
         return response
     }
 
-    listSavedActors(query: URLSearchParams): Promise<unknown> {
-        return this.requestJson("GET", `/v1/actors${query.size ? `?${query}` : ""}`)
-    }
-
-    inspectActor(actorName: string, actorId: string): Promise<unknown> {
-        return this.requestJson(
-            "GET",
-            `${projectActorPath(this.connection.projectId, actorName, actorId)}?include=state`
-        )
-    }
-
     private projectPath(): string {
         return `/v1/projects/${encodeURIComponent(validateProjectId(this.connection.projectId))}`
     }
 
     private async requestJson(
-        method: "GET" | "PUT" | "POST",
+        method: "GET" | "PUT",
         pathname: string,
         body?: unknown,
         timeoutMs = 30_000,

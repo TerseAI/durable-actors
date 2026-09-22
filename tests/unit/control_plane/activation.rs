@@ -118,7 +118,6 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
             project_id: "default".into(),
             source: None,
             code_snapshot: None,
-            code_revision: "revision".into(),
             image_ref: "image".into(),
             working_directory: "/app".into(),
             actor_entrypoint: None,

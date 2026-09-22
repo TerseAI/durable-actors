@@ -30,7 +30,7 @@ npx little-actors start --dev --project-id my-project
 
 Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts. You can also set `DURABLE_OBJECT_PROJECT_ID` in `.env` instead of passing `--project-id`.
 
-Startup compiles and publishes your actors' public contract. You can then run `npx little-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
+Startup publishes your actors' current contract. Run `npx little-actors generate --url` to generate clients from it. Source changes restart local actors and update the contract.
 
 The same terminal shows runtime logs and a request log with the method, path, status, and duration when the local control plane responds. Request logs omit query strings, headers, and bodies. Use `RUST_LOG=debug npx little-actors start --dev` for more detail, or `RUST_LOG=warn npx little-actors start --dev` to show only warnings and errors.
 
@@ -74,8 +74,7 @@ The command waits for the tunnel to be ready, saves `DURABLE_OBJECT_CONTROL_PLAN
 For a quick check in another terminal, use the built CLI:
 
 ```sh
-node sdk/dist/cli.js actors list
-node sdk/dist/cli.js actors inspect Counter YOUR_ACTOR_ID
+node sdk/dist/cli.js observe
 ```
 
 You can still run `pnpm run tunnel` and `pnpm run start` separately. In that case, wait for the tunnel before starting the control plane; unset any older shell export of `DURABLE_OBJECT_CONTROL_PLANE_URL` so `.env` takes precedence. A running process or another terminal's environment cannot be changed by the helper.

@@ -1,3 +1,4 @@
+/** @module little-actors */
 export { Actor } from "./actor/actor.js"
 export { Emittable, Ephemeral, Persisted, Reentrant } from "./actor/decorators.js"
 export type { ActorClass, ActorMessageOf, ActorSocketOf } from "./actor/actor.js"

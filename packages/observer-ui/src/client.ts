@@ -19,7 +19,7 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
-    query?(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult>
+    listRequests?(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage>
     watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal, after?: string): Promise<void>
     watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
     listActors(signal?: AbortSignal): Promise<ActorInventory>
@@ -47,31 +47,14 @@ class HttpObserverClient implements ObserverClient {
         return this.watch(`requests/events${query}`, "requests", isTracePage, onPage, signal)
     }
 
-    async query(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult> {
-        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/query`, {
-            method: "POST",
-            credentials: "same-origin",
-            redirect: "error",
-            signal,
-            headers: { "content-type": "application/json", accept: "application/json" },
-            body: JSON.stringify(query)
-        })
-        if (!response.ok) throw new Error(`Observability query failed (HTTP ${response.status}).`)
-        const result: unknown = await response.json()
-        if (
-            !result ||
-            typeof result !== "object" ||
-            !("rows" in result) ||
-            !Array.isArray(result.rows) ||
-            result.rows.length > 500 ||
-            !("truncated" in result) ||
-            typeof result.truncated !== "boolean" ||
-            !result.rows.every(
-                row => row && typeof row === "object" && !Array.isArray(row) && Object.values(row).every(value => value === null || ["string", "boolean", "number"].includes(typeof value))
-            )
-        )
-            throw new Error("Invalid SQL query response")
-        return result as ObserverQueryResult
+    async listRequests(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage> {
+        const params = new URLSearchParams()
+        for (const [key, value] of Object.entries(query)) {
+            if (value !== undefined) params.set(key, String(value))
+        }
+        const result = await this.get(`requests${params.size ? `?${params}` : ""}`, signal)
+        if (!isTracePage(result)) throw new Error("Invalid request history response")
+        return result
     }
 
     private async watch<T>(path: string, eventName: string, validate: (value: unknown) => value is T, receive: (value: T) => void, signal: AbortSignal): Promise<void> {
@@ -187,14 +170,14 @@ export interface RequestTrace {
     outcome: "completed" | "failed" | "rejected" | "rerouted" | "interrupted"
 }
 
-export type SqlValue = string | number | boolean | null
-export interface ObserverQuery {
-    sql: string
-    params: SqlValue[]
-}
-export interface ObserverQueryResult {
-    rows: Record<string, SqlValue>[]
-    truncated: boolean
+export interface RequestHistoryQuery {
+    actorName?: string
+    actorId?: string
+    outcome?: RequestTrace["outcome"]
+    fromMs?: number
+    toMs?: number
+    limit?: number
+    cursor?: string
 }
 
 export interface RequestTracePage {

@@ -1,12 +1,15 @@
+/** @module little-actors/proxy */
 import { z } from "zod"
 
 import { projectActorPath, validateActorComponent, validateProjectId } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
 
+/** Overrides for the backend's DURABLE_OBJECT environment settings. */
 interface SocketProxyOptions {
     readonly projectId?: string
     readonly controlPlaneUrl?: string
     readonly apiKey?: string
+    /** Defaults to 180000 ms; accepts 1000–600000 ms. */
     readonly setupTimeoutMs?: number
 }
 
@@ -18,6 +21,7 @@ interface ProxyActor<Metadata = unknown> {
     readonly types?: Metadata
 }
 
+/** Actor access your backend has already authorized. */
 type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
     [Name in keyof Actors & string]: {
         readonly actorName: Name
@@ -36,8 +40,10 @@ const socketGrantSchema = z.object({
     authorizedUntilMs: z.number().int()
 })
 
+/** Browser connection URL and deadlines in Unix milliseconds. Treat the URL as a credential. */
 type SocketGrant = z.infer<typeof socketGrantSchema>
 
+/** Issues browser connection URLs from your backend. */
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly projectId: string
     private readonly origin: string
@@ -72,6 +78,10 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
+    /**
+     * Call after authenticating the user and checking actor access.
+     * Pass `websocketUrl` to the browser's `new WebSocket()`.
+     */
     async handle(authorization: SocketAuthorization<Actors>): Promise<SocketGrant> {
         const actorName = validateActorComponent("actor name", authorization.actorName)
         const actorId = validateActorComponent("actor ID", authorization.actorId)

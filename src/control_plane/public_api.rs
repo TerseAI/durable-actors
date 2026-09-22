@@ -14,7 +14,7 @@ use crate::actor::ActorKey;
 use super::{
     MAX_CONTROL_PLANE_MESSAGE_BYTES,
     admin::{AdminService, HostLaunchSpec},
-    contracts::{ContractRevisionConflict, PublicActorContract},
+    contracts::PublicActorContract,
     service::{ControlPlaneService, TargetResolutionTimings},
 };
 
@@ -27,7 +27,7 @@ struct PublicApiState {
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
     let contracts = super::contract_api::router(admin.clone());
     Router::new()
-        .route("/.well-known/jwks.json", get(jwks))
+        .route("/openapi.yaml", get(openapi))
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/v1/projects/{project_id}/deployment",
@@ -59,6 +59,13 @@ pub(super) fn local_router(
             connect_actor(State(state.clone()), Path(ActorPath { project_id: project_id.clone(), actor_name, actor_id }), headers, request)
         }),
     ).layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES)))
+}
+
+async fn openapi() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/yaml")],
+        include_str!("../../docs/reference/openapi.yaml"),
+    )
 }
 
 async fn connect_actor(
@@ -189,7 +196,6 @@ async fn get_deployment(
             actor_entrypoint: spec.actor_entrypoint,
         });
     Ok(Json(RegisterDeploymentRequest {
-        code_revision: spec.code_revision,
         contract: None,
         image_ref: source.image_ref,
         working_directory: source.working_directory,
@@ -230,7 +236,6 @@ async fn register_deployment(
         project_id: project_id(path)?,
         source: None,
         code_snapshot: None,
-        code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
         actor_entrypoint: request.actor_entrypoint,
@@ -240,20 +245,8 @@ async fn register_deployment(
         .invocations
         .deploy_source(&state.admin, &spec, contract.as_ref())
         .await
-        .map_err(|error| {
-            if error.is::<ContractRevisionConflict>() {
-                ApiError::conflict(error.to_string())
-            } else {
-                ApiError::bad_request(error)
-            }
-        })?;
+        .map_err(ApiError::bad_request)?;
     Ok(Json(DeploymentReply { changed }))
-}
-
-async fn jwks(State(state): State<PublicApiState>) -> Result<Json<Value>, ApiError> {
-    let document = serde_json::from_slice(&state.admin.jwks_json().map_err(ApiError::internal)?)
-        .map_err(ApiError::internal)?;
-    Ok(Json(document))
 }
 
 async fn resolve_actor_target(
@@ -398,7 +391,6 @@ fn authorization(headers: &HeaderMap) -> Result<&str, ApiError> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
-    code_revision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     image_ref: String,

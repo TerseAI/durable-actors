@@ -7,6 +7,7 @@ import type { SocketContract } from "../wire/contract.js"
 
 import { socketTagsSchema } from "./socketProtocol.js"
 
+/** Optional Zod validators for `static schemas`. Transformations are not applied. */
 interface ActorSchemas<Metadata = unknown, Incoming = unknown, Outgoing = Incoming, Tag extends string = string> {
     readonly contract?: SocketContract
     readonly metadata?: z.ZodType<Metadata, Metadata>
@@ -15,12 +16,14 @@ interface ActorSchemas<Metadata = unknown, Incoming = unknown, Outgoing = Incomi
     readonly tag?: z.ZodType<Tag, Tag>
 }
 
+/** Initial snapshot of public `@Emittable` fields. */
 interface ActorStateMessage<State = JsonObject> {
     readonly type: "state"
     readonly state: State
     readonly version?: number
 }
 
+/** Saved state update. Merge `changes` and delete fields listed in `removed`. */
 interface ActorStateUpdate<State = JsonObject> {
     readonly type: "state_update"
     readonly changes: Partial<State>

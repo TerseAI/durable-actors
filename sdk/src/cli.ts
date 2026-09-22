@@ -4,7 +4,6 @@ import { config } from "dotenv"
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-import { registerActorCommands } from "./cli/actors.js"
 import { registerDeployCommand } from "./cli/deploy.js"
 import { registerGenerateCommand } from "./cli/generate.js"
 import { registerObserveCommand } from "./cli/observe.js"
@@ -21,7 +20,7 @@ try {
         .showHelpAfterError()
     program
         .command("init <directory>")
-        .description("Create a sample application")
+        .description("Start from a sample project")
         .addOption(
             new Option("--template <name>", "example app").choices(["chat", "ai-chat", "documents"]).default("chat")
         )
@@ -30,7 +29,6 @@ try {
     registerGenerateCommand(program)
     registerDeployCommand(program)
     registerObserveCommand(program)
-    registerActorCommands(program)
     if (process.argv.length === 2) program.help()
     await program.parseAsync(process.argv)
 } catch (error) {

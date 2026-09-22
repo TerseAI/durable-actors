@@ -83,7 +83,8 @@
         "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
-        "build:observer": "pnpm --filter little-actors-observer build"
+        "build:observer": "pnpm --filter little-actors-observer build",
+        "docs": "typedoc --options typedoc.json"
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
@@ -108,6 +109,8 @@
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
-        "@types/ws": "^8.18.1"
+        "@types/ws": "^8.18.1",
+        "typedoc": "^0.28.20",
+        "typedoc-plugin-missing-exports": "^4.1.4"
     }
 }

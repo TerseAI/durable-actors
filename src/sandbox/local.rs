@@ -188,7 +188,7 @@ impl SandboxProvider for LocalSandboxProvider {
         );
         let key = format!(
             "{}/{}/{}",
-            request.code_revision,
+            request.host_config_key,
             request.canonical_region,
             request
                 .actor
@@ -222,7 +222,7 @@ impl SandboxProvider for LocalSandboxProvider {
     }
 
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination> {
-        let prefix = format!("{}/", request.code_revision);
+        let prefix = format!("{}/", request.host_config_key);
         let mut hosts = self.hosts.lock().await;
         let keys = hosts
             .keys()

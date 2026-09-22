@@ -12,13 +12,13 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     let runtime = LocalRuntime::start(None).await?;
     let client = reqwest::Client::new();
     for (method, path, status) in [
-        (reqwest::Method::GET, "/.well-known/jwks.json", 200),
+        (reqwest::Method::GET, "/healthz", 200),
         (
             reqwest::Method::POST,
             "/v1/projects/default/actors/Counter/one/connect",
             401,
         ),
-        (reqwest::Method::GET, "/v1/actors", 401),
+        (reqwest::Method::GET, "/v1/observe/actors", 401),
         (reqwest::Method::GET, "/missing", 404),
     ] {
         let response = client
@@ -38,13 +38,13 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
     let requests = request_logs(&output);
     assert_eq!(requests.len(), 4, "missing terminal request logs: {output}");
     for (log, (method, path, status)) in requests.iter().zip([
-        ("GET", "/.well-known/jwks.json", 200),
+        ("GET", "/healthz", 200),
         (
             "POST",
             "/v1/projects/default/actors/Counter/one/connect",
             401,
         ),
-        ("GET", "/v1/actors", 401),
+        ("GET", "/v1/observe/actors", 401),
         ("GET", "/missing", 404),
     ]) {
         assert!(log.contains("INFO "), "missing level: {log}");
@@ -72,7 +72,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
 #[tokio::test]
 async fn local_request_logs_respect_rust_log() -> Result<()> {
     let runtime = LocalRuntime::start(Some("warn")).await?;
-    reqwest::get(format!("{}/.well-known/jwks.json", runtime.origin))
+    reqwest::get(format!("{}/healthz", runtime.origin))
         .await?
         .error_for_status()?;
     let output = runtime.stop().await?;

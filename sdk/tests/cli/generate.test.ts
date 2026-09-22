@@ -24,7 +24,6 @@ test("generate uses environment settings and explicit flags without reading disc
         assert.equal(request.headers.authorization, "Bearer local-key")
         response.end(
             JSON.stringify({
-                codeRevision: "local-revision",
                 contractHash: `sha256:${"a".repeat(64)}`,
                 contract
             })
@@ -52,7 +51,7 @@ test("generate uses environment settings and explicit flags without reading disc
     const generate = (...args: string[]) =>
         run(process.execPath, [cli, "generate", "--url", ...args], { cwd: directory, env: localEnv })
     const result = await generate()
-    assert.match(result.stdout, /local-revision/)
+    assert.match(result.stdout, /Generated 1 actor contract/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
     await run(process.execPath, [cli, "generate", "--url", origin, "--api-key", "local-key"], {
         cwd: directory,
@@ -124,7 +123,6 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     let deployment: any
     const requests: string[] = []
     const publication = {
-        codeRevision: "release-1",
         contractHash: `sha256:${"a".repeat(64)}`,
         contract: JSON.parse(
             (
@@ -163,14 +161,13 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     const beforeDeploy = await readdir(author)
     const deployed = await run(
         process.execPath,
-        [cli, "deploy", "--url", origin, "--image", "im-chat", "--revision", "release-1", "--secret", "chat-secrets"],
+        [cli, "deploy", "--url", origin, "--image", "im-chat", "--secret", "chat-secrets"],
         { cwd: author, env }
     )
-    assert.match(deployed.stdout, /release-1/)
+    assert.match(deployed.stdout, /Deployed actors/)
     assert.deepEqual(await readdir(author), beforeDeploy)
     const { contract } = publication
     assert.deepEqual(deployment, {
-        codeRevision: "release-1",
         imageRef: "im-chat",
         workingDirectory: "/customer",
         actorEntrypoint: "src/durable-objects.ts",
@@ -180,15 +177,15 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
     await rm(author, { recursive: true })
-    const result = await run(process.execPath, [cli, "generate", "--url", origin, "--revision", "release-1"], {
+    const result = await run(process.execPath, [cli, "generate", "--url", origin], {
         cwd: directory,
         env
     })
-    assert.deepEqual(requests, ["/v1/projects/default/deployment/contract?revision=release-1"])
+    assert.deepEqual(requests, ["/v1/projects/default/deployment/contract"])
     for (const [file, content] of expected)
         assert.equal(await readFile(path.join(directory, "generated", file), "utf8"), content)
     assert.deepEqual(await readdir(path.join(directory, "generated")), files)
-    assert.match(result.stdout, /release-1/)
+    assert.match(result.stdout, /Generated 1 actor contract/)
 
     await run(process.execPath, [cli, "generate", "--url", "--out-dir", "active"], {
         cwd: directory,
@@ -205,7 +202,6 @@ test("generate rejects remote errors and invalid inputs before changing output",
     const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
     let status = 200
     let body: unknown = {
-        codeRevision: "r1",
         contractHash: `sha256:${"a".repeat(64)}`,
         contract
     }
@@ -231,7 +227,6 @@ test("generate rejects remote errors and invalid inputs before changing output",
         /API key/
     )
     assert.equal(requests, 0)
-    await assert.rejects(generate("--revision", "different"), /revision/)
     contract.version = 2
     await assert.rejects(generate(), /version/)
     contract.version = 1

@@ -104,6 +104,14 @@ jobs:
             - run: pnpm --dir packages/observer-ui format:check
             - run: pnpm --dir packages/observer-ui test
             - run: pnpm --dir sdk test
+            - name: Validate HTTP and build TypeScript documentation
+              run: pnpm docs:build
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: typescript-api
+                  path: .artifacts/api
+                  include-hidden-files: true
+                  if-no-files-found: error
             - run: pnpm --dir packages/observer-ui package:check
             - name: Verify npm package
               working-directory: sdk

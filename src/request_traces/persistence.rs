@@ -12,9 +12,9 @@ use rusqlite::{Connection, Transaction, params};
 use serde::Deserialize;
 
 use super::{TraceEvent, TracePage, replay::ReplayQuery};
+mod history;
 mod replay;
-mod sqlite_query;
-use super::query::{SqlQuery, SqlResult};
+use super::history::HistoryQuery;
 
 const LOCAL_RETENTION: usize = 10_000;
 
@@ -22,7 +22,7 @@ const LOCAL_RETENTION: usize = 10_000;
 pub(crate) trait TracePersistence: Send + Sync {
     // Events have stable IDs; repeated appends must not duplicate them.
     async fn append(&self, events: &[TraceEvent]) -> Result<()>;
-    async fn query(&self, query: &SqlQuery) -> Result<SqlResult>;
+    async fn history(&self, query: &HistoryQuery) -> Result<TracePage>;
     async fn replay(&self, query: &ReplayQuery) -> Result<TracePage>;
 }
 
@@ -85,10 +85,10 @@ impl TracePersistence for SqliteTracePersistence {
         }).await
     }
 
-    async fn query(&self, query: &SqlQuery) -> Result<SqlResult> {
+    async fn history(&self, query: &HistoryQuery) -> Result<TracePage> {
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| sqlite_query::query(connection, &query))
+        self.run(move |connection| history::query(connection, &query))
             .await
     }
 
@@ -102,8 +102,8 @@ impl TracePersistence for SqliteTracePersistence {
 
 fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 3, "unsupported request trace database version");
-    if version == 3 {
+    ensure!(version <= 4, "unsupported request trace database version");
+    if version == 4 {
         return Ok(());
     }
     let transaction = connection.transaction()?;
@@ -130,22 +130,10 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
             [uuid::Uuid::new_v4().to_string()],
         )?;
     }
-    transaction.execute_batch("
-        CREATE VIEW request_events AS SELECT position AS sequence, event_id, started_at_ms, actor_name, actor_id, outcome, event,
-            json_extract(event, '$.requestId') AS request_id,
-            json_extract(event, '$.hostId') AS host_id,
-            json_extract(event, '$.sessionId') AS session_id,
-            json_extract(event, '$.kind') AS kind,
-            json_extract(event, '$.operation') AS operation,
-            json_extract(event, '$.connectionId') AS connection_id,
-            json_extract(event, '$.durationMs') AS duration_ms,
-            json_extract(event, '$.queueWaitMs') AS queue_wait_ms
-        FROM traces;
-        CREATE VIEW request_history AS SELECT generation, pruned, total,
-            COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'traces'), 0) AS watermark
-        FROM trace_meta;
-    ")?;
-    transaction.pragma_update(None, "user_version", 3)?;
+    transaction.execute_batch(
+        "DROP VIEW IF EXISTS request_events; DROP VIEW IF EXISTS request_history;",
+    )?;
+    transaction.pragma_update(None, "user_version", 4)?;
     transaction.commit()?;
     Ok(())
 }
@@ -204,5 +192,5 @@ struct LegacyHistory {
 mod tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/request_traces/persistence/sql_tests.rs"]
-mod sql_tests;
+#[path = "../../tests/unit/request_traces/persistence/history_tests.rs"]
+mod history_tests;

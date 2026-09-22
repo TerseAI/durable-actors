@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Pause, Play, RefreshCw } from "lucide-react"
 
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
+import type { RequestHistoryQuery } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
@@ -10,15 +11,14 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
-import type { HistoryFilters } from "./request-sql.js"
 
 interface RequestObserverProps {
-    client: Pick<ObserverClient, "watchRequests" | "query">
+    client: Pick<ObserverClient, "watchRequests" | "listRequests">
     actor?: Pick<RequestTrace, "actorName" | "actorId">
 }
 
 function RequestObserver({ client, actor }: RequestObserverProps) {
-    const [query, setQuery] = useState<HistoryFilters>()
+    const [query, setQuery] = useState<RequestHistoryQuery>()
     const scopedQuery = useMemo(() => (query ? { ...query, ...actor } : undefined), [query, actor?.actorName, actor?.actorId])
     const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
@@ -43,7 +43,7 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
                     <p>{actor ? "Method calls and WebSocket events for this instance." : "Method calls and WebSocket events, with time spent waiting and processing."}</p>
                 </div>
                 <div className="la-request-actions">
-                    {client.query && (
+                    {client.listRequests && (
                         <>
                             <Button
                                 variant={!query ? "secondary" : "outline"}
@@ -237,7 +237,7 @@ function RequestObserver({ client, actor }: RequestObserverProps) {
     )
 }
 
-function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFilters; loading: boolean; onSearch: (query: HistoryFilters) => void; scoped: boolean }) {
+function HistoryFilters({ query, loading, onSearch, scoped }: { query: RequestHistoryQuery; loading: boolean; onSearch: (query: RequestHistoryQuery) => void; scoped: boolean }) {
     const [invalid, setInvalid] = useState(false)
     return (
         <form
@@ -256,7 +256,7 @@ function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFi
                     fromMs,
                     toMs,
                     actorId: String(data.get("actorId") || "").trim() || undefined,
-                    outcome: (String(data.get("outcome") || "") as HistoryFilters["outcome"]) || undefined
+                    outcome: (String(data.get("outcome") || "") as RequestHistoryQuery["outcome"]) || undefined
                 })
             }}
         >
@@ -271,7 +271,7 @@ function HistoryFilters({ query, loading, onSearch, scoped }: { query: HistoryFi
             {!scoped && (
                 <label>
                     Actor ID
-                    <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
+                    <Input name="actorId" placeholder="All actors" maxLength={128} defaultValue={query.actorId} />
                 </label>
             )}
             <label>

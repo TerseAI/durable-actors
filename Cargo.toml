@@ -10,7 +10,7 @@ repository = "https://github.com/TerseAI/little-actors"
 license = "MIT"
 keywords = ["actors", "distributed-systems", "durable-objects", "serverless"]
 categories = ["asynchronous", "network-programming"]
-include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/build.rs", "/README.md", "/LICENSE.md"]
+include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
 anstream = "1"
@@ -48,7 +48,7 @@ postgres-native-tls = "0.5"
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
 moka = { version = "0.12", features = ["future"] }
-rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "limits"], default-features = false }
+rusqlite = { version = "0.40.2", features = ["bundled"], default-features = false }
 gcp_auth = { version = "0.12.7", default-features = false, features = ["aws-lc-rs"] }
 
 [build-dependencies]

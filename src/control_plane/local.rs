@@ -324,7 +324,6 @@ async fn local_routes(
         project_id: options.project_id.clone(),
         source: None,
         code_snapshot: None,
-        code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
         actor_entrypoint: Some(options.entrypoint.clone()),
@@ -357,13 +356,9 @@ async fn local_routes(
     .with_runtime_access(storage.access.clone())
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
-    let inspector = super::inspection::ActorInspector::new(
-        storage.runtime.clone(),
-        storage.runtime.clone(),
-        storage.runtime.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(service.traces.clone());
+    let inspector =
+        super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
+            .with_traces(service.traces.clone());
     let public =
         public_api::local_router(service.clone(), admin.clone(), options.project_id.clone())
             .merge(super::inspection::router(inspector, admin))

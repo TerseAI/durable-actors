@@ -21,7 +21,7 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         resources: Default::default(),
         runtime_config: None,
 
-        code_revision: "local".into(),
+        host_config_key: "local".into(),
         canonical_region: "north-america-east".into(),
         host_id: HostId::new("host"),
         session_id: "session".into(),

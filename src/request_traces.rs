@@ -9,8 +9,8 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+pub(crate) mod history;
 pub(crate) mod persistence;
-pub(crate) mod query;
 pub(crate) mod replay;
 use persistence::{SqliteTracePersistence, TracePersistence};
 use replay::ReplayQuery;
@@ -176,8 +176,12 @@ impl TraceStore {
         Ok(page)
     }
 
-    pub(crate) async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-        self.persistence.query(query).await
+    pub(crate) async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+        query.validate()?;
+        let mut page = self.persistence.history(query).await?;
+        page.dropped = self.dropped.load(Ordering::Relaxed);
+        page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
+        Ok(page)
     }
 
     fn new(persistence: Arc<dyn TracePersistence>) -> Self {

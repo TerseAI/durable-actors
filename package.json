@@ -13,10 +13,14 @@
         "format:check": "cargo fmt --all -- --check && pnpm --dir sdk format:check && prettier --check \"scripts/*.mjs\" \"tests/scripts/*.mjs\" && pnpm --dir packages/observer-ui format:check",
         "release:prepare": "node scripts/release.mjs prepare",
         "release:verify": "node scripts/release.mjs verify",
-        "test": "pnpm --dir packages/observer-ui test && node --test tests/scripts/*.test.mjs && cargo test --locked --no-fail-fast && pnpm --dir sdk test"
+        "test": "pnpm --dir packages/observer-ui test && node --test tests/scripts/*.test.mjs && cargo test --locked --no-fail-fast && pnpm --dir sdk test",
+        "docs:build": "pnpm docs:check && pnpm --dir sdk build && pnpm --dir sdk docs",
+        "docs:check": "node --test tests/scripts/openapi.test.mjs"
     },
     "devDependencies": {
+        "@apidevtools/swagger-parser": "^12.1.0",
         "@trivago/prettier-plugin-sort-imports": "^6.0.2",
+        "ajv": "^8.20.0",
         "prettier": "^3.8.1",
         "wscat": "6.1.0"
     },

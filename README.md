@@ -149,14 +149,14 @@ function Chat() {
 
 Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your backend with an API key and deploy your actors.
 
-See [bucket authority and replication](docs/guides/replication.md) for ownership, leases, storage layout, and replica placement.
-
 ## Reference
 
 - [Configuration](docs/reference/configuration.md): local defaults, environment variables, credentials, and server settings.
-- [CLI reference](docs/reference/cli.md): running actors, generating SDKs, and command options.
-- [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
-- [HTTP and WebSocket reference](docs/reference/http.md): deployments, backend access, WebSockets, and callbacks.
+- [CLI workflows](docs/reference/cli.md): running actors, generating clients, and opening the observability UI.
+- [TypeScript API](docs/reference/api.md): actor classes, methods, connections, types, and errors.
+- [HTTP API (OpenAPI)](docs/reference/openapi.yaml): deployments, backend access, WebSockets, and callbacks.
+
+See the [documentation index](docs/README.md). The runtime serves its HTTP specification at `/openapi.yaml`. Run `pnpm docs:build` to generate the TypeScript reference in `.artifacts/api/`.
 
 ## License
 

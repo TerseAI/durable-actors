@@ -166,7 +166,6 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 .register_test_deployment(&HostLaunchSpec {
                     project_id: project.into(),
                     source: None,
-                    code_revision: "same".into(),
                     image_ref: image.into(),
                     code_snapshot: Some("im-code".into()),
                     working_directory: "/customer".into(),

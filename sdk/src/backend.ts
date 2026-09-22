@@ -1,3 +1,4 @@
+/** @module little-actors/backend */
 import { validateActorComponent } from "./actor/identity.js"
 import { actorClient } from "./client/client.js"
 import type { ActorClientTransport } from "./client/client.js"
@@ -11,6 +12,7 @@ interface ActorRpcMethod {
     readonly result: "void" | "value"
 }
 
+/** Creates a backend client from generated method definitions. */
 function createActorStub<Stub extends object>(
     actorName: string,
     actorId: string,
@@ -51,6 +53,7 @@ function invocationArguments(args: readonly unknown[]): readonly unknown[] {
 export { createActorStub }
 export type { ActorRpcMethod, ActorRpcTransport }
 
+/** Connects backend clients using explicit settings. Keep the API key on the server. */
 export function createActorTransport(options: DurableObjectsClientOptions): ActorRpcTransport {
     let client: Promise<ActorRpcTransport> | undefined
     return {

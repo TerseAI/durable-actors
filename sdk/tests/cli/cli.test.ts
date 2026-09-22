@@ -64,7 +64,7 @@ test("observe serves a local UI using environment settings or flag overrides", {
         assert.deepEqual(await exited, [0, null])
         await assert.rejects(fetch(url))
     }
-    assert.deepEqual(requests, Array(4).fill("/v1/actors?limit=1"))
+    assert.deepEqual(requests, Array(4).fill("/v1/observe/actors"))
 })
 
 test("observe exits unsuccessfully without a greeting when authentication or transport fails", async t => {
@@ -86,7 +86,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     }
     await assert.rejects(run(process.execPath, args), failure(/HTTP 401.*Unauthorized/u))
     await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
-    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/actors/u))
+    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/observe\/actors/u))
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
@@ -112,162 +112,6 @@ test("init refuses an existing directory and preserves its contents", async t =>
     await writeFile(file, "existing app")
     await assert.rejects(run(process.execPath, [cli, "init", project]), /already exists/)
     assert.equal(await readFile(file, "utf8"), "existing app")
-})
-
-test("actors lists every page locally and inspects committed internal state", async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        assert.equal(request.headers.authorization, "Bearer local-key")
-        requests.push(request.url!)
-        response.setHeader("content-type", "application/json")
-        if (request.url!.includes("?include=state")) {
-            response.end(JSON.stringify({ stateVersion: 7, state: { secret: "saved" } }))
-        } else {
-            const secondPage = request.url!.includes("after=")
-            response.end(
-                JSON.stringify({
-                    actors: [
-                        {
-                            actorName: "Room",
-                            actorId: secondPage ? "two" : "one",
-                            stateVersion: 7
-                        }
-                    ],
-                    nextCursor: secondPage ? null : "object.v1.local.Room.one"
-                })
-            )
-        }
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: "",
-        DURABLE_OBJECT_API_KEY: ""
-    }
-    const flags = ["--url", origin, "--api-key", "local-key"]
-    const listed = await run(process.execPath, [cli, "actors", "list", ...flags, "--all", "--json"], { env })
-    assert.deepEqual(
-        JSON.parse(listed.stdout).map((object: { actorId: string }) => object.actorId),
-        ["one", "two"]
-    )
-    assert.equal(requests[0], "/v1/actors?limit=500")
-    assert.match(requests[1]!, /after=object.v1.local.Room.one/u)
-    const inspected = await run(process.execPath, [cli, "actors", "inspect", "Room", "one", ...flags], { env })
-    assert.deepEqual(JSON.parse(inspected.stdout).state, { secret: "saved" })
-    assert.equal(requests[2], "/v1/projects/default/actors/Room/one?include=state")
-})
-
-test("actors uses cloud credentials, and reports API errors", async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        assert.equal(request.headers.authorization, "Bearer cloud-key")
-        requests.push(request.url!)
-        response.setHeader("content-type", "application/json")
-        if (request.url!.includes("?include=state")) {
-            response.statusCode = 404
-            response.end(JSON.stringify({ error: { code: "not_found", message: "Object not found" } }))
-        } else response.end(JSON.stringify({ actors: [], nextCursor: null }))
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env = {
-        ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: origin,
-        DURABLE_OBJECT_API_KEY: "cloud-key"
-    }
-    const result = await run(process.execPath, [cli, "actors", "list"], { env })
-    assert.match(result.stdout, /No actors/u)
-    assert.equal(requests[0], "/v1/actors?limit=50")
-    await assert.rejects(
-        run(process.execPath, [cli, "actors", "inspect", "Room", "missing"], { env }),
-        /Object not found/u
-    )
-    assert.equal(requests[1], "/v1/projects/default/actors/Room/missing?include=state")
-    await assert.rejects(
-        run(process.execPath, [cli, "actors", "list", "--url", origin], {
-            env: { ...env, DURABLE_OBJECT_API_KEY: "" }
-        }),
-        /API key/u
-    )
-    assert.equal(requests.length, 2)
-})
-
-test("actors limits rows by default and resumes a filtered page without fetching ahead", async t => {
-    const requests: URL[] = []
-    const objects = Array.from({ length: 55 }, (_, index) => ({
-        actorName: "Room",
-        actorId: String(index),
-        homeRegion: "north-america-east",
-        stateVersion: 1
-    }))
-    const server = createServer((request, response) => {
-        const url = new URL(request.url!, "http://localhost")
-        requests.push(url)
-        const after = url.searchParams.get("after")
-        const start = after ? objects.findIndex(object => `object.v3.Room:${object.actorId}` === after) + 1 : 0
-        const end = Math.min(start + Number(url.searchParams.get("limit") ?? 100), objects.length)
-        response.setHeader("content-type", "application/json")
-        response.end(
-            JSON.stringify({
-                actors: objects.slice(start, end),
-                nextCursor: end < objects.length ? `object.v3.Room:${objects[end - 1]!.actorId}` : null
-            })
-        )
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const env = {
-        ...process.env,
-        DURABLE_OBJECT_PROJECT_ID: "default",
-        DURABLE_OBJECT_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-        DURABLE_OBJECT_API_KEY: "cloud-key"
-    }
-    const args = [cli, "actors", "list"]
-    const first = await run(process.execPath, args, { env })
-    assert.equal(first.stdout.trim().split("\n").length, 51)
-    assert.match(first.stderr, /--after 'object.v3.Room:49'/u)
-    assert.equal(requests.length, 1)
-    assert.equal(requests[0]!.searchParams.get("limit"), "50")
-
-    const limited = await run(process.execPath, [...args, "--limit", "2", "--json"], { env })
-    assert.deepEqual(JSON.parse(limited.stdout), objects.slice(0, 2))
-    assert.match(limited.stderr, /--after 'object.v3.Room:1'/u)
-    assert.equal(requests.length, 2)
-
-    const last = await run(process.execPath, [...args, "--limit", "5", "--after", "object.v3.Room:49", "--json"], {
-        env
-    })
-    assert.deepEqual(JSON.parse(last.stdout), objects.slice(50))
-    assert.equal(last.stderr, "")
-    assert.equal(requests.length, 3)
-    assert.equal(requests[2]!.searchParams.get("after"), "object.v3.Room:49")
-    assert.equal(requests[2]!.searchParams.get("limit"), "5")
-})
-
-test("actors rejects invalid limits and conflicting pagination flags before connecting", async () => {
-    for (const value of ["0", "-1", "1.5", "501", "1e2", "abc"]) {
-        await assert.rejects(
-            run(process.execPath, [cli, "actors", "list", "--limit", value]),
-            /Limit must be an integer from 1 to 500/u
-        )
-    }
-    for (const flags of [
-        ["--all", "--limit", "10"],
-        ["--all", "--after", "cursor"]
-    ]) {
-        await assert.rejects(
-            run(process.execPath, [cli, "actors", "list", "--project-id", "default", ...flags]),
-            /cannot be used with/u
-        )
-    }
 })
 
 test("start --dev accepts configured keys without logging the generated key from readiness", async t => {

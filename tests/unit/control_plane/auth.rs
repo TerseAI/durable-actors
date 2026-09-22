@@ -61,7 +61,7 @@ fn invocation_credentials_are_distinct_from_control_plane_credentials() -> Resul
     let mut claims = valid_claims(unix_seconds()?);
     claims["aud"] = json!("durable-object-invoke");
     claims["scope"] = json!("actor:invoke");
-    claims["codeRevision"] = json!("revision-1");
+    claims["hostConfigKey"] = json!("revision-1");
     let token = token(
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),

@@ -14,10 +14,10 @@ function registerStartCommand(program: Command): void {
     program
         .command("start")
         .description("Start the runtime; use --dev for local development")
-        .option("--dev", "Run local actors with persistent state and source watching")
+        .option("--dev", "run locally and reload code changes")
         .optionsGroup("Development options (require --dev):")
         .addOption(new Option("--project-id <id>", "actor project ID (required)").env("DURABLE_OBJECT_PROJECT_ID"))
-        .option("--no-watch", "Disable automatic actor reload when source files change")
+        .option("--no-watch", "disable automatic code reload")
         .addOption(
             new Option("--api-key <key>", "API key for local clients (generated when omitted)").env(
                 "DURABLE_OBJECT_API_KEY"
@@ -43,7 +43,7 @@ function registerStartCommand(program: Command): void {
             )
         )
         .addOption(
-            new Option("--storage <backend>", "where to save actor state and ownership")
+            new Option("--storage <backend>", "where to save actor state")
                 .env("DURABLE_OBJECT_STORAGE")
                 .choices(["local", "gcs"])
                 .default("local")

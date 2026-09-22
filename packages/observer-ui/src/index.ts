@@ -1,7 +1,7 @@
 export { ActorObserver } from "./ActorObserver.js"
 export { RequestObserver } from "./RequestObserver.js"
 export type { RequestObserverProps } from "./RequestObserver.js"
-export type { RequestTrace, RequestTracePage, ObserverQuery, ObserverQueryResult } from "./client.js"
+export type { RequestTrace, RequestTracePage, RequestHistoryQuery } from "./client.js"
 export type { ActorObserverProps } from "./ActorObserver.js"
 export { HttpObserverClient } from "./client.js"
 export type { ActorInventory, ObserverClient } from "./client.js"

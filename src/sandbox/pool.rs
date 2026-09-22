@@ -56,16 +56,16 @@ impl SparePool {
             .claim(
                 &self.key(&spec.image_ref, region),
                 host,
-                &spec.host_revision(),
+                &spec.host_config_key(),
             )
             .await?;
         self.wake.notify_one();
         Ok(result)
     }
 
-    pub async fn reserve_host(&self, session: &str, host: &str, revision: &str) -> Result<()> {
+    pub async fn reserve_host(&self, session: &str, host: &str, config_key: &str) -> Result<()> {
         let name = format!("do-actor-{session}");
-        self.store.0.execute("INSERT INTO durable_object_spares (name, pool_key, status, host_id, code_revision, expires_at) VALUES ($1, '', 'claimed', $2, $3, clock_timestamp() + interval '120 seconds')", &[&name, &host, &revision]).await?;
+        self.store.0.execute("INSERT INTO durable_object_spares (name, pool_key, status, host_id, host_config_key, expires_at) VALUES ($1, '', 'claimed', $2, $3, clock_timestamp() + interval '120 seconds')", &[&name, &host, &config_key]).await?;
         Ok(())
     }
 
@@ -91,11 +91,11 @@ impl SparePool {
         .context("actor sandbox readiness timed out")?
     }
 
-    pub async fn remember(&self, host: &str, revision: &str, spare: &SpareHandle) -> Result<()> {
+    pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
         let updated = self.store.0.execute(
             "UPDATE durable_object_spares SET status = 'active', handle = $2, expires_at = created_at + interval '24 hours' \
-             WHERE name = $1 AND host_id = $3 AND code_revision = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
-            &[&spare.name, &serde_json::to_string(spare)?, &host, &revision],
+             WHERE name = $1 AND host_id = $3 AND host_config_key = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
+            &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
         Ok(())
@@ -125,9 +125,9 @@ impl SparePool {
         Ok(())
     }
 
-    pub async fn retire_revision(&self, revision: &str) -> Result<Vec<String>> {
+    pub async fn retire_config(&self, config_key: &str) -> Result<Vec<String>> {
         let client = self.store.0.connection().await?;
-        let rows = client.query("UPDATE durable_object_spares SET status = 'retiring' WHERE code_revision = $1 RETURNING handle", &[&revision]).await?;
+        let rows = client.query("UPDATE durable_object_spares SET status = 'retiring' WHERE host_config_key = $1 RETURNING handle", &[&config_key]).await?;
         let mut ids = Vec::new();
         for row in rows {
             if let Some(handle) = row.get::<_, Option<String>>(0) {
@@ -299,11 +299,11 @@ impl PoolStore {
         ).await? == 1)
     }
 
-    async fn claim(&self, key: &str, host: &str, revision: &str) -> Result<Option<SpareHandle>> {
+    async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
         self.0.query_opt(
-            "UPDATE durable_object_spares SET status = 'claimed', host_id = $2, code_revision = $3, expires_at = clock_timestamp() + interval '120 seconds' \
+            "UPDATE durable_object_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
              WHERE name = (SELECT name FROM durable_object_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
-            &[&key, &host, &revision],
+            &[&key, &host, &config_key],
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
     }
 

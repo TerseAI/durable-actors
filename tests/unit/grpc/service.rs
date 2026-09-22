@@ -17,7 +17,7 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         host_id: host_id.clone(),
         session_id: "00000000-0000-4000-8000-000000000001".into(),
         region: "north-america-east".into(),
-        code_revision: Some("revision-1".into()),
+        host_config_key: Some("revision-1".into()),
         invocation: Some(ActorInvocationCapability {
             actor: actor.clone(),
             host_id: host_id.clone(),

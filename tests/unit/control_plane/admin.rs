@@ -1,17 +1,16 @@
 use super::*;
 
 #[test]
-fn secret_changes_get_a_new_host_revision_without_changing_the_image_revision() {
+fn secret_changes_update_host_configuration() {
     let mut deployment = spec("image-1");
-    let initial = deployment.host_revision();
+    let initial = deployment.host_config_key();
     deployment.secret_refs = vec!["secrets-first".into()];
-    let first = deployment.host_revision();
+    let first = deployment.host_config_key();
     assert_ne!(initial, first);
     deployment.secret_refs = vec!["secrets-second".into()];
-    assert_ne!(first, deployment.host_revision());
-    assert_eq!(deployment.code_revision, "revision-1");
+    assert_ne!(first, deployment.host_config_key());
     deployment.secret_refs.clear();
-    assert_eq!(initial, deployment.host_revision());
+    assert_eq!(initial, deployment.host_config_key());
 }
 
 #[tokio::test]
@@ -30,12 +29,12 @@ async fn deployment_retains_secret_references() -> Result<()> {
 }
 
 #[tokio::test]
-async fn registration_replaces_the_projects_active_revision() -> Result<()> {
+async fn registration_replaces_the_projects_deployment() -> Result<()> {
     let registry = LocalAdminRegistry::default();
     assert!(registry.register_test_deployment(&spec("im-1")).await?);
     assert!(!registry.register_test_deployment(&spec("im-1")).await?);
-    let mut replacement = spec("im-2");
-    replacement.code_revision = "revision-2".into();
+    let replacement = spec("im-2");
+
     assert!(registry.register_test_deployment(&replacement).await?);
     assert_eq!(registry.launch_spec("default").await?, Some(replacement));
     Ok(())
@@ -76,7 +75,6 @@ fn spec(image: &str) -> HostLaunchSpec {
         project_id: "default".into(),
         source: None,
         code_snapshot: None,
-        code_revision: "revision-1".into(),
         image_ref: image.into(),
         working_directory: "/workspace".into(),
         actor_entrypoint: Some("src/durable-objects.ts".into()),
@@ -94,7 +92,7 @@ async fn projects_keep_independent_deployments_and_host_identities() -> Result<(
     };
     let first = deployment("team-a");
     let second = deployment("team-b");
-    assert_ne!(first.host_revision(), second.host_revision());
+    assert_ne!(first.host_config_key(), second.host_config_key());
     registry.register_test_deployment(&first).await?;
     registry.register_test_deployment(&second).await?;
     let mut deployments = registry.launch_specs().await?;
@@ -131,37 +129,16 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
         assert_eq!(deployments, vec![first.clone(), second.clone()]);
         assert_eq!(registry.launch_spec("team-a").await?, Some(first.clone()));
         assert_eq!(registry.launch_spec("team-b").await?, Some(second.clone()));
-        first.code_revision = "revision-2".into();
+
         first.secret_refs = vec!["team-a-secret".into()];
         registry
             .register_deployment(&first, Some(&contract))
             .await?;
         assert_eq!(registry.launch_spec("team-b").await?, Some(second.clone()));
-        assert!(
-            registry
-                .deployment_contract("team-b", Some("revision-1"))
-                .await?
-                .is_some()
-        );
-        assert!(
-            registry
-                .deployment_contract("team-b", Some("revision-2"))
-                .await?
-                .is_none()
-        );
+        assert!(registry.deployment_contract("team-b").await?.is_some());
         registry.remove_deployment("team-a").await?;
-        assert!(
-            registry
-                .deployment_contract("team-a", None)
-                .await?
-                .is_none()
-        );
-        assert!(
-            registry
-                .deployment_contract("team-b", None)
-                .await?
-                .is_some()
-        );
+        assert!(registry.deployment_contract("team-a").await?.is_none());
+        assert!(registry.deployment_contract("team-b").await?.is_some());
         assert_eq!(registry.launch_spec("team-b").await?, Some(second));
         Ok(())
     })

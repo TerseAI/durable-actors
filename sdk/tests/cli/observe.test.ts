@@ -206,14 +206,20 @@ for (const [method, path, event] of [
     })
 }
 
-test("observer forwards raw SQL and opaque live replay cursors", async t => {
+test("observer forwards history filters and opaque replay cursors", async t => {
     const observer = new Observer(
         {
             checkConnection: async () => {},
             listActors: async () => ({}),
-            query: async query => {
-                assert.deepEqual(query, { sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
-                return { records: [] }
+            listRequests: async (query, signal) => {
+                assert.deepEqual(Object.fromEntries(query), {
+                    actorId: "one",
+                    outcome: "failed",
+                    limit: "100",
+                    cursor: "page+token"
+                })
+                assert.ok(signal)
+                return { records: [], nextCursor: null }
             },
             openRequestStream: async (_signal, after) => {
                 assert.equal(after, "resume+token")
@@ -229,15 +235,9 @@ test("observer forwards raw SQL and opaque live replay cursors", async t => {
     const { url } = await observer.start(false)
     assert.deepEqual(
         await (
-            await fetch(`${url}/api/observe/query`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
-            })
+            await fetch(`${url}/api/observe/requests?actorId=one&outcome=failed&limit=100&cursor=page%2Btoken`)
         ).json(),
-        {
-            records: []
-        }
+        { records: [], nextCursor: null }
     )
     assert.match(
         await (await fetch(`${url}/api/observe/requests/events?after=resume%2Btoken`)).text(),
@@ -245,13 +245,13 @@ test("observer forwards raw SQL and opaque live replay cursors", async t => {
     )
 })
 
-test("SQL proxy rejects cross-origin and malformed requests and hides upstream secrets", async t => {
+test("history proxy rejects writes and cross-origin requests and hides upstream errors", async t => {
     let calls = 0
     const observer = new Observer(
         {
             checkConnection: async () => {},
             listActors: async () => ({}),
-            query: async () => {
+            listRequests: async () => {
                 calls++
                 throw new Error("private-admin-key")
             }
@@ -261,28 +261,57 @@ test("SQL proxy rejects cross-origin and malformed requests and hides upstream s
     )
     t.after(() => observer.close())
     const { url } = await observer.start(false)
-    const endpoint = `${url}/api/observe/query`
-    const body = JSON.stringify({ sql: "SELECT 1", params: [] })
-    assert.equal((await fetch(endpoint)).status, 405)
-    assert.equal(
-        (
-            await fetch(endpoint, {
-                method: "POST",
-                headers: { "content-type": "application/json", origin: "https://untrusted.example" },
-                body
-            })
-        ).status,
-        403
-    )
-    assert.equal((await fetch(endpoint, { method: "POST", body })).status, 400)
-    assert.equal(
-        (await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "broken" }))
-            .status,
-        400
-    )
+    const endpoint = `${url}/api/observe/requests`
+    assert.equal((await fetch(endpoint, { method: "POST" })).status, 405)
+    assert.equal((await fetch(endpoint, { headers: { origin: "https://untrusted.example" } })).status, 403)
     assert.equal(calls, 0)
-    const rejected = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body })
+    const rejected = await fetch(endpoint)
     assert.equal(rejected.status, 503)
-    assert.deepEqual(await rejected.json(), { error: "Observability query failed" })
+    assert.deepEqual(await rejected.json(), { error: "Request history unavailable" })
     assert.equal(calls, 1)
+})
+
+test("history proxy cancels the upstream request when the viewer disconnects", async t => {
+    let signal: AbortSignal | undefined
+    let started!: () => void
+    let cancelled!: () => void
+    const ready = new Promise<void>(resolve => {
+        started = resolve
+    })
+    const stopped = new Promise<void>(resolve => {
+        cancelled = resolve
+    })
+    const observer = new Observer(
+        {
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            listRequests: async (_query, upstream) => {
+                signal = upstream
+                started()
+                await new Promise<void>(resolve =>
+                    upstream!.addEventListener(
+                        "abort",
+                        () => {
+                            cancelled()
+                            resolve()
+                        },
+                        { once: true }
+                    )
+                )
+                return { records: [] }
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    const controller = new AbortController()
+    const response = fetch(`${url}/api/observe/requests`, { signal: controller.signal })
+    const rejected = assert.rejects(response, { name: "AbortError" })
+    await ready
+    controller.abort()
+    await rejected
+    await stopped
+    assert.equal(signal?.aborted, true)
 })
