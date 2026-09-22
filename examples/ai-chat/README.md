@@ -64,6 +64,6 @@ The lobby is shared and has no authentication. Add authentication and chat owner
 
 ## Development
 
-Both processes read `.env`; actor state lives in `.durable-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. Run one example at a time on the default ports.
+Both processes read `.env`; actor state lives in `.durable-actors/`. Actor code reloads automatically; restart `npm run dev` after editing the actor class imported by the backend. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
 
 `npm run build` checks TypeScript and builds the frontend.

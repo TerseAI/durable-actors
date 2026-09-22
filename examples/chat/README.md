@@ -7,7 +7,7 @@ An Express + React chatroom backed by a durable actor. Messages appear in every 
 Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
-npx durable-actors init chat-example
+npx durable-actors init chat-example --template chat
 cd chat-example
 npm install
 cp .env.example .env
@@ -69,6 +69,6 @@ Everyone joins as a guest. Add authentication and room access checks before issu
 
 ## Development
 
-Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
 
 `npm run build` generates clients, checks TypeScript, and builds the frontend.

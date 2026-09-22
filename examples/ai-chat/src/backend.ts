@@ -2,12 +2,15 @@ import { openai } from "@ai-sdk/openai"
 import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
 import type { UIMessage } from "ai"
 import express from "express"
+import { createServer as createHttpServer } from "node:http"
 import { createServer } from "vite"
 
 import { ChatHistory } from "./actors.js"
 import type { ChatMessage } from "./actors.js"
 
 const app = express()
+const server = createHttpServer(app)
+const port = Number(process.env.PORT ?? 3000)
 app.use(express.json())
 
 app.get("/api/chat/:id", async (request, response) => {
@@ -37,10 +40,10 @@ app.post("/api/chat", async (request, response) => {
 })
 
 const vite = await createServer({
-    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
+    server: { middlewareMode: true, hmr: { server }, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
 })
 app.use(vite.middlewares)
-app.listen(3000, "127.0.0.1", () => console.log("AI chat: http://127.0.0.1:3000"))
+server.listen(port, "127.0.0.1", () => console.log(`AI chat: http://127.0.0.1:${port}`))
 
 function historyMessage(message: UIMessage): ChatMessage {
     return {

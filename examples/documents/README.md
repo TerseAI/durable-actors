@@ -48,6 +48,6 @@ Editing pauses while disconnected. Reload to reconnect; unsaved edits are not st
 
 ## Development
 
-Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
 
 `npm run build` generates clients, checks TypeScript, and builds the frontend.

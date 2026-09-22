@@ -1,9 +1,12 @@
 import express from "express"
+import { createServer as createHttpServer } from "node:http"
 import { createServer } from "vite"
 
 import { actors } from "../generated/index.js"
 
 const app = express()
+const server = createHttpServer(app)
+const port = Number(process.env.PORT ?? 3000)
 
 app.post("/api/socket/ChatRoom/:actorId", async (request, response) => {
     const grant = await actors.ChatRoom.prepareWebsocket({
@@ -14,7 +17,7 @@ app.post("/api/socket/ChatRoom/:actorId", async (request, response) => {
 })
 
 const vite = await createServer({
-    server: { middlewareMode: true, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
+    server: { middlewareMode: true, hmr: { server }, fs: { deny: [".env", ".env.*", "**/.durable-actors/**", "**/.git/**"] } }
 })
 app.use(vite.middlewares)
-app.listen(3000, "127.0.0.1", () => console.log("Chat: http://127.0.0.1:3000"))
+server.listen(port, "127.0.0.1", () => console.log(`Chat: http://127.0.0.1:${port}`))
