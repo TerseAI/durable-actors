@@ -33,14 +33,14 @@ import modal
 image = modal.Image.from_registry(
     "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors:YOUR_VERSION",
     add_python="3.12",
-)
+).entrypoint([])
 app = modal.App.lookup("durable-actors-runtime-images", create_if_missing=True)
 with modal.enable_output():
     image.build(app)
 print(image.object_id)
 ```
 
-Run `.venv/bin/python build_image.py` and set the printed `im-...` ID as the shared runtime image in `control-plane.env` using the [configuration table](../reference/configuration.md). Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
+Clear the Docker entrypoint so Modal can run the provider's build, actor, and replica commands. Run `.venv/bin/python build_image.py` and set the printed `im-...` ID as the shared runtime image in `control-plane.env` using the [configuration table](../reference/configuration.md). Private registries require a Modal registry secret. For an unreleased checkout, build and push its Dockerfile to your own registry and import that tag.
 
 ## 3. Run the control plane
 
