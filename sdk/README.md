@@ -1,12 +1,16 @@
 # little-actors
 
-Named actors with saved state. Requires Node.js ^20.19.0 or >=22.12.0 and Bun 1.4.2+.
+Durable actors are TypeScript classes that persist their own state. Call them from your backend or connect browsers over WebSockets.
+
+## Installation
+
+Requires Node.js ^20.19.0 or >=22.12.0 and Bun 1.4.2+.
 
 ```sh
 npm install little-actors
 ```
 
-For a complete app, run `npx little-actors init my-app` and follow its README. See [CLI workflows](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md) for deployment and other commands.
+For a complete app, try [chat](https://github.com/TerseAI/little-actors/tree/main/examples/chat), [AI chat](https://github.com/TerseAI/little-actors/tree/main/examples/ai-chat), or [collaborative documents](https://github.com/TerseAI/little-actors/tree/main/examples/documents).
 
 ## Define an actor
 
@@ -24,75 +28,60 @@ export class Counter extends Actor {
 }
 ```
 
-Methods must be async. Mark each field `@Persisted` to save it or `@Ephemeral` for temporary values. Calls run sequentially by default. See the [TypeScript API](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md) for behavior and the generated reference.
+Methods must be async. Mark every instance field `@Persisted` to save it or `@Ephemeral` for temporary values. Use JSON values for state, arguments, and results.
 
 ## Run locally
 
-```sh
-DURABLE_OBJECT_PROJECT_ID=my-project npx little-actors start --dev
+Set your local connection in `.env`:
+
+```dotenv
+DURABLE_OBJECT_PROJECT_ID=my-project
+DURABLE_OBJECT_API_KEY=local-development-key
+DURABLE_OBJECT_CONTROL_PLANE_URL=http://127.0.0.1:7100
 ```
 
-Wait for `Ready`. In your backend terminal, set `DURABLE_OBJECT_PROJECT_ID=my-project` and run the printed `export DURABLE_OBJECT_API_KEY=…` command. Keep the actor server running; code reloads automatically and state survives restarts.
+```sh
+npx little-actors start --dev
+```
 
-Call an actor from your backend:
+Wait for `Ready`. Actor code reloads automatically, and state is saved in `.little-actors/` across restarts.
+
+## Call from your backend
+
+Load the same environment in your backend, then call an actor by ID:
 
 ```ts
-import { Counter } from "./src/durable-objects.js"
+import { Counter } from "./durable-objects.js"
 
 const count = await Counter.get("visits").increment()
 ```
 
-For a separate backend project, generate typed helpers with `npx little-actors generate` and import `actors` from `generated/index.js`.
+Reusing the project ID, class name, and actor ID accesses the same saved state. Calls run sequentially by default. Await all work before returning from an actor method.
 
-See [configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md) for remote servers and credentials.
+Failed calls roll back saved-state changes unless the actor uses `@Reentrant`. External effects cannot be undone. An `ActorInvocationError` with `code: "outcome_unknown"` means the operation may already have completed; retrying can run it twice.
 
-## Browser clients
+## Connect a browser
 
-Generate backend helpers with `npx little-actors generate`. Authenticate the user and check actor access before issuing a WebSocket URL. For a `ChatRoom` actor:
+Run `npx little-actors generate` to create backend helpers. Your backend authenticates users, checks actor access, and calls `prepareWebsocket` to issue a connection URL. The browser passes that URL to `new WebSocket()`.
 
-```ts
-import { actors } from "./generated/index.js"
+See the [chat backend](https://github.com/TerseAI/little-actors/blob/main/examples/chat/src/backend.ts) and [React client](https://github.com/TerseAI/little-actors/blob/main/examples/chat/src/Chat.tsx) for a working example. Keep the API key on your backend; your app handles reconnecting when a connection closes or expires.
 
-export async function POST(request: Request) {
-    const user = await requireUser(request)
-    const roomId = "lobby"
-    await requireRoomAccess(user, roomId)
-    const grant = await actors.ChatRoom.prepareWebsocket({
-        actorId: roomId,
-        metadata: { userId: user.id }
-    })
-    return Response.json(grant, { headers: { "cache-control": "no-store" } })
-}
+## Deploy
+
+Set your server URL, API key, and project ID in `.env`. With a published actor image:
+
+```sh
+npx little-actors deploy --image im-YOUR_IMAGE_ID
+npx little-actors generate --remote
 ```
 
-The browser connects using native WebSockets:
+Deploy replaces the current code and restarts actors while keeping saved state. Import `actors` from `generated/index.js` in a separate backend project; regenerate when the deployed API changes.
 
-```js
-const response = await fetch("/api/socket/ChatRoom/lobby", { method: "POST" })
-if (!response.ok) throw new Error("Connection denied")
-const { websocketUrl } = await response.json()
-const socket = new WebSocket(websocketUrl)
+## Reference
 
-socket.onopen = () => socket.send(JSON.stringify({ type: "post", text: "Hello" }))
-socket.onmessage = event => renderMessage(JSON.parse(event.data))
-```
-
-Keep the API key on your backend and treat the returned URL as a credential. See [WebSockets](https://github.com/TerseAI/little-actors/blob/main/docs/guides/websockets.md) for state updates, expiration, and reconnecting.
-
-## Test runners
-
-```ts
-import { startLocalActors } from "little-actors/dev"
-
-const runtime = await startLocalActors({ projectId: "my-project", entrypoint: "src/durable-objects.ts" })
-try {
-    await runTests(runtime.connection)
-} finally {
-    await runtime.stop()
-}
-```
-
-`stop()` preserves saved state. Set `dataDir` to isolate test runs.
+- [Configuration](https://github.com/TerseAI/little-actors/blob/main/docs/reference/configuration.md): environment variables and defaults.
+- [API references](https://github.com/TerseAI/little-actors/blob/main/docs/README.md): TypeScript and HTTP.
+- CLI: `npx little-actors <command> --help`.
 
 ## License
 

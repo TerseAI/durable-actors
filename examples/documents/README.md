@@ -1,10 +1,10 @@
-# Shared documents
+# Collaborative documents
 
-Requires Node.js 22.19+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+A Tiptap editor with Yjs for concurrent edits and durable actors for saved documents. Edit together in multiple tabs, then reload to pick up where you left off.
 
-A small Tiptap editor with Yjs for concurrent edits and durable actors for saved documents.
+## Run locally
 
-## Run it
+Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
 npx little-actors init documents-example --template documents
@@ -14,31 +14,40 @@ cp .env.example .env
 npm run dev:actors
 ```
 
-Wait for `Ready`. In another terminal in this directory, start the application:
+Already in the example directory? Start at `npm install`.
+
+Wait for `Ready`. In another terminal in the same directory:
 
 ```sh
 npm run dev
 ```
 
-Open [the editor](http://127.0.0.1:3000) in two tabs. Type in Welcome, format some text, and edit from both tabs. Add another document and switch between them. Reload after changes arrive in the other tab to see the saved content.
+Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Edit **Welcome** from both, add another document, and switch between them. Restart the servers and reload to restore saved documents.
 
-If you already have this directory, start at `npm install`. No external service is needed.
+## Save and share documents
 
-Both processes read the project ID, local development API key, and control-plane URL from `.env`. `dev:actors` runs the actors; `dev` generates the backend client and starts Express and Vite. Run one example at a time with the default ports.
+[src/durable-objects.ts](src/durable-objects.ts) defines two actors:
 
-`npm run build` generates the client, checks TypeScript, and builds the frontend.
+- `Workspace` saves the document list.
+- `Document` merges Yjs updates, saves the merged content, and broadcasts it to connected editors. Each document ID has its own actor.
 
-The actor server watches source changes. After changing the actor's public types, restart `npm run dev` to regenerate the backend client.
+A document joins through the [Express backend](src/backend.ts):
 
-## The code
+```ts
+import { actors } from "../generated/index.js"
 
-- [src/durable-objects.ts](src/durable-objects.ts): a workspace actor stores the document list; one document actor per ID merges and saves Yjs state. The actors send initial data in `onConnect` and broadcast updates explicitly.
-- [src/backend.ts](src/backend.ts): issues WebSocket credentials using the generated `prepareWebsocket` helpers and local defaults.
-- [src/collaboration.ts](src/collaboration.ts): connects Yjs to a native WebSocket. It sends local updates and applies remote state without echoing it.
-- [src/App.tsx](src/App.tsx) and [src/Editor.tsx](src/Editor.tsx): document navigation and Tiptap’s editor, formatting controls, and collaborative undo/redo.
+const grant = await actors.Document.prepareWebsocket({
+    actorId: "welcome",
+    metadata: null
+})
+```
 
-Yjs updates are encoded as base64 strings to fit the SDK’s JSON protocol. The actor saves the Yjs state, preserving the information needed to merge concurrent edits. Clients receive the complete merged document after each edit; this keeps the sample small rather than optimizing for large documents.
+The [collaboration client](src/collaboration.ts) opens the returned `websocketUrl` and exchanges Yjs updates. [App.tsx](src/App.tsx) handles document navigation; [Editor.tsx](src/Editor.tsx) connects Tiptap to the shared document.
 
-Editing pauses while disconnected. Reload to request a fresh connection. There is no automatic reconnect or browser storage for unsaved edits. Keep `.little-actors/` and restart both servers to restore saved documents.
+Editing pauses while disconnected. Reload to reconnect; unsaved edits are not stored in the browser. This demo shares one workspace without authentication. Add user authentication and document access checks before issuing WebSocket URLs in your app.
 
-This demo has one shared workspace and no authentication. In an application, authenticate the proxy route and authorize access to the requested workspace or document. Presence cursors, document deletion, and permissions UI are left out.
+## Development
+
+Both processes read `.env`; saved state lives in `.little-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. Run one example at a time on the default ports.
+
+`npm run build` generates clients, checks TypeScript, and builds the frontend.
