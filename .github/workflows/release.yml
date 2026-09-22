@@ -78,6 +78,11 @@ jobs:
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt && rustup default 1.89.0
 
+            - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+              with:
+                  shared-key: validation-ubuntu-24.04
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+
             - name: Check formatting
               run: cargo fmt --all -- --check
 
@@ -140,9 +145,17 @@ jobs:
             - name: Run tests
               run: pnpm --dir packages/observer-ui test && pnpm --dir sdk test && pnpm --dir packages/observer-ui package:check
 
-            - name: Verify npm package
-              working-directory: sdk
-              run: npm pack --dry-run
+            - name: Check and pack the tested npm packages
+              run: |
+                  pnpm --dir sdk package:check
+                  pnpm --dir packages/observer-ui --config.ignore-scripts=true pack --pack-destination ../../dist-tarballs
+                  pnpm --dir sdk --config.ignore-scripts=true pack --pack-destination ../dist-tarballs
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: sdk-package
+                  path: dist-tarballs/*.tgz
+                  if-no-files-found: error
+                  retention-days: 7
 
     go-ci:
         name: Test Modal Go provider
@@ -168,8 +181,12 @@ jobs:
               run: node --test tests/scripts/release-workflow.test.mjs
 
     native:
-        name: Package native runtime (${{ matrix.runner }})
-        needs: [preflight, rust, npm-ci, go-ci]
+        needs: preflight
+        uses: ./.github/workflows/native-build.yml
+
+    native-publish:
+        name: Verify and publish native runtime (${{ matrix.runner }})
+        needs: [preflight, rust, npm-ci, go-ci, native]
         strategy:
             fail-fast: false
             matrix:
@@ -192,17 +209,15 @@ jobs:
               with:
                   node-version: "22.19.0"
                   cache: pnpm
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
               with:
-                  go-version: "1.27.1"
-                  cache-dependency-path: providers/modal-go/go.sum
-            - name: Install Rust toolchain
-              run: rustup toolchain install 1.89.0 --profile minimal && rustup default 1.89.0
+                  name: native-${{ matrix.runner }}
+                  path: dist-runtime
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+              with:
+                  name: sdk-package
+                  path: .artifacts
             - run: pnpm install --frozen-lockfile
-            - name: Build Rust runtime and bundled Go provider
-              run: pnpm build
-            - name: Pack SDK for the tutorial test
-              run: pnpm --dir sdk pack --pack-destination ../.artifacts
             - name: Check the packaged SDK and native bundle
               env:
                   DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
@@ -219,7 +234,7 @@ jobs:
 
     image-build:
         name: Build runtime image (${{ matrix.arch }})
-        needs: [preflight, rust, npm-ci, go-ci]
+        needs: preflight
         strategy:
             fail-fast: false
             matrix:
@@ -234,13 +249,53 @@ jobs:
         timeout-minutes: 60
         permissions:
             contents: read
-            id-token: write
         steps:
             - name: Checkout the tagged commit
               uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
               with:
                   ref: ${{ github.sha }}
 
+            - name: Set up Blacksmith Docker builder
+              uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+              with:
+                  cache-key: durable-actors/runtime-${{ matrix.arch }}
+                  nofallback: true
+                  platforms: ${{ matrix.platform }}
+
+            - name: Build runtime image
+              uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
+              with:
+                  context: .
+                  platforms: ${{ matrix.platform }}
+                  outputs: type=docker,dest=${{ runner.temp }}/runtime-image.tar
+                  tags: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/TerseAI/durable-actors
+                      org.opencontainers.image.revision=${{ github.sha }}
+                      org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
+                      org.opencontainers.image.licenses=MIT
+
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: runtime-image-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/runtime-image.tar
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 1
+
+    image-push:
+        name: Push runtime image (${{ matrix.arch }})
+        needs: [preflight, rust, npm-ci, go-ci, image-build]
+        strategy:
+            fail-fast: false
+            matrix:
+                arch: [amd64, arm64]
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 15
+        permissions:
+            contents: read
+            id-token: write
+        steps:
             - name: Authenticate to Google Cloud
               uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
               with:
@@ -253,29 +308,21 @@ jobs:
             - name: Configure Docker for Artifact Registry
               run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
 
-            - name: Set up Blacksmith Docker builder
-              uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
               with:
-                  cache-key: durable-actors/runtime-${{ matrix.arch }}
-                  nofallback: true
-                  platforms: ${{ matrix.platform }}
-
-            - name: Build and push
-              uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
-              with:
-                  context: .
-                  platforms: ${{ matrix.platform }}
-                  push: true
-                  tags: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
-                  labels: |
-                      org.opencontainers.image.source=https://github.com/TerseAI/durable-actors
-                      org.opencontainers.image.revision=${{ github.sha }}
-                      org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
-                      org.opencontainers.image.licenses=MIT
+                  name: runtime-image-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/runtime-image
+            - name: Push the validated image
+              env:
+                  VERSION: ${{ needs.preflight.outputs.version }}
+                  ARCH: ${{ matrix.arch }}
+              run: |
+                  docker load --input "$RUNNER_TEMP/runtime-image/runtime-image.tar"
+                  docker push "${IMAGE}:${VERSION}-${ARCH}"
 
     image:
         name: Publish runtime image
-        needs: [preflight, image-build]
+        needs: [preflight, image-push]
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 10
         permissions:
@@ -322,7 +369,7 @@ jobs:
 
     npm:
         name: Publish npm packages
-        needs: [preflight, image, native]
+        needs: [preflight, image, native-publish]
         runs-on: ubuntu-latest
         timeout-minutes: 30
         permissions:
@@ -334,13 +381,6 @@ jobs:
               with:
                   ref: ${{ github.sha }}
 
-            - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-              with:
-                  version: 10.17.1
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
             - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
               with:
                   node-version: "22.19.0"
@@ -349,14 +389,10 @@ jobs:
             - name: Install trusted-publishing npm version
               run: npm install -g npm@11.9.0
 
-            - name: Install dependencies
-              run: pnpm install --frozen-lockfile
-
-            - name: Pack tarballs
-              run: |
-                  mkdir -p dist-tarballs
-                  pnpm --dir packages/observer-ui pack --pack-destination "$PWD/dist-tarballs"
-                  pnpm --dir sdk pack --pack-destination "$PWD/dist-tarballs"
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+              with:
+                  name: sdk-package
+                  path: dist-tarballs
 
             - name: Publish to npm
               env:
@@ -376,7 +412,7 @@ jobs:
 
     crate:
         name: Publish crate
-        needs: [preflight, npm]
+        needs: [preflight, image, native-publish]
         runs-on: ubuntu-24.04
         timeout-minutes: 30
         steps:
@@ -401,7 +437,8 @@ jobs:
                   if [ "$status" = "200" ]; then
                       echo "durable-actors@$RELEASE_VERSION already published"
                   elif [ "$status" = "404" ]; then
-                      cargo publish --locked
+                      # The rust job already verified this tagged source with cargo publish --dry-run.
+                      cargo publish --locked --no-verify
                   else
                       echo "::error::crates.io returned HTTP $status"
                       exit 1

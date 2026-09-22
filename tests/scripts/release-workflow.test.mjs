@@ -39,7 +39,9 @@ test("CI and release validate the Go provider before publishing", () => {
         assert.match(workflow, /go test -race -mod=readonly -overlay tests\/overlay\.json \.\/\.\.\./)
         assert.match(workflow, /go-version: "1\.27\.1"/)
     }
-    assert.match(read(".github/workflows/release.yml"), /needs: \[preflight, rust, npm-ci, go-ci\]/)
+    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) {
+        for (const check of ["rust", "npm-ci", "go-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
+    }
 })
 
 test("CI and release exercise direct host sockets with the built SDK", () => {
@@ -56,17 +58,74 @@ test("runtime image generates protobuf sources before compiling the SDK", () => 
     assert.match(dockerfile, /pnpm --dir sdk generate:proto[\s\S]*pnpm --dir sdk exec tsc/)
 })
 
-test("release jobs that pack the SDK install Bun for the package checks", () => {
-    const workflow = read(".github/workflows/release.yml")
-    for (const job of ["native", "npm"]) {
-        const body = workflow.split(`    ${job}:\n`)[1].split(/\n    [a-z-]+:\n/)[0]
-        assert.match(body, /oven-sh\/setup-bun@v2[\s\S]*bun-version: "1\.4\.2"/)
+test("the SDK is packed once after validation and reused by native tests and npm", () => {
+    const validation = releaseJob("npm-ci")
+    assert.match(validation, /oven-sh\/setup-bun@v2/)
+    assert.match(validation, /pnpm --dir sdk package:check/)
+    assert.match(validation, /pnpm --dir sdk --config.ignore-scripts=true pack/)
+    assert.match(validation, /actions\/upload-artifact@[\s\S]*name: sdk-package/)
+    assert.equal(validation.match(/pnpm --dir sdk --config.ignore-scripts=true pack/g)?.length, 1)
+    for (const job of ["native-publish", "npm"]) {
+        assert.match(releaseJob(job), /actions\/download-artifact@[\s\S]*name: sdk-package/)
+        assert.doesNotMatch(releaseJob(job), /pnpm (build|--dir sdk (build|pack))/)
     }
+    assert.match(releaseJob("native-publish"), /DURABLE_OBJECT_TEST_PACKAGE:[\s\S]*examples\/chat build/)
 })
 
 test("release publishes the observer dependency before the SDK", () => {
     const workflow = read(".github/workflows/release.yml")
     const npmJob = workflow.split("    npm:\n")[1].split("    crate:\n")[0]
-    assert.match(npmJob, /pnpm --dir packages\/observer-ui pack/)
+    assert.equal(releaseJob("npm-ci").match(/pnpm --dir packages\/observer-ui --config.ignore-scripts=true pack/g)?.length, 1)
+    assert.doesNotMatch(npmJob, /pnpm .* pack/)
     assert.match(npmJob, /npm publish \.\/dist-tarballs\/durable-actors-observer-.*\.tgz --access public[\s\S]*npm publish \.\/dist-tarballs\/durable-actors-.*\.tgz --access public/)
 })
+test("native and image builds start independently of validation and stage artifacts", () => {
+    for (const job of ["native", "image-build"]) {
+        assert.deepEqual(dependencies(job), ["preflight"])
+        assert.match(releaseJob(job), /actions\/upload-artifact@/)
+        assert.doesNotMatch(releaseJob(job), /push: true|gh release upload|docker push/)
+    }
+    assert.match(releaseJob("native"), /node scripts\/build-runtime.mjs/)
+    assert.match(releaseJob("image-build"), /outputs: type=docker,dest=/)
+    assert.ok(dependsOn("native-publish", "native"))
+    assert.ok(dependsOn("image-push", "image-build"))
+})
+
+test("Cargo caches are restored after toolchain selection", () => {
+    for (const job of ["rust", "native"]) assert.match(releaseJob(job), /rustup default 1\.89\.0[\s\S]*Swatinem\/rust-cache@/)
+    assert.match(read(".github/workflows/ci.yml"), /uses: \.\/\.github\/workflows\/native-build.yml/)
+    assert.match(read(".github/workflows/native-build.yml"), /shared-key: native-\$\{\{ matrix.runner \}\}/)
+    const dockerfile = read("Dockerfile")
+    assert.match(dockerfile, /--mount=type=cache,target=\/usr\/local\/cargo/)
+    assert.match(dockerfile, /--mount=type=cache,target=\/build\/target/)
+    assert.match(dockerfile, /cp target\/release\/durable-actors \/out\/durable-actors/)
+    assert.match(dockerfile, /COPY --from=builder \/out\/durable-actors/)
+})
+
+test("crate publication reuses successful verification and does not wait for npm publication", () => {
+    assert.match(releaseJob("rust"), /cargo publish --locked --dry-run/)
+    assert.ok(dependsOn("crate", "rust"))
+    assert.match(releaseJob("crate"), /cargo publish --locked --no-verify/)
+    assert.ok(!dependsOn("crate", "npm"))
+})
+
+function releaseJob(name) {
+    const body = read(".github/workflows/release.yml").split(`    ${name}:\n`)[1]
+    assert.ok(body, `Missing release job: ${name}`)
+    const job = body.split(/\n    [a-z-]+:\n/)[0]
+    const reusable = job.match(/^        uses: \.\/(.+)$/m)?.[1]
+    return reusable ? `${job}\n${read(reusable)}` : job
+}
+
+function dependencies(name) {
+    return (
+        releaseJob(name)
+            .match(/^        needs: (.+)$/m)?.[1]
+            .replace(/[\[\]]/g, "")
+            .split(/,\s*/) ?? []
+    )
+}
+
+function dependsOn(job, dependency) {
+    return dependencies(job).some(name => name === dependency || dependsOn(name, dependency))
+}
