@@ -210,7 +210,9 @@ test("a connection reported by a host before its connect trace is saved starts w
     await waitFor(() => assert.ok(queries.length > before, "an inventory change refreshes history immediately"))
 })
 
-test("a custom range is picked from the calendar and time fields, validated, and bounds the session query", async () => {
+test("a custom range is picked from the calendar and time fields, validated, and bounds the session query", async context => {
+    // Keep the initial one-hour range on the same calendar day, even when CI runs just after midnight.
+    context.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 22, 12).getTime() })
     const queries: ObserverQuery[] = []
     const client: ObserverClient = {
         listActors: async () => inventory,
