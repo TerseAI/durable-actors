@@ -4,7 +4,7 @@ WORKDIR /build
 COPY providers/modal-go/go.mod providers/modal-go/go.sum ./
 RUN go mod download
 COPY providers/modal-go/ ./
-RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/little-actors-modal-go .
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/durable-actors-modal-go .
 
 FROM rust:1.89.0-bookworm AS builder
 
@@ -42,18 +42,18 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/little-actors /usr/local/bin/little-actors
-COPY --from=modal-builder /out/little-actors-modal-go /usr/local/bin/little-actors-modal-go
+COPY --from=builder /build/target/release/durable-actors /usr/local/bin/durable-actors
+COPY --from=modal-builder /out/durable-actors-modal-go /usr/local/bin/durable-actors-modal-go
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=sdk-builder /build/node_modules /opt/little-actors/node_modules
-COPY --from=sdk-builder /build/sdk/node_modules /opt/little-actors/sdk/node_modules
-COPY --from=sdk-builder /build/packages/observer-ui /opt/little-actors/packages/observer-ui
-COPY --from=sdk-builder /build/sdk/dist /opt/little-actors/sdk/dist
-COPY sdk/package.json /opt/little-actors/sdk/package.json
+COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules
+COPY --from=sdk-builder /build/sdk/node_modules /opt/durable-actors/sdk/node_modules
+COPY --from=sdk-builder /build/packages/observer-ui /opt/durable-actors/packages/observer-ui
+COPY --from=sdk-builder /build/sdk/dist /opt/durable-actors/sdk/dist
+COPY sdk/package.json /opt/durable-actors/sdk/package.json
 RUN mkdir -p /customer /node_modules \
-    && ln -s /opt/little-actors/sdk /node_modules/little-actors
+    && ln -s /opt/durable-actors/sdk /node_modules/durable-actors
 
-ENV RUST_LOG=warn,little_actors=info
-ENV DURABLE_OBJECT_SANDBOX_COMMAND=little-actors-modal-go
-ENV DURABLE_OBJECT_SDK_HOST=/opt/little-actors/sdk/dist/host.js
-ENTRYPOINT ["/usr/local/bin/little-actors"]
+ENV RUST_LOG=warn,durable_actors=info
+ENV DURABLE_OBJECT_SANDBOX_COMMAND=durable-actors-modal-go
+ENV DURABLE_OBJECT_SDK_HOST=/opt/durable-actors/sdk/dist/host.js
+ENTRYPOINT ["/usr/local/bin/durable-actors"]

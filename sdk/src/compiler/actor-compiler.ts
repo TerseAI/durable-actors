@@ -128,12 +128,12 @@ class ActorCompiler {
     }
 
     private resolveSdk(entrypoint: string, options: ts.CompilerOptions, host: ts.CompilerHost) {
-        const resolved = ts.resolveModuleName("little-actors", entrypoint, options, host).resolvedModule
+        const resolved = ts.resolveModuleName("durable-actors", entrypoint, options, host).resolvedModule
         const sdkEntrypoint =
             resolved?.resolvedFileName ??
             ts.resolveModuleName(fileURLToPath(new URL("../index.js", import.meta.url)), entrypoint, options, host)
                 .resolvedModule?.resolvedFileName
-        if (!sdkEntrypoint) throw new ActorDefinitionError("cannot resolve the little-actors SDK")
+        if (!sdkEntrypoint) throw new ActorDefinitionError("cannot resolve the durable-actors SDK")
         return sdkEntrypoint
     }
 

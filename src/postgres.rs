@@ -98,6 +98,7 @@ async fn migrate(pool: &Pool) -> Result<()> {
     let client = pool.get().await.context("connect to PostgreSQL")?;
     // Closing this dedicated session releases the lock even on errors or cancellation.
     let mut client = deadpool_postgres::Object::take(client);
+    // Retain the lock identity so old and new runtimes serialize migrations.
     client
         .query_one(
             "SELECT pg_advisory_lock(hashtext('little-actors'), hashtext('schema-migrations'))",

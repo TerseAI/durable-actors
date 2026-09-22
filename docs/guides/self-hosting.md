@@ -9,7 +9,7 @@ Recommended setup:
 - One GCS bucket for combined ownership and activation leases, replication sessions, and snapshots.
 - Modal hosts with matching runtime and SDK versions.
 
-Use matching runtime-container and SDK versions that include `little-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
+Use matching runtime-container and SDK versions that include `durable-actors build`. The generic container includes the Rust runtime, Bun, SDK, and Go provider; no local Rust or Go compiler is required. See [replication configuration](replication.md) for optional replica hosts and placement.
 
 ## 1. Configure storage and credentials
 
@@ -20,7 +20,7 @@ Create `control-plane.env` using [hosted server setup](../reference/configuratio
 Build and publish this repository's runtime image once per runtime version. It contains Rust, Bun, and the matching SDK. Import that image into Modal; customer code is published separately. Use the same SDK version in the actor source project:
 
 ```sh
-npm install --save-exact little-actors@YOUR_VERSION
+npm install --save-exact durable-actors@YOUR_VERSION
 python3 -m venv .venv
 .venv/bin/python -m pip install modal
 ```
@@ -31,10 +31,10 @@ Create `build_image.py`:
 import modal
 
 image = modal.Image.from_registry(
-    "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION",
+    "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors:YOUR_VERSION",
     add_python="3.12",
 )
-app = modal.App.lookup("little-actors-runtime-images", create_if_missing=True)
+app = modal.App.lookup("durable-actors-runtime-images", create_if_missing=True)
 with modal.enable_output():
     image.build(app)
 print(image.object_id)
@@ -51,7 +51,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:YOUR_VERSION
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors:YOUR_VERSION
 ```
 
 For an attached Google service account, follow the [Google credentials configuration](../reference/configuration.md) and omit the mount.
@@ -73,7 +73,7 @@ Publish a customer build image containing the source project, its TypeScript con
 ```python
 customer = image.add_local_dir(
     ".", "/customer", copy=True,
-    ignore=["node_modules", ".git", ".venv", ".env*", "*.env", ".little-actors"],
+    ignore=["node_modules", ".git", ".venv", ".env*", "*.env", ".durable-actors"],
 ).run_commands("cd /customer && bun install")
 with modal.enable_output():
     customer.build(app)
@@ -83,7 +83,7 @@ print(customer.object_id)
 Register that customer image with one call:
 
 ```sh
-npx little-actors deploy --image im-YOUR_CUSTOMER_IMAGE_ID
+npx durable-actors deploy --image im-YOUR_CUSTOMER_IMAGE_ID
 ```
 
 The control plane creates a temporary builder from the customer image, checks its actor contract, bundles code and JavaScript dependencies, and publishes a permanent Modal directory snapshot. It registers the snapshot and contract against the shared runtime image before returning success, then terminates the builder. Unchanged source metadata reuses the current compiled code, including when secrets change. The deployment terminal does not need source files or Modal credentials to make this API call.
@@ -102,7 +102,7 @@ Old code snapshots remain immutable deployment artifacts; retiring hosts does no
 
 Start the application backend with the [client connection](../reference/configuration.md) configured in step 1.
 
-Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx little-actors generate --url`, and have the frontend fetch a grant from that application route.
+Use the generated `actors.ChatRoom.prepareWebsocket()` helper as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the clients from the published API with `npx durable-actors generate --url`, and have the frontend fetch a grant from that application route.
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session broadcasts the updated history to both sessions. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
@@ -113,7 +113,7 @@ The application backend checks user access and obtains connection credentials. A
 Configure [local GCS storage](../reference/configuration.md), then start the runtime:
 
 ```sh
-npx little-actors dev --storage gcs --data-dir .gcs-demo
+npx durable-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
 Generate the [browser demo](../../examples/chat/README.md) SDK, set the same `DURABLE_OBJECT_API_KEY` on the runtime and application backend, and start your web app normally. Send a message and reload the page to see the saved conversation.

@@ -90,23 +90,23 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { stdout } = await run(process.execPath, [cli, "init", "my chat"], { cwd: directory })
     const project = path.join(directory, "my chat")
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const sdk = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"))
-    assert.equal(metadata.dependencies["little-actors"], sdk.version)
+    assert.equal(metadata.dependencies["durable-actors"], sdk.version)
     assert.match(await readFile(path.join(project, "src/durable-objects.ts"), "utf8"), /extends Actor/)
     assert.match(await readFile(path.join(project, "src/backend.ts"), "utf8"), /actors\.ChatRoom\.prepareWebsocket/)
     assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /new WebSocket\(websocketUrl\)/)
-    assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.little-actors\//)
+    assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
     assert.match(stdout, /npm install/)
-    assert.match(stdout, /little-actors generate/)
+    assert.match(stdout, /durable-actors generate/)
 })
 
 test("init refuses an existing directory and preserves its contents", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-init-existing-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-existing-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "chat")
     await mkdir(project)
@@ -273,15 +273,15 @@ test("objects rejects invalid limits and conflicting pagination flags before con
 })
 
 test("dev accepts configured keys without logging the generated key from readiness", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-env-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor-project")
     await mkdir(path.join(project, "node_modules"), { recursive: true })
-    await symlink(path.resolve(path.dirname(cli), ".."), path.join(project, "node_modules/little-actors"), "dir")
+    await symlink(path.resolve(path.dirname(cli), ".."), path.join(project, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     await writeFile(
         path.join(project, "actors.ts"),
-        'import { Actor } from "little-actors"; export class Room extends Actor {}'
+        'import { Actor } from "durable-actors"; export class Room extends Actor {}'
     )
     const binary = path.join(directory, "runtime")
     await writeFile(

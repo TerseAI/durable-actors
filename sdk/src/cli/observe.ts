@@ -41,7 +41,7 @@ class Observer {
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL(
             "./",
-            import.meta.resolve("little-actors-observer/standalone/index.html")
+            import.meta.resolve("durable-actors-observer/standalone/index.html")
         )
     ) {}
 

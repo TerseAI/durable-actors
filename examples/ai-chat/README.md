@@ -7,7 +7,7 @@ Vercel AI SDK streams replies; a durable actor stores the conversation.
 ## Run it
 
 ```sh
-npx little-actors init ai-chat-example --template ai-chat
+npx durable-actors init ai-chat-example --template ai-chat
 cd ai-chat-example
 npm install
 ```
@@ -15,7 +15,7 @@ npm install
 Copy `.env.example` to `.env` and add your `OPENAI_API_KEY`, then start the actors:
 
 ```sh
-npx little-actors dev
+npx durable-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, run the printed export command, then:

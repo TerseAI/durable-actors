@@ -15,7 +15,7 @@ import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 try {
     config({ quiet: true })
     const program = new Command()
-        .name("little-actors")
+        .name("durable-actors")
         .description("Run durable TypeScript actors locally or in the cloud")
         .version(await version())
         .enablePositionalOptions()
@@ -76,10 +76,10 @@ async function initializeProject(directory: string, options: { template: string 
     console.log(`Created ${options.template} app in ${destination}.
 
 From that directory, run:
-  npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx little-actors generate"}
-  npx little-actors dev
+  npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx durable-actors generate"}
+  npx durable-actors dev
 
-In another terminal, run any export command printed by little-actors dev, then:
+In another terminal, run any export command printed by durable-actors dev, then:
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`)

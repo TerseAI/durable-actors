@@ -73,7 +73,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
     std::fs::write(&file, r#"{"version":99,"actors":[]}"#)?;
     let output = timeout(
         Duration::from_secs(5),
-        Command::new(env!("CARGO_BIN_EXE_little-actors"))
+        Command::new(env!("CARGO_BIN_EXE_durable-actors"))
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .env("DURABLE_OBJECT_PROJECT_ID", "default")
             .env("DURABLE_OBJECT_API_KEY", "test-key")
@@ -93,7 +93,7 @@ async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result
         logs.contains("unsupported public actor contract version"),
         "{logs}"
     );
-    assert!(!project.path().join(".little-actors/runtime.json").exists());
+    assert!(!project.path().join(".durable-actors/runtime.json").exists());
     Ok(())
 }
 
@@ -106,7 +106,7 @@ struct LocalRuntime {
 
 impl LocalRuntime {
     async fn start(project: &Path, contract: Option<&Path>) -> Result<Self> {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_little-actors"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .arg("--project-id")
@@ -140,7 +140,7 @@ impl LocalRuntime {
             }
         })
         .await??;
-        let key_file = project.join(".little-actors/api-key");
+        let key_file = project.join(".durable-actors/api-key");
         let api_key = std::fs::read_to_string(&key_file)?;
         assert_eq!(
             std::fs::metadata(&key_file)?.permissions().mode() & 0o777,
@@ -159,7 +159,7 @@ impl LocalRuntime {
         assert!(loaded.status.success());
         assert_eq!(String::from_utf8(loaded.stdout)?, api_key);
         ensure!(api_key.len() >= 32, "generated API key is too short");
-        assert!(!project.join(".little-actors/runtime.json").exists());
+        assert!(!project.join(".durable-actors/runtime.json").exists());
         Ok(Self {
             child,
             output,

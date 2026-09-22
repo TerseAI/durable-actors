@@ -64,7 +64,7 @@ function launch(executable: string, options: LocalActorOptions) {
             "--entrypoint",
             path.resolve(project, options.entrypoint),
             "--data-dir",
-            path.resolve(project, options.dataDir ?? ".little-actors"),
+            path.resolve(project, options.dataDir ?? ".durable-actors"),
             "--port",
             String(options.port ?? 0),
             "--ready-fd",

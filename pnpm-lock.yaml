@@ -32,7 +32,7 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
-      little-actors:
+      durable-actors:
         specifier: workspace:^
         version: link:../../sdk
       react:
@@ -69,7 +69,7 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
-      little-actors:
+      durable-actors:
         specifier: workspace:^
         version: link:../../sdk
       react:
@@ -127,7 +127,7 @@ importers:
       lib0:
         specifier: ^0.2.117
         version: 0.2.117
-      little-actors:
+      durable-actors:
         specifier: workspace:^
         version: link:../../sdk
       react:
@@ -267,7 +267,7 @@ importers:
       json-schema-to-typescript:
         specifier: ^16.0.0
         version: 16.0.0
-      little-actors-observer:
+      durable-actors-observer:
         specifier: workspace:0.1.0
         version: link:../packages/observer-ui
       open:

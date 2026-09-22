@@ -2,14 +2,14 @@
 
 Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
 
-The sample bundled with `little-actors init`.
+The sample bundled with `durable-actors init`.
 
 ## Run it
 
 ```sh
 npm install
-npx little-actors generate
-npx little-actors dev
+npx durable-actors generate
+npx durable-actors dev
 ```
 
 Wait for `Local actors ready`. In another terminal, run the printed export command, then:
@@ -26,4 +26,4 @@ Everyone is a guest in this demo. In your app, authenticate the request before `
 
 The frontend fetches a signed URL from the backend and passes it to `new WebSocket()`. The actor sends history explicitly on connection and after each message. Reload to reconnect if the socket closes.
 
-After changing the actor's types, rerun `npx little-actors generate` and restart the actor server.
+After changing the actor's types, rerun `npx durable-actors generate` and restart the actor server.

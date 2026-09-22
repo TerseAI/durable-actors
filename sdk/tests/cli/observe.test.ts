@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url"
 
 import { Observer } from "../../src/cli/observe.js"
 
-const assets = new URL("./", import.meta.resolve("little-actors-observer/standalone/index.html"))
+const assets = new URL("./", import.meta.resolve("durable-actors-observer/standalone/index.html"))
 
 test("observer serves the installed UI package by default", async t => {
     const observer = new Observer(

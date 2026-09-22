@@ -1,14 +1,16 @@
-# little-actors
+# Durable Actors
 
-little-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
+Durable Actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
 
 Durable Actors are TypeScript classes that persist their own state.
 
 ## Installation
 
 ```sh
-npm install little-actors
+npm install durable-actors
 ```
+
+Upgrading from Little Actors? See the [rename guide](docs/guides/renaming.md) for imports, local state, and self-hosted deployments.
 
 See the sample apps:
 
@@ -21,18 +23,18 @@ See the sample apps:
 Install Node.js 20+ for the CLI and Bun 1.4.2+ for actor execution. Each actor runs in its own Bun/Rust process pair locally and its own Modal sandbox when hosted.
 
 ```sh
-npx little-actors dev
+npx durable-actors dev
 ```
 
 If it generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your application backend terminal.
 
 To test Modal hosts against a control plane on your laptop, use the repository's [`pnpm run start:cloud` command](docs/guides/local-development.md#test-modal-hosts-against-a-local-control-plane).
 
-The Terse development setup uses the dedicated control-plane endpoint `https://terse-little-actors.ngrok.app`. Set these values in the repository root `.env`, alongside the Modal, GCS, database, and authentication settings:
+Reserve a dedicated ngrok domain for your control plane. Substitute your domain in these values in the repository root `.env`, alongside the Modal, GCS, database, and authentication settings:
 
 ```dotenv
-NGROK_DOMAIN=terse-little-actors.ngrok.app
-DURABLE_OBJECT_CONTROL_PLANE_URL=https://terse-little-actors.ngrok.app
+NGROK_DOMAIN=YOUR_DOMAIN.ngrok.app
+DURABLE_OBJECT_CONTROL_PLANE_URL=https://YOUR_DOMAIN.ngrok.app
 DURABLE_OBJECT_CONTROL_PLANE_BIND=127.0.0.1:7200
 ```
 
@@ -43,7 +45,7 @@ pnpm run start:cloud
 Keep this domain separate from the Terse backend's tunnel. Other ngrok accounts should reserve their own domain and substitute it above. The command waits for the tunnel, then starts the control plane; Ctrl+C stops both.
 
 
-To keep the Terse backend's ngrok API on port 4040, give this tunnel its own local config. Create `.little-actors/ngrok.yml` (already gitignored):
+To keep the Terse backend's ngrok API on port 4040, give this tunnel its own local config. Create `.durable-actors/ngrok.yml` (already gitignored):
 
 ```yaml
 version: 3
@@ -51,14 +53,14 @@ agent:
   web_addr: 127.0.0.1:4041
 ```
 
-Add `NGROK_CONFIG=.little-actors/ngrok.yml` to the root `.env`, along with `NGROK_AUTH_TOKEN` for authentication. This config replaces ngrok's default config for this process only. Restart `pnpm run start:cloud` to apply it; the public endpoint and control-plane port stay the same. Leave `NGROK_CONFIG` unset to use ngrok's default config.
+Add `NGROK_CONFIG=.durable-actors/ngrok.yml` to the root `.env`, along with `NGROK_AUTH_TOKEN` for authentication. This config replaces ngrok's default config for this process only. Restart `pnpm run start:cloud` to apply it; the public endpoint and control-plane port stay the same. Leave `NGROK_CONFIG` unset to use ngrok's default config.
 
 
 ## Define an Actor
 
 ```ts
 import type { UIMessage } from "ai"
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
     @Persisted private messages: UIMessage[] = []

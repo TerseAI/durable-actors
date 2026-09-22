@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai"
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
     @Persisted private messages: UIMessage[] = []

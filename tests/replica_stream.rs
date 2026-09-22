@@ -1,5 +1,5 @@
 use anyhow::Result;
-use little_actors::{
+use durable_actors::{
     replication::{FileReplicaStore, ReplicaStore, ReplicaStream},
     state_log::StateSnapshot,
 };

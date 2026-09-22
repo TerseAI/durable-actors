@@ -92,7 +92,7 @@ pub async fn serve_local(
     let directory = options
         .data_dir
         .clone()
-        .unwrap_or_else(|| project.join(".little-actors"));
+        .unwrap_or_else(|| project.join(".durable-actors"));
     let _lock = prepare_directory(&directory)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, options.port))
         .await
@@ -217,7 +217,7 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
         TraceLayer::new_for_http()
             .make_span_with(|request: &Request| {
                 info_span!(
-                    target: "little_actors::dev",
+                    target: "durable_actors::dev",
                     "control_plane_request",
                     method = %request.method(),
                     path = %request.uri().path(),
@@ -225,7 +225,7 @@ fn logged_routes(routes: tonic::service::Routes) -> Router {
             })
             .on_response(|response: &Response, latency: Duration, span: &Span| {
                 info!(
-                    target: "little_actors::dev",
+                    target: "durable_actors::dev",
                     parent: span,
                     status = response.status().as_u16(),
                     latency_ms = %format_args!("{:.1}", latency.as_secs_f64() * 1_000.0),
@@ -441,7 +441,7 @@ fn format_local_ready_message(
         ""
     };
     format!(
-        "{title}little actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx little-actors generate --url {origin}{command:#}{note}",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}  {origin}\n  {label}State{label:#}  {}\n  {label}Next{label:#}   {command}npx durable-actors generate --url {origin}{command:#}{note}",
         directory.display(),
     )
 }

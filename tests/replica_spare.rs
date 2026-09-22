@@ -1,5 +1,5 @@
 use anyhow::{Result, ensure};
-use little_actors::{
+use durable_actors::{
     bucket::{GrpcReplicaPeers, ReplicaPeers},
     clock::{Clock, SystemClock},
     replication::{ReplicaAccess, ReplicaGrant, ReplicaScope, ReplicaStream, ReplicaTarget},
@@ -18,7 +18,7 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
     drop((storage, control));
     let token = "test-spare-token-with-at-least-32-bytes";
     let ready = directory.path().join("ready");
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_little-actors"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .env_clear()
         .env("DURABLE_OBJECT_PROCESS_ROLE", "replica")
         .env("DURABLE_OBJECT_SPARE_TOKEN", token)
@@ -82,7 +82,7 @@ async fn a_replica_can_listen_before_assignment_and_retries_cannot_reassign_it()
         session: scope.identity(),
         prefix: format!(
             "{}1/",
-            little_actors::storage_paths::snapshots(&scope.actor)?
+            durable_actors::storage_paths::snapshots(&scope.actor)?
         ),
         owner_epoch: 1,
         base_version: 0,

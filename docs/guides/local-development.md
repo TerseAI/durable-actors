@@ -7,17 +7,17 @@ Run actors locally using the published npm package. For a complete sample applic
 Install Node.js 20+ and Bun 1.4.2+ on your PATH. The CLI uses Node; Rust starts Bun to execute each actor in a separate process.
 
 ```sh
-npm install little-actors
+npm install durable-actors
 ```
 
-The package includes the `little-actors` CLI and TypeScript actor execution support. `little-actors dev` downloads a matching native runtime on first use and caches it for later runs. You do not need Rust or a manually configured binary path.
+The package includes the `durable-actors` CLI and TypeScript actor execution support. `durable-actors dev` downloads a matching native runtime on first use and caches it for later runs. You do not need Rust or a manually configured binary path.
 
 ## Define actors and generate clients
 
 Export your actor classes from `src/durable-objects.ts`, as shown in the [README](../../README.md#define-an-actor). Generate the backend RPC and WebSocket grant helpers:
 
 ```sh
-npx little-actors generate
+npx durable-actors generate
 ```
 
 The backend imports `actors` from `generated/index.js`. The frontend fetches a grant from your backend and passes its `websocketUrl` directly to `new WebSocket()`.
@@ -25,20 +25,20 @@ The backend imports `actors` from `generated/index.js`. The frontend fetches a g
 ## Start the actor server
 
 ```sh
-npx little-actors dev
+npx durable-actors dev
 ```
 
-Wait for the `Ready` line. State is saved in `.little-actors/` and survives restarts.
+Wait for the `Ready` line. State is saved in `.durable-actors/` and survives restarts.
 
-Startup compiles and publishes your actors' public contract. You can then run `npx little-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
+Startup compiles and publishes your actors' public contract. You can then run `npx durable-actors generate --url` to generate from the running deployment. Restarting publishes the updated contract under a fresh revision.
 
-The same terminal shows runtime logs and a request log with the method, path, status, and duration when the local control plane responds. Request logs omit query strings, headers, and bodies. Use `RUST_LOG=debug npx little-actors dev` for more detail, or `RUST_LOG=warn npx little-actors dev` to show only warnings and errors.
+The same terminal shows runtime logs and a request log with the method, path, status, and duration when the local control plane responds. Request logs omit query strings, headers, and bodies. Use `RUST_LOG=debug npx durable-actors dev` for more detail, or `RUST_LOG=warn npx durable-actors dev` to show only warnings and errors.
 
 ## Connect your application
 
 If `dev` generates a key, run the printed `export DURABLE_OBJECT_API_KEY=…` command in your backend terminal. Backend actor calls and generated `prepareWebsocket` helpers read that setting.
 
-Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running.
+Start your frontend and application backend with their usual tooling, keeping `durable-actors dev` running.
 
 The frontend never imports the actor implementation. The frontend requests credentials from your backend, then sends socket messages directly to the actor gateway.
 
@@ -46,7 +46,7 @@ For remote servers or a custom data directory, see [configuration](../reference/
 
 ## Update after changes
 
-Keep `little-actors dev` running while editing actor code. Restarting it generates a new key unless you provide one explicitly.
+Keep `durable-actors dev` running while editing actor code. Restarting it generates a new key unless you provide one explicitly.
 
 ## Test Modal hosts against a local control plane
 
@@ -80,12 +80,12 @@ node sdk/dist/cli.js objects inspect Counter YOUR_ACTOR_ID
 
 You can still run `pnpm run tunnel` and `pnpm run start` separately. In that case, wait for the tunnel before starting the control plane; unset any older shell export of `DURABLE_OBJECT_CONTROL_PLANE_URL` so `.env` takes precedence. A running process or another terminal's environment cannot be changed by the helper.
 
-If you change `DURABLE_OBJECT_CONTROL_PLANE_BIND`, the tunnel forwards to that address and port instead; wildcard addresses use loopback. `start` runs the hosted control plane locally and provisions actors on Modal. `little-actors dev` always uses local actor processes, even when Modal credentials are set.
+If you change `DURABLE_OBJECT_CONTROL_PLANE_BIND`, the tunnel forwards to that address and port instead; wildcard addresses use loopback. `start` runs the hosted control plane locally and provisions actors on Modal. `durable-actors dev` always uses local actor processes, even when Modal credentials are set.
 
 Follow the [self-hosting guide](self-hosting.md#4-package-and-deploy-customer-code) to package and register your Modal actor image. Use the printed public URL and the same API key in your deployment and application backend terminals. If the tunnel URL changes, restart the control plane and replace existing Modal hosts so they receive the new callback address.
 
 ## Troubleshooting
 
-If the CLI is missing, run `npm install little-actors` in your application directory before invoking `npx little-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.
+If the CLI is missing, run `npm install durable-actors` in your application directory before invoking `npx durable-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.
 
 For server startup, storage, and client connection issues, check the [local defaults and connection settings](../reference/configuration.md).

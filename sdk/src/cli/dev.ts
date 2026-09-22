@@ -52,7 +52,7 @@ function registerDevCommand(program: Command): void {
                 .default("src/durable-objects.ts")
         )
         .addOption(
-            new Option("--data-dir <directory>", "state directory (default: <project>/.little-actors)").env(
+            new Option("--data-dir <directory>", "state directory (default: <project>/.durable-actors)").env(
                 "DURABLE_OBJECT_DATA_DIR"
             )
         )
@@ -77,7 +77,7 @@ function portNumber(value: string): number {
 async function runDev(options: DevOptions): Promise<number> {
     const project = await realpath(options.project)
     const contract = await compileContract(project, options.entrypoint)
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-contract-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-contract-"))
     try {
         const file = path.join(directory, "contract.json")
         await writeFile(file, JSON.stringify(contract))

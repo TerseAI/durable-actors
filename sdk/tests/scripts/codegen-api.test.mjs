@@ -5,7 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 
 test("public codegen returns the same typed artifacts as file generation", async t => {
-    const { generateTypeScript } = await import("little-actors/codegen")
+    const { generateTypeScript } = await import("durable-actors/codegen")
     const { generateClient } = await import("../../dist/compiler/generators/client-generator.js")
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-codegen-api-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
@@ -36,14 +36,14 @@ test("public codegen returns the same typed artifacts as file generation", async
 })
 
 test("public codegen supports projects without actors", async () => {
-    const { generateTypeScript } = await import("little-actors/codegen")
+    const { generateTypeScript } = await import("durable-actors/codegen")
     const files = await generateTypeScript([])
     assert.deepEqual([...files.keys()].sort(), ["index.ts"])
 })
 
 test("public contract generation writes one backend module for actors and ActorProxy and removes legacy files", async t => {
-    const { generateTypeScript } = await import("little-actors/codegen")
-    const { createActorStub } = await import("little-actors/backend")
+    const { generateTypeScript } = await import("durable-actors/codegen")
+    const { createActorStub } = await import("durable-actors/backend")
     const { generateClient } = await import("../../dist/compiler/generators/client-generator.js")
     assert.equal(typeof createActorStub, "function")
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-contract-api-"))

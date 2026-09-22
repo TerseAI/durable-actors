@@ -629,6 +629,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "durable-actors"
+version = "0.2.3"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "anyhow",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64",
+ "bytes",
+ "clap",
+ "deadpool-postgres",
+ "futures-util",
+ "gcp_auth",
+ "google-cloud-auth",
+ "google-cloud-storage",
+ "jsonwebtoken",
+ "moka",
+ "native-tls",
+ "postgres-native-tls",
+ "prost",
+ "protoc-bin-vendored",
+ "refinery",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1692,51 +1737,6 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
-
-[[package]]
-name = "little-actors"
-version = "0.2.3"
-dependencies = [
- "anstream",
- "anstyle",
- "anyhow",
- "async-trait",
- "aws-lc-rs",
- "axum",
- "base64",
- "bytes",
- "clap",
- "deadpool-postgres",
- "futures-util",
- "gcp_auth",
- "google-cloud-auth",
- "google-cloud-storage",
- "jsonwebtoken",
- "moka",
- "native-tls",
- "postgres-native-tls",
- "prost",
- "protoc-bin-vendored",
- "refinery",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "subtle",
- "tempfile",
- "tokio",
- "tokio-postgres",
- "tokio-stream",
- "tokio-tungstenite",
- "tokio-util",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "lock_api"

@@ -689,7 +689,7 @@ pub(super) fn spawn_javascript_process(
     Command::new("bun")
         .args([
             "--eval",
-            "import(process.env.DURABLE_OBJECT_SDK_HOST ?? \"little-actors/host\").then(module => module[process.env.DURABLE_OBJECT_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runDurableObjectHost\"]())",
+            "import(process.env.DURABLE_OBJECT_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_OBJECT_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runDurableObjectHost\"]())",
         ])
         .env("DURABLE_OBJECT_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
         .env("DURABLE_OBJECT_EXECUTOR_SOCKET", socket)

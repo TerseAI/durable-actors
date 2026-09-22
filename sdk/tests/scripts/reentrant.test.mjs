@@ -24,7 +24,7 @@ for (const built of [false, true]) {
             await rm(root, { recursive: true, force: true })
         })
         await mkdir(path.join(root, "node_modules"))
-        await symlink(sdk, path.join(root, "node_modules/little-actors"))
+        await symlink(sdk, path.join(root, "node_modules/durable-actors"))
         await copyFile(new URL("../fixtures/reentrant-actor.ts", import.meta.url), path.join(root, "actors.ts"))
         await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
         await writeFile(

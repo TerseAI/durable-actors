@@ -72,9 +72,9 @@ function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEn
 test("clients require explicit credentials even if a discovery file exists", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actors-no-discovery-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    await mkdir(path.join(directory, ".little-actors"))
+    await mkdir(path.join(directory, ".durable-actors"))
     await writeFile(
-        path.join(directory, ".little-actors/runtime.json"),
+        path.join(directory, ".durable-actors/runtime.json"),
         JSON.stringify({
             controlPlaneUrl: "http://localhost:7100",
             apiKey: "stale-key"

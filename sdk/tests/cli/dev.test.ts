@@ -12,16 +12,16 @@ const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 
 test("dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-dev-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor project")
     await mkdir(path.join(project, "node_modules"), { recursive: true })
-    await symlink(sdk, path.join(project, "node_modules/little-actors"), "dir")
+    await symlink(sdk, path.join(project, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     const source = path.join(project, "actors.ts")
     await writeFile(
         source,
-        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(): Promise<string> { return "hi" } }\nthrow new Error("must not execute actor source")'
+        'import { Actor } from "durable-actors"; export class Room extends Actor { async hello(): Promise<string> { return "hi" } }\nthrow new Error("must not execute actor source")'
     )
     const executable = path.join(directory, "runtime.mjs")
     await writeFile(
@@ -99,7 +99,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 
     await writeFile(
         source,
-        'import { Actor } from "little-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
+        'import { Actor } from "durable-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
     )
     await assert.rejects(run(process.execPath, args, { cwd: directory, env }), /JSON-compatible/)
 })

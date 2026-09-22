@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use little_actors::{
+use durable_actors::{
     control_plane::{ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local},
     host::{ActorHostConfig, serve_actor_host},
 };
@@ -29,7 +29,7 @@ async fn main() {
 fn init_logging(development: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(if development {
-            "little_actors=error,little_actors::dev=info"
+            "durable_actors=error,durable_actors::dev=info"
         } else {
             "info"
         })
@@ -63,9 +63,9 @@ async fn run(cli: Cli) -> Result<()> {
         "control_plane" => {
             serve_control_plane(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
-        "spare" => little_actors::host::serve_spare(shutdown).await,
+        "spare" => durable_actors::host::serve_spare(shutdown).await,
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
-        "replica" => little_actors::replication::serve_replica_host(shutdown).await,
+        "replica" => durable_actors::replication::serve_replica_host(shutdown).await,
         role => anyhow::bail!("unsupported DURABLE_OBJECT_PROCESS_ROLE {role:?}"),
     }
 }

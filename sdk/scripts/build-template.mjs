@@ -15,12 +15,15 @@ async function buildTemplate(template) {
     for (const file of files)
         await cp(new URL(file, source), new URL(file, destination), {
             recursive: true,
-            filter: file => !["generated", "node_modules", ".little-actors", "dist"].includes(path.basename(file))
+            filter: file =>
+                !["generated", "node_modules", ".durable-actors", ".little-actors", "dist"].includes(
+                    path.basename(file)
+                )
         })
     // npm excludes .gitignore; init restores its name after copying the template.
     await copyFile(new URL(".gitignore", source), new URL("gitignore", destination))
     await copyFile(new URL("../../LICENSE.md", import.meta.url), new URL("LICENSE.md", destination))
     const metadata = JSON.parse(await readFile(new URL("package.json", destination), "utf8"))
-    metadata.dependencies["little-actors"] = version
+    metadata.dependencies["durable-actors"] = version
     await writeFile(new URL("package.json", destination), JSON.stringify(metadata, null, 4) + "\n")
 }

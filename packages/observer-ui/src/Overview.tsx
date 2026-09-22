@@ -39,7 +39,7 @@ export function Overview({ client, onSelectActor, timeRange, onTimeRangeChange }
     return (
         <section className="la-observer overview" aria-label="Runtime overview">
             <div className="overview-heading">
-                <h1>little-actors</h1>
+                <h1>Durable Actors</h1>
                 <div className="overview-controls">
                     <span className="overview-updated">
                         {actors.failed ? (

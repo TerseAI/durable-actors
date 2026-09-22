@@ -13,7 +13,7 @@ permissions:
 
 env:
     REGISTRY: us-central1-docker.pkg.dev
-    IMAGE: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors
+    IMAGE: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
 
 jobs:
     preflight:
@@ -205,11 +205,11 @@ jobs:
               run: pnpm --dir sdk pack --pack-destination ../.artifacts
             - name: Check the packaged SDK and native bundle
               env:
-                  DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/little-actors-${{ needs.preflight.outputs.version }}.tgz
+                  DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
               run: |
                   node --test tests/scripts/build-runtime.test.mjs
                   pnpm --dir examples/chat add --ignore-scripts "$DURABLE_OBJECT_TEST_PACKAGE"
-                  pnpm --dir examples/chat exec little-actors generate
+                  pnpm --dir examples/chat exec durable-actors generate
                   pnpm --dir examples/chat build
             - name: Upload native bundles and checksums
               env:
@@ -256,7 +256,7 @@ jobs:
             - name: Set up Blacksmith Docker builder
               uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
               with:
-                  cache-key: little-actors/runtime-${{ matrix.arch }}
+                  cache-key: durable-actors/runtime-${{ matrix.arch }}
                   nofallback: true
                   platforms: ${{ matrix.platform }}
 
@@ -268,7 +268,7 @@ jobs:
                   push: true
                   tags: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
                   labels: |
-                      org.opencontainers.image.source=https://github.com/TerseAI/little-actors
+                      org.opencontainers.image.source=https://github.com/TerseAI/durable-actors
                       org.opencontainers.image.revision=${{ github.sha }}
                       org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
                       org.opencontainers.image.licenses=MIT
@@ -321,7 +321,7 @@ jobs:
                   subject-digest: ${{ steps.manifest.outputs.digest }}
 
     npm:
-        name: Publish npm package
+        name: Publish npm packages
         needs: [preflight, image, native]
         runs-on: ubuntu-latest
         timeout-minutes: 30
@@ -352,19 +352,26 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
-            - name: Pack tarball
+            - name: Pack tarballs
               run: |
                   mkdir -p dist-tarballs
+                  pnpm --dir packages/observer-ui pack --pack-destination "$PWD/dist-tarballs"
                   pnpm --dir sdk pack --pack-destination "$PWD/dist-tarballs"
 
             - name: Publish to npm
               env:
                   RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
               run: |
-                  if npm view "little-actors@$RELEASE_VERSION" version >/dev/null 2>&1; then
-                      echo "little-actors@$RELEASE_VERSION already published"
+                  OBSERVER_VERSION=$(node -p 'require("./packages/observer-ui/package.json").version')
+                  if npm view "durable-actors-observer@$OBSERVER_VERSION" version >/dev/null 2>&1; then
+                      echo "durable-actors-observer@$OBSERVER_VERSION already published"
                   else
-                      npm publish ./dist-tarballs/*.tgz --access public
+                      npm publish ./dist-tarballs/durable-actors-observer-$OBSERVER_VERSION.tgz --access public
+                  fi
+                  if npm view "durable-actors@$RELEASE_VERSION" version >/dev/null 2>&1; then
+                      echo "durable-actors@$RELEASE_VERSION already published"
+                  else
+                      npm publish ./dist-tarballs/durable-actors-$RELEASE_VERSION.tgz --access public
                   fi
 
     crate:
@@ -387,12 +394,12 @@ jobs:
                   RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
               run: |
                   status=$(curl -sS \
-                    --user-agent "little-actors-release/1.0 (+https://github.com/TerseAI/little-actors)" \
+                    --user-agent "durable-actors-release/1.0 (+https://github.com/TerseAI/durable-actors)" \
                     -o /dev/null \
                     -w "%{http_code}" \
-                    "https://crates.io/api/v1/crates/little-actors/$RELEASE_VERSION")
+                    "https://crates.io/api/v1/crates/durable-actors/$RELEASE_VERSION")
                   if [ "$status" = "200" ]; then
-                      echo "little-actors@$RELEASE_VERSION already published"
+                      echo "durable-actors@$RELEASE_VERSION already published"
                   elif [ "$status" = "404" ]; then
                       cargo publish --locked
                   else

@@ -15,7 +15,7 @@ const cli = path.join(sdk, "dist/cli.js")
 const env = { ...process.env, DURABLE_OBJECT_PROJECT_ID: "default", DURABLE_OBJECT_API_KEY: "contract-key" }
 
 test("generate uses environment settings and explicit flags without reading discovery files", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-local-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-local-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
     const requests: string[] = []
@@ -34,9 +34,9 @@ test("generate uses environment settings and explicit flags without reading disc
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    await mkdir(path.join(directory, ".little-actors"))
+    await mkdir(path.join(directory, ".durable-actors"))
     await writeFile(
-        path.join(directory, ".little-actors/runtime.json"),
+        path.join(directory, ".durable-actors/runtime.json"),
         JSON.stringify({
             projectId: "default",
             controlPlaneUrl: origin,
@@ -74,12 +74,12 @@ test("generate uses environment settings and explicit flags without reading disc
 })
 
 test("deploy publishes the inferred API directly and a separate consumer generates identical clients without contract files", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const author = path.join(directory, "author")
     await mkdir(path.join(author, "src"), { recursive: true })
     await mkdir(path.join(author, "node_modules"))
-    await symlink(sdk, path.join(author, "node_modules/little-actors"), "dir")
+    await symlink(sdk, path.join(author, "node_modules/durable-actors"), "dir")
     await mkdir(path.join(author, "node_modules/private-data"))
     await writeFile(path.join(author, "node_modules/private-data/package.json"), '{"types":"index.d.ts"}')
     await writeFile(
@@ -102,7 +102,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
     await writeFile(
         path.join(author, "src/durable-objects.ts"),
         `
-        import { Actor } from "little-actors"
+        import { Actor } from "durable-actors"
         import type { Message } from "private-data"
         export class ChatRoom extends Actor<{}, Message, Message> {
             async sendMessage(input: Message): Promise<Message> { return input }
@@ -198,7 +198,7 @@ test("deploy publishes the inferred API directly and a separate consumer generat
 })
 
 test("generate rejects remote errors and invalid inputs before changing output", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "little-actors-generate-errors-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-errors-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "generated"))
     await writeFile(path.join(directory, "generated/index.ts"), "keep existing output")

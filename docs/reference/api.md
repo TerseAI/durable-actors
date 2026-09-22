@@ -10,7 +10,7 @@
 ## Actor
 
 ```ts
-import { Actor, Persisted } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
 
 export class ChatRoom extends Actor {
     @Persisted history: string[] = []
@@ -157,10 +157,10 @@ Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`
 
 Stack `@Emittable` with `@Persisted` on a public field to synchronize it with connected browsers. Connections receive an initial `state` snapshot of those fields, then `state_update` messages after successful commits. Nested mutations are detected and coalesced once per operation. Private, protected, and non-emittable fields are excluded. Actors without emittable fields send no automatic state messages. Use `socket.send()` and `this.broadcast()` for application messages.
 
-Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `little-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
+Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `durable-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
 
 ```ts
-import { Actor, Ephemeral, Persisted } from "little-actors"
+import { Actor, Ephemeral, Persisted } from "durable-actors"
 
 export class Counter extends Actor {
     @Persisted count = 0
@@ -199,7 +199,7 @@ For actors without reentrant methods, when a method or socket lifecycle hook thr
 Use `@Reentrant` on a public async method to allow other invocations and socket lifecycle events to run while it awaits:
 
 ```ts
-import { Actor, Persisted, Reentrant } from "little-actors"
+import { Actor, Persisted, Reentrant } from "durable-actors"
 
 export class Room extends Actor {
     @Persisted text = ""
@@ -233,7 +233,7 @@ Saved state is limited to 16 MiB of JSON. Method requests and responses must fit
 The host validates actor definitions at startup. To validate actors without starting the host:
 
 ```ts
-import { ActorCompiler } from "little-actors/compiler"
+import { ActorCompiler } from "durable-actors/compiler"
 
 const compiler = new ActorCompiler()
 compiler.check("src/durable-objects.ts")
@@ -241,7 +241,7 @@ compiler.check("src/durable-objects.ts")
 
 Actor entrypoints must be TypeScript source files. `compiler.check(entrypoint)` reads `tsconfig.json`, checks TypeScript and actor definitions, and returns persistence schemas. Pass `{ configFile: "path/to/tsconfig.json" }` as the second argument to select another configuration. Compiler tooling is loaded separately from the normal actor API.
 
-Returned field schemas use `Persistence.Persisted` or `Persistence.Ephemeral`. Import the `Persistence` enum from `little-actors/compiler` when inspecting those schemas.
+Returned field schemas use `Persistence.Persisted` or `Persistence.Ephemeral`. Import the `Persistence` enum from `durable-actors/compiler` when inspecting those schemas.
 
 ## Actor references
 
@@ -311,7 +311,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 ## ActorSocket
 
 ```ts
-import type { ActorSocket } from "little-actors"
+import type { ActorSocket } from "durable-actors"
 ```
 
 Actor-side connection passed to lifecycle hooks and listed in `await this.getConnections()`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
@@ -447,7 +447,7 @@ Sending and broadcasting do not acknowledge persistence or recipient delivery. A
 ## ActorConnection
 
 ```ts
-import type { ActorConnection } from "little-actors"
+import type { ActorConnection } from "durable-actors"
 ```
 
 Connection returned by the server SDK's `[reference.connect()](#referenceconnect)`. The SDK handles authentication, initialization, JSON encoding and decoding, and declared schema validation. `ActorConnection<Send, Receive, State>` types sent messages, received application messages, and initial state. `connect()` infers send and receive types from the actor and uses `JsonObject` for initial state. Application code handles display and replay beyond the initial saved state. Import it as a type; it is not a constructor.
@@ -539,7 +539,7 @@ The initial state arrives as a parsed object with shape `{"type":"state","state"
 ## ActorInvocationError
 
 ```ts
-import { ActorInvocationError } from "little-actors"
+import { ActorInvocationError } from "durable-actors"
 ```
 
 An `Error` subclass for failed remote operations. Its `name` is `"ActorInvocationError"`.
@@ -555,7 +555,7 @@ new ActorInvocationError(code: string, requestId: string, message: string)
 - `message` (`string`, required) — Failure description, available through the inherited `message` property.
 
 ```ts
-import { ActorInvocationError } from "little-actors"
+import { ActorInvocationError } from "durable-actors"
 
 import { ChatRoom } from "./durable-objects.js"
 
@@ -604,7 +604,7 @@ Validation, actor definition, configuration, serialization, and socket failures 
 
 ## Types
 
-These types are exported from `little-actors` alongside `ActorSocket` and `ActorConnection`.
+These types are exported from `durable-actors` alongside `ActorSocket` and `ActorConnection`.
 
 ### ActorSocketOf and ActorMessageOf
 
@@ -628,7 +628,7 @@ The automatic initial state message, included in the client message event union.
 ### ActorClass
 
 ```ts
-import type { ActorClass } from "little-actors"
+import type { ActorClass } from "durable-actors"
 ```
 
 ```text
@@ -643,7 +643,7 @@ An actor class whose prototype has type `Instance`. The type describes the class
 ### ActorBroadcastOptions
 
 ```ts
-import type { ActorBroadcastOptions } from "little-actors"
+import type { ActorBroadcastOptions } from "durable-actors"
 ```
 
 `ActorBroadcastOptions<Tag = string>` supplies recipient filters for `[Actor.broadcast()](#actorbroadcast)`. Both properties are readonly and optional; filters and exclusions can be combined.
@@ -680,7 +680,7 @@ type ActorSocketMessage = string | number | boolean | null
     | { readonly [key: string]: ActorSocketMessage }
 ```
 
-The default JSON message type. Strings are encoded as JSON strings; raw text and binary frames are unsupported by the SDK. Import with `import type { ActorSocketMessage } from "little-actors"`.
+The default JSON message type. Strings are encoded as JSON strings; raw text and binary frames are unsupported by the SDK. Import with `import type { ActorSocketMessage } from "durable-actors"`.
 
 ### ActorSocketState (type)
 
@@ -688,4 +688,4 @@ The default JSON message type. Strings are encoded as JSON strings; raw text and
 type ActorSocketState = "connecting" | "open" | "closed"
 ```
 
-Actor-side connection state. Import with `import type { ActorSocketState } from "little-actors"`. Client connections instead expose numeric `[readyState](#actorconnectionreadystate)`.
+Actor-side connection state. Import with `import type { ActorSocketState } from "durable-actors"`. Client connections instead expose numeric `[readyState](#actorconnectionreadystate)`.

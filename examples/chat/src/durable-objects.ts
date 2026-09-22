@@ -1,5 +1,5 @@
-import { Actor, Persisted } from "little-actors"
-import type { ActorSocket } from "little-actors"
+import { Actor, Persisted } from "durable-actors"
+import type { ActorSocket } from "durable-actors"
 
 export class ChatRoom extends Actor<Member, string, ChatMessage[]> {
     @Persisted history: ChatMessage[] = []

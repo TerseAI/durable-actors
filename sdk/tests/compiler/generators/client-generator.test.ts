@@ -15,13 +15,13 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     await mkdir(path.join(directory, "node_modules"))
     await symlink(
         fileURLToPath(new URL("../../../../", import.meta.url)),
-        path.join(directory, "node_modules/little-actors")
+        path.join(directory, "node_modules/durable-actors")
     )
     await writeFile(path.join(directory, "package.json"), JSON.stringify({ type: "module" }))
     const entrypoint = path.join(directory, "actors.ts")
     await writeFile(
         entrypoint,
-        `import { Actor } from "little-actors"
+        `import { Actor } from "durable-actors"
         interface Member { userId: string; profile?: { displayName: string } }
         export class Room extends Actor<Member, { type: "post"; text: string }, never> {}
         export class Counter extends Actor<{ tenantId: number; role: "viewer" | "editor" }, number, never> {}
@@ -79,7 +79,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         bundle: true,
         platform: "node",
         format: "esm",
-        external: ["little-actors/generated"],
+        external: ["durable-actors/generated"],
         outfile: proxyFile,
         logLevel: "silent"
     })
@@ -268,7 +268,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             format: "esm",
             write: false,
             alias: {
-                "little-actors/generated": fileURLToPath(
+                "durable-actors/generated": fileURLToPath(
                     new URL("../../../../src/generated.browser.ts", import.meta.url)
                 )
             },
@@ -280,7 +280,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             platform: "node",
             format: "esm",
             write: false,
-            external: ["little-actors/generated"],
+            external: ["durable-actors/generated"],
             logLevel: "silent"
         })
     } finally {
@@ -317,7 +317,7 @@ test("regenerates typed descriptors without stale validators or server imports",
             directory
         )
         const source = await readFile(path.join(directory, "index.ts"), "utf8")
-        assert.doesNotMatch(source, /little-actors\/browser|createClient|export const clients/)
+        assert.doesNotMatch(source, /durable-actors\/browser|createClient|export const clients/)
         assert.match(source, /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler|durable-objects/)
         assert.deepEqual((await readdir(directory)).sort(), ["index.ts"])
@@ -346,7 +346,7 @@ test("regenerates typed descriptors without stale validators or server imports",
             platform: "browser",
             format: "esm",
             write: false,
-            alias: { "little-actors/generated": browser },
+            alias: { "durable-actors/generated": browser },
             metafile: true
         })
         assert.equal(
@@ -481,8 +481,8 @@ function checkTypes(consumer: string): void {
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
         paths: {
-            "little-actors/generated": [fileURLToPath(new URL("../../../../src/generated.ts", import.meta.url))],
-            "little-actors/proxy": [fileURLToPath(new URL("../../../../src/proxy.ts", import.meta.url))]
+            "durable-actors/generated": [fileURLToPath(new URL("../../../../src/generated.ts", import.meta.url))],
+            "durable-actors/proxy": [fileURLToPath(new URL("../../../../src/proxy.ts", import.meta.url))]
         }
     }
     const program = ts.createProgram([consumer], options)
