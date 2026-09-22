@@ -1,86 +1,168 @@
-# durable-actors
+# Durable Actors
 
-Durable actors are TypeScript classes that persist their own state. Call them from your backend or connect browsers over WebSockets.
+Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
 
-## Installation
+Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
 
-Requires Node.js ^20.19.0 or >=22.12.0 and Bun 1.4.2+.
+Durable Actors is a primitive to help developers build the next generation of collaborative software. We provide a mechanism to serve shared, concurrency safe state to your app.
+
+Based on the Actor principle from Erlang, all state is durably persisted for you. Only one Agent/person can be in the actor at a time, protecting you from race conditions.
+
+We are fully horizontally scalable, and instances go dormant when not in use. Only pay for what your users are using.
+
+We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
+
+## Local development
+
+Install Node.js 22.19+, pnpm, and Bun 1.4.2+. Install the CLI once:
 
 ```sh
-npm install durable-actors
+pnpm add --global durable-actors
 ```
 
-For a complete app, try [chat](https://github.com/TerseAI/durable-actors/tree/main/examples/chat), [AI chat](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat), or [collaborative documents](https://github.com/TerseAI/durable-actors/tree/main/examples/documents).
+### Create your actor project in your directory of choice
 
-## Define an actor
+```sh
+durable-actors init my-actors
+cd my-actors
+pnpm install
+durable-actors dev // this will run the server locally on your machine
+```
 
-Export actors from `src/actors.ts`:
+Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
+
+### Connect your application
+
+In your separate application project's directory (ex: node server), install the SDK:
+
+```sh
+pnpm add durable-actors
+```
+
+Copy the three settings printed by `dev` into that application's `.env` file:
+
+```dotenv
+DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
+DURABLE_ACTORS_SECRET='<paste the secret printed by dev>'
+```
+
+Then generate your client from the same application directory:
+
+```sh
+durable-actors generate
+```
+
+This contract will match perfectly the actor you have defined!
+
+Now you may call your actor and access the state.
 
 ```ts
+import { actors } from "./generated/index.js"
+
+const counter = actors.Counter.get("example")
+console.log(await counter.increment())
+```
+
+For complete sample applications, see [AI Chat](https://github.com/TerseAI/durable-actors/tree/main/examples/ai-chat), [Collaborative documents](https://github.com/TerseAI/durable-actors/tree/main/examples/documents), and [Chatroom](https://github.com/TerseAI/durable-actors/tree/main/examples/chat).
+
+## Define an Actor
+
+Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
+
+```ts
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
-export class Counter extends Actor {
-    @Persisted count = 0
+export class ChatHistory extends Actor {
+    @Persisted private messages: UIMessage[] = []
 
-    async increment(): Promise<number> {
-        return ++this.count
+    async load() {
+        return this.messages
+    }
+
+    async append(message: UIMessage) {
+        this.messages.push(message)
+        return this.messages
     }
 }
 ```
 
-Methods must be async. Mark every instance field `@Persisted` to save it or `@Ephemeral` for temporary values. Use JSON values for state, arguments, and results.
+## Stream from the backend (Express)
 
-## Run locally
-
-Set your local connection in `.env`:
-
-```dotenv
-DURABLE_ACTORS_PROJECT_ID=my-project
-DURABLE_ACTORS_SECRET=local-development-key
-DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
-```
-
-```sh
-npx durable-actors dev
-```
-
-Wait for `Ready`. Actor code reloads automatically, and state is saved in `.durable-actors/` across restarts.
-
-## Call from your backend
-
-Load the same environment in your backend, then call an actor by ID:
+After adding `ChatHistory`, rerun `durable-actors generate` in your application and use its generated client:
 
 ```ts
-import { Counter } from "./actors.js"
+import { openai } from "@ai-sdk/openai"
+import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
+import express from "express"
 
-const count = await Counter.get("visits").increment()
+import { actors } from "./generated/index.js"
+
+const app = express()
+app.use(express.json())
+
+app.get("/api/chat/:id", async (request, response) => {
+    response.json(await actors.ChatHistory.get(request.params.id).load())
+})
+
+app.post("/api/chat", async (request, response) => {
+    const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
+    if (message.role !== "user") return response.sendStatus(400)
+    const chat = actors.ChatHistory.get(request.body.id)
+    const messages = await chat.append(message)
+    const result = streamText({
+        model: openai("gpt-5-mini"),
+        messages: await convertToModelMessages(messages)
+    })
+    await pipeUIMessageStreamToResponse({
+        response,
+        stream: toUIMessageStream({
+            stream: result.stream,
+            originalMessages: messages,
+            generateMessageId: generateId,
+            onEnd: async ({ responseMessage, outcome }) => {
+                if (outcome.status === "completed") await chat.append(responseMessage)
+            }
+        })
+    })
+})
 ```
 
-Reusing the project ID, class name, and actor ID accesses the same saved state. Calls run sequentially by default. Await all work before returning from an actor method.
+## Connect the frontend (React)
 
-Failed calls roll back saved-state changes unless the actor uses `@Reentrant`. External effects cannot be undone. An `ActorInvocationError` with `code: "outcome_unknown"` means the operation may already have completed; retrying can run it twice.
+```tsx
+import { useChat } from "@ai-sdk/react"
+import type { UIMessage } from "ai"
 
-## Connect a browser
+const history: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
 
-Run `npx durable-actors generate` to create backend helpers. Your backend authenticates users, checks actor access, and calls `prepareWebsocket` to issue a connection URL. The browser passes that URL to `new WebSocket()`.
+function Chat() {
+    const { messages, sendMessage, status } = useChat({ id: "lobby", messages: history })
+    const busy = status === "submitted" || status === "streaming"
 
-See the [chat backend](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/src/backend.ts) and [React client](https://github.com/TerseAI/durable-actors/blob/main/examples/chat/src/Chat.tsx) for a working example. Keep the API key on your backend; your app handles reconnecting when a connection closes or expires.
-
-## Connect to deployed actors
-
-Deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.yaml). Set your server URL, API key, and project ID in `.env`, then generate your client:
-
-```sh
-npx durable-actors generate --remote
+    return (
+        <>
+            {messages.map(message => (
+                <p key={message.id}>
+                    {message.role}: {message.parts.map(part => (part.type === "text" ? part.text : "")).join("")}
+                </p>
+            ))}
+            <form
+                action={async form => {
+                    await sendMessage({ text: String(form.get("message")) })
+                }}
+            >
+                <input name="message" aria-label="Message" required disabled={busy} />
+                <button disabled={busy}>Send</button>
+            </form>
+        </>
+    )
+}
 ```
 
-Deployments replace the current code and restart actors while keeping saved state. Import `actors` from `generated/index.js` in a separate backend project; regenerate when the deployed API changes.
+## Host it yourself
 
-## Reference
-
-- [Configuration](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/configuration.md): environment variables and defaults.
-- [API references](https://github.com/TerseAI/durable-actors/blob/main/docs/README.md): TypeScript and HTTP.
-- CLI: `npx durable-actors <command> --help`.
+Follow the [self-hosting guide](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/self-hosting.md) to connect your backend with an API key and deploy your actors.
 
 ## License
 

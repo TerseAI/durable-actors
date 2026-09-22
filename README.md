@@ -1,90 +1,115 @@
-# durable-actors
+# Durable Actors
 
-durable-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
+Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
 
-Durable Actors are TypeScript classes that persist their own state.
+Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
 
-## Installation
+Durable Actors is a primitive to help developers build the next generation of collaborative software. We provide a mechanism to serve shared, concurrency safe state to your app.
+
+Based on the Actor principle from Erlang, all state is durably persisted for you. Only one Agent/person can be in the actor at a time, protecting you from race conditions.
+
+We are fully horizontally scalable, and instances go dormant when not in use. Only pay for what your users are using.
+
+We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
+
+## Local development
+
+Install Node.js 22.19+, pnpm, and Bun 1.4.2+. Install the CLI once:
 
 ```sh
-npm install durable-actors
+pnpm add --global durable-actors
 ```
 
-See the sample apps:
-
-- [AI Chat](examples/ai-chat)
-- [Collaborative documents](examples/documents)
-- [Chatroom](examples/chat)
-
-## Run locally
-
-Use Node.js 22.19+ and Bun 1.4.2+. Export your actors from `src/actors.ts`, then start the actor server:
+### Create your actor project in your directory of choice
 
 ```sh
-npx durable-actors init my-actors
+durable-actors init my-actors
 cd my-actors
 pnpm install
-pnpm exec durable-actors dev
+durable-actors dev // this will run the server locally on your machine
 ```
 
-The server defaults to project ID `local`. In your application project, install `durable-actors` and copy the printed project ID, URL, and secret into `.env`, then run `npx durable-actors generate --remote`. Load that `.env` when starting your backend.
+Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
 
-Actor code reloads automatically, and saved state survives restarts.
+### Connect your application
 
-For configuration and API documentation, see [Reference](docs/README.md).
+In your separate application project's directory (ex: node server), install the SDK:
+
+```sh
+pnpm add durable-actors
+```
+
+Copy the three settings printed by `dev` into that application's `.env` file:
+
+```dotenv
+DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
+DURABLE_ACTORS_SECRET='<paste the secret printed by dev>'
+```
+
+Then generate your client from the same application directory:
+
+```sh
+durable-actors generate
+```
+
+This contract will match perfectly the actor you have defined!
+
+Now you may call your actor and access the state.
+
+```ts
+import { actors } from "./generated/index.js"
+
+const counter = actors.Counter.get("example")
+console.log(await counter.increment())
+```
+
+For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
 
 ## Define an Actor
 
-Export a `ChatHistory` actor to save each conversation:
+Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
 
 ```ts
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
-    @Persisted private messages: ChatMessage[] = []
+    @Persisted private messages: UIMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: ChatMessage) {
+    async append(message: UIMessage) {
         this.messages.push(message)
         return this.messages
     }
-}
-
-export type ChatMessage = {
-    id: string
-    role: "system" | "user" | "assistant"
-    parts: { type: "text"; text: string }[]
 }
 ```
 
 ## Stream from the backend (Express)
 
-Use backend actor calls to load history and save completed replies:
+After adding `ChatHistory`, rerun `durable-actors generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
 import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
-import type { UIMessage } from "ai"
 import express from "express"
 
-import { ChatHistory } from "./actors.js"
-import type { ChatMessage } from "./actors.js"
+import { actors } from "./generated/index.js"
 
 const app = express()
 app.use(express.json())
 
 app.get("/api/chat/:id", async (request, response) => {
-    response.json(await ChatHistory.get(request.params.id).load())
+    response.json(await actors.ChatHistory.get(request.params.id).load())
 })
 
 app.post("/api/chat", async (request, response) => {
     const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
     if (message.role !== "user") return response.sendStatus(400)
-    const chat = ChatHistory.get(request.body.id)
-    const messages = await chat.append(historyMessage(message))
+    const chat = actors.ChatHistory.get(request.body.id)
+    const messages = await chat.append(message)
     const result = streamText({
         model: openai("gpt-5-mini"),
         messages: await convertToModelMessages(messages)
@@ -96,19 +121,11 @@ app.post("/api/chat", async (request, response) => {
             originalMessages: messages,
             generateMessageId: generateId,
             onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(historyMessage(responseMessage))
+                if (outcome.status === "completed") await chat.append(responseMessage)
             }
         })
     })
 })
-
-function historyMessage(message: UIMessage): ChatMessage {
-    return {
-        id: message.id,
-        role: message.role,
-        parts: message.parts.filter(part => part.type === "text").map(part => ({ type: "text", text: part.text }))
-    }
-}
 ```
 
 ## Connect the frontend (React)
@@ -142,27 +159,6 @@ function Chat() {
     )
 }
 ```
-
-The [AI chat example](examples/ai-chat) includes the complete Express and React app. It saves text messages; reload after a reply finishes to restore the conversation. Add authentication and chat access checks before using it for private conversations.
-
-## Host it yourself
-
-A hosted server uses Modal, PostgreSQL, and GCS. See [server configuration](docs/reference/configuration.md#server-hosting) for the required settings.
-
-Deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](docs/reference/openapi.yaml). After deployment, set the server URL, API key, and your project ID in `.env`, then generate your client:
-
-```sh
-npx durable-actors generate --remote
-```
-
-Each deployment replaces the current code and restarts actors while keeping saved state. Generated clients use the current deployed API.
-
-## Reference
-
-- [Configuration](docs/reference/configuration.md): environment variables and defaults.
-- [HTTP API](docs/reference/openapi.yaml): OpenAPI, also served at `/openapi.yaml`.
-- [TypeScript](docs/README.md): generated TypeDoc and editor hover documentation.
-- CLI: `npx durable-actors <command> --help`.
 
 ## License
 
