@@ -1102,7 +1102,6 @@ impl SandboxHostProvisioner {
                 .clone()
                 .or_else(|| spec.code_snapshot.as_ref().map(|_| "actors.mjs".into())),
             secret_refs: spec.secret_refs.clone(),
-            actor_idle_timeout_seconds: self.runtime.actor_idle_timeout_seconds,
             host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
         })
     }

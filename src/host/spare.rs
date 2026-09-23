@@ -12,7 +12,6 @@ pub(super) struct WarmHost {
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
     pub entrypoint: String,
-    pub actor_idle_timeout_ms: u64,
 }
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
@@ -65,16 +64,12 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                 .any(|part| matches!(part, std::path::Component::ParentDir)),
         "customer entrypoint must be a compiled module under /customer"
     );
-    let actor_idle_timeout_ms = crate::control_plane::actor_idle_timeout_seconds(&mut |name| {
-        environment.get(name).cloned()
-    })? * 1_000;
     let warm = WarmHost {
         readiness: Some(assigned.ready),
         listener,
         executor,
         javascript,
         entrypoint,
-        actor_idle_timeout_ms,
     };
     serve_assigned_host(config, Some(warm), shutdown).await
 }

@@ -9,13 +9,12 @@ import type {
     InvokeCommand,
     WebSocketEventCommand
 } from "./protocol.js"
-import type { ActorWorkerSupervisor, ResidentActorWorker } from "./worker-supervisor.js"
+import type { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
 interface ActorHostSettings {
     readonly socketPath: string
     readonly actorEntrypoint: string | undefined
     readonly startupTimeoutMs: number
-    readonly actorIdleTimeoutMs: number
 }
 
 type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
@@ -34,7 +33,6 @@ type ActorWorkerSupervisorFactory = (
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
-    readonly actorIdleTimeoutMs?: number
     readonly createWorker?: ActorWorkerFactory
 }
 
@@ -43,10 +41,8 @@ interface ResidentActorWorkerOptions {
     readonly sequenceBase: number
     readonly onActiveActorsChange: () => void
     readonly moduleUrl: string
-    readonly idleTimeoutMs: number
     readonly worker?: ActorWorkerHandle
     readonly createWorker: ActorWorkerFactory
-    readonly onIdle: (actor: ResidentActorWorker) => void
 }
 
 type ActorWorkerState = "starting" | "ready" | "stopping" | "stopped"

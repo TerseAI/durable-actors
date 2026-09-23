@@ -15,9 +15,6 @@ const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
-const DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS: u64 = 60;
-const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
-const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ControlPlaneProcessConfig {
     pub bind: SocketAddr,
@@ -357,13 +354,7 @@ fn sandbox_provider_config(
             control_plane_url,
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
-            actor_idle_timeout_seconds: actor_idle_timeout_seconds(get)?,
-            host_idle_timeout_ms: idle_timeout(
-                get,
-                "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
-                DEFAULT_HOST_IDLE_TIMEOUT_MS,
-                MAX_IDLE_TIMEOUT_MS,
-            )?,
+            host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
     })
 }
@@ -406,35 +397,6 @@ fn validated_http_url(value: &str, name: &str) -> Result<String> {
         "{name} must be HTTP or HTTPS"
     );
     Ok(url.to_string())
-}
-
-pub(crate) fn actor_idle_timeout_seconds(
-    get: &mut impl FnMut(&str) -> Option<String>,
-) -> Result<u64> {
-    idle_timeout(
-        get,
-        "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS",
-        DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS,
-        86_400,
-    )
-}
-
-fn idle_timeout(
-    get: &mut impl FnMut(&str) -> Option<String>,
-    name: &str,
-    default: u64,
-    maximum: u64,
-) -> Result<u64> {
-    let value = get(name)
-        .map(|value| value.parse())
-        .transpose()
-        .with_context(|| format!("{name} must be an integer"))?
-        .unwrap_or(default);
-    ensure!(
-        (1..=maximum).contains(&value),
-        "{name} must be an integer between 1 and {maximum}"
-    );
-    Ok(value)
 }
 
 #[cfg(test)]

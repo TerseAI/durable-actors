@@ -312,10 +312,9 @@ async fn local_routes(
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
         invocation_jwt_audience: "durable-actors-invoke".into(),
-        actor_idle_timeout_seconds: super::process::actor_idle_timeout_seconds(&mut |name| {
+        host_idle_timeout_ms: crate::host::host_idle_timeout_ms(&mut |name| {
             std::env::var(name).ok()
         })?,
-        host_idle_timeout_ms: 300_000,
     };
     let provisioner = Arc::new(
         SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)

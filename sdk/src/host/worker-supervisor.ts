@@ -27,17 +27,13 @@ import type {
     SocketSource
 } from "./types.js"
 
-const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
-
 class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
-    private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
     private resident: ResidentActorWorker | undefined
     private lastActiveActors = "[]"
     private readonly activeActorListeners = new Set<() => void>()
     private speculativeWorker: ActorWorkerHandle | undefined
-    private speculativeTimer: NodeJS.Timeout | undefined
     private identity: string | undefined
     private closed = false
     private actorNames: readonly string[] | undefined
@@ -45,11 +41,7 @@ class ActorWorkerSupervisor {
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
-        this.actorIdleTimeoutMs = options.actorIdleTimeoutMs ?? DEFAULT_ACTOR_IDLE_TIMEOUT_MS
         this.createWorker = options.createWorker ?? ((data, onStateChange) => new ActorWorker(data, onStateChange))
-        if (!Number.isInteger(this.actorIdleTimeoutMs) || this.actorIdleTimeoutMs <= 0) {
-            throw new Error("actor idle timeout must be a positive integer")
-        }
         this.preload()
     }
 
@@ -57,12 +49,7 @@ class ActorWorkerSupervisor {
         if (this.closed) throw new Error("actor supervisor is closed")
         if (this.actorNames !== undefined) return this.actorNames
         const worker = this.speculativeWorker ?? this.preload()
-        if (this.speculativeTimer !== undefined) clearTimeout(this.speculativeTimer)
         this.actorNames = await worker.ready()
-        if (this.speculativeWorker === worker) {
-            this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
-            this.speculativeTimer.unref()
-        }
         return this.actorNames
     }
 
@@ -122,15 +109,13 @@ class ActorWorkerSupervisor {
     private preload(): ActorWorkerHandle {
         const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl }, () => this.notifyActiveActorsChange())
         this.speculativeWorker = worker
-        this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
-        this.speculativeTimer.unref()
         void worker.ready().catch(() => this.discardPreload(worker))
         return worker
     }
 
     private discardPreload(worker: ActorWorkerHandle): void {
         if (this.speculativeWorker !== worker) return
-        this.takeSpeculativeWorker()?.terminate("unused actor preload expired or failed")
+        this.takeSpeculativeWorker()?.terminate("actor preload failed")
     }
 
     private execute(
@@ -154,10 +139,8 @@ class ActorWorkerSupervisor {
                 identity: command.actor,
                 sequenceBase: this.lastSequence,
                 moduleUrl: this.actorEntrypointUrl,
-                idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
-                onIdle: candidate => this.removeIfCurrent(candidate),
                 onActiveActorsChange: () => this.notifyActiveActorsChange()
             })
             this.resident = actor
@@ -179,15 +162,7 @@ class ActorWorkerSupervisor {
         return { type: "evicted" }
     }
 
-    private removeIfCurrent(actor: ResidentActorWorker): void {
-        if (this.resident !== actor || !actor.isIdle()) return
-        this.resident = undefined
-        actor.terminate(`resident actor was idle for ${this.actorIdleTimeoutMs}ms`)
-    }
-
     private takeSpeculativeWorker(): ActorWorkerHandle | undefined {
-        if (this.speculativeTimer !== undefined) clearTimeout(this.speculativeTimer)
-        this.speculativeTimer = undefined
         const worker = this.speculativeWorker
         this.speculativeWorker = undefined
         return worker
@@ -198,22 +173,15 @@ class ResidentActorWorker {
     readonly identity: ActorIdentity
     readonly sequenceBase: number
     readonly moduleUrl: string
-    readonly idleTimeoutMs: number
     readonly createWorker: ActorWorkerFactory
-    readonly onIdle: (actor: ResidentActorWorker) => void
-    lastCompletedAt = Date.now()
     private readonly onActiveActorsChange: () => void
     private worker: ActorWorkerHandle | undefined
-    private idleTimer: NodeJS.Timeout | undefined
-    private activeInvocations = 0
 
     constructor(options: ResidentActorWorkerOptions) {
         this.identity = { ...options.identity }
         this.sequenceBase = options.sequenceBase
         this.moduleUrl = options.moduleUrl
-        this.idleTimeoutMs = options.idleTimeoutMs
         this.createWorker = options.createWorker
-        this.onIdle = options.onIdle
         this.onActiveActorsChange = options.onActiveActorsChange
         this.worker = options.worker
     }
@@ -225,11 +193,8 @@ class ResidentActorWorker {
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (this.worker === undefined && command.resident_only) return { type: "state_required" }
-        if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
-        this.idleTimer = undefined
         this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl }, this.onActiveActorsChange)
         const worker = this.worker
-        this.activeInvocations++
         this.onActiveActorsChange()
         let reply: ActorExecutorReply
         try {
@@ -239,9 +204,6 @@ class ResidentActorWorker {
                 error instanceof ActorWorkerTerminatedError ? "actor_worker_terminated" : "actor_worker_failed",
                 errorMessage(error)
             )
-        } finally {
-            this.activeInvocations--
-            this.lastCompletedAt = Date.now()
         }
         if (this.worker !== worker)
             return failedReply("actor_worker_terminated", "resident actor was terminated during invocation")
@@ -255,10 +217,6 @@ class ResidentActorWorker {
             this.worker = undefined
             this.onActiveActorsChange()
         }
-        if (this.activeInvocations === 0) {
-            this.idleTimer = setTimeout(() => this.onIdle(this), this.idleTimeoutMs)
-            this.idleTimer.unref()
-        }
         return reply
     }
 
@@ -266,13 +224,7 @@ class ResidentActorWorker {
         return this.worker?.state === "ready"
     }
 
-    isIdle(): boolean {
-        return this.idleTimer !== undefined
-    }
-
     terminate(reason: string): void {
-        if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
-        this.idleTimer = undefined
         this.worker?.terminate(reason)
         this.worker = undefined
         this.onActiveActorsChange()
@@ -488,5 +440,4 @@ class ActorWorkerTerminatedError extends Error {
     }
 }
 
-export { ActorWorker, ActorWorkerSupervisor, DEFAULT_ACTOR_IDLE_TIMEOUT_MS }
-export type { ResidentActorWorker }
+export { ActorWorker, ActorWorkerSupervisor }

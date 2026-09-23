@@ -13,6 +13,7 @@ pub(crate) mod storage;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub(crate) use self::process::host_idle_timeout_ms;
 pub use self::process::{ActorHostConfig, serve_actor_host};
 pub use self::spare::serve_spare;
 pub(crate) use self::{

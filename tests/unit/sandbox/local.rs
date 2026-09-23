@@ -315,7 +315,6 @@ impl LocalFixture {
             working_directory: self.directory.path().display().to_string(),
             actor_entrypoint: None,
             secret_refs: vec![],
-            actor_idle_timeout_seconds: 60,
             host_idle_timeout_ms: 300_000,
         }
     }
@@ -408,7 +407,6 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         working_directory: project.display().to_string(),
         actor_entrypoint: None,
         secret_refs: vec![],
-        actor_idle_timeout_seconds: 60,
         host_idle_timeout_ms: 300_000,
     };
     assert_eq!(
@@ -416,8 +414,8 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         Some(&"development".to_owned())
     );
     assert_eq!(
-        host_environment(&request, &directory).get("DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS"),
-        Some(&"60".to_owned())
+        host_environment(&request, &directory).get("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"),
+        Some(&"300000".to_owned())
     );
     let error = provider.ensure_host(&request).await.unwrap_err();
     assert!(error.to_string().contains("shutting down"), "{error:#}");

@@ -13,12 +13,12 @@ async function runGenericHost(): Promise<never> {
         const settings = parseHostSettings(process.env)
         const socket = await connectSocket(settings.socketPath)
         const assignment = readAssignment(socket)
-        socket.write(`${JSON.stringify({ type: "warm", protocol: 17 })}\n`)
-        const { entrypoint, actorIdleTimeoutMs } = await assignment
+        socket.write(`${JSON.stringify({ type: "warm", protocol: 18 })}\n`)
+        const { entrypoint } = await assignment
         await waitForCode(entrypoint)
         let available = true
         const session = new ActorSession(
-            { ...settings, actorEntrypoint: entrypoint, actorIdleTimeoutMs },
+            { ...settings, actorEntrypoint: entrypoint },
             options =>
                 new ActorWorkerSupervisor({
                     ...options,
@@ -84,8 +84,7 @@ async function waitForCode(entrypoint: string): Promise<void> {
 
 const assignmentSchema = z.object({
     type: z.literal("load"),
-    entrypoint: z.string().refine(isAbsolute, "entrypoint must be absolute"),
-    actorIdleTimeoutMs: z.number().int().positive().max(86_400_000)
+    entrypoint: z.string().refine(isAbsolute, "entrypoint must be absolute")
 })
 
 export { runGenericHost }

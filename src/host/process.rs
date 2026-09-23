@@ -25,7 +25,7 @@ use super::{ActorHost, HostEndpoint, HostLeaseMaintainer, LeaseRenewalTask};
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 60_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
@@ -275,15 +275,7 @@ impl ActorHostConfig {
             duration_seconds(&mut get, "DURABLE_ACTORS_JWT_MAX_TTL_SECONDS", 86_400)?;
         let lease_duration = duration_ms(&mut get, "DURABLE_ACTORS_LEASE_MS", 30_000)?;
         let renew_every = duration_ms(&mut get, "DURABLE_ACTORS_RENEW_MS", 10_000)?;
-        let host_idle_timeout = duration_ms(
-            &mut get,
-            "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
-            DEFAULT_HOST_IDLE_TIMEOUT_MS,
-        )?;
-        ensure!(
-            host_idle_timeout.as_millis() <= u128::from(MAX_IDLE_TIMEOUT_MS),
-            "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS is too large"
-        );
+        let host_idle_timeout = Duration::from_millis(host_idle_timeout_ms(&mut get)?);
         ensure!(
             lease_duration.as_millis() <= u128::from(MAX_HOST_LEASE_DURATION_MS),
             "DURABLE_ACTORS_LEASE_MS is too large"
@@ -376,12 +368,7 @@ async fn prepare_actor_host(
     let (warm_listener, warm_executor) = match warm {
         Some(warm) => (
             Some(warm.listener),
-            Some((
-                warm.executor,
-                warm.javascript,
-                warm.entrypoint,
-                warm.actor_idle_timeout_ms,
-            )),
+            Some((warm.executor, warm.javascript, warm.entrypoint)),
         ),
         None => (None, None),
     };
@@ -406,10 +393,9 @@ async fn prepare_actor_host(
     );
     let storage_ready = prepare_storage(config, &endpoint, control_plane.clone(), stop);
     let executor_ready = async {
-        if let Some((executor, javascript, entrypoint, idle)) = warm_executor {
+        if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection =
-                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint, idle))
-                    .await??;
+                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
             Ok((connection, javascript))
         } else {
             connect_executor(
@@ -706,6 +692,19 @@ fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<
     let value = get(name).with_context(|| format!("{name} is required"))?;
     ensure!(!value.is_empty(), "{name} must not be empty");
     Ok(value)
+}
+
+pub(crate) fn host_idle_timeout_ms(get: &mut impl FnMut(&str) -> Option<String>) -> Result<u64> {
+    let timeout = duration_ms(
+        get,
+        "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
+        DEFAULT_HOST_IDLE_TIMEOUT_MS,
+    )?;
+    ensure!(
+        timeout.as_millis() <= u128::from(MAX_IDLE_TIMEOUT_MS),
+        "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS is too large"
+    );
+    Ok(timeout.as_millis() as u64)
 }
 
 fn duration_ms(

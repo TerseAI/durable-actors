@@ -64,7 +64,7 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(17), supports_residency: z.boolean().optional() }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(18), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -105,7 +105,7 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 17
+    readonly protocol: 18
     readonly actor_names: readonly string[]
 }
 
