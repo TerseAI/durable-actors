@@ -37,35 +37,43 @@
         "./generated": {
             "types": "./dist/generated.d.ts",
             "browser": "./dist/generated.browser.js",
-            "import": "./dist/generated.js"
+            "import": "./dist/generated.js",
+            "default": "./dist/generated.js"
         },
         "./backend": {
             "types": "./dist/backend.d.ts",
-            "import": "./dist/backend.js"
+            "import": "./dist/backend.js",
+            "default": "./dist/backend.js"
         },
         "./dev": {
             "types": "./dist/localRuntime.d.ts",
-            "import": "./dist/localRuntime.js"
+            "import": "./dist/localRuntime.js",
+            "default": "./dist/localRuntime.js"
         },
         "./proxy": {
             "types": "./dist/proxy.d.ts",
-            "import": "./dist/proxy.js"
+            "import": "./dist/proxy.js",
+            "default": "./dist/proxy.js"
         },
         ".": {
             "types": "./dist/index.d.ts",
-            "import": "./dist/index.js"
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
         },
         "./host": {
             "types": "./dist/host.d.ts",
-            "import": "./dist/host.js"
+            "import": "./dist/host.js",
+            "default": "./dist/host.js"
         },
         "./compiler": {
             "types": "./dist/compiler/actor-compiler.d.ts",
-            "import": "./dist/compiler/actor-compiler.js"
+            "import": "./dist/compiler/actor-compiler.js",
+            "default": "./dist/compiler/actor-compiler.js"
         },
         "./codegen": {
             "types": "./dist/compiler/generators/typescript-generator.d.ts",
-            "import": "./dist/compiler/generators/typescript-generator.js"
+            "import": "./dist/compiler/generators/typescript-generator.js",
+            "default": "./dist/compiler/generators/typescript-generator.js"
         }
     },
     "files": [
