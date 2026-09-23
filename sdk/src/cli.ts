@@ -90,7 +90,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
     ${styleText("cyan", "pnpm install")}
 
   ${styleText("bold", "Start the actor server")}
-    ${styleText("cyan", "durable-actors dev")}
+    ${styleText("cyan", "pnpm exec durable-actors dev")}
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.
