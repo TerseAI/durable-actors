@@ -14,3 +14,12 @@ test("CLI help explains source defaults without requiring credentials", async ()
     assert.match(stdout, /src\/actors\.ts/u)
     assert.match(stdout, /DURABLE_ACTORS_PROJECT_ID/u)
 })
+
+test("dev help explains the project directory, entrypoint, and setup", async () => {
+    const { stdout } = await run(process.execPath, [cli, "dev", "--help"])
+    assert.match(stdout, /current directory/u)
+    assert.match(stdout, /src\/actors\.ts/u)
+    assert.match(stdout, /DURABLE_ACTORS_PROJECT\b/u)
+    assert.match(stdout, /DURABLE_ACTORS_ENTRYPOINT/u)
+    assert.match(stdout, /durable-actors init my-project/u)
+})

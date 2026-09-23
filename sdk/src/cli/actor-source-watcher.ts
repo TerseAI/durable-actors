@@ -15,7 +15,9 @@ async function watchActorSources(
     refresh: () => Promise<void>
 ): Promise<ActorSourceWatcher> {
     const watcher = watch(options.projectDirectory, {
-        ignored: watchedPath => ignoredActorPath(watchedPath, options),
+        ignored: (watchedPath, stats) =>
+            ignoredActorPath(watchedPath, options) ||
+            (stats !== undefined && !stats.isDirectory() && (!stats.isFile() || !isActorSource(watchedPath))),
         ignoreInitial: true,
         followSymlinks: false,
         atomic: true,
@@ -24,7 +26,7 @@ async function watchActorSources(
     let timer: ReturnType<typeof setTimeout> | undefined
     let updates = Promise.resolve()
     watcher.on("all", (_event, changedPath) => {
-        if (!/\.(?:[cm]?[jt]sx?|json|ya?ml)$/u.test(changedPath) && path.basename(changedPath) !== "bun.lock") return
+        if (!isActorSource(changedPath)) return
         clearTimeout(timer)
         timer = setTimeout(() => {
             updates = updates.then(refresh).catch(reportWatchError)
@@ -56,6 +58,10 @@ function ignoredActorPath(candidate: string, options: ActorSourceWatcherOptions)
     if (!options.dataDirectory) return false
     const state = path.resolve(options.dataDirectory)
     return candidate === state || candidate.startsWith(`${state}${path.sep}`)
+}
+
+function isActorSource(candidate: string): boolean {
+    return /\.(?:[cm]?[jt]sx?|json|ya?ml)$/u.test(candidate) || path.basename(candidate) === "bun.lock"
 }
 
 function reportWatchError(error: unknown): void {
