@@ -11,7 +11,7 @@ import { ActorProtocolError } from "../../src/errors.js"
 test("direct transport speaks the actor host protobuf contract", async () => {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../fixtures/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true
@@ -143,7 +143,7 @@ test("only transport authentication rejections are safe to retry", async () => {
 function actorHostServer(reply: HostReply, errorCode?: number): Server {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../fixtures/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true
@@ -193,7 +193,7 @@ type HostReply = {
 test("socket effects use authenticated host gRPC with actor ownership binding", async () => {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../fixtures/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true

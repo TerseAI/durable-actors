@@ -1,6 +1,5 @@
 import { Metadata, credentials, loadPackageDefinition, status } from "@grpc/grpc-js"
-import { loadSync } from "@grpc/proto-loader"
-import { fileURLToPath } from "node:url"
+import { fromJSON } from "@grpc/proto-loader"
 
 import { parseSocketEffects } from "../actor/socketProtocol.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
@@ -9,6 +8,7 @@ import type { ProtoGrpcType } from "../generated/durable_actors.js"
 import type { ActorHostServiceClient } from "../generated/durable_actors/v1/ActorHostService.js"
 import type { HostInvokeActorRequest } from "../generated/durable_actors/v1/HostInvokeActorRequest.js"
 import type { InvokeActorReply__Output } from "../generated/durable_actors/v1/InvokeActorReply.js"
+import schema from "../generated/schema.js"
 import type { JsonValue } from "../json.js"
 
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -161,7 +161,7 @@ function actorHostUrl(route: string): URL {
 }
 
 const definition = loadPackageDefinition(
-    loadSync(fileURLToPath(new URL("../generated/durable_actors.proto", import.meta.url)), {
+    fromJSON(schema, {
         defaults: true,
         longs: Number,
         oneofs: true
