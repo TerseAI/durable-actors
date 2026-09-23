@@ -4,7 +4,7 @@ The CLI reads `.env` in the current directory. Exported variables take precedenc
 
 ## Application connection
 
-Used by backend clients, `generate`, and `observe`. Local startup also uses the project ID and API key.
+Used by backend clients, `generate --remote`, and `observe`. Local startup also uses the project ID and API key.
 
 | Variable                           | Default                                             | Meaning                                                                                                                     |
 | ---------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -15,8 +15,6 @@ Used by backend clients, `generate`, and `observe`. Local startup also uses the 
 Local CLI commands and backend clients need no connection settings with the defaults. Connections to localhost (`localhost`, `127.0.0.1`, and `[::1]`) default to project `local`. Remote connections require an explicit project ID. If you override the project or port, use matching settings in your backend.
 
 Authentication is disabled when `DURABLE_ACTORS_SECRET` is unset on the server, locally or remotely. Set it on both the server and your backend to test or enable authentication. Clients omit the authorization header when no secret is configured. Leave the variable unset to disable authentication; empty values and surrounding whitespace are invalid on the server.
-
-`generate` fetches the published contract from the configured server. `generate --control-plane-url <origin>` overrides the URL for one run. Pass a source file (`generate ./src/actors.ts`) to compile locally without connection settings; `--config` requires that source entrypoint.
 
 ## Local development
 
