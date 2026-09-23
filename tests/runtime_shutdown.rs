@@ -36,7 +36,10 @@ async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(
         project.path(),
-        "async processId(): Promise<number> { return process.pid }",
+        "@Persisted count = 0;
+         async increment(): Promise<number> { return ++this.count }
+         async read(): Promise<number> { return this.count }
+         async processId(): Promise<number> { return process.pid }",
     )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .args([
