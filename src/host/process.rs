@@ -21,7 +21,9 @@ use crate::{
     host_leases::MAX_HOST_LEASE_DURATION_MS,
 };
 
-use super::{ActorHost, HostEndpoint, HostLeaseMaintainer, LeaseRenewalTask};
+use super::{
+    ActorHost, HostEndpoint, HostLeaseMaintainer, LeaseRenewalTask, actor_host::ActorActivity,
+};
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -197,6 +199,7 @@ pub(super) async fn serve_assigned_host(
         &mut lease_lost,
         (&mut activity, &mut socket_activity, &mut actor_stopped),
         config.host_idle_timeout,
+        |last_active| host.evict_idle(last_active),
     )
     .await;
     socket_stop.cancel();
@@ -598,32 +601,35 @@ async fn connect_executor(
     Ok((listener.accept().await?, javascript))
 }
 
-async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture>(
+async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture, EvictFuture>(
     mut server: std::pin::Pin<&mut ServerFuture>,
     mut executor: std::pin::Pin<&mut ExecutorFuture>,
     javascript: &mut tokio::process::Child,
     mut shutdown: std::pin::Pin<&mut ShutdownFuture>,
     lease_lost: &mut tokio::sync::watch::Receiver<bool>,
     activity: (
-        &mut tokio::sync::watch::Receiver<usize>,
+        &mut tokio::sync::watch::Receiver<ActorActivity>,
         &mut tokio::sync::watch::Receiver<usize>,
         &mut tokio::sync::watch::Receiver<bool>,
     ),
     idle_timeout: Duration,
+    mut evict_idle: impl FnMut(tokio::time::Instant) -> EvictFuture,
 ) -> Result<()>
 where
     ServerFuture: Future<Output = Result<()>> + ?Sized,
     ExecutorFuture: Future<Output = Result<()>> + ?Sized,
     ShutdownFuture: Future<Output = ()> + ?Sized,
+    EvictFuture: Future<Output = Result<()>>,
 {
     let (activity, socket_activity, actor_stopped) = activity;
-    let mut idle_deadline = tokio::time::Instant::now() + idle_timeout;
+    let mut eviction: Option<std::pin::Pin<Box<EvictFuture>>> = None;
     loop {
         if *actor_stopped.borrow() {
             break Err(anyhow::anyhow!(
                 "actor activation stopped; host self-fenced"
             ));
         }
+        let current = *activity.borrow_and_update();
         tokio::select! {
             changed = actor_stopped.changed() => {
                 if changed.is_err() { break Err(anyhow::anyhow!("actor lifecycle tracker stopped")); }
@@ -639,15 +645,20 @@ where
             }
             changed = socket_activity.changed() => {
                 if changed.is_err() { break Err(anyhow::anyhow!("socket activity tracker stopped")); }
-                if *socket_activity.borrow() == 0 { idle_deadline = tokio::time::Instant::now() + idle_timeout; }
             }
             changed = activity.changed() => {
                 if changed.is_err() { break Err(anyhow::anyhow!("actor activity tracker stopped")); }
-                if *activity.borrow() == 0 {
-                    idle_deadline = tokio::time::Instant::now() + idle_timeout;
-                }
             }
-            () = tokio::time::sleep_until(idle_deadline), if *activity.borrow() == 0 && *socket_activity.borrow() == 0 => break Ok(()),
+            result = async { eviction.as_mut().unwrap().await }, if eviction.is_some() => {
+                result.context("evict idle actor")?;
+                eviction = None;
+            }
+            () = tokio::time::sleep_until(current.last_active + idle_timeout),
+                if current.active == 0 && eviction.is_none() && (current.resident || *socket_activity.borrow() == 0) => {
+                if activity.has_changed()? { continue; }
+                if *socket_activity.borrow() == 0 { break Ok(()); }
+                eviction = Some(Box::pin(evict_idle(current.last_active)));
+            },
         }
     }
 }
