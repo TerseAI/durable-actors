@@ -122,9 +122,73 @@ test("extracts named re-exports and orders actors and methods deterministically"
     )
 })
 
+test("unknown message payloads support arbitrary JSON in contracts", async t => {
+    const project = await createProject(t)
+    await project.write(`
+        interface Message {
+            id: string
+            metadata?: unknown
+            parts: { [key: string]: unknown }[]
+        }
+        export class Room extends Actor<{}, never, never> {
+            async send(message: Message): Promise<Message> { return message }
+        }
+    `)
+    const { rpc } = new ActorCompiler().compileContract(project.entrypoint).actors[0]
+    const [send] = rpc.methods
+    assert.equal(send.result.kind, "value")
+    if (send.result.kind !== "value") assert.fail("expected result schema")
+    const ajv = new Ajv({ allowUnionTypes: true })
+    for (const type of [send.parameters[0].type, send.result.type]) {
+        const validate = ajv.compile({ ...rpc.schema, ...type })
+        for (const value of [null, true, 42, "hello", [1, null], { nested: [false, { text: "hello" }] }]) {
+            assert.equal(
+                validate({
+                    id: "1",
+                    metadata: value,
+                    parts: [{ type: "tool", input: value, output: value, data: value }]
+                }),
+                true
+            )
+        }
+        assert.equal(validate({ id: "1", parts: [{ type: "text", text: "hello" }] }), true)
+        assert.equal(validate({ id: 1, parts: [] }), false)
+        assert.equal(validate({ id: "1", parts: "invalid" }), false)
+    }
+})
+
+test("JSON dictionaries allow omitted entries", async t => {
+    const project = await createProject(t)
+    await project.write(`
+        type Json = null | boolean | number | string | Json[] | { [key: string]: Json | undefined }
+        export class Room extends Actor<{}, never, never> {
+            async send(value: { [key: string]: Json | undefined }) { return value }
+        }
+    `)
+    const { rpc } = new ActorCompiler().compileContract(project.entrypoint).actors[0]
+    const [send] = rpc.methods
+    if (send.result.kind !== "value") assert.fail("expected result schema")
+    for (const type of [send.parameters[0].type, send.result.type]) {
+        const validate = new Ajv({ allowUnionTypes: true }).compile({ ...rpc.schema, ...type })
+        const value = { omitted: undefined, nested: { omitted: undefined, retained: [null, true, 42, "hello"] } }
+        assert.equal(validate(JSON.parse(JSON.stringify(value))), true)
+        assert.equal(validate({}), true)
+        assert.equal(validate(["invalid"]), false)
+    }
+})
+
 test("rejects RPC types that cannot preserve their meaning across JSON", async t => {
     const project = await createProject(t)
-    for (const type of ["Date", "bigint", "any", "unknown", "() => void", "string | undefined", "{ nested: Date }"]) {
+    for (const type of [
+        "Date",
+        "bigint",
+        "any",
+        "() => void",
+        "string | undefined",
+        "(string | undefined)[]",
+        "{ nested: Date }",
+        "Record<string, Date | undefined>"
+    ]) {
         await project.write(`export class Room extends Actor<{}, never, never> {
             async send(value: ${type}): Promise<void> {}
         }`)

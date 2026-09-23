@@ -9,7 +9,7 @@ pnpm exec durable-actors dev
 
 Define your actors in `src/actors.ts`. The starter contains a counter with persisted state and `read()` and `increment()` methods. Each counter ID has its own saved value.
 
-`durable-actors dev` watches your actor source and stores local state in `.durable-actors/`. It defaults to project ID `local`; choose another with `DURABLE_ACTORS_PROJECT_ID=my-project pnpm exec durable-actors dev`. If the CLI is installed globally, you can run `durable-actors dev` directly; it uses the SDK and runtime version installed in your actor project. Startup validates actor imports before printing `Ready`.
+`durable-actors dev` watches your actor source and stores local state in `.durable-actors/`. It defaults to project ID `local`; choose another with `DURABLE_ACTORS_PROJECT_ID=my-project pnpm exec durable-actors dev`. If the CLI is installed globally, you can run `durable-actors dev` directly.
 
 ## Connect your application
 
