@@ -7,6 +7,7 @@ import { z } from "zod"
 
 import { validateProjectId } from "./actor/identity.js"
 import { actorEnvironment } from "./environment.js"
+import { projectSdkModule } from "./project-sdk.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
@@ -42,9 +43,14 @@ export interface LocalActorRuntime {
     stop(): Promise<void>
 }
 
-/** Starts a local server and waits until ready. */
+/** Starts a local server using the project's installed SDK and waits until ready. */
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
     validateProjectId(options.projectId)
+    const localModule = await projectSdkModule(options.project ?? ".", "dev")
+    if (localModule !== import.meta.url) {
+        const { startLocalActors } = await import(localModule)
+        return startLocalActors(options)
+    }
     const child = launch(await fetchRuntimeExecutablePath(), options)
     const { closed, stop } = lifecycle(child)
     try {

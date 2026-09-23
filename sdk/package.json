@@ -34,6 +34,10 @@
         "durable-actors": "dist/cli.js"
     },
     "exports": {
+        "./cli": {
+            "types": "./dist/cli/program.d.ts",
+            "import": "./dist/cli/program.js"
+        },
         "./generated": {
             "types": "./dist/generated.d.ts",
             "browser": "./dist/generated.browser.js",
@@ -95,9 +99,10 @@
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
         "dotenv": "^18.0.0",
-        "esbuild": "^0.28.2",
-        "json-schema-to-typescript": "^16.0.0",
         "durable-actors-observer": "workspace:0.1.0",
+        "esbuild": "^0.28.2",
+        "import-meta-resolve": "^4.2.0",
+        "json-schema-to-typescript": "^16.0.0",
         "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",

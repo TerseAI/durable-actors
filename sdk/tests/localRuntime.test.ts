@@ -8,6 +8,42 @@ import { promisify } from "node:util"
 
 import { startLocalActors } from "../src/localRuntime.js"
 
+import { projectSdkFixture } from "./fixtures/project-sdk.js"
+
+test("starts actors with the project's SDK when the caller uses another installation", async t => {
+    const { directory, project, binary } = await projectSdkFixture()
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const previous = process.env.DURABLE_ACTORS_BINARY
+    const previousHold = process.env.TEST_RUNTIME_HOLD_OPEN
+    process.env.DURABLE_ACTORS_BINARY = binary
+    process.env.TEST_RUNTIME_HOLD_OPEN = "1"
+    try {
+        const runtime = await startLocalActors({ projectId: "default", project, entrypoint: "actors.ts" })
+        try {
+            assert.deepEqual(JSON.parse(await readFile(path.join(project, "invocation.json"), "utf8")), {
+                id: "counter",
+                count: 1
+            })
+        } finally {
+            await runtime.stop()
+        }
+    } finally {
+        if (previous === undefined) delete process.env.DURABLE_ACTORS_BINARY
+        else process.env.DURABLE_ACTORS_BINARY = previous
+        if (previousHold === undefined) delete process.env.TEST_RUNTIME_HOLD_OPEN
+        else process.env.TEST_RUNTIME_HOLD_OPEN = previousHold
+    }
+})
+
+test("rejects local startup without the project's SDK", async t => {
+    const project = await mkdtemp(path.join(os.tmpdir(), "actor-missing-sdk-"))
+    t.after(() => rm(project, { recursive: true, force: true }))
+    await assert.rejects(
+        startLocalActors({ projectId: "default", project, entrypoint: "actors.ts" }),
+        /Cannot resolve durable-actors.*Run pnpm install/s
+    )
+})
+
 async function fixture(source: string, run: (binary: string) => Promise<void>) {
     const directory = await mkdtemp(path.join(os.tmpdir(), "local-runtime-"))
     const binary = path.join(directory, "runtime")

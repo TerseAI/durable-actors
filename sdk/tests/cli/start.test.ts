@@ -41,6 +41,8 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 test("dev validates its configured storage and port before launching", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-options-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
+    await mkdir(path.join(directory, "node_modules"))
+    await symlink(sdk, path.join(directory, "node_modules/durable-actors"), "dir")
     for (const settings of [{ DURABLE_ACTORS_STORAGE: "invalid" }, { DURABLE_ACTORS_PORT: "65536" }])
         await assert.rejects(
             run(process.execPath, [cli, "dev"], {
