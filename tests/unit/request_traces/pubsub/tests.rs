@@ -119,7 +119,7 @@ async fn published_json_matches_the_bigquery_table_schema() -> Result<()> {
     let sink = sink(publisher.clone());
     sink.record(&scope(), vec![event("event").trace], 0).await?;
     let schema: Vec<serde_json::Value> =
-        serde_json::from_str(include_str!("../../../../deploy/analytics/schema.json"))?;
+        serde_json::from_str(include_str!("../../../fixtures/analytics-schema.json"))?;
     let messages = publisher.messages.lock().unwrap();
     let object = messages[0].as_object().unwrap();
     for (key, value) in object {

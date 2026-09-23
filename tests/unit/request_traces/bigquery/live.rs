@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[tokio::test]
-#[ignore = "requires an isolated, provisioned GCP analytics module and ADC; publishes retained test events"]
+#[ignore = "requires an isolated, provisioned GCP analytics pipeline and ADC; publishes retained test events"]
 async fn pubsub_bigquery_end_to_end_matches_sqlite() -> Result<()> {
     let config = AnalyticsConfig::from_lookup(&mut |name| std::env::var(name).ok())?
         .context("set DURABLE_ACTORS_ANALYTICS_* for a test dataset")?;

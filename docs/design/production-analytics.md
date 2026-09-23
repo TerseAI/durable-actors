@@ -32,9 +32,9 @@ The publisher has 1,024 outstanding-event slots, including events whose reportin
 
 ## Storage and query parity
 
-The Terraform module in `deploy/analytics` provisions a versioned event table, topic, native BigQuery export subscription, retained dead-letter subscription, table-scoped ingestion/read IAM, and backlog/dead-letter alerts. Pub/Sub messages use the table schema and preserve subscription metadata. JSON metadata is encoded as an escaped JSON string in the message, as required by table-schema subscriptions. [GCP JSON mapping](https://docs.cloud.google.com/pubsub/docs/create-bigquery-subscription)
+Hosted analytics requires a separately provisioned versioned event table, topic, native BigQuery export subscription, retained dead-letter subscription, table-scoped ingestion/read IAM, and backlog/dead-letter alerts. Pub/Sub messages use the table schema and preserve subscription metadata. JSON metadata is encoded as an escaped JSON string in the message, as required by table-schema subscriptions. [GCP JSON mapping](https://docs.cloud.google.com/pubsub/docs/create-bigquery-subscription)
 
-The table partitions on `started_at`, requires partition filters, and clusters by project, actor name, actor ID, and connection ID. Defaults are 30 days of BigQuery partition retention and seven days of Pub/Sub recovery retention. Export rejects already expired UTC partitions and timestamps more than five minutes in the future. Runtime and Terraform retention settings must match.
+The table partitions on `started_at`, requires partition filters, and clusters by project, actor name, actor ID, and connection ID. Defaults are 30 days of BigQuery partition retention and seven days of Pub/Sub recovery retention. Export rejects already expired UTC partitions and timestamps more than five minutes in the future. Runtime and warehouse retention settings must match.
 
 BigQuery SQL first filters environment, project, schema version, and timestamp partitions, then deduplicates `(project_id, event_id)` by receipt/publication/message order. History, overview, queue-wait, and WebSocket queries all use that shared relation. BigQuery subscriptions deliver at least once; republishing must preserve the producer ID. [Delivery semantics](https://docs.cloud.google.com/pubsub/docs/bigquery)
 
@@ -67,8 +67,8 @@ Start with 15-second cache buckets and measure ingestion visibility and billed q
 
 ## Validation and rollout
 
-Local tests cover identity, project isolation, actor authorization, metadata/schema encoding, cancelled reports, publisher capacity/failure, cache coalescing, signed cursors across replicas, backend HTTP parameters/budgets, and the unchanged history/SSE envelope. Terraform tests use mocked providers and do not create resources.
+Local tests cover identity, project isolation, actor authorization, metadata/schema encoding, cancelled reports, publisher capacity/failure, cache coalescing, signed cursors across replicas, backend HTTP parameters/budgets, and the unchanged history/SSE envelope.
 
-The opt-in `pubsub_bigquery_end_to_end_matches_sqlite` test publishes duplicates and a second tenant into an isolated provisioned module, then compares BigQuery history/metrics/queue waits/session results with SQLite. Run it before rollout; local mocks do not validate GCP export behavior or GoogleSQL execution. See the deployment README for commands and recovery procedures.
+The opt-in `pubsub_bigquery_end_to_end_matches_sqlite` test publishes duplicates and a second tenant into an isolated provisioned pipeline, then compares BigQuery history/metrics/queue waits/session results with SQLite. Run it before rollout; local mocks do not validate GCP export behavior or GoogleSQL execution.
 
 The official Pub/Sub client version is pinned to the repository's Rust 1.89 support. The available official BigQuery REST crate requires Rust 1.90, so the query adapter uses existing `reqwest` and Google's ADC credential library at a narrow injected transport boundary. It implements only job submission, result pagination, and cancellation.

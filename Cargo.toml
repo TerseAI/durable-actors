@@ -10,7 +10,7 @@ repository = "https://github.com/TerseAI/durable-actors"
 license = "MIT"
 keywords = ["actors", "distributed-systems", "durable-actors", "serverless"]
 categories = ["asynchronous", "network-programming"]
-include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/deploy/analytics/schema.json", "/build.rs", "/README.md", "/LICENSE.md"]
+include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
 anstream = "1"
