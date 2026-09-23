@@ -10,6 +10,9 @@
 !proto/**
 !src
 !src/**
+!docs
+!docs/reference
+!docs/reference/openapi.yaml
 !providers
 !providers/modal-go
 !providers/modal-go/**

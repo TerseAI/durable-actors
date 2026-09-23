@@ -14,6 +14,7 @@ COPY .cargo ./.cargo
 COPY migrations ./migrations
 COPY proto ./proto
 COPY src ./src
+COPY docs/reference/openapi.yaml ./docs/reference/openapi.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
