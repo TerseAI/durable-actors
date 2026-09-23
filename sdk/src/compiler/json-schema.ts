@@ -4,8 +4,6 @@ import { JsonSchemaGenerator, getDefaultArgs } from "typescript-json-schema"
 
 import { ActorDefinitionError } from "../errors.js"
 
-import { annotateType } from "./type-annotations.js"
-
 function jsonSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>): JSONSchema7 {
     const { allTypes, namesByType } = collectSchemaTypes(checker, types)
     const generator = new JsonSchemaGenerator([], allTypes, {}, {}, checker, {
@@ -25,7 +23,7 @@ function jsonSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>): JS
     const definitions: Record<string, JSONSchema7Definition> = { ...generated.definitions }
     for (const [name, type] of Object.entries(allTypes)) {
         if (type.flags & ts.TypeFlags.Never) definitions[name] = false
-        if (type.flags & ts.TypeFlags.Undefined) definitions[name] = { not: {} }
+        if (type.flags & ts.TypeFlags.Undefined) definitions[name] = false
     }
     const seen = new Set<JSONSchema7>()
     for (const [name, type] of Object.entries(allTypes))
@@ -81,21 +79,10 @@ function preserveTypes(
     const reference = (child: ts.Type) => ({
         $ref: `#/definitions/${namesByType.get(child)!.replaceAll("~", "~0").replaceAll("/", "~1")}`
     })
-    if (
-        type.isUnion() &&
-        type.types.some(
-            member =>
-                member.flags &
-                (ts.TypeFlags.Object |
-                    ts.TypeFlags.Intersection |
-                    ts.TypeFlags.TemplateLiteral |
-                    ts.TypeFlags.Undefined)
-        )
-    ) {
+    if (type.isUnion() && type.types.some(member => member.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection))) {
         // Rebuild branches from compiler types: the schema library coalesces primitive unions and loses their correspondence.
         for (const key of ["$ref", "type", "enum", "const", "anyOf", "oneOf"] as const) delete schema[key]
         schema.anyOf = type.types.filter(member => !(member.flags & ts.TypeFlags.Undefined)).map(reference)
-        if (type.types.some(member => member.flags & ts.TypeFlags.Undefined)) annotateType(schema, { undefined: true })
     } else if (schema.$ref) {
         const key = decodeURIComponent(schema.$ref.slice("#/definitions/".length))
             .replaceAll("~1", "/")
@@ -105,8 +92,6 @@ function preserveTypes(
     }
     const title = sourceTypeName(type)
     if (title) schema.title ??= title
-    if (type.flags & ts.TypeFlags.Undefined) annotateType(schema, { undefined: true })
-    preserveTemplateLiteral(checker, type, schema)
     if (type.isUnion()) return
     if (type.isIntersection() && schema.allOf) {
         schema.allOf = type.types.map(reference)
@@ -118,18 +103,6 @@ function preserveTypes(
     const indexType = checker.getIndexTypeOfType(type, ts.IndexKind.String)
     if (indexType && type.flags & ts.TypeFlags.Object && !isArray(checker, type))
         schema.additionalProperties = reference(indexType)
-}
-
-function preserveTemplateLiteral(checker: ts.TypeChecker, type: ts.Type, schema: JSONSchema7): void {
-    if (!(type.flags & ts.TypeFlags.TemplateLiteral)) return
-    const template = type as ts.TemplateLiteralType
-    const types = template.types.map(span => {
-        if (span.flags & ts.TypeFlags.String) return "string" as const
-        if (span.flags & ts.TypeFlags.Number) return "number" as const
-        if (span.flags & ts.TypeFlags.BigInt) return "bigint" as const
-        throw new ActorDefinitionError(`unsupported template literal span ${checker.typeToString(span)}`)
-    })
-    annotateType(schema, { templateLiteral: { texts: [...template.texts], types } })
 }
 
 function preserveChildren(

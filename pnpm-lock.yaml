@@ -313,9 +313,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      ai:
-        specifier: 7.0.97
-        version: 7.0.97(zod@4.5.4)
       next:
         specifier: ^16.3.6
         version: 16.3.6(@types/node@22.20.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)

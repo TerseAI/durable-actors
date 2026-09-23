@@ -6,8 +6,6 @@ import { z } from "zod"
 import type { SocketContract } from "../wire/contract.js"
 import type { ActorApi, PublicActorContract, RpcContract } from "../wire/public-contract.js"
 
-import { readTypeAnnotation } from "./type-annotations.js"
-
 function parsePublicContract(input: unknown): PublicActorContract {
     const document = documentSchema.parse(input)
     const names = new Set<string>()
@@ -84,7 +82,6 @@ function parseSchema(input: unknown, context: z.RefinementCtx): JSONSchema7 | ty
 
 function visit(node: JSONSchema7Definition, root: JSONSchema7): void {
     if (typeof node === "boolean") return
-    readTypeAnnotation(node)
     if (["$id", "id", "tsType"].some(key => Object.hasOwn(node, key)))
         throw new Error("contract schemas cannot override type resolution")
     if (node.$ref) reference(root, node.$ref)

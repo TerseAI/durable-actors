@@ -6,10 +6,10 @@ import ts from "typescript"
 import { runtimeFiles } from "../../generated/client-runtime.js"
 import type { SocketContract } from "../../wire/contract.js"
 import type { PublicActorContract } from "../../wire/public-contract.js"
-import { schemaForTypeScript } from "../type-annotations.js"
 import { parsePublicContract } from "../validate-public-contract.js"
 
 import { backendSource } from "./backend-generator.js"
+import { normalizeUnconstrainedSchemas } from "./normalize-unconstrained-schemas.js"
 import { usageComment } from "./usage-comment.js"
 
 /** Returns JavaScript and TypeScript declarations with a standalone runtime, without writing files or executing actor code. */
@@ -89,7 +89,7 @@ async function wireDeclarations(contract: SocketContract) {
         ])
     )
     const code = await compile(
-        schemaForTypeScript(
+        normalizeUnconstrainedSchemas(
             inlineAnonymousReferences(
                 {
                     ...contract.schema,
