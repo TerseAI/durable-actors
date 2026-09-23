@@ -166,17 +166,12 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         "/v1/projects/default/observe/queue-waits",
         "/v1/projects/default/observe/websockets",
     ] {
-        for credential in ["", "wrong", &token] {
-            assert_eq!(
-                fixture
-                    .client
-                    .get(format!("{}{path}", fixture.origin))
-                    .bearer_auth(credential)
-                    .send()
-                    .await?
-                    .status(),
-                StatusCode::UNAUTHORIZED
-            );
+        for credential in [None, Some(""), Some("wrong"), Some(token.as_str())] {
+            let mut request = fixture.client.get(format!("{}{path}", fixture.origin));
+            if let Some(credential) = credential {
+                request = request.bearer_auth(credential);
+            }
+            assert_eq!(request.send().await?.status(), StatusCode::UNAUTHORIZED);
         }
     }
     Ok(())

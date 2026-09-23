@@ -3,8 +3,9 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::{Path, Query, Request, State, rejection::QueryRejection},
     http::{HeaderMap, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -16,6 +17,11 @@ use super::{
 };
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
+    local_router(inspector, admin.clone())
+        .route_layer(middleware::from_fn_with_state(admin, require_admin))
+}
+
+pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route(
             "/v1/projects/{project_id}/observe/actors",
@@ -46,6 +52,15 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
             get(request_events),
         )
         .with_state(InspectionApi { inspector, admin })
+}
+
+async fn require_admin(
+    State(admin): State<AdminService>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorized_admin(&admin, request.headers())?;
+    Ok(next.run(request).await)
 }
 
 #[derive(Clone)]
@@ -82,9 +97,7 @@ impl ActorInspector {
 async fn actor_inventory(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let inventory = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, &project))
         .await
@@ -129,13 +142,11 @@ async fn read_inventory(
 async fn actor_events(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use std::convert::Infallible;
     use tokio_stream::wrappers::ReceiverStream;
 
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let mut changes = state.inspector.changes.subscribe();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
@@ -188,10 +199,8 @@ async fn actor_events(
 async fn overview_metrics(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
@@ -207,10 +216,8 @@ async fn overview_metrics(
 async fn queue_waits(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::QueueWaitQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
@@ -226,10 +233,8 @@ async fn queue_waits(
 async fn websocket_history(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
@@ -245,10 +250,8 @@ async fn websocket_history(
 async fn request_history(
     State(state): State<InspectionApi>,
     path: Path<ProjectPath>,
-    headers: HeaderMap,
     query: Result<Query<crate::request_traces::history::HistoryQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
@@ -283,7 +286,6 @@ async fn request_events(
     use crate::request_traces::replay::ReplayQuery;
     use axum::response::sse::{KeepAlive, Sse};
     use tokio_stream::wrappers::ReceiverStream;
-    authorized_admin(&state.admin, &headers)?;
     let project = project_id(path)?;
     let Query(replay) = query.map_err(ApiError::bad_request)?;
     let cursor = replay.after.or_else(|| {

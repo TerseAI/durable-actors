@@ -29,3 +29,5 @@ Pass your own `ObserverClient` to connect these views to a hosted backend, or co
 Control-plane endpoints require a project in the path: `/v1/projects/{project_id}/observe/...`. The hosted backend should authorize access to that project and proxy the routes using its server-side admin credential. The CLI's `/api/observe` proxy uses its configured `DURABLE_ACTORS_PROJECT_ID`. Request traces include a required `projectId`; older stored traces without one are excluded from project results.
 
 The observer version follows the SDK and runtime version. Run `pnpm release:prepare <version>` at the repository root before publishing a GitHub release. Release preflight checks all versions, and the workflow publishes the observer before the SDK. The SDK's `workspace:*` dependency becomes the exact observer version when packed.
+
+The localhost-only `durable-actors dev` runtime allows observability requests without a secret, even when a secret is configured for application routes. Hosted runtimes retain their configured admin authentication.
