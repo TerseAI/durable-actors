@@ -26,7 +26,7 @@ pnpm add --global durable-actors
 durable-actors init my-actors
 cd my-actors
 pnpm install
-durable-actors dev // this will run the server locally on your machine
+durable-actors dev # this will run the server locally on your machine
 ```
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
