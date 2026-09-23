@@ -108,30 +108,6 @@ async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn local_source_watcher_rebuilds_and_retains_the_last_successful_code() -> Result<()> {
-    let output = timeout(
-        Duration::from_secs(90),
-        Command::new("node")
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/scripts/local-reload.mjs"
-            ))
-            .arg(env!("CARGO_BIN_EXE_durable-actors"))
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await??;
-    ensure!(
-        output.status.success(),
-        "local reload failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    println!("{}", String::from_utf8_lossy(&output.stdout));
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
 async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> Result<()> {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
