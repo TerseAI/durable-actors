@@ -28,7 +28,7 @@ export function registerDevCommand(program: Command): void {
         .description("Run local actors and reload code changes")
         .option("--no-watch", "disable automatic code reload")
         .addOption(
-            new Option("--port <number>", "loopback port (0 selects a free port)")
+            new Option("--port <number>", "localhost port (0 selects a free port)")
                 .env("DURABLE_ACTORS_PORT")
                 .argParser(portNumber)
                 .default(7100)

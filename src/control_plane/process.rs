@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env, future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
@@ -27,7 +27,7 @@ pub struct ControlPlaneProcessConfig {
     pub authority_audience: String,
     pub invocation_audience: String,
     pub jwt_max_lifetime: Duration,
-    pub api_key: String,
+    pub api_key: Option<String>,
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
@@ -64,6 +64,7 @@ pub async fn serve_control_plane(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let bind = config.bind;
+    warn_if_authentication_disabled(bind, config.api_key.as_deref());
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
     let routes = control_plane_routes(config, stop).await?;
@@ -72,6 +73,15 @@ pub async fn serve_control_plane(
         .await
         .context("bind durable-actors control plane")?;
     serve_routes(listener, routes, shutdown).await
+}
+
+fn warn_if_authentication_disabled(bind: SocketAddr, secret: Option<&str>) {
+    if secret.is_none() && !bind.ip().is_loopback() {
+        warn!(
+            %bind,
+            "Authentication is disabled. Anyone who can reach this server can access its API. Set DURABLE_ACTORS_SECRET to enable authentication."
+        );
+    }
 }
 
 async fn serve_routes(
@@ -223,11 +233,17 @@ impl ControlPlaneProcessConfig {
             !jwt_max_lifetime.is_zero(),
             "DURABLE_ACTORS_JWT_MAX_TTL_SECONDS must be positive"
         );
-        let api_key = required(&mut get, "DURABLE_ACTORS_SECRET")?;
-        ensure!(
-            api_key.trim() == api_key,
-            "DURABLE_ACTORS_SECRET has surrounding whitespace"
-        );
+        let api_key = get("DURABLE_ACTORS_SECRET");
+        if let Some(api_key) = &api_key {
+            ensure!(
+                !api_key.is_empty(),
+                "DURABLE_ACTORS_SECRET must not be empty"
+            );
+            ensure!(
+                api_key.trim() == api_key,
+                "DURABLE_ACTORS_SECRET has surrounding whitespace"
+            );
+        }
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
         let replica_regions = crate::replication::replica_regions(&mut get)?;

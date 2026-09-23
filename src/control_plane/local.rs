@@ -337,7 +337,7 @@ async fn local_routes(
         )),
     )))
     .with_traces(storage.traces.clone());
-    let admin = AdminService::for_local_development(options.api_key.clone(), registry, issuer)?;
+    let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
@@ -419,7 +419,7 @@ fn format_local_ready_message(
         label,
         command,
     } = styles;
-    let credentials = local_credentials_instructions(secret, styles);
+    let credentials = local_authentication_instructions(secret);
     let project = if project_id == "local" {
         String::new()
     } else {
@@ -431,14 +431,12 @@ fn format_local_ready_message(
     )
 }
 
-fn local_credentials_instructions(secret: Option<&str>, styles: LocalReadyStyles) -> String {
-    let Some(secret) = secret else {
-        return "     Authentication is disabled. No secret is needed for local development."
-            .into();
-    };
-    let command = styles.command;
-    let quote = if secret.contains('\'') { '"' } else { '\'' };
-    format!("     {command}DURABLE_ACTORS_SECRET={quote}{secret}{quote}{command:#}")
+fn local_authentication_instructions(secret: Option<&str>) -> &'static str {
+    if secret.is_some() {
+        "     Authentication is enabled. Set DURABLE_ACTORS_SECRET in your backend to the same value."
+    } else {
+        "     Authentication is disabled. No secret is needed for local development."
+    }
 }
 
 #[derive(Clone, Copy, Default)]

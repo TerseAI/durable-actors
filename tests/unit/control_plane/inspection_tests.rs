@@ -96,7 +96,7 @@ impl Fixture {
             Duration::from_secs(60),
         )?;
         let admin = AdminService::new(
-            "api-key".into(),
+            Some("api-key".into()),
             Arc::new(super::admin::LocalAdminRegistry::default()),
             issuer.clone(),
         )?;

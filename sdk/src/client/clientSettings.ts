@@ -14,10 +14,6 @@ function configuredSettings(options: unknown) {
         throw new ActorConfigurationError(
             "durable-actors client settings are invalid: projectId is required for remote connections"
         )
-    if (!local && result.data.apiKey === undefined)
-        throw new ActorConfigurationError(
-            "durable-actors client settings are invalid: apiKey (shared secret) is required for remote connections"
-        )
     return {
         credential: result.data.apiKey,
         projectId,

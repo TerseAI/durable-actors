@@ -132,34 +132,21 @@ pub(crate) struct AdminService {
 
 impl AdminService {
     pub(crate) fn new(
-        api_key: String,
-        registry: std::sync::Arc<dyn AdminRegistry>,
-        issuer: ActorJwtIssuer,
-    ) -> Result<Self> {
-        ensure!(
-            !api_key.is_empty() && api_key.trim() == api_key,
-            "API key is invalid"
-        );
-        Ok(Self {
-            api_key: Some(api_key),
-            registry,
-            issuer,
-        })
-    }
-
-    pub(super) fn for_local_development(
         api_key: Option<String>,
         registry: std::sync::Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
     ) -> Result<Self> {
-        match api_key {
-            Some(api_key) => Self::new(api_key, registry, issuer),
-            None => Ok(Self {
-                api_key: None,
-                registry,
-                issuer,
-            }),
+        if let Some(api_key) = &api_key {
+            ensure!(
+                !api_key.is_empty() && api_key.trim() == api_key,
+                "API key is invalid"
+            );
         }
+        Ok(Self {
+            api_key,
+            registry,
+            issuer,
+        })
     }
 
     pub(super) fn issue_direct_socket(

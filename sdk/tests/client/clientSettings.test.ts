@@ -81,15 +81,19 @@ function environmentFor(settings: DurableActorsClientOptions): NodeJS.ProcessEnv
     }
 }
 
-test("backend clients default to unauthenticated local connections", async () => {
-    const client = new RemoteActorClient(undefined, {
-        environment: {},
-        fetch: async (url, init) => {
-            assert.equal(String(url), "http://127.0.0.1:7100/v1/projects/local/actors/Counter/one/find-websocket")
-            assert.equal(new Headers(init?.headers).get("authorization"), null)
-            return Response.json({ websocketUrl: "ws://127.0.0.1:7100/v1/socket?key=ticket" })
-        },
-        connectWebSocket: async () => ({}) as ActorConnection
-    })
-    await client.connect("Counter", "one", {})
+test("backend clients omit authorization without a secret locally and remotely", async () => {
+    for (const options of [undefined, { projectId: "private", controlPlaneUrl: "http://192.168.1.1:7100" }]) {
+        const client = new RemoteActorClient(options, {
+            environment: {},
+            fetch: async (url, init) => {
+                const origin = options?.controlPlaneUrl ?? "http://127.0.0.1:7100"
+                const project = options?.projectId ?? "local"
+                assert.equal(String(url), `${origin}/v1/projects/${project}/actors/Counter/one/find-websocket`)
+                assert.equal(new Headers(init?.headers).get("authorization"), null)
+                return Response.json({ websocketUrl: "ws://127.0.0.1:7100/v1/socket?key=ticket" })
+            },
+            connectWebSocket: async () => ({}) as ActorConnection
+        })
+        await client.connect("Counter", "one", {})
+    }
 })

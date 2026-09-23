@@ -43,20 +43,22 @@ pub(crate) trait SocketMessageEventSink: Send + Sync {
 pub(crate) struct HttpSocketMessageEventSink {
     client: reqwest::Client,
     url: String,
-    token: String,
+    token: Option<String>,
 }
 
 impl HttpSocketMessageEventSink {
-    pub(crate) fn new(url: String, token: String) -> Result<Self> {
+    pub(crate) fn new(url: String, token: Option<String>) -> Result<Self> {
         let parsed = reqwest::Url::parse(&url).context("socket event sink URL is invalid")?;
         ensure!(
             matches!(parsed.scheme(), "http" | "https"),
             "socket event sink URL must use HTTP or HTTPS"
         );
-        ensure!(
-            !token.is_empty(),
-            "socket event sink token must not be empty"
-        );
+        if let Some(token) = &token {
+            ensure!(
+                !token.is_empty(),
+                "socket event sink token must not be empty"
+            );
+        }
         Ok(Self {
             client: reqwest::Client::new(),
             url,
@@ -68,10 +70,11 @@ impl HttpSocketMessageEventSink {
 #[async_trait]
 impl SocketMessageEventSink for HttpSocketMessageEventSink {
     async fn deliver(&self, event: SocketMessageEvent) -> Result<()> {
-        self.client
-            .post(&self.url)
-            .bearer_auth(&self.token)
-            .json(&event)
+        let mut request = self.client.post(&self.url).json(&event);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        request
             .send()
             .await?
             .error_for_status()
@@ -79,3 +82,7 @@ impl SocketMessageEventSink for HttpSocketMessageEventSink {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/event_sink.rs"]
+mod tests;

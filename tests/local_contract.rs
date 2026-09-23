@@ -44,7 +44,7 @@ async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_o
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build and Bun"]
-async fn dev_enforces_an_explicit_secret() -> Result<()> {
+async fn dev_enforces_a_secret_set_in_the_environment() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
     let runtime = LocalRuntime::start(project.path(), Some("optional-secret")).await?;
@@ -165,7 +165,7 @@ impl LocalRuntime {
             .stdout(Stdio::piped())
             .kill_on_drop(true);
         if let Some(api_key) = api_key {
-            command.arg("--api-key").arg(api_key);
+            command.env("DURABLE_ACTORS_SECRET", api_key);
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);

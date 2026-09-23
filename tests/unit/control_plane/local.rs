@@ -35,10 +35,17 @@ fn startup_command_uses_the_configured_project_and_port() {
 }
 
 #[test]
-fn credentials_print_a_dotenv_shared_secret() {
-    let message =
-        local_credentials_instructions(Some("Sam's-$secret #1"), LocalReadyStyles::default());
-    assert!(message.contains("DURABLE_ACTORS_SECRET=\"Sam's-$secret #1\""));
+fn startup_reports_configured_authentication_without_exposing_the_secret() {
+    let message = format_local_ready_message(
+        "http://127.0.0.1:7100",
+        Path::new("/projects/chat/.durable-actors"),
+        "local",
+        Some("Sam's-$secret #1"),
+        LocalReadyStyles::default(),
+    );
+    assert!(message.contains("Authentication is enabled"));
+    assert!(message.contains("DURABLE_ACTORS_SECRET"));
+    assert!(!message.contains("Sam's-$secret #1"));
 }
 
 #[tokio::test]

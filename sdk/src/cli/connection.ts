@@ -12,6 +12,6 @@ export function connection(environment: NodeJS.ProcessEnv) {
 
 export const connectionHelp = `
 Connection settings (.env or environment):
-  DURABLE_ACTORS_PROJECT_ID (default: local for loopback connections)
+  DURABLE_ACTORS_PROJECT_ID (default: local on localhost)
   DURABLE_ACTORS_CONTROL_PLANE_URL (default: http://127.0.0.1:7100)
-  DURABLE_ACTORS_SECRET (optional locally; enables authentication when set)`
+  DURABLE_ACTORS_SECRET (optional; must match the server's secret when authentication is enabled)`

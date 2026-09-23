@@ -45,28 +45,83 @@ async fn server_carries_websocket_upgrades() -> Result<()> {
 
 #[test]
 fn parses_the_minimal_storage_configuration() -> Result<()> {
-    let values = HashMap::from([
-        ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-        ("DURABLE_ACTORS_SECRET", "api-key"),
-        ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
-        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
-        (
-            "DURABLE_ACTORS_CONTROL_PLANE_URL",
-            "https://objects.example.com",
-        ),
-        ("MODAL_TOKEN_ID", "modal-token-id"),
-        ("MODAL_TOKEN_SECRET", "modal-token-secret"),
-        (
-            "DURABLE_ACTORS_POSTGRES_URL",
-            "postgresql://localhost/actors",
-        ),
-    ]);
+    let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
+    assert_eq!(config.api_key.as_deref(), Some("api-key"));
+    Ok(())
+}
+
+#[test]
+fn server_configuration_allows_an_unset_secret_on_any_address() -> Result<()> {
+    for bind in [
+        "127.0.0.1:7100",
+        "[::1]:7100",
+        "0.0.0.0:7100",
+        "[::]:7100",
+        "192.168.1.1:7100",
+    ] {
+        let mut values = process_environment();
+        values.remove("DURABLE_ACTORS_SECRET");
+        values.insert("DURABLE_ACTORS_CONTROL_PLANE_BIND", bind);
+        let config = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })?;
+        assert!(config.api_key.is_none());
+        assert_eq!(config.bind, bind.parse::<SocketAddr>()?);
+    }
+    Ok(())
+}
+
+#[test]
+fn server_rejects_an_empty_or_untrimmed_shared_secret() {
+    for secret in ["", " ", " key", "key "] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_SECRET", secret);
+        let result = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        });
+        assert!(result.is_err(), "server accepted an invalid secret");
+    }
+}
+
+#[test]
+fn authentication_warning_depends_on_the_listening_address_and_secret() -> Result<()> {
+    for (bind, exposed) in [
+        ("127.0.0.1:7100", false),
+        ("127.0.0.2:7100", false),
+        ("[::1]:7100", false),
+        ("0.0.0.0:7100", true),
+        ("[::]:7100", true),
+        ("192.168.1.1:7100", true),
+    ] {
+        for secret in [None, Some("configured-secret")] {
+            let output = tempfile::NamedTempFile::new()?;
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(output.reopen()?)
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                warn_if_authentication_disabled(bind.parse().unwrap(), secret);
+            });
+            let logs = std::fs::read_to_string(output.path())?;
+            if exposed && secret.is_none() {
+                assert!(
+                    logs.contains("Authentication is disabled"),
+                    "{bind}: {logs}"
+                );
+                assert!(logs.contains(bind));
+                assert!(logs.contains("DURABLE_ACTORS_SECRET"));
+            } else {
+                assert!(logs.is_empty(), "unexpected warning at {bind}: {logs}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -128,4 +183,24 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
             let _ = socket.send(message).await;
         }
     })
+}
+
+fn process_environment() -> HashMap<&'static str, &'static str> {
+    HashMap::from([
+        ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
+        ("DURABLE_ACTORS_SECRET", "api-key"),
+        ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
+        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
+        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
+        (
+            "DURABLE_ACTORS_CONTROL_PLANE_URL",
+            "https://objects.example.com",
+        ),
+        ("MODAL_TOKEN_ID", "modal-token-id"),
+        ("MODAL_TOKEN_SECRET", "modal-token-secret"),
+        (
+            "DURABLE_ACTORS_POSTGRES_URL",
+            "postgresql://localhost/actors",
+        ),
+    ])
 }

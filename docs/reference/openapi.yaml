@@ -4,16 +4,18 @@ info:
     version: "1"
     description: |
         Manage durable-actors deployments, find actor hosts, and inspect activity.
-        Authenticate backend requests with a bearer API key; never expose it to browsers.
+        When DURABLE_ACTORS_SECRET is set on the server, authenticate backend requests
+        with that bearer API key; never expose it to browsers. When unset, no API key is required.
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
-        Local development requires no authentication unless DURABLE_ACTORS_SECRET is set.
+        Servers listening beyond localhost warn when the secret is unset but still start.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.
 security:
     - ApiKey: []
+    - {}
 tags:
     - name: Discovery
     - name: Deployments
@@ -354,7 +356,7 @@ webhooks:
             operationId: receiveSocketMessageEvent
             tags: [WebSockets]
             summary: Receive handled socket messages
-            description: Set DURABLE_ACTORS_SOCKET_EVENT_URL to enable. Verify the bearer API key. Delivery is best effort, without retries.
+            description: Set DURABLE_ACTORS_SOCKET_EVENT_URL to enable. When DURABLE_ACTORS_SECRET is configured, callbacks send it as a bearer API key; otherwise the authorization header is omitted. Delivery is best effort, without retries.
             requestBody:
                 required: true
                 content:
@@ -376,7 +378,7 @@ components:
         ApiKey:
             type: http
             scheme: bearer
-            description: Backend API key; never send it to browsers.
+            description: Required when DURABLE_ACTORS_SECRET is set on the server. Never send it to browsers.
         SocketTicket:
             type: apiKey
             in: query

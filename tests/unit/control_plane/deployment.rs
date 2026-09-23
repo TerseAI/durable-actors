@@ -223,7 +223,7 @@ fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> 
         std::time::Duration::from_secs(60),
     )?;
     let registry = Arc::new(LocalAdminRegistry::default());
-    let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+    let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     let provider = Arc::new(BuildProvider::default());
     let provisioner = Arc::new(SandboxHostProvisioner::new(
         provider.clone(),

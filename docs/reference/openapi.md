@@ -10,7 +10,7 @@ curl --fail http://127.0.0.1:7100/openapi.yaml -o openapi.yaml
 
 Replace the origin with your hosted server's URL when needed. Import the file into an OpenAPI-compatible API client or documentation viewer.
 
-The specification is public. Authenticated endpoints require `Authorization: Bearer <api-key>`; use your backend's `DURABLE_ACTORS_SECRET` and keep it out of browser code.
+The specification is public. When the server has `DURABLE_ACTORS_SECRET` set, API requests require `Authorization: Bearer <api-key>` with the same secret; keep it out of browser code. When the secret is unset, API requests need no authentication. A server listening beyond localhost warns when authentication is disabled but still starts.
 
 ## Local development
 
