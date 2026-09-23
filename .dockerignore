@@ -21,6 +21,8 @@
 !pnpm-workspace.yaml
 !sdk
 !sdk/package.json
+!sdk/scripts
+!sdk/scripts/generate-schema.mjs
 !sdk/tsconfig*.json
 !sdk/src
 !sdk/src/**

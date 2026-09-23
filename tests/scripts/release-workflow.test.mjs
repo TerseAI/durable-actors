@@ -55,6 +55,9 @@ test("CI and release exercise direct host sockets with the built SDK", () => {
 
 test("runtime image generates protobuf sources before compiling the SDK", () => {
     const dockerfile = read("Dockerfile")
+    assert.match(dockerfile, /COPY sdk\/scripts\/generate-schema\.mjs \.\/sdk\/scripts\/generate-schema\.mjs[\s\S]*pnpm --dir sdk generate:proto/)
+    assert.match(read(".dockerignore"), /^!sdk\/scripts$/m)
+    assert.match(read(".dockerignore"), /^!sdk\/scripts\/generate-schema\.mjs$/m)
     assert.match(dockerfile, /pnpm --dir sdk generate:proto[\s\S]*pnpm --dir sdk exec tsc/)
 })
 
