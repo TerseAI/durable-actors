@@ -60,6 +60,8 @@ The [Express backend](src/backend.ts) appends the user message, sends the saved 
 
 The [React client](src/Chat.tsx) loads saved messages and uses `useChat` to display the stream. This demo saves text only; in-progress streams are not resumed after a reload.
 
+`ChatMessage` is the JSON-compatible storage type; the backend converts AI SDK messages to it before appending. For arbitrary JSON metadata or tool data, import `JsonValue` or `JsonObject` from `durable-actors` instead of using the AI SDK's `unknown` fields in actor methods.
+
 The lobby is shared and has no authentication. Add authentication and chat ownership checks before using it for private conversations.
 
 ## Development

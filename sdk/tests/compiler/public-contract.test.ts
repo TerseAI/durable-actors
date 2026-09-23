@@ -8,6 +8,21 @@ import { fileURLToPath } from "node:url"
 
 import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
 
+test("public JSON types support nested arbitrary JSON in RPC contracts", async t => {
+    const project = await createProject(t)
+    await project.write(`
+        import type { JsonValue } from "durable-actors"
+        export class JsonStore extends Actor {
+            async echo(value: JsonValue): Promise<JsonValue> { return value }
+        }
+    `)
+    const [actor] = new ActorCompiler().compileContract(project.entrypoint).actors
+    const method = actor.rpc.methods[0]
+    const validate = new Ajv().compile({ ...actor.rpc.schema, ...method.parameters[0].type })
+    assert.equal(validate({ metadata: { nested: [null, true, 42, "text", { tool: "search" }] } }), true)
+    assert.equal(validate({ callback: () => {} }), false)
+})
+
 test("public contracts survive JSON transport without actor source or dependency imports", async t => {
     const project = await createProject(t)
     await mkdir(path.join(project.root, "node_modules/private-data"))

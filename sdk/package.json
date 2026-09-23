@@ -105,6 +105,7 @@
         "json-schema-to-typescript": "^16.0.0",
         "open": "^10.2.0",
         "prettier": "^3.9.6",
+        "protobufjs": "^7.6.6",
         "tar": "^7.5.22",
         "typescript": "~5.9.3",
         "typescript-json-schema": "^0.68.0",

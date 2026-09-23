@@ -111,12 +111,12 @@ test("a separate consumer generates identical clients from the deployed contract
         env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid" }
     })
     const local = path.join(author, "generated")
-    const files = await readdir(local)
+    const files = (await readdir(local, { recursive: true })).filter(file => file !== "runtime").sort()
     for (const file of ["index.ts"]) assert.ok(files.includes(file), `missing ${file}`)
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
-    assert.ok(files.every(file => file.endsWith(".ts")))
+    assert.ok(files.includes("runtime/index.js"))
     const requests: string[] = []
     const publication = {
         contractHash: `sha256:${"a".repeat(64)}`,
@@ -158,7 +158,12 @@ test("a separate consumer generates identical clients from the deployed contract
     assert.deepEqual(requests, ["/v1/projects/default/deployment/contract"])
     for (const [file, content] of expected)
         assert.equal(await readFile(path.join(directory, "generated", file), "utf8"), content)
-    assert.deepEqual(await readdir(path.join(directory, "generated")), files)
+    assert.deepEqual(
+        (await readdir(path.join(directory, "generated"), { recursive: true }))
+            .filter(file => file !== "runtime")
+            .sort(),
+        files
+    )
     assert.match(result.stdout, /Generated 1 actor contract/)
 
     await run(process.execPath, [cli, "generate", "--remote", "--out-dir", "active"], {

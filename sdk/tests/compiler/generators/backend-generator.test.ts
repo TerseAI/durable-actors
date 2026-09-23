@@ -165,7 +165,7 @@ test("groups public state and method arguments and results under each actor", as
     `
     )
     const files = await generateTypeScript(new ActorCompiler().compileContract(entrypoint))
-    assert.deepEqual([...files.keys()], ["index.ts"])
+    assert.ok(files.has("index.ts"))
     await writeFile(path.join(root, "index.ts"), files.get("index.ts")!)
     await writeFile(
         path.join(root, "consumer.ts"),
@@ -235,7 +235,7 @@ test("preserves named RPC types and their dependencies in clients generated from
     assert.match(code, /latest\(\): Promise<Message>/)
     assert.match(code, /reply\?: Message/)
     const consumer = await project(t)
-    for (const [file, content] of files) await writeFile(path.join(consumer, file), content)
+    await writeArtifacts(consumer, files)
     checkTypes(path.join(consumer, "index.ts"))
 })
 
@@ -249,7 +249,7 @@ test("names anonymous RPC types from methods and parameters in existing publishe
     assert.match(code, /export interface SendMessageResult\b/)
     assert.match(code, /sendMessage\(input: SendMessageInput\): Promise<SendMessageResult>/)
     const consumer = await project(t)
-    for (const [file, content] of files) await writeFile(path.join(consumer, file), content)
+    await writeArtifacts(consumer, files)
     checkTypes(path.join(consumer, "index.ts"))
 })
 
@@ -277,7 +277,7 @@ test("disambiguates source type names without merging distinct RPC types or gene
     const code = files.get("index.ts")!
     assert.match(code, /export interface Item\b/)
     assert.match(code, /first\(input: Item\): Promise<Item>/)
-    for (const [file, content] of files) await writeFile(path.join(root, file), content)
+    await writeArtifacts(root, files)
     await writeFile(
         path.join(root, "consumer.ts"),
         `
@@ -328,7 +328,7 @@ test("generates callable typed backend stubs in a consumer without actor source 
     const files = await generateTypeScript(contract)
     assert.ok(files.has("index.ts"))
     const consumer = await project(t)
-    for (const [file, content] of files) await writeFile(path.join(consumer, file), content)
+    await writeArtifacts(consumer, files)
     await writeFile(
         path.join(consumer, "consumer.ts"),
         `
@@ -362,7 +362,6 @@ test("generates callable typed backend stubs in a consumer without actor source 
         bundle: true,
         format: "esm",
         platform: "node",
-        external: ["durable-actors/generated"],
         metafile: true
     })
     assert.equal(
@@ -421,7 +420,7 @@ test("generated modules handle actor/helper collisions, duplicate argument label
     `
     )
     const files = await generateTypeScript(new ActorCompiler().compileContract(entrypoint))
-    for (const [file, content] of files) await writeFile(path.join(root, file), content)
+    await writeArtifacts(root, files)
     await writeFile(
         path.join(root, "consumer.ts"),
         `
@@ -450,6 +449,7 @@ async function project(t: { after(fn: () => Promise<void>): void }) {
     const sdk = location.endsWith(`${path.sep}.test-dist${path.sep}`) ? path.dirname(location.slice(0, -1)) : location
     await symlink(sdk, path.join(root, "node_modules/durable-actors"))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
+    await writeArtifacts(root, await generateTypeScript([]))
     return root
 }
 
@@ -458,7 +458,7 @@ async function checkUsageExamples(root: string, code: string) {
         match[1]!.replace(/^[ \t]*\* /gm, "").trim()
     )
     const [imports, ...snippets] = examples
-    await mkdir(path.join(root, "generated"))
+    await writeArtifacts(path.join(root, "generated"), await generateTypeScript([]))
     await writeFile(path.join(root, "generated/index.ts"), code)
     const consumer = path.join(root, "usage.ts")
     await writeFile(
@@ -482,4 +482,12 @@ function checkTypes(entrypoint: string) {
             .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
         []
     )
+}
+
+async function writeArtifacts(directory: string, files: ReadonlyMap<string, string>) {
+    for (const [file, content] of files) {
+        const destination = path.join(directory, file)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await writeFile(destination, content)
+    }
 }

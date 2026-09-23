@@ -33,26 +33,23 @@ Running dev will also start a watch, every-time you make a change to an actor an
 
 ### Connect your application
 
-In your separate application project's directory (ex: node server), install the SDK:
+Your application does not need to install `durable-actors`. The generated client includes its runtime and types.
 
-```sh
-pnpm add durable-actors
-```
-
-Copy the three settings printed by `dev` into that application's `.env` file:
+Copy the three settings printed by `dev` into your application's `.env` file:
 
 ```dotenv
+DURABLE_ACTORS_PROJECT_ID='<paste the project ID printed by dev>'
 DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
 DURABLE_ACTORS_SECRET='<paste the secret printed by dev>'
 ```
 
-Then generate your client from the same application directory:
+Then use the CLI to generate a client from your running actor server:
 
 ```sh
-durable-actors generate
+durable-actors generate --remote
 ```
 
-This contract will match perfectly the actor you have defined!
+Keep the entire `generated/` directory, including `runtime/`, with your application. When compiling TypeScript with `tsc`, copy `generated/runtime/` alongside the emitted `index.js`; bundlers include the runtime automatically. Regenerate to pick up actor contract changes and SDK runtime updates.
 
 Now you may call your actor and access the state.
 
@@ -67,25 +64,32 @@ For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborativ
 
 ## Define an Actor
 
-Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
+Define and export actors in your actor project’s `src/actors.ts`. For example, a chat history actor:
 
 ```ts
-import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
-    @Persisted private messages: UIMessage[] = []
+    @Persisted private messages: ChatMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: UIMessage) {
+    async append(message: ChatMessage) {
         this.messages.push(message)
         return this.messages
     }
 }
+
+export type ChatMessage = {
+    id: string
+    role: "system" | "user" | "assistant"
+    parts: { type: "text"; text: string }[]
+}
 ```
+
+This example saves text parts only. Actor method arguments and results must have JSON-compatible types. For arbitrary JSON metadata or tool data, import `JsonValue` or `JsonObject` from `durable-actors`; the AI SDK's default `UIMessage` includes `unknown` fields that cannot be used directly in an actor contract.
 
 ## Stream from the backend (Express)
 
@@ -94,6 +98,7 @@ After adding `ChatHistory`, rerun `durable-actors generate` in your application 
 ```ts
 import { openai } from "@ai-sdk/openai"
 import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
+import type { UIMessage } from "ai"
 import express from "express"
 
 import { actors } from "./generated/index.js"
@@ -109,7 +114,7 @@ app.post("/api/chat", async (request, response) => {
     const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
     if (message.role !== "user") return response.sendStatus(400)
     const chat = actors.ChatHistory.get(request.body.id)
-    const messages = await chat.append(message)
+    const messages = await chat.append(historyMessage(message))
     const result = streamText({
         model: openai("gpt-5-mini"),
         messages: await convertToModelMessages(messages)
@@ -121,11 +126,19 @@ app.post("/api/chat", async (request, response) => {
             originalMessages: messages,
             generateMessageId: generateId,
             onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(responseMessage)
+                if (outcome.status === "completed") await chat.append(historyMessage(responseMessage))
             }
         })
     })
 })
+
+function historyMessage(message: UIMessage) {
+    return {
+        id: message.id,
+        role: message.role,
+        parts: message.parts.filter(part => part.type === "text").map(part => ({ type: part.type, text: part.text }))
+    }
+}
 ```
 
 ## Connect the frontend (React)

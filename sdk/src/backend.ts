@@ -1,16 +1,9 @@
 /** @module durable-actors/backend */
 import { validateActorComponent } from "./actor/identity.js"
 import { actorClient } from "./client/client.js"
-import type { ActorClientTransport } from "./client/client.js"
 import type { DurableActorsClientOptions } from "./client/remoteClient.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
-
-type ActorRpcTransport = Pick<ActorClientTransport, "invoke">
-
-interface ActorRpcMethod {
-    readonly name: string
-    readonly result: "void" | "value"
-}
+import type { ActorRpcMethod, ActorRpcTransport } from "./generated-runtime/types.js"
 
 /** Creates a backend client from generated method definitions. */
 function createActorStub<Stub extends object>(

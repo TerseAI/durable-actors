@@ -11,3 +11,4 @@ export type {
     ActorSocketState
 } from "./actor/socket.js"
 export type { ActorSchemas, ActorStateMessage, ActorStateUpdate } from "./actor/socketValidation.js"
+export type { JsonObject, JsonPrimitive, JsonValue } from "./json.js"

@@ -79,7 +79,6 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         bundle: true,
         platform: "node",
         format: "esm",
-        external: ["durable-actors/generated"],
         outfile: proxyFile,
         logLevel: "silent"
     })
@@ -266,11 +265,6 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             platform: "browser",
             format: "esm",
             write: false,
-            alias: {
-                "durable-actors/generated": fileURLToPath(
-                    new URL("../../../../src/generated.browser.ts", import.meta.url)
-                )
-            },
             logLevel: "silent"
         })
         await build({
@@ -279,7 +273,6 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             platform: "node",
             format: "esm",
             write: false,
-            external: ["durable-actors/generated"],
             logLevel: "silent"
         })
     } finally {
@@ -319,7 +312,7 @@ test("regenerates typed descriptors without stale validators or server imports",
         assert.doesNotMatch(source, /durable-actors\/browser|createClient|export const clients/)
         assert.match(source, /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
-        assert.deepEqual((await readdir(directory)).sort(), ["index.ts"])
+        assert.deepEqual((await readdir(directory)).sort(), ["index.ts", "runtime"])
         assert.doesNotMatch(source, /validators/)
         assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export const actors/)
         const consumer = path.join(directory, "consumer.ts")
@@ -337,7 +330,6 @@ test("regenerates typed descriptors without stale validators or server imports",
             // @ts-expect-error socket-only contracts have no RPC stub
             actors.Room.get("lobby")`
         )
-        const browser = fileURLToPath(new URL("../../../../src/generated.browser.ts", import.meta.url))
         checkTypes(consumer)
         const bundle = await build({
             entryPoints: [path.join(directory, "index.ts")],
@@ -345,7 +337,6 @@ test("regenerates typed descriptors without stale validators or server imports",
             platform: "browser",
             format: "esm",
             write: false,
-            alias: { "durable-actors/generated": browser },
             metafile: true
         })
         assert.equal(
@@ -479,10 +470,7 @@ function checkTypes(consumer: string): void {
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
-        paths: {
-            "durable-actors/generated": [fileURLToPath(new URL("../../../../src/generated.ts", import.meta.url))],
-            "durable-actors/proxy": [fileURLToPath(new URL("../../../../src/proxy.ts", import.meta.url))]
-        }
+        typeRoots: []
     }
     const program = ts.createProgram([consumer], options)
     assert.deepEqual(

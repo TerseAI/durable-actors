@@ -4,34 +4,13 @@ import { z } from "zod"
 import { projectActorPath, validateActorComponent, validateProjectId } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
 import { actorEnvironment } from "./environment.js"
-
-/** Overrides for the backend's DURABLE_ACTORS environment settings. */
-interface SocketProxyOptions {
-    readonly projectId?: string
-    readonly controlPlaneUrl?: string
-    readonly apiKey?: string
-    /** Defaults to 180000 ms; accepts 1000–600000 ms. */
-    readonly setupTimeoutMs?: number
-}
-
-interface SocketProxyDependencies {
-    readonly fetch?: typeof globalThis.fetch
-}
-
-interface ProxyActor<Metadata = unknown> {
-    readonly types?: Metadata
-}
-
-/** Actor access your backend has already authorized. */
-type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
-    [Name in keyof Actors & string]: {
-        readonly actorName: Name
-        readonly actorId: string
-        readonly metadata: Actors[Name] extends ProxyActor<infer Metadata> ? Metadata : never
-        readonly homeRegion?: string
-        readonly authorizationLifetimeMs?: number
-    }
-}[keyof Actors & string]
+import type {
+    ProxyActor,
+    SocketAuthorization,
+    SocketGrant,
+    SocketProxyDependencies,
+    SocketProxyOptions
+} from "./generated-runtime/types.js"
 
 const socketGrantSchema = z.object({
     websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol)),
@@ -39,9 +18,6 @@ const socketGrantSchema = z.object({
     connectByMs: z.number().int(),
     authorizedUntilMs: z.number().int()
 })
-
-/** Browser connection URL and deadlines in Unix milliseconds. Treat the URL as a credential. */
-type SocketGrant = z.infer<typeof socketGrantSchema>
 
 /** Issues browser connection URLs from your backend. */
 class SocketProxy<Actors extends Record<string, ProxyActor>> {

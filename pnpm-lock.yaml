@@ -285,6 +285,9 @@ importers:
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
+      protobufjs:
+        specifier: ^7.6.6
+        version: 7.6.6
       tar:
         specifier: ^7.5.22
         version: 7.5.22
