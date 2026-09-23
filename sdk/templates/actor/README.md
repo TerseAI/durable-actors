@@ -30,6 +30,4 @@ const counter = actors.Counter.get("example")
 console.log(await counter.increment())
 ```
 
-Start your backend with any configured environment file loaded. Local development requires no secret by default. An explicitly configured `DURABLE_ACTORS_SECRET` stays the same across actor server restarts; update the backend only when you change the server’s configured secret. If you change the actor server's URL or port, also set `DURABLE_ACTORS_CONTROL_PLANE_URL` in the backend environment. After changing actor method signatures, rerun the generate command in your application.
-
 Use `pnpm check` to check types. Production deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.yaml).
