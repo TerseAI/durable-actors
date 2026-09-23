@@ -16,7 +16,49 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
-test("correlates overlapping worker replies and socket lookups without idle eviction", { timeout: 10000 }, async () => {
+test("keeps actor state resident between requests until the host closes", async context => {
+    context.mock.timers.enable({ apis: ["setTimeout"] })
+    let created = 0
+    let terminated = 0
+    const supervisor = new ActorWorkerSupervisor({
+        actorEntrypointUrl: "file:///unused.mjs",
+        createWorker: () => {
+            created++
+            let count = 0
+            return {
+                state: "ready",
+                ready: async () => ["SessionCounter"],
+                execute: async () => ({ type: "invoked", result: ++count, state: { count } }),
+                terminate() {
+                    terminated++
+                }
+            }
+        }
+    })
+    try {
+        const command = invokeCommand("counter-1", "SessionCounter")
+        assert.deepEqual(await supervisor.handle(command, () => {}), {
+            type: "invoked",
+            result: 1,
+            state: { count: 1 }
+        })
+        context.mock.timers.tick(300_000)
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
+        assert.deepEqual(await supervisor.handle({ ...command, resident_only: true, state: undefined }, () => {}), {
+            type: "invoked",
+            result: 2,
+            state: { count: 2 }
+        })
+        assert.equal(created, 1)
+        assert.equal(terminated, 0)
+    } finally {
+        supervisor.close()
+    }
+    assert.equal(terminated, 1)
+    assert.deepEqual(supervisor.activeActors(), [])
+})
+
+test("correlates overlapping worker replies and socket lookups", { timeout: 10000 }, async () => {
     const root = await createTypeScriptConsumer("InterleavedWorker")
     const file = path.join(root, "src/actors.ts")
     await writeFile(
@@ -36,8 +78,7 @@ test("correlates overlapping worker replies and socket lookups without idle evic
     )
     const entrypoint = await buildConsumer(root)
     const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorIdleTimeoutMs: 25
+        actorEntrypointUrl: entrypoint
     })
     const events: string[] = []
     let started!: () => void
@@ -69,7 +110,7 @@ test("correlates overlapping worker replies and socket lookups without idle evic
         const first = await holding
         assert.equal("result" in first && first.result, 2)
         assert.deepEqual(events, ['"started:one"', '"ended:one"'])
-        await new Promise(resolve => setTimeout(resolve, 60))
+        await runtime.handle({ type: "evict", actor: invokeCommand("one", "InterleavedWorker").actor }, () => {})
         assert.deepEqual(runtime.activeActors(), [])
         const resumed = await runtime.handle(
             { ...invokeCommand("one", "InterleavedWorker"), state: { count: 2 } },
@@ -139,8 +180,7 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const entrypoint = await buildConsumer(consumerRoot)
     try {
         await exerciseActiveActors(entrypoint)
-        await exerciseIdleRecycling(entrypoint)
-        await exerciseSocketHibernation(entrypoint)
+        await exerciseSocketRecovery(entrypoint)
     } finally {
         await rm(consumerRoot, { recursive: true, force: true })
     }
@@ -282,41 +322,35 @@ test("thrown methods and socket handlers roll back state without restarting the 
     }
 })
 
-test("expires an unused speculative Worker without replenishing it", async () => {
+test("keeps the preloaded Worker available until the first request", async context => {
+    context.mock.timers.enable({ apis: ["setTimeout"] })
     let created = 0
     let terminated = 0
-    let finish: (() => void) | undefined
-    const expired = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("preload did not expire")), 1_000)
-        finish = () => {
-            clearTimeout(timeout)
-            resolve()
-        }
-    })
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.mjs",
-        actorIdleTimeoutMs: 50,
         createWorker: () => {
-            created += 1
+            created++
             return {
-                state: "starting",
-
-                ready: () => new Promise(() => undefined),
-                async execute() {
-                    return { type: "invoked", result: null, state: {} }
-                },
+                state: "ready",
+                ready: async () => ["SessionCounter"],
+                execute: async () => ({ type: "invoked", result: null, state: {} }),
                 terminate() {
-                    terminated += 1
-                    finish?.()
+                    terminated++
                 }
             }
         }
     })
-    await expired
+    try {
+        await supervisor.ready()
+        context.mock.timers.tick(300_000)
+        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
+        assert.equal(created, 1)
+        assert.equal(terminated, 0)
+        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
+    } finally {
+        supervisor.close()
+    }
     assert.equal(terminated, 1)
-    await new Promise(resolve => setTimeout(resolve, 100))
-    assert.equal(created, 1)
-    supervisor.close()
 })
 
 test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
@@ -480,12 +514,12 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
         ),
         { type: "invoked", result: 2, state: { count: 2 } }
     )
+    runtime.close()
 }
 
-async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
+async function exerciseSocketRecovery(entrypoint: string): Promise<void> {
     const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorIdleTimeoutMs: 10
+        actorEntrypointUrl: entrypoint
     })
     const connection = { id: "socket-1", metadata: { userId: "user-1" }, tags: [] }
     assert.deepEqual(
@@ -507,7 +541,7 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
         }
     )
     assert.deepEqual(runtime.activeActors(), [actorIdentity])
-    await new Promise(resolve => setTimeout(resolve, 30))
+    await runtime.handle({ type: "evict", actor: actorIdentity }, () => {})
     assert.deepEqual(runtime.activeActors(), [])
     const published: SocketEffect[] = []
     assert.deepEqual(
@@ -543,42 +577,6 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
         }
     ])
     runtime.close()
-}
-
-async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
-    const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorIdleTimeoutMs: 10
-    })
-    assert.deepEqual(
-        await runtime.handle(
-            {
-                type: "invoke",
-                request_id: "idle-request-1",
-                actor: actorIdentity,
-                method: "increment",
-                args: [2],
-                state: null
-            },
-            () => {}
-        ),
-        { type: "invoked", result: 2, state: { count: 2 } }
-    )
-    await new Promise(resolve => setTimeout(resolve, 30))
-    assert.deepEqual(
-        await runtime.handle(
-            {
-                type: "invoke",
-                request_id: "idle-request-2",
-                actor: actorIdentity,
-                method: "getCount",
-                args: [],
-                state: { count: 9 }
-            },
-            () => {}
-        ),
-        { type: "invoked", result: 9, state: { count: 9 } }
-    )
 }
 
 async function buildConsumer(root: string): Promise<string> {
@@ -698,77 +696,6 @@ test("residency subscribers see worker creation and eviction immediately", async
         await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
         assert.deepEqual(seen, [1, 0])
     } finally {
-        supervisor.close()
-    }
-})
-
-test("activity resets the idle timeout without publishing dormant residency", async context => {
-    context.mock.timers.enable({ apis: ["setTimeout"] })
-    const supervisor = new ActorWorkerSupervisor({
-        actorEntrypointUrl: "file:///unused.mjs",
-        actorIdleTimeoutMs: 10_000,
-        createWorker: () => ({
-            state: "ready",
-
-            ready: async () => ["SessionCounter"],
-            execute: async () => ({ type: "invoked", result: null, state: {} }),
-            terminate() {}
-        })
-    })
-    const seen: number[] = []
-    supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
-    try {
-        await supervisor.ready()
-        for (let request = 0; request < 5; request++) {
-            await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
-            context.mock.timers.tick(9_000)
-            assert.deepEqual(supervisor.activeActors(), [actorIdentity])
-        }
-        assert.deepEqual(seen, [1])
-        context.mock.timers.tick(1_000)
-        assert.deepEqual(supervisor.activeActors(), [])
-        assert.deepEqual(seen, [1, 0])
-    } finally {
-        supervisor.close()
-    }
-})
-
-test("a running request stays resident beyond the idle timeout", async context => {
-    context.mock.timers.enable({ apis: ["setTimeout"] })
-    let finish: (() => void) | undefined
-    const pending = new Promise<void>(resolve => {
-        finish = resolve
-    })
-    let block = false
-    const supervisor = new ActorWorkerSupervisor({
-        actorEntrypointUrl: "file:///unused.mjs",
-        actorIdleTimeoutMs: 10_000,
-        createWorker: () => ({
-            state: "ready",
-
-            ready: async () => ["SessionCounter"],
-            async execute() {
-                if (block) await pending
-                return { type: "invoked", result: null, state: {} }
-            },
-            terminate() {}
-        })
-    })
-    try {
-        await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
-        context.mock.timers.tick(9_000)
-        block = true
-        const running = supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
-        context.mock.timers.tick(30_000)
-        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
-        finish!()
-        assert.equal((await running).type, "invoked")
-        context.mock.timers.tick(9_999)
-        assert.deepEqual(supervisor.activeActors(), [actorIdentity])
-        context.mock.timers.tick(1)
-        assert.deepEqual(supervisor.activeActors(), [])
-    } finally {
-        finish?.()
         supervisor.close()
     }
 })

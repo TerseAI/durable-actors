@@ -5,22 +5,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::*;
 
-#[test]
-fn actor_idle_timeout_uses_bounded_seconds() -> Result<()> {
-    assert_eq!(actor_idle_timeout_seconds(&mut |_| None)?, 60);
-    for value in ["1", "10", "86400"] {
-        let parsed = actor_idle_timeout_seconds(&mut |name| {
-            assert_eq!(name, "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS");
-            Some(value.into())
-        })?;
-        assert_eq!(parsed, value.parse::<u64>()?);
-    }
-    for value in ["0", "-1", "1.5", "86401", "not-a-number"] {
-        assert!(actor_idle_timeout_seconds(&mut |_| Some(value.into())).is_err());
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -50,8 +34,35 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
         values.get(name).map(|value| (*value).into())
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
+    assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 60_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
     assert_eq!(config.api_key.as_deref(), Some("api-key"));
+    Ok(())
+}
+
+#[test]
+fn host_idle_timeout_is_configurable_and_bounded() -> Result<()> {
+    for value in ["1", "120000", "86400000"] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS", value);
+        let config = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })?;
+        assert_eq!(
+            config.sandbox_provider.runtime.host_idle_timeout_ms,
+            value.parse::<u64>()?
+        );
+    }
+    for value in ["0", "-1", "1.5", "86400001", "not-a-number"] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS", value);
+        assert!(
+            ControlPlaneProcessConfig::from_lookup(|name| {
+                values.get(name).map(|value| (*value).into())
+            })
+            .is_err()
+        );
+    }
     Ok(())
 }
 

@@ -26,7 +26,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 17;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 18;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -298,13 +298,9 @@ pub(crate) struct WarmExecutor {
 }
 
 impl WarmExecutor {
-    pub(crate) async fn load(
-        mut self,
-        entrypoint: &str,
-        idle_timeout_ms: u64,
-    ) -> Result<ActorExecutorConnection> {
+    pub(crate) async fn load(mut self, entrypoint: &str) -> Result<ActorExecutorConnection> {
         let mut bytes = serde_json::to_vec(&serde_json::json!({
-            "type": "load", "entrypoint": entrypoint, "actorIdleTimeoutMs": idle_timeout_ms
+            "type": "load", "entrypoint": entrypoint
         }))?;
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await?;

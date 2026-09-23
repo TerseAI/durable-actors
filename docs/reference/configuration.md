@@ -55,8 +55,7 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 
 | Variable                                    | Default              | Meaning                                                                                                                                                                                                         |
 | ------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS` | `60`                 | Actor idle time before hibernation; 1–86400 seconds. Applies locally too.                                                                                                                                       |
-| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`       | `300000`             | Unused cloud host lifetime; 1–86400000 ms.                                                                                                                                                                      |
+| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`      | `60000`              | Host idle time before shutdown; 1–86400000 ms. Applies locally too. Running requests and open WebSockets keep the host alive.                                                                                   |
 | `DURABLE_ACTORS_HOST_STARTUP_MS`            | `10000`              | Positive actor-host startup timeout in milliseconds.                                                                                                                                                            |
 | `DURABLE_ACTORS_SPARE_IDLE`                 | `5`                  | Ready sandboxes per role, image, region, and resource configuration; 0–32. Zero creates hosts on demand. Servers sharing PostgreSQL must use matching pool settings. Named Modal secrets bypass the actor pool. |
 | `DURABLE_ACTORS_SPARE_REGIONS`              | `north-america-east` | Comma-separated regions for ready actor hosts.                                                                                                                                                                  |
@@ -66,6 +65,8 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
+
+Each host serves one actor identity and keeps its JavaScript instance loaded until the host shuts down or the Worker fails or is explicitly evicted. The host idle timeout starts when requests finish and after the last WebSocket closes. Persisted state survives host shutdown and is restored on the next request.
 
 ### Authentication and callbacks
 

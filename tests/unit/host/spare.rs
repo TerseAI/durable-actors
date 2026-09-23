@@ -108,7 +108,6 @@ async fn run_activation(
         executor,
         javascript,
         entrypoint: code.to_str().unwrap().into(),
-        actor_idle_timeout_ms: 60_000,
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
