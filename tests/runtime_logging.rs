@@ -25,7 +25,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
         (
             reqwest::Method::GET,
             "/v1/projects/default/observe/actors",
-            401,
+            200,
         ),
         (reqwest::Method::GET, "/missing", 404),
     ] {
@@ -52,7 +52,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
             "/v1/projects/default/actors/Counter/one/find-actor",
             401,
         ),
-        ("GET", "/v1/projects/default/observe/actors", 401),
+        ("GET", "/v1/projects/default/observe/actors", 200),
         ("GET", "/missing", 404),
     ]) {
         assert!(log.contains("INFO "), "missing level: {log}");
