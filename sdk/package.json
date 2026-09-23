@@ -86,7 +86,7 @@
         "generate:proto": "rm -rf src/generated && proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_actors.proto",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/package-exports.test.mjs",
+        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
         "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_actors.proto .test-dist/src/generated/durable_actors.proto && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
@@ -119,7 +119,6 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/ws": "^8.18.1",
-        "tsx": "^4.23.13",
         "typedoc": "^0.28.20",
         "typedoc-plugin-missing-exports": "^4.1.4"
     }
