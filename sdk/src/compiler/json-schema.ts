@@ -110,6 +110,7 @@ function assertJsonType(
             ts.TypeFlags.NumberLike |
             ts.TypeFlags.BooleanLike |
             ts.TypeFlags.Null |
+            ts.TypeFlags.Unknown |
             ts.TypeFlags.Never)
     )
         return
@@ -139,7 +140,7 @@ function assertJsonType(
             seen
         )
     }
-    for (const index of checker.getIndexInfosOfType(type)) assertJsonType(checker, index.type, label, false, seen)
+    for (const index of checker.getIndexInfosOfType(type)) assertJsonType(checker, index.type, label, true, seen)
 }
 
 export { assertJsonType, jsonSchema, sourceTypeName }
