@@ -209,38 +209,44 @@ test("a connection reported by a host before its connect trace is saved starts w
     await waitFor(() => assert.ok(queries.length > before, "an inventory change refreshes history immediately"))
 })
 
-test("a custom range is picked from the calendar and time fields, validated, and bounds the session query", async context => {
-    // Keep the initial one-hour range on the same calendar day, even when CI runs just after midnight.
-    context.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 22, 12).getTime() })
-    const queries: { fromMs?: number; toMs?: number }[] = []
-    const client: ObserverClient = {
-        listActors: async () => inventory,
-        checkConnection: async () => {},
-        listWebSockets: async query => {
-            queries.push(query)
-            return rows
+for (const locale of ["en-US", "en-CA"]) {
+    test(`a custom range is picked from the calendar and time fields, validated, and bounds the session query (${locale})`, async context => {
+        // Keep the initial one-hour range on the same calendar day, even when CI runs just after midnight.
+        context.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 8, 22, 12).getTime() })
+        const toLocaleDateString = Date.prototype.toLocaleDateString
+        context.mock.method(Date.prototype, "toLocaleDateString", function (this: Date) {
+            return toLocaleDateString.call(this, locale)
+        })
+        const queries: { fromMs?: number; toMs?: number }[] = []
+        const client: ObserverClient = {
+            listActors: async () => inventory,
+            checkConnection: async () => {},
+            listWebSockets: async query => {
+                queries.push(query)
+                return rows
+            }
         }
-    }
-    const view = render(<WebSocketObserver client={client} />)
-    await view.findByRole("button", { name: "Inspect connection closed-connection-1234567890" })
-    fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
-    const panel = view.getByRole("dialog", { name: "Time range" })
-    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "09:00" } })
-    fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "08:00" } })
-    fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
-    assert.ok(within(panel).getByRole("alert"), "a same-day range that ends before it starts is rejected")
-    fireEvent.click(within(panel).getByRole("button", { name: /previous month/iu }))
-    const today = new Date()
-    const start = new Date(today.getFullYear(), today.getMonth() - 1, 5)
-    const end = new Date(today.getFullYear(), today.getMonth() - 1, 6)
-    fireEvent.click(panel.querySelector(`[data-day="${start.toLocaleDateString()}"]`)!)
-    fireEvent.click(panel.querySelector(`[data-day="${end.toLocaleDateString()}"]`)!)
-    fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "07:30" } })
-    fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
-    await waitFor(() => assert.equal(queries.length, 2))
-    const custom = { kind: "absolute" as const, fromMs: new Date(start.getFullYear(), start.getMonth(), 5, 7, 30).getTime(), toMs: new Date(end.getFullYear(), end.getMonth(), 6, 8, 0).getTime() }
-    assert.deepEqual(queries[1], { fromMs: custom.fromMs, toMs: custom.toMs }, "a custom range binds both ends from the calendar and time fields")
-    assert.ok(view.getByRole("button", { name: `Time range: ${rangeLabel(custom)}` }))
-    assert.match(view.getByRole("group", { name: "Connection timeline" }).textContent!, /08:00/u, "the timeline ends at the range end instead of now")
-    assert.match(view.container.textContent!, new RegExp(`sessions between ${rangeLabel(custom).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"))
-})
+        const view = render(<WebSocketObserver client={client} />)
+        await view.findByRole("button", { name: "Inspect connection closed-connection-1234567890" })
+        fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
+        const panel = view.getByRole("dialog", { name: "Time range" })
+        fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "09:00" } })
+        fireEvent.change(within(panel).getByLabelText("To"), { target: { value: "08:00" } })
+        fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
+        assert.ok(within(panel).getByRole("alert"), "a same-day range that ends before it starts is rejected")
+        fireEvent.click(within(panel).getByRole("button", { name: /previous month/iu }))
+        const today = new Date()
+        const start = new Date(today.getFullYear(), today.getMonth() - 1, 5)
+        const end = new Date(today.getFullYear(), today.getMonth() - 1, 6)
+        fireEvent.click(panel.querySelector(`button[data-day="${start.toLocaleDateString()}"]`)!)
+        fireEvent.click(panel.querySelector(`button[data-day="${end.toLocaleDateString()}"]`)!)
+        fireEvent.change(within(panel).getByLabelText("From"), { target: { value: "07:30" } })
+        fireEvent.click(within(panel).getByRole("button", { name: "Apply range" }))
+        await waitFor(() => assert.equal(queries.length, 2))
+        const custom = { kind: "absolute" as const, fromMs: new Date(start.getFullYear(), start.getMonth(), 5, 7, 30).getTime(), toMs: new Date(end.getFullYear(), end.getMonth(), 6, 8, 0).getTime() }
+        assert.deepEqual(queries[1], { fromMs: custom.fromMs, toMs: custom.toMs }, "a custom range binds both ends from the calendar and time fields")
+        assert.ok(view.getByRole("button", { name: `Time range: ${rangeLabel(custom)}` }))
+        assert.match(view.getByRole("group", { name: "Connection timeline" }).textContent!, /08:00/u, "the timeline ends at the range end instead of now")
+        assert.match(view.container.textContent!, new RegExp(`sessions between ${rangeLabel(custom).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"))
+    })
+}
