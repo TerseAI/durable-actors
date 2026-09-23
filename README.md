@@ -157,4 +157,4 @@ MIT © 2026 Terse
 
 ## Production analytics
 
-The observer supports a managed Pub/Sub → BigQuery pipeline with backend query caching and the existing UI contract. See the [analytics architecture](docs/design/production-analytics.md). Local development continues to use SQLite.
+The observer supports a managed Pub/Sub → BigQuery pipeline with backend query caching and the existing UI contract. Local development continues to use SQLite.
