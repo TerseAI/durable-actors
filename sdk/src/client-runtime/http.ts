@@ -6,12 +6,18 @@ export class HttpActorHostTransport implements ActorHostTransport {
     constructor(private readonly fetchRequest: typeof globalThis.fetch = globalThis.fetch) {}
 
     async invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply> {
-        const response = await this.post(target, invocation, "invoke", {
-            requestId: invocation.requestId,
-            ownerEpoch: target.ownerEpoch,
-            method: invocation.method,
-            args: invocation.args
-        })
+        let response: Response
+        try {
+            response = await this.post(target, invocation, "invoke", {
+                requestId: invocation.requestId,
+                ownerEpoch: target.ownerEpoch,
+                method: invocation.method,
+                args: invocation.args
+            })
+        } catch (error) {
+            if (connectionRefused(error)) return { type: "not_dispatched" }
+            throw error
+        }
         // A 401 is issued before dispatch, so refreshing this ticket cannot repeat actor code.
         if (response.status === 401) return { type: "unauthenticated" }
         if (!response.ok) throw new Error(`actor host returned HTTP ${response.status}`)
@@ -53,6 +59,20 @@ export class HttpActorHostTransport implements ActorHostTransport {
     }
 }
 
+function connectionRefused(error: unknown, ancestors = new Set<unknown>()): boolean {
+    if (!isRecord(error) || ancestors.has(error)) return false
+    const visited = new Set(ancestors).add(error)
+    if (error.code !== undefined && error.code !== "ECONNREFUSED") return false
+    if (error.errors !== undefined)
+        return (
+            Array.isArray(error.errors) &&
+            error.errors.length > 0 &&
+            error.errors.every(cause => connectionRefused(cause, visited))
+        )
+    if (error.code === "ECONNREFUSED") return error.syscall === "connect"
+    return connectionRefused(error.cause, visited)
+}
+
 export async function responseDocument(response: Response): Promise<unknown> {
     try {
         return await response.json()
@@ -86,6 +106,7 @@ export type ActorHostReply =
     | { readonly type: "failed"; readonly code: string; readonly message: string }
     | { readonly type: "reroute" }
     | { readonly type: "unauthenticated" }
+    | { readonly type: "not_dispatched" }
 export interface ActorHostTransport {
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
     publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>

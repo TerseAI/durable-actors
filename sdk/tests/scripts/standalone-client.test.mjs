@@ -7,6 +7,7 @@ import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 import ts from "typescript"
 
@@ -21,6 +22,31 @@ test("generated clients typecheck and run with or without bundling in an applica
     await checkTypes(directory)
     await checkServerCalls(t, directory)
     await checkBrowser(directory)
+})
+
+test("a generated client rediscovers a retired host on its first subsequent call", { timeout: 30_000 }, async t => {
+    const directory = await standaloneProject(t)
+    const calls = []
+    const oldHost = actorHost(calls)
+    const newHost = actorHost(calls)
+    for (const host of [oldHost, newHost]) {
+        t.after(() => host.close())
+        host.listen(0, "127.0.0.1")
+        await once(host, "listening")
+    }
+    let port = oldHost.address().port
+    const requests = []
+    const origin = await controlPlaneServer(t, () => port, requests)
+    const clientPath = path.join(directory, "generated/index.js")
+    const { actors, createActorTransport } = await import(pathToFileURL(clientPath).href)
+    const transport = createActorTransport({ projectId: "team-a", apiKey: "app-key", controlPlaneUrl: origin })
+    const room = actors.ChatRoom.get("lobby", transport)
+    assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
+    await new Promise((resolve, reject) => oldHost.close(error => (error ? reject(error) : resolve())))
+    port = newHost.address().port
+    assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
+    assert.deepEqual(calls, ["sendMessage", "sendMessage"])
+    assert.equal(requests.length, 2)
 })
 
 async function standaloneProject(t) {
@@ -79,7 +105,7 @@ async function checkServerCalls(t, directory) {
     await once(host, "listening")
     const port = host.address().port
     const requests = []
-    const origin = await controlPlaneServer(t, port, requests)
+    const origin = await controlPlaneServer(t, () => port, requests)
     for (const format of ["node", "tsx", "bun", "esm", "cjs", "commonjs-project"]) {
         if (format === "commonjs-project") await writeFile(path.join(directory, "package.json"), '{"type":"commonjs"}')
         calls.length = 0
@@ -104,7 +130,7 @@ async function controlPlaneServer(t, port, requests) {
         response.end(
             JSON.stringify(
                 request.url.endsWith("/find-actor")
-                    ? { route: `http://127.0.0.1:${port}`, token: "host-ticket", ownerEpoch: 3, expiresAtMs: Date.now() + 60_000 }
+                    ? { route: `http://127.0.0.1:${port()}`, token: "host-ticket", ownerEpoch: 3, expiresAtMs: Date.now() + 60_000 }
                     : { websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000, authorizedUntilMs: 900000 }
             )
         )
