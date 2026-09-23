@@ -9,6 +9,7 @@ use async_trait::async_trait;
 
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
+pub(crate) use gcs::WarmGcs;
 pub use peers::{GrpcReplicaPeers, ReplicaPeers};
 pub use runtime::{LoadedActor, ReplicaMembership, RuntimeStorage};
 

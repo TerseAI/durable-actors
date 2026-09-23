@@ -5,6 +5,7 @@ use tokio::net::TcpListener;
 
 use super::process::{ActorHostConfig, serve_assigned_host, spawn_javascript_process};
 use crate::actor::{ActorExecutorListener, WarmExecutor};
+use crate::bucket::WarmGcs;
 
 pub(super) struct WarmHost {
     pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
@@ -12,6 +13,7 @@ pub(super) struct WarmHost {
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
     pub entrypoint: String,
+    pub storage: WarmGcs,
 }
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
@@ -36,7 +38,14 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let listener = TcpListener::bind(bind).await?;
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let mut javascript = spawn_javascript_process(true, &socket)?;
-    let executor = tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await??;
+    let (executor, storage) = tokio::try_join!(
+        async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
+        async {
+            let storage = WarmGcs::new().await?;
+            storage.preconnect().await;
+            anyhow::Ok(storage)
+        },
+    )?;
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
@@ -44,6 +53,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         result = &mut server => anyhow::bail!("spare assignment server stopped: {result:?}"),
         status = javascript.wait() => anyhow::bail!("generic Bun executor exited: {}", status?),
         () = &mut shutdown => return Ok(()),
+        () = storage.keep_warm() => unreachable!("storage warmup stopped"),
     };
     tokio::fs::remove_file(&ready).await?;
     let environment = assigned.environment;
@@ -70,6 +80,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         executor,
         javascript,
         entrypoint,
+        storage,
     };
     serve_assigned_host(config, Some(warm), shutdown).await
 }

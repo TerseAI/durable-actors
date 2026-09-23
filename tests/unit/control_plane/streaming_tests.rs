@@ -618,6 +618,7 @@ impl Stack {
                 "http://unused".into(),
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
+                None,
             )
             .await?
             .with_actor(Some(actor.clone()), true),

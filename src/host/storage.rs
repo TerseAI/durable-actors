@@ -15,7 +15,7 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        Bucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage,
+        Bucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage, WarmGcs,
         access::{HostStorageConfig, StorageToken},
     },
     clock::{Clock, SystemClock},
@@ -52,12 +52,14 @@ impl HostStorage {
         origin: String,
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
+        warm: Option<WarmGcs>,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let authority: Arc<dyn Bucket> = match config.bucket {
-            crate::bucket::access::BucketLocation::Gcs { bucket } => {
-                Arc::new(GcsBucket::with_credentials(&bucket, credentials.into()).await?)
-            }
+            crate::bucket::access::BucketLocation::Gcs { bucket } => Arc::new(match warm {
+                Some(warm) => warm.bind(&bucket, credentials.into())?,
+                None => GcsBucket::with_credentials(&bucket, credentials.into()).await?,
+            }),
             crate::bucket::access::BucketLocation::File { directory } => {
                 Arc::new(crate::bucket::FileBucket::new(directory)?)
             }

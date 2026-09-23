@@ -365,12 +365,13 @@ async fn prepare_actor_host(
 ) -> Result<PreparedActorHost> {
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor) = match warm {
+    let (warm_listener, warm_executor, warm_storage) = match warm {
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript, warm.entrypoint)),
+            Some(warm.storage),
         ),
-        None => (None, None),
+        None => (None, None, None),
     };
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
         ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
@@ -391,7 +392,8 @@ async fn prepare_actor_host(
         !config.runtime_config.replica_regions.is_empty(),
         stop.clone(),
     );
-    let storage_ready = prepare_storage(config, &endpoint, control_plane.clone(), stop);
+    let storage_ready =
+        prepare_storage(config, &endpoint, control_plane.clone(), stop, warm_storage);
     let executor_ready = async {
         if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection =
@@ -457,6 +459,7 @@ async fn prepare_storage(
     endpoint: &HostEndpoint,
     control_plane: Arc<ControlPlaneClient>,
     stop: CancellationToken,
+    warm: Option<crate::bucket::WarmGcs>,
 ) -> Result<(
     Arc<super::storage::HostStorage>,
     Arc<HostLeaseMaintainer>,
@@ -470,6 +473,7 @@ async fn prepare_storage(
             config.control_plane_url.clone(),
             control_plane,
             stop,
+            warm,
         )
         .await?
         .with_actor(config.actor.clone(), config.new_actor),
