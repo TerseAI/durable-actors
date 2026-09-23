@@ -1,6 +1,7 @@
 use super::{Bucket, BucketObject};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use atomic_write_file::AtomicWriteFile;
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -44,15 +45,11 @@ impl Bucket for FileBucket {
     ) -> Result<bool> {
         let key = key.to_owned();
         self.run(move |directory| {
-            let lock = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(directory.join(".bucket.lock"))?;
-            lock.lock()?;
             let path = object_path(directory, &key)?;
-            let generation = read(&path)?.map(|object| object.generation);
+            let _lock = lock_object(&path)?;
+            let generation = open(&path)?
+                .map(|mut file| read_generation(&mut file))
+                .transpose()?;
             if generation != expected {
                 return Ok(false);
             }
@@ -60,14 +57,10 @@ impl Bucket for FileBucket {
                 .unwrap_or(0)
                 .checked_add(1)
                 .context("bucket generation overflow")?;
-            let parent = path.parent().context("object parent missing")?;
-            std::fs::create_dir_all(parent)?;
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-            temporary.write_all(&next.to_be_bytes())?;
-            temporary.write_all(&bytes)?;
-            temporary.as_file().sync_all()?;
-            temporary.persist(&path)?;
-            File::open(parent)?.sync_all()?;
+            let mut replacement = AtomicWriteFile::open(&path)?;
+            replacement.write_all(&next.to_be_bytes())?;
+            replacement.write_all(&bytes)?;
+            replacement.commit()?;
             Ok(true)
         })
         .await
@@ -97,20 +90,46 @@ fn object_path(directory: &Path, key: &str) -> Result<PathBuf> {
 }
 
 fn read(path: &Path) -> Result<Option<BucketObject>> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(mut file) = open(path)? else {
+        return Ok(None);
     };
+    let generation = read_generation(&mut file)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(BucketObject { generation, bytes }))
+}
+
+fn open(path: &Path) -> Result<Option<File>> {
+    match File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_generation(file: &mut File) -> Result<i64> {
     let mut generation = [0; 8];
     file.read_exact(&mut generation)
         .context("incomplete bucket object")?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(Some(BucketObject {
-        generation: i64::from_be_bytes(generation),
-        bytes,
-    }))
+    Ok(i64::from_be_bytes(generation))
+}
+
+fn lock_object(path: &Path) -> Result<File> {
+    let parent = path.parent().context("object parent missing")?;
+    let name = path
+        .file_name()
+        .context("object filename missing")?
+        .to_string_lossy();
+    std::fs::create_dir_all(parent)?;
+    // Keep a stable lock file: replacing or unlinking it would split waiting writers.
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(parent.join(format!(".{name}.lock")))?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 fn list(root: &Path, directory: &Path, prefix: &str, objects: &mut Vec<String>) -> Result<()> {

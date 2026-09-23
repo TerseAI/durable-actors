@@ -621,7 +621,7 @@ impl ActorRuntime {
             next_version,
             owner_epoch,
             invocation.request_id.clone(),
-            next_state,
+            &next_state,
             result.clone(),
         )?;
         timings.snapshot_created_at_ms = Some(timings.elapsed_ms());
@@ -629,6 +629,7 @@ impl ActorRuntime {
         timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());
         cached.pending = Some(PendingStateCommit {
             snapshot,
+            state: next_state,
             ticket,
             durable: false,
         });
@@ -755,7 +756,7 @@ impl ActorRuntime {
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
         cached.state_version = pending.snapshot.state_version;
-        cached.state = Some(Arc::new(pending.snapshot.state));
+        cached.state = Some(Arc::new(pending.state));
         cached.last_request_id = Some(pending.snapshot.request_id);
         cached.last_result = Some(pending.snapshot.result);
         cached.next_write = Some(next_write);
@@ -858,6 +859,7 @@ struct CachedActorState {
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
+    state: Value,
     ticket: WritePlan,
     durable: bool,
 }
@@ -888,7 +890,7 @@ impl CachedActorState {
         Ok(Self {
             owner_epoch,
             state_version,
-            state: Some(Arc::new(snapshot.state)),
+            state: Some(Arc::new(serde_json::from_str(snapshot.state.get())?)),
             last_request_id: Some(snapshot.request_id),
             last_result: Some(snapshot.result),
             next_write: None,

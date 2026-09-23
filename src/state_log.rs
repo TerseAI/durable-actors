@@ -1,16 +1,20 @@
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{
+    Value,
+    value::{RawValue, to_raw_value},
+};
+use std::borrow::Borrow;
 
 pub const MAX_ACTOR_STATE_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateSnapshot {
     pub state_version: u64,
     pub owner_epoch: u64,
     pub request_id: String,
-    pub state: Value,
+    pub state: Box<RawValue>,
     pub result: Value,
 }
 
@@ -19,14 +23,14 @@ impl StateSnapshot {
         state_version: u64,
         owner_epoch: u64,
         request_id: String,
-        state: Value,
+        state: impl Borrow<Value>,
         result: Value,
     ) -> Result<Self> {
         let snapshot = Self {
             state_version,
             owner_epoch,
             request_id,
-            state,
+            state: to_raw_value(state.borrow())?,
             result,
         };
         snapshot.validate()?;
@@ -55,9 +59,12 @@ impl StateSnapshot {
             !self.request_id.is_empty() && self.request_id.len() <= 255,
             "actor state request ID is invalid"
         );
-        ensure!(self.state.is_object(), "actor state must be a JSON object");
         ensure!(
-            serde_json::to_vec(&self.state)?.len() <= MAX_ACTOR_STATE_BYTES,
+            self.state.get().starts_with('{'),
+            "actor state must be a JSON object"
+        );
+        ensure!(
+            self.state.get().len() <= MAX_ACTOR_STATE_BYTES,
             "actor state exceeds the {MAX_ACTOR_STATE_BYTES}-byte limit"
         );
         Ok(())
