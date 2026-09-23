@@ -156,7 +156,9 @@ if (request.barrier) {
 } else if (request.exit) {
   process.exitCode = 1;
 } else if (request.marker) {
-  fs.writeFileSync(request.marker, String(process.pid));
+  const pendingMarker = request.marker + '.tmp';
+  fs.writeFileSync(pendingMarker, String(process.pid));
+  fs.renameSync(pendingMarker, request.marker);
   setInterval(() => {}, 1000);
 } else {
   reply({pid: process.pid, index: request.index});
