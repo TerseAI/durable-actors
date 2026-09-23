@@ -426,7 +426,7 @@ fn format_local_ready_message(
         format!("     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n")
     };
     format!(
-        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n{project}     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate --remote{command:#}\n\n  Start your application backend with this .env loaded.\n",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n{project}     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
     )
 }

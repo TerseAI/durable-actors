@@ -40,8 +40,26 @@ test("HTTP failures retain their status with JSON, non-JSON, or malformed error 
             connection,
             async () => new Response(body, { status: 409, statusText: "Conflict" })
         )
-        await assert.rejects(client.getContract(), { message: `Control-plane request failed (HTTP 409): ${message}` })
+        await assert.rejects(client.getContract(), {
+            message: `Control-plane request failed (HTTP 409): ${message}\nGET https://control.example/v1/projects/default/deployment/contract`
+        })
     }
+})
+
+test("missing contract endpoints identify the server and project without exposing credentials", async () => {
+    const client = new ControlPlaneClient(
+        connection,
+        async () => new Response(null, { status: 404, statusText: "Not Found" })
+    )
+    await assert.rejects(client.getContract(), error => {
+        const message = (error as Error).message
+        assert.match(message, /HTTP 404.*Not Found/u)
+        assert.match(message, /GET https:\/\/control\.example\/v1\/projects\/default\/deployment\/contract/u)
+        assert.match(message, /durable-actors dev/u)
+        assert.match(message, /DURABLE_ACTORS_PROJECT_ID/u)
+        assert.doesNotMatch(message, /admin-key/u)
+        return true
+    })
 })
 
 test("successful responses must contain JSON", async () => {

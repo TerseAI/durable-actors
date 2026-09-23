@@ -9,17 +9,17 @@ import { createControlPlaneClient } from "./control-plane.js"
 interface GenerateOptions {
     outDir: string
     config?: string
-    remote?: boolean
+    controlPlaneUrl?: string
 }
 
 function registerGenerateCommand(program: Command): void {
     program
         .command("generate")
-        .argument("[entrypoint]", "actor source file (default: src/actors.ts)")
-        .description("Generate clients to reach durable actors in your own project")
+        .argument("[entrypoint]", "actor source file to compile instead of fetching from the server")
+        .description("Generate actor clients from the running server or an explicit source file")
         .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
-        .option("--remote", "generate from the configured server")
+        .option("--control-plane-url <url>", "control-plane origin (overrides DURABLE_ACTORS_CONTROL_PLANE_URL)")
         .addHelpText("after", connectionHelp)
         .action(generate)
 }
@@ -27,7 +27,9 @@ function registerGenerateCommand(program: Command): void {
 async function generate(entrypoint: string | undefined, options: GenerateOptions): Promise<void> {
     validateOptions(entrypoint, options)
     const { generateClient } = await import("../compiler/generators/client-generator.js")
-    const contract = options.remote ? await remoteContract() : await localContract(entrypoint, options.config)
+    const contract = entrypoint
+        ? await localContract(entrypoint, options.config)
+        : await remoteContract(options.controlPlaneUrl)
     const directory = path.resolve(options.outDir)
     await generateClient(contract, directory)
     for (const obsolete of ["contract.json", "contract-source.json"])
@@ -36,18 +38,25 @@ async function generate(entrypoint: string | undefined, options: GenerateOptions
 }
 
 function validateOptions(entrypoint: string | undefined, options: GenerateOptions): void {
-    if (options.remote && (entrypoint || options.config))
-        throw new Error("--remote cannot be combined with a source entrypoint or --config.")
+    if (entrypoint && options.controlPlaneUrl !== undefined)
+        throw new Error("--control-plane-url cannot be combined with a source entrypoint.")
+    if (options.config && !entrypoint) throw new Error("--config requires a source entrypoint.")
 }
 
-async function localContract(entrypoint: string | undefined, configFile?: string) {
+async function localContract(entrypoint: string, configFile?: string) {
     const { ActorCompiler } = await import("../compiler/actor-compiler.js")
-    return new ActorCompiler().compileContract(entrypoint ?? "src/actors.ts", { configFile })
+    return new ActorCompiler().compileContract(entrypoint, { configFile })
 }
 
-async function remoteContract() {
+async function remoteContract(controlPlaneUrl?: string) {
     const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
-    const client = createControlPlaneClient(process.env, fetch)
+    const client = createControlPlaneClient(
+        {
+            ...process.env,
+            DURABLE_ACTORS_CONTROL_PLANE_URL: controlPlaneUrl ?? process.env.DURABLE_ACTORS_CONTROL_PLANE_URL
+        },
+        fetch
+    )
     const publication = publicationSchema.parse(await client.getContract())
     return parsePublicContract(publication.contract)
 }

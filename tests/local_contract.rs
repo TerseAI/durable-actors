@@ -124,7 +124,7 @@ async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Re
     let consumer = tempfile::tempdir()?;
     let output = Command::new("node")
         .arg(sdk.join("cli.js"))
-        .args(["generate", "--remote"])
+        .args(["generate"])
         .current_dir(consumer.path())
         .env_remove("DURABLE_ACTORS_PROJECT_ID")
         .env_remove("DURABLE_ACTORS_SECRET")
@@ -180,7 +180,7 @@ impl LocalRuntime {
                 if let Some((_, value)) = line.split_once("  Ready  ") {
                     origin = Some(value.trim().to_owned());
                 }
-                if line.contains("durable-actors generate --remote") {
+                if line.contains("durable-actors generate") {
                     return origin.context("missing origin");
                 }
                 line.clear();

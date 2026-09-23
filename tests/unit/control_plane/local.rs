@@ -31,7 +31,7 @@ fn startup_command_uses_the_configured_project_and_port() {
     );
     assert!(message.contains("DURABLE_ACTORS_PROJECT_ID=my-project"));
     assert!(message.contains("DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:8123"));
-    assert!(message.contains("     durable-actors generate --remote\n"));
+    assert!(message.contains("     durable-actors generate\n"));
 }
 
 #[test]
