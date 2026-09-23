@@ -4,7 +4,6 @@ import ts from "typescript"
 
 import type { ActorApi, RpcContract, RpcMethod, TypeReference } from "../../wire/public-contract.js"
 
-import { normalizeUnconstrainedSchemas } from "./normalize-unconstrained-schemas.js"
 import { usageComment } from "./usage-comment.js"
 
 async function backendSource(
@@ -90,14 +89,14 @@ ${namespaces.join("\n")}
 async function rpcDeclarations(rpc: RpcContract, wireNames: readonly string[]) {
     const { properties, definitions } = rpcSchemaTypes(rpc)
     const code = await compile(
-        normalizeUnconstrainedSchemas({
+        {
             ...rpc.schema,
             definitions,
             type: "object",
             properties,
             required: Object.keys(properties),
             additionalProperties: false
-        }) as JSONSchema,
+        } as JSONSchema,
         "RpcTypes",
         {
             $refOptions: { resolve: { file: false, http: false } },

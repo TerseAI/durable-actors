@@ -9,7 +9,6 @@ import type { PublicActorContract } from "../../wire/public-contract.js"
 import { parsePublicContract } from "../validate-public-contract.js"
 
 import { backendSource } from "./backend-generator.js"
-import { normalizeUnconstrainedSchemas } from "./normalize-unconstrained-schemas.js"
 import { usageComment } from "./usage-comment.js"
 
 /** Returns JavaScript and TypeScript declarations with a standalone runtime, without writing files or executing actor code. */
@@ -89,17 +88,15 @@ async function wireDeclarations(contract: SocketContract) {
         ])
     )
     const code = await compile(
-        normalizeUnconstrainedSchemas(
-            inlineAnonymousReferences(
-                {
-                    ...contract.schema,
-                    type: "object",
-                    additionalProperties: false,
-                    properties,
-                    required: Object.keys(properties)
-                },
-                contract.schema.definitions ?? {}
-            ) as SocketContract["schema"]
+        inlineAnonymousReferences(
+            {
+                ...contract.schema,
+                type: "object",
+                additionalProperties: false,
+                properties,
+                required: Object.keys(properties)
+            },
+            contract.schema.definitions ?? {}
         ) as JSONSchema,
         "ActorTypes",
         {

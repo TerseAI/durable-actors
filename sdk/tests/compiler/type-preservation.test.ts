@@ -58,28 +58,25 @@ test("nested dictionaries preserve union branches and recursive values", async t
     `)
 })
 
-test("unknown stays unconstrained in method, property, dictionary and socket types", async t => {
+test("intersections preserve dictionary values and required properties", async t => {
     const project = await createProject(t)
     await project.generate(`
-        type Message = { metadata?: unknown; values: Record<string, unknown> }
-        export class Room extends Actor<unknown, Message, unknown> {
-            @Persisted messages: Message[] = []
-            async echo(value: unknown): Promise<unknown> { return value }
-            async message(value: Message): Promise<Message> { return value }
+        type Message = { id: string } & { metadata: Record<string, { requestId: string }> }
+        export class Room extends Actor<{}, Message, Message> {
+            async echo(value: Message): Promise<Message> { return value }
         }
     `)
     await project.check(`
-        declare const value: unknown
-        await room.echo(value)
-        await room.message({ metadata: value, values: { anything: value } })
-        const metadata: actors.Room.Metadata = value
-        const outgoing: actors.Room.Outgoing = value
-        const incoming: actors.Room.Incoming = { metadata: value, values: { anything: value } }
-        const state: actors.Room.State = { messages: [incoming] }
-        // @ts-expect-error unknown results require narrowing
-        const object: Record<string, unknown> = await room.echo(value)
-        // @ts-expect-error unknown properties require narrowing
-        const text: string = (await room.message(incoming)).metadata
+        type Message = { id: string } & { metadata: Record<string, { requestId: string }> }
+        declare const message: Message
+        const result: Message = await room.echo(message)
+        const incoming: actors.Room.Incoming = message
+        declare const outgoing: actors.Room.Outgoing
+        const sent: Message = outgoing
+        // @ts-expect-error both sides of the intersection are required
+        await room.echo({ metadata: {} })
+        // @ts-expect-error the dictionary retains its value type
+        await room.echo({ id: "one", metadata: { provider: { requestId: 42 } } })
     `)
 })
 

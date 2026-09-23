@@ -5,8 +5,10 @@ import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import ts from "typescript"
 
 import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
+import { generateClient } from "../../src/compiler/generators/client-generator.js"
 
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
@@ -26,6 +28,22 @@ test("the README ChatHistory contract compiles with the AI SDK", async t => {
     assert.deepEqual(
         actor.rpc.methods.map(method => method.name),
         ["append", "load"]
+    )
+    await generateClient(contract, path.join(project, "generated"))
+    const consumer = path.join(project, "backend.ts")
+    await writeFile(consumer, readme.split("## Stream from the backend (Express)")[1].match(/```ts\n([\s\S]*?)```/)![1])
+    const program = ts.createProgram([consumer], {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: false,
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.NodeNext
+    })
+    assert.deepEqual(
+        ts
+            .getPreEmitDiagnostics(program)
+            .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        []
     )
 })
 

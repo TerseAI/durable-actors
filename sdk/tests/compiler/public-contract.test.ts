@@ -122,13 +122,14 @@ test("extracts named re-exports and orders actors and methods deterministically"
     )
 })
 
-test("unknown message payloads support arbitrary JSON in contracts", async t => {
+test("explicit recursive JSON types support varied payloads in contracts", async t => {
     const project = await createProject(t)
     await project.write(`
+        type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
         interface Message {
             id: string
-            metadata?: unknown
-            parts: { [key: string]: unknown }[]
+            metadata?: Json
+            parts: { [key: string]: Json }[]
         }
         export class Room extends Actor<{}, never, never> {
             async send(message: Message): Promise<Message> { return message }
@@ -154,6 +155,61 @@ test("unknown message payloads support arbitrary JSON in contracts", async t => 
         assert.equal(validate({ id: "1", parts: [{ type: "text", text: "hello" }] }), true)
         assert.equal(validate({ id: 1, parts: [] }), false)
         assert.equal(validate({ id: "1", parts: "invalid" }), false)
+    }
+})
+
+test("rejects unknown throughout public actor types", async t => {
+    const project = await createProject(t)
+    for (const type of [
+        "unknown",
+        "{ metadata?: unknown }",
+        "Record<string, unknown>",
+        "readonly unknown[]",
+        "[string, unknown]",
+        '{ kind: "text"; value: string } | { kind: "raw"; value: unknown }',
+        "{ id: string } & Record<string, unknown>"
+    ]) {
+        await t.test(`parameter ${type}`, async () => {
+            await project.write(`export class Room extends Actor<{}, never, never> {
+                async send(value: ${type}): Promise<void> {}
+            }`)
+            assert.throws(
+                () => new ActorCompiler().compileContract(project.entrypoint),
+                /Room\.send parameter value.*unsupported type unknown/
+            )
+        })
+    }
+    const cases = [
+        ["result", "<{}, never, never>", "async send(): Promise<unknown> { return null }", "send result"],
+        [
+            "nested result",
+            "<{}, never, never>",
+            "async send(): Promise<{ data: unknown }> { return { data: null } }",
+            "send result.data"
+        ],
+        ["optional parameter", "<{}, never, never>", "async send(value?: unknown) {}", "send parameter value"],
+        ["recursive parameter", "<{}, never, never>", "async send(value: Tree) {}", "send parameter value.payload"],
+        ["socket metadata", "<unknown, never, never>", "", "Metadata"],
+        ["socket incoming", "<{}, { payload: unknown }, never>", "", "Incoming.payload"],
+        ["socket outgoing", "<{}, never, unknown[]>", "", "Outgoing"],
+        ["public state", "<{}, never, never>", "@Persisted value: unknown = null", "Field_value"],
+        [
+            "nested public state",
+            "<{}, never, never>",
+            "@Persisted messages: { parts: unknown[] }[] = []",
+            "Field_messages.parts"
+        ]
+    ]
+    for (const [name, arguments_, body, location] of cases) {
+        await t.test(name, async () => {
+            await project.write(`
+                type Tree = { children: Tree[]; payload: unknown }
+                export class Room extends Actor${arguments_} { ${body} }
+            `)
+            assert.throws(() => new ActorCompiler().compileContract(project.entrypoint), {
+                message: `Room.${location} must be JSON-compatible; unsupported type unknown`
+            })
+        })
     }
 })
 

@@ -170,7 +170,6 @@ function assertJsonType(
             ts.TypeFlags.NumberLike |
             ts.TypeFlags.BooleanLike |
             ts.TypeFlags.Null |
-            ts.TypeFlags.Unknown |
             ts.TypeFlags.Never)
     )
         return
