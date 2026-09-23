@@ -6,6 +6,24 @@ use crate::request_traces::{
 };
 
 #[tokio::test]
+async fn replay_metadata_counts_only_the_requested_project() -> Result<()> {
+    let store = SqliteTracePersistence::in_memory();
+    let mut records: Vec<_> = (0..501).map(|id| event(&id.to_string())).collect();
+    let mut isolated = event("isolated");
+    isolated.trace.project_id = "other".into();
+    records.push(isolated);
+    store.append(&records).await?;
+    let page = store.replay("other", &ReplayQuery::default()).await?;
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.evicted, 0);
+    assert_eq!(
+        store.replay("empty", &ReplayQuery::default()).await?.cursor,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> Result<()> {
     let store = SqliteTracePersistence::in_memory();
     let mut events = Vec::new();
@@ -85,10 +103,13 @@ async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> 
     }
     store.append(&events).await?;
     let metrics = store
-        .metrics(&TimeRange {
-            from_ms: Some(1000),
-            to_ms: Some(5000),
-        })
+        .metrics(
+            "default",
+            &TimeRange {
+                from_ms: Some(1000),
+                to_ms: Some(5000),
+            },
+        )
         .await?;
     assert_eq!(metrics.total.count, 27);
     assert_eq!(metrics.total.success, Some(100.0 * 22.0 / 24.0));
@@ -108,13 +129,23 @@ async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> 
     assert_eq!(idle.count, 1);
     assert_eq!((idle.success, idle.p95, idle.queue_p95), (None, None, None));
     let old = store
-        .metrics(&TimeRange {
-            from_ms: Some(0),
-            to_ms: Some(999),
-        })
+        .metrics(
+            "default",
+            &TimeRange {
+                from_ms: Some(0),
+                to_ms: Some(999),
+            },
+        )
         .await?;
     assert_eq!(old.total.count, 1);
-    assert_eq!(store.metrics(&TimeRange::default()).await?.total.count, 28);
+    assert_eq!(
+        store
+            .metrics("default", &TimeRange::default())
+            .await?
+            .total
+            .count,
+        28
+    );
     Ok(())
 }
 
@@ -144,7 +175,7 @@ async fn queue_waits_group_admitted_attempts_and_filter_actor_and_time() -> Resu
         to_ms: Some(2000),
         actor_name: Some("Room".into()),
     };
-    let rows = store.queue_waits(&query).await?;
+    let rows = store.queue_waits("default", &query).await?;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].actor_id, "a");
     assert_eq!(rows[0].admitted, 2);
@@ -152,10 +183,13 @@ async fn queue_waits_group_admitted_attempts_and_filter_actor_and_time() -> Resu
     assert_eq!(rows[0].max_ms, 30.0);
     assert!(
         store
-            .queue_waits(&QueueWaitQuery {
-                actor_name: Some("Other".into()),
-                ..query
-            })
+            .queue_waits(
+                "default",
+                &QueueWaitQuery {
+                    actor_name: Some("Other".into()),
+                    ..query
+                }
+            )
             .await?
             .is_empty()
     );
@@ -184,10 +218,13 @@ async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect
     }
     store.append(&events).await?;
     let sessions = store
-        .websockets(&TimeRange {
-            from_ms: Some(2000),
-            to_ms: Some(4000),
-        })
+        .websockets(
+            "default",
+            &TimeRange {
+                from_ms: Some(2000),
+                to_ms: Some(4000),
+            },
+        )
         .await?;
     assert_eq!(sessions.len(), 1);
     let session = &sessions[0];
@@ -199,19 +236,25 @@ async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect
     assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
     assert!(
         store
-            .websockets(&TimeRange {
-                from_ms: Some(5001),
-                to_ms: None
-            })
+            .websockets(
+                "default",
+                &TimeRange {
+                    from_ms: Some(5001),
+                    to_ms: None
+                }
+            )
             .await?
             .is_empty()
     );
     assert!(
         store
-            .websockets(&TimeRange {
-                from_ms: None,
-                to_ms: Some(999)
-            })
+            .websockets(
+                "default",
+                &TimeRange {
+                    from_ms: None,
+                    to_ms: Some(999)
+                }
+            )
             .await?
             .is_empty()
     );

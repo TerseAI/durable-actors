@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import { HttpObserverClient } from "../src/client.js"
+import { HttpObserverClient, isTrace } from "../src/client.js"
 import type { RequestHistoryQuery, RequestTracePage } from "../src/client.js"
 
 import "./dom.js"
@@ -20,6 +20,7 @@ const page: RequestTracePage = {
     records: [
         {
             sequence: 1,
+            projectId: "default",
             requestId: "request-one",
             hostId: "host-one",
             sessionId: "session-one",
@@ -35,6 +36,11 @@ const page: RequestTracePage = {
         }
     ]
 }
+
+test("request traces require an explicit valid project ID", () => {
+    for (const projectId of [undefined, "", "bad/project"]) assert.equal(isTrace({ ...page.records[0], projectId }), false)
+    assert.equal(isTrace({ ...page.records[0], projectId: "hosted-project" }), true)
+})
 
 test("request history shows both timings, deduplicates replay, and can pause for inspection", async () => {
     let publish!: (page: RequestTracePage) => void

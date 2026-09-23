@@ -96,7 +96,7 @@ async fn local_runtime_uses_configured_options_secret_and_parent_lifetime() -> R
     let client = reqwest::Client::new();
     for (key, authorized) in [("preferred-secret", true), ("alternate-key", false)] {
         let response = client
-            .get(format!("{origin}/v1/observe/actors"))
+            .get(format!("{origin}/v1/projects/default/observe/actors"))
             .bearer_auth(key)
             .send()
             .await?;

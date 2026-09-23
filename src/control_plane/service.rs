@@ -472,6 +472,7 @@ impl ControlPlaneService {
                 }
                 self.traces
                     .record(
+                        &principal.actor.project_id,
                         principal.host_id.as_str(),
                         &principal.session_id,
                         traces,

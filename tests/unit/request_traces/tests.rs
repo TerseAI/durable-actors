@@ -3,32 +3,83 @@ use super::*;
 use std::sync::Mutex;
 
 #[tokio::test]
+async fn trace_reports_require_the_authenticated_project() -> Result<()> {
+    let store = TraceStore::default();
+    assert!(
+        store
+            .record("other", "host", "session", vec![trace(1)], 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .record("", "host", "session", vec![], 0)
+            .await
+            .is_err()
+    );
+    let mut payload = serde_json::to_value(trace(1))?;
+    payload.as_object_mut().unwrap().remove("projectId");
+    assert!(serde_json::from_value::<RequestTrace>(payload).is_err());
+    assert!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .records
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> {
     #[derive(Default)]
     struct RecordingPersistence(Mutex<Vec<Vec<TraceEvent>>>);
     #[async_trait::async_trait]
     impl TracePersistence for RecordingPersistence {
-        async fn metrics(&self, query: &metrics::TimeRange) -> Result<metrics::OverviewMetrics> {
-            SqliteTracePersistence::in_memory().metrics(query).await
+        async fn initialize(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn metrics(
+            &self,
+            project_id: &str,
+            query: &metrics::TimeRange,
+        ) -> Result<metrics::OverviewMetrics> {
+            SqliteTracePersistence::in_memory()
+                .metrics(project_id, query)
+                .await
         }
         async fn queue_waits(
             &self,
+            project_id: &str,
             query: &metrics::QueueWaitQuery,
         ) -> Result<Vec<metrics::QueueWaitRow>> {
-            SqliteTracePersistence::in_memory().queue_waits(query).await
+            SqliteTracePersistence::in_memory()
+                .queue_waits(project_id, query)
+                .await
         }
         async fn websockets(
             &self,
+            project_id: &str,
             query: &metrics::TimeRange,
         ) -> Result<Vec<metrics::SocketSession>> {
-            SqliteTracePersistence::in_memory().websockets(query).await
+            SqliteTracePersistence::in_memory()
+                .websockets(project_id, query)
+                .await
         }
 
-        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().history(query).await
+        async fn history(
+            &self,
+            project_id: &str,
+            query: &history::HistoryQuery,
+        ) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .history(project_id, query)
+                .await
         }
-        async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().replay(query).await
+        async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .replay(project_id, query)
+                .await
         }
         async fn append(&self, events: &[TraceEvent]) -> Result<()> {
             self.0.lock().unwrap().push(events.to_vec());
@@ -38,7 +89,9 @@ async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> 
     let persistence = Arc::new(RecordingPersistence::default());
     let store = TraceStore::open(persistence.clone()).await?;
     for _ in 0..2 {
-        store.record("host", "session", vec![trace(1)], 0).await?;
+        store
+            .record("default", "host", "session", vec![trace(1)], 0)
+            .await?;
     }
     let batches = persistence.0.lock().unwrap();
     assert_eq!(batches.len(), 2);
@@ -53,27 +106,50 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     struct BlockedPersistence(tokio::sync::Semaphore);
     #[async_trait::async_trait]
     impl TracePersistence for BlockedPersistence {
-        async fn metrics(&self, query: &metrics::TimeRange) -> Result<metrics::OverviewMetrics> {
-            SqliteTracePersistence::in_memory().metrics(query).await
+        async fn initialize(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn metrics(
+            &self,
+            project_id: &str,
+            query: &metrics::TimeRange,
+        ) -> Result<metrics::OverviewMetrics> {
+            SqliteTracePersistence::in_memory()
+                .metrics(project_id, query)
+                .await
         }
         async fn queue_waits(
             &self,
+            project_id: &str,
             query: &metrics::QueueWaitQuery,
         ) -> Result<Vec<metrics::QueueWaitRow>> {
-            SqliteTracePersistence::in_memory().queue_waits(query).await
+            SqliteTracePersistence::in_memory()
+                .queue_waits(project_id, query)
+                .await
         }
         async fn websockets(
             &self,
+            project_id: &str,
             query: &metrics::TimeRange,
         ) -> Result<Vec<metrics::SocketSession>> {
-            SqliteTracePersistence::in_memory().websockets(query).await
+            SqliteTracePersistence::in_memory()
+                .websockets(project_id, query)
+                .await
         }
 
-        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().history(query).await
+        async fn history(
+            &self,
+            project_id: &str,
+            query: &history::HistoryQuery,
+        ) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .history(project_id, query)
+                .await
         }
-        async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().replay(query).await
+        async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .replay(project_id, query)
+                .await
         }
         async fn append(&self, _: &[TraceEvent]) -> Result<()> {
             self.0.acquire().await?.forget();
@@ -85,7 +161,11 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     let mut writes = tokio::task::JoinSet::new();
     for id in 0..64 {
         let store = store.clone();
-        writes.spawn(async move { store.record("host", "session", vec![trace(id)], 0).await });
+        writes.spawn(async move {
+            store
+                .record("default", "host", "session", vec![trace(id)], 0)
+                .await
+        });
     }
     tokio::time::timeout(Duration::from_secs(5), async {
         while store.pending.available_permits() != 0 {
@@ -95,13 +175,19 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     .await?;
     tokio::time::timeout(
         Duration::from_millis(100),
-        store.record("host", "session", vec![trace(64)], 0),
+        store.record("default", "host", "session", vec![trace(64)], 0),
     )
     .await??;
-    assert_eq!(store.replay(&ReplayQuery::default()).await?.cursor, 0);
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .cursor,
+        0
+    );
     assert!(
         store
-            .replay(&ReplayQuery::default())
+            .replay("default", &ReplayQuery::default())
             .await?
             .persistence_failed
     );
@@ -120,6 +206,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
     let store = open().await?;
     store
         .record(
+            "default",
             "host",
             "session",
             (0..TRACE_CAPACITY + 2).map(trace).collect(),
@@ -127,7 +214,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
         )
         .await?;
     let before: Vec<_> = store
-        .replay(&ReplayQuery::default())
+        .replay("default", &ReplayQuery::default())
         .await?
         .records
         .into_iter()
@@ -138,7 +225,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
     let restored = open().await?;
     assert_eq!(
         restored
-            .replay(&ReplayQuery::default())
+            .replay("default", &ReplayQuery::default())
             .await?
             .records
             .iter()
@@ -148,26 +235,41 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
     );
     assert_eq!(
         restored
-            .replay(&ReplayQuery::default())
+            .replay("default", &ReplayQuery::default())
             .await?
             .records
             .len(),
         TRACE_CAPACITY
     );
-    assert_eq!(restored.replay(&ReplayQuery::default()).await?.evicted, 2);
-    assert_eq!(restored.replay(&ReplayQuery::default()).await?.dropped, 0);
+    assert_eq!(
+        restored
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .evicted,
+        2
+    );
+    assert_eq!(
+        restored
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .dropped,
+        0
+    );
     let cursor = restored
-        .replay(&ReplayQuery::default())
+        .replay("default", &ReplayQuery::default())
         .await?
         .resume_cursor;
     restored
-        .record("host", "session", vec![trace(999)], 0)
+        .record("default", "host", "session", vec![trace(999)], 0)
         .await?;
     let delta = restored
-        .replay(&ReplayQuery {
-            cursor: Some(cursor),
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                cursor: Some(cursor),
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(delta.records.len(), 1);
     assert_eq!(delta.records[0].sequence, (TRACE_CAPACITY + 3) as u64);
@@ -180,27 +282,50 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
     struct FailingPersistence;
     #[async_trait::async_trait]
     impl TracePersistence for FailingPersistence {
-        async fn metrics(&self, query: &metrics::TimeRange) -> Result<metrics::OverviewMetrics> {
-            SqliteTracePersistence::in_memory().metrics(query).await
+        async fn initialize(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn metrics(
+            &self,
+            project_id: &str,
+            query: &metrics::TimeRange,
+        ) -> Result<metrics::OverviewMetrics> {
+            SqliteTracePersistence::in_memory()
+                .metrics(project_id, query)
+                .await
         }
         async fn queue_waits(
             &self,
+            project_id: &str,
             query: &metrics::QueueWaitQuery,
         ) -> Result<Vec<metrics::QueueWaitRow>> {
-            SqliteTracePersistence::in_memory().queue_waits(query).await
+            SqliteTracePersistence::in_memory()
+                .queue_waits(project_id, query)
+                .await
         }
         async fn websockets(
             &self,
+            project_id: &str,
             query: &metrics::TimeRange,
         ) -> Result<Vec<metrics::SocketSession>> {
-            SqliteTracePersistence::in_memory().websockets(query).await
+            SqliteTracePersistence::in_memory()
+                .websockets(project_id, query)
+                .await
         }
 
-        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().history(query).await
+        async fn history(
+            &self,
+            project_id: &str,
+            query: &history::HistoryQuery,
+        ) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .history(project_id, query)
+                .await
         }
-        async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().replay(query).await
+        async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .replay(project_id, query)
+                .await
         }
         async fn append(&self, _: &[TraceEvent]) -> Result<()> {
             anyhow::bail!("disk full")
@@ -208,16 +333,34 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
     }
     let store = TraceStore::open(Arc::new(FailingPersistence)).await?;
     let changes = store.changes.subscribe();
-    store.record("host", "session", vec![trace(1)], 2).await?;
-    assert_eq!(store.replay(&ReplayQuery::default()).await?.cursor, 0);
-    assert_eq!(store.replay(&ReplayQuery::default()).await?.dropped, 2);
+    store
+        .record("default", "host", "session", vec![trace(1)], 2)
+        .await?;
     assert_eq!(
-        store.replay(&ReplayQuery::default()).await?.records.len(),
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .cursor,
+        0
+    );
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .dropped,
+        2
+    );
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .records
+            .len(),
         0
     );
     assert!(
         store
-            .replay(&ReplayQuery::default())
+            .replay("default", &ReplayQuery::default())
             .await?
             .persistence_failed
     );
@@ -247,13 +390,17 @@ async fn concurrent_batches_survive_reload_without_lost_updates() -> Result<()> 
     let mut writes = tokio::task::JoinSet::new();
     for id in 0..20 {
         let store = store.clone();
-        writes.spawn(async move { store.record("host", "session", vec![trace(id)], 1).await });
+        writes.spawn(async move {
+            store
+                .record("default", "host", "session", vec![trace(id)], 1)
+                .await
+        });
     }
     while let Some(result) = writes.join_next().await {
         result??;
     }
     let restored = TraceStore::open(Arc::new(SqliteTracePersistence::new(path))).await?;
-    let page = restored.replay(&ReplayQuery::default()).await?;
+    let page = restored.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.cursor, 20);
     assert_eq!(page.dropped, 0);
     let ids: std::collections::HashSet<_> = page
@@ -267,7 +414,7 @@ async fn concurrent_batches_survive_reload_without_lost_updates() -> Result<()> 
         .iter()
         .map(|record| &record.event.event_id)
         .collect();
-    let live = store.replay(&ReplayQuery::default()).await?;
+    let live = store.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(
         persisted_ids,
         live.records
@@ -288,27 +435,48 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     }
     #[async_trait::async_trait]
     impl TracePersistence for PausedPersistence {
-        async fn metrics(&self, query: &metrics::TimeRange) -> Result<metrics::OverviewMetrics> {
-            SqliteTracePersistence::in_memory().metrics(query).await
+        async fn initialize(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn metrics(
+            &self,
+            project_id: &str,
+            query: &metrics::TimeRange,
+        ) -> Result<metrics::OverviewMetrics> {
+            SqliteTracePersistence::in_memory()
+                .metrics(project_id, query)
+                .await
         }
         async fn queue_waits(
             &self,
+            project_id: &str,
             query: &metrics::QueueWaitQuery,
         ) -> Result<Vec<metrics::QueueWaitRow>> {
-            SqliteTracePersistence::in_memory().queue_waits(query).await
+            SqliteTracePersistence::in_memory()
+                .queue_waits(project_id, query)
+                .await
         }
         async fn websockets(
             &self,
+            project_id: &str,
             query: &metrics::TimeRange,
         ) -> Result<Vec<metrics::SocketSession>> {
-            SqliteTracePersistence::in_memory().websockets(query).await
+            SqliteTracePersistence::in_memory()
+                .websockets(project_id, query)
+                .await
         }
 
-        async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
-            SqliteTracePersistence::in_memory().history(query).await
+        async fn history(
+            &self,
+            project_id: &str,
+            query: &history::HistoryQuery,
+        ) -> Result<TracePage> {
+            SqliteTracePersistence::in_memory()
+                .history(project_id, query)
+                .await
         }
-        async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
-            self.file.replay(query).await
+        async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
+            self.file.replay(project_id, query).await
         }
         async fn append(&self, events: &[TraceEvent]) -> Result<()> {
             self.started.notify_one();
@@ -329,11 +497,18 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     let store = TraceStore::open(persistence.clone()).await?;
     let mut changes = store.changes.subscribe();
     let writer = store.clone();
-    let report =
-        tokio::spawn(async move { writer.record("host", "session", vec![trace(1)], 0).await });
+    let report = tokio::spawn(async move {
+        writer
+            .record("default", "host", "session", vec![trace(1)], 0)
+            .await
+    });
     tokio::time::timeout(Duration::from_secs(5), persistence.started.notified()).await?;
     assert_eq!(
-        store.replay(&ReplayQuery::default()).await?.records.len(),
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .records
+            .len(),
         0,
         "live delivery must wait for the commit"
     );
@@ -344,16 +519,33 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(5), persistence.finished.notified()).await?;
     tokio::time::timeout(Duration::from_secs(5), changes.changed()).await??;
     let restored = TraceStore::open(Arc::new(SqliteTracePersistence::new(path))).await?;
-    assert_eq!(restored.replay(&ReplayQuery::default()).await?.cursor, 1);
     assert_eq!(
-        serde_json::to_value(restored.replay(&ReplayQuery::default()).await?.records)?,
-        serde_json::to_value(store.replay(&ReplayQuery::default()).await?.records)?
+        restored
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .cursor,
+        1
+    );
+    assert_eq!(
+        serde_json::to_value(
+            restored
+                .replay("default", &ReplayQuery::default())
+                .await?
+                .records
+        )?,
+        serde_json::to_value(
+            store
+                .replay("default", &ReplayQuery::default())
+                .await?
+                .records
+        )?
     );
     Ok(())
 }
 
 fn trace(id: usize) -> RequestTrace {
     RequestTrace {
+        project_id: "default".into(),
         request_id: id.to_string(),
         actor_name: "Counter".into(),
         actor_id: "one".into(),
@@ -372,19 +564,24 @@ fn trace(id: usize) -> RequestTrace {
 async fn history_keeps_distinct_requests_and_reports_expired_records() -> Result<()> {
     let store = TraceStore::default();
     for id in 0..TRACE_CAPACITY + 2 {
-        store.record("host", "session", vec![trace(id)], 0).await?;
+        store
+            .record("default", "host", "session", vec![trace(id)], 0)
+            .await?;
     }
-    let page = store.replay(&ReplayQuery::default()).await?;
+    let page = store.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), TRACE_CAPACITY);
     assert_eq!(page.evicted, 2);
     assert_eq!(page.records[0].event.trace.request_id, "501");
     assert_eq!(page.cursor, (TRACE_CAPACITY + 2) as u64);
     assert!(
         store
-            .replay(&ReplayQuery {
-                cursor: Some(page.resume_cursor),
-                ..Default::default()
-            })
+            .replay(
+                "default",
+                &ReplayQuery {
+                    cursor: Some(page.resume_cursor),
+                    ..Default::default()
+                }
+            )
             .await?
             .records
             .is_empty()
@@ -406,8 +603,23 @@ fn trace_validation_rejects_invalid_timings() {
 #[tokio::test]
 async fn delivery_loss_is_visible_even_without_new_records() -> Result<()> {
     let store = TraceStore::default();
-    store.record("host", "session", vec![], 3).await?;
-    assert_eq!(store.replay(&ReplayQuery::default()).await?.dropped, 3);
+    store
+        .record("default", "host", "session", vec![], 3)
+        .await?;
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .dropped,
+        3
+    );
+    assert_eq!(
+        store
+            .replay("other", &ReplayQuery::default())
+            .await?
+            .dropped,
+        0
+    );
     Ok(())
 }
 
