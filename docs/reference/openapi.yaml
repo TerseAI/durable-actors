@@ -161,8 +161,9 @@ paths:
                 Send the discovery token and ownerEpoch to the discovered host origin.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
-                Only HTTP 401 or an explicit reroute permits rediscovery and one retry.
-                Network errors, other HTTP failures and failed outcomes must not be retried automatically.
+                HTTP 401, an explicit reroute, or a confirmed connection refusal before dispatch permits rediscovery and one shared retry.
+                Ambiguous network errors, other HTTP failures and failed outcomes must not be retried automatically.
+                Exhausted connection refusals and discovery transport failures are unavailable; ambiguous invocation transport failures are outcome_unknown.
                 requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
             requestBody:
                 required: true
