@@ -14,7 +14,7 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
+For local actor development, install Node.js 22.19+, pnpm, and Bun 1.3.9+. The actor scaffold uses this higher Node.js minimum; applications that only consume the SDK or generate clients follow the SDK’s declared range: `^20.19.0 || >=22.12.0` (Node.js 20.x from 20.19, or 22.12 and newer).
 
 ### Create your actor project in your directory of choice
 
@@ -33,12 +33,16 @@ In your separate application project's directory (ex: node server), install the 
 
 ```sh
 pnpm add -D durable-actors
+# Or with npm:
+npm install --save-dev durable-actors
 ```
 
 Then generate your client from the same application directory:
 
 ```sh
 pnpm exec durable-actors generate
+# Or with npm:
+npx durable-actors generate
 ```
 
 Now you may call your actor and access the state.
@@ -54,7 +58,15 @@ For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborativ
 
 ## Define an Actor
 
-Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
+In your actor project’s directory, install the AI SDK dependency used by this example:
+
+```sh
+pnpm add ai
+# Or with npm:
+npm install ai
+```
+
+Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
 ```ts
 import type { UIMessage } from "ai"
@@ -76,7 +88,7 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` in your application and use its generated client:
+After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` (or `npx durable-actors generate` with npm) in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
