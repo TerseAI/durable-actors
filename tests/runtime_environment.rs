@@ -13,9 +13,10 @@ use tokio::{
 fn runtime() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
     for (name, _) in std::env::vars_os() {
-        if name.to_str().is_some_and(|name| {
-            name.starts_with("DURABLE_OBJECT_") || name.starts_with("DURABLE_ACTORS_")
-        }) {
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with("DURABLE_ACTORS_"))
+        {
             command.env_remove(name);
         }
     }
@@ -24,19 +25,18 @@ fn runtime() -> Command {
 }
 
 #[tokio::test]
-async fn process_role_uses_the_new_name() -> Result<()> {
+async fn process_role_rejects_unsupported_roles() -> Result<()> {
     let output = runtime()
-        .env("DURABLE_OBJECT_PROCESS_ROLE", "legacy-role")
-        .env("DURABLE_ACTORS_PROCESS_ROLE", "new-role")
+        .env("DURABLE_ACTORS_PROCESS_ROLE", "invalid-role")
         .output()
         .await?;
     let log: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert!(log["error"].as_str().unwrap().contains("new-role"));
+    assert!(log["error"].as_str().unwrap().contains("invalid-role"));
     Ok(())
 }
 
 #[tokio::test]
-async fn control_plane_accepts_new_configuration_names() -> Result<()> {
+async fn control_plane_rejects_invalid_bind_addresses() -> Result<()> {
     let output = runtime()
         .envs([
             ("DURABLE_ACTORS_PROCESS_ROLE", "control_plane"),
@@ -56,7 +56,7 @@ async fn control_plane_accepts_new_configuration_names() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build and Bun"]
-async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<()> {
+async fn local_runtime_uses_configured_options_secret_and_parent_lifetime() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
     let mut child = runtime()
@@ -65,13 +65,12 @@ async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<(
         .arg(local_project::sdk_host())
         .env("DURABLE_ACTORS_PROJECT", project.path())
         .envs([
-            ("DURABLE_ACTORS_PROJECT_ID", "new-project"),
+            ("DURABLE_ACTORS_PROJECT_ID", "test-project"),
             ("DURABLE_ACTORS_PORT", "0"),
             ("DURABLE_ACTORS_ENTRYPOINT", "actors.ts"),
             ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1"),
             ("DURABLE_ACTORS_SECRET", "preferred-secret"),
-            ("DURABLE_ACTORS_API_KEY", "new-key"),
-            ("DURABLE_OBJECT_API_KEY", "old-key"),
+            ("DURABLE_ACTORS_API_KEY", "alternate-key"),
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -95,11 +94,7 @@ async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<(
     })
     .await??;
     let client = reqwest::Client::new();
-    for (key, authorized) in [
-        ("preferred-secret", true),
-        ("new-key", false),
-        ("old-key", false),
-    ] {
+    for (key, authorized) in [("preferred-secret", true), ("alternate-key", false)] {
         let response = client
             .get(format!("{origin}/v1/observe/actors"))
             .bearer_auth(key)

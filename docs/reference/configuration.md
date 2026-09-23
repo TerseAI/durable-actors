@@ -83,7 +83,7 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | Variable                         | Default                   | Meaning                                                                                        |
 | -------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
 | `RUST_LOG`                       | `info`                    | Runtime log filter, such as `warn` or `debug`; the packaged container supplies its own filter. |
-| `DURABLE_ACTORS_TELEMETRY`       | Enabled                   | Set to `0` to disable SDK invocation telemetry on standard error.                              |
+| `DURABLE_ACTORS_TELEMETRY`       | Disabled                  | Set to `1` to enable SDK invocation telemetry on standard error; unset or `0` keeps it disabled. |
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 | `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |
