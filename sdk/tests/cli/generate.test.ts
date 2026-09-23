@@ -97,6 +97,60 @@ test("generate defaults to the server using .env settings and exported environme
     assert.equal(requests.length, 2)
 })
 
+test("generate loads .env.local before .env and preserves exported environment overrides", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-env-local-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
+    const requests: string[] = []
+    const server = createServer((request, response) => {
+        requests.push(request.url!)
+        assert.equal(request.headers.authorization, "Bearer local-key")
+        response.end(JSON.stringify({ contractHash: `sha256:${"a".repeat(64)}`, contract }))
+    })
+    t.after(() => server.close())
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const fileEnv = { ...process.env }
+    for (const key of [
+        "DURABLE_ACTORS_PROJECT_ID",
+        "DURABLE_ACTORS_CONTROL_PLANE_URL",
+        "DURABLE_ACTORS_SECRET",
+        "DURABLE_ACTORS_API_KEY"
+    ])
+        delete fileEnv[key]
+    const localFile = path.join(directory, ".env.local")
+    await writeFile(localFile, `DURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`)
+    const result = await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
+    assert.match(result.stdout, /Generated 1 actor contract/u)
+    assert.match(await readFile(path.join(directory, "generated/index.ts"), "utf8"), /export const actors/u)
+    assert.deepEqual(requests, ["/v1/projects/local/deployment/contract"])
+
+    await writeFile(
+        path.join(directory, ".env"),
+        "DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_SECRET=wrong\n"
+    )
+    await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
+    await writeFile(
+        localFile,
+        "DURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_SECRET=wrong\n"
+    )
+    await run(process.execPath, [cli, "generate"], {
+        cwd: directory,
+        env: {
+            ...fileEnv,
+            DURABLE_ACTORS_PROJECT_ID: "exported",
+            DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+            DURABLE_ACTORS_SECRET: "local-key"
+        }
+    })
+    assert.deepEqual(requests, [
+        "/v1/projects/local/deployment/contract",
+        "/v1/projects/default/deployment/contract",
+        "/v1/projects/exported/deployment/contract"
+    ])
+})
+
 test("a separate consumer generates identical clients from the deployed contract without local actor source", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
