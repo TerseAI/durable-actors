@@ -113,7 +113,7 @@ class ControlPlaneClient {
                 `Cannot complete ${method} ${pathname} at ${controlPlaneUrl}. Check the URL and runtime.${method === "GET" ? "" : " The request may have reached the server."}`
             )
         })
-        return readResponse(response)
+        return readResponse(response, method, `${controlPlaneUrl}${pathname}`)
     }
 }
 
@@ -121,15 +121,20 @@ function createControlPlaneClient(env: NodeJS.ProcessEnv, request: typeof fetch)
     return new ControlPlaneClient(connection(env), request)
 }
 
-async function readResponse(response: Response): Promise<unknown> {
+async function readResponse(response: Response, method: string, url: string): Promise<unknown> {
     const result: unknown = await response.json().catch(() => {
         if (response.ok) throw new Error(`Control plane returned invalid JSON (HTTP ${response.status}).`)
         return undefined
     })
-    if (!response.ok)
+    if (!response.ok) {
+        const hint =
+            response.status === 404 && url.endsWith("/deployment/contract")
+                ? "\nCheck the control-plane URL and DURABLE_ACTORS_PROJECT_ID. For local development, run durable-actors dev in the actor project and wait for Ready."
+                : ""
         throw new Error(
-            `Control-plane request failed (HTTP ${response.status}): ${errorMessage(result) ?? response.statusText}`
+            `Control-plane request failed (HTTP ${response.status}): ${errorMessage(result) ?? response.statusText}\n${method} ${url}${hint}`
         )
+    }
     return result
 }
 

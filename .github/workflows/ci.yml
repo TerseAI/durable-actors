@@ -109,7 +109,7 @@ jobs:
             - name: Check the Express and React example
               working-directory: examples/chat
               run: |
-                  node ../../sdk/dist/cli.js generate
+                  node ../../sdk/dist/cli.js generate src/actors.ts
                   npm run build
             - name: Check the AI chat example
               working-directory: examples/ai-chat
@@ -117,7 +117,7 @@ jobs:
             - name: Check the documents example
               working-directory: examples/documents
               run: |
-                  node ../../sdk/dist/cli.js generate
+                  node ../../sdk/dist/cli.js generate src/actors.ts
                   npm run build
 
     npm:

@@ -58,7 +58,7 @@ test("init defaults to a standalone actor project that can typecheck and generat
     await symlink(sdk, path.join(project, "node_modules/durable-actors"), "dir")
     await symlink(path.join(sdk, "node_modules/@types"), path.join(project, "node_modules/@types"), "dir")
     await run(process.execPath, [path.join(sdk, "node_modules/typescript/bin/tsc"), "--noEmit"], { cwd: project })
-    await run(process.execPath, [cli, "generate"], { cwd: project })
+    await run(process.execPath, [cli, "generate", "src/actors.ts"], { cwd: project })
     const generated = await readFile(path.join(project, "generated/index.ts"), "utf8")
     assert.match(generated, /Counter/)
     assert.match(generated, /increment/)

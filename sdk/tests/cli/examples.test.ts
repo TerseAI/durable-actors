@@ -26,7 +26,7 @@ for (const template of ["chat", "ai-chat", "documents"]) {
                 path.join(project, "node_modules")
             )
             await run("npm", ["run", "build"], { cwd: project })
-            await run(process.execPath, [path.join(sdk, "dist/cli.js"), "generate"], { cwd: project })
+            await run(process.execPath, [path.join(sdk, "dist/cli.js"), "generate", "src/actors.ts"], { cwd: project })
         }
     )
 }

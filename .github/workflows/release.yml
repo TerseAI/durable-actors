@@ -224,7 +224,7 @@ jobs:
               run: |
                   node --test tests/scripts/build-runtime.test.mjs
                   pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
-                  pnpm --dir examples/chat exec durable-actors generate
+                  pnpm --dir examples/chat exec durable-actors generate src/actors.ts
                   pnpm --dir examples/chat build
             - name: Upload native bundles and checksums
               env:
