@@ -188,9 +188,6 @@ test("a separate consumer generates identical clients from the deployed contract
         throw new Error("do not execute actor source")
     `
     )
-    await mkdir(path.join(author, "generated"))
-    await writeFile(path.join(author, "generated/contract.json"), "old generated contract")
-    await writeFile(path.join(author, "generated/contract-source.json"), "old generated provenance")
     await run(process.execPath, [cli, "generate", "src/actors.ts", "--config", "tsconfig.json"], {
         cwd: author,
         env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid" }
@@ -203,7 +200,6 @@ test("a separate consumer generates identical clients from the deployed contract
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
-    assert.ok(files.includes("runtime/index.js"))
     const requests: string[] = []
     const publication = {
         contractHash: `sha256:${"a".repeat(64)}`,

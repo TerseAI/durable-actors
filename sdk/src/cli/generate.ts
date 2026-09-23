@@ -1,5 +1,4 @@
 import { Command } from "commander"
-import { rm } from "node:fs/promises"
 import path from "node:path"
 import { z } from "zod"
 
@@ -32,8 +31,6 @@ async function generate(entrypoint: string | undefined, options: GenerateOptions
         : await remoteContract(options.controlPlaneUrl)
     const directory = path.resolve(options.outDir)
     await generateClient(contract, directory)
-    for (const obsolete of ["contract.json", "contract-source.json"])
-        await rm(path.join(directory, obsolete), { force: true })
     console.log(`Generated ${contract.actors.length} actor contract(s) in ${directory}.`)
 }
 

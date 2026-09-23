@@ -12,19 +12,12 @@ import { backendSource } from "./backend-generator.js"
 import { usageComment } from "./usage-comment.js"
 
 /** Returns JavaScript and TypeScript declarations with a standalone runtime, without writing files or executing actor code. */
-async function generateTypeScript(
-    input: readonly SocketContract[] | PublicActorContract
-): Promise<ReadonlyMap<string, string>> {
-    const document = "actors" in input ? input : undefined
-    if (document && document.version !== 1)
-        throw new Error(`unsupported public actor contract version ${document.version}`)
-    if (document) parsePublicContract(document)
-    const contracts = "actors" in input ? input.actors.map(actor => actor.socket) : input
+async function generateClientArtifacts(input: PublicActorContract): Promise<ReadonlyMap<string, string>> {
+    const document = parsePublicContract(input)
+    const contracts = document.actors.map(actor => actor.socket)
     const declarations: string[] = []
     const wireNames = new Map<string, readonly string[]>()
     for (const contract of contracts) {
-        if (!/^[A-Za-z_$][\w$]*$/u.test(contract.actorName))
-            throw new Error(`actor name ${contract.actorName} cannot be emitted as a TypeScript identifier`)
         const wire = await wireDeclarations(contract)
         wireNames.set(contract.actorName, [...wire.names, "Authorization"])
         declarations.push(actorDeclarations(contract, wire.code))
@@ -40,7 +33,7 @@ export declare namespace actors {
 ${declarations.join("\n")}
 }
 
-${await backendSource(document?.actors ?? [], contracts, wireNames)}
+${await backendSource(document.actors, wireNames)}
 ${proxySource(contracts)}`
     return clientArtifacts(source)
 }
@@ -210,6 +203,5 @@ ${contracts.map(({ actorName }) => `[${JSON.stringify(actorName)}]: import("./ru
 `
 }
 
-export { generateTypeScript }
-export type { SocketContract }
+export { generateClientArtifacts }
 export type { PublicActorContract }

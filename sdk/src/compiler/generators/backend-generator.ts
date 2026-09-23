@@ -2,28 +2,18 @@ import { compile } from "json-schema-to-typescript"
 import type { JSONSchema } from "json-schema-to-typescript"
 import ts from "typescript"
 
-import type { SocketContract } from "../../wire/contract.js"
 import type { ActorApi, RpcContract, RpcMethod, TypeReference } from "../../wire/public-contract.js"
 
 import { usageComment } from "./usage-comment.js"
 
 async function backendSource(
     actors: readonly ActorApi[],
-    contracts: readonly SocketContract[],
     wireNames: ReadonlyMap<string, readonly string[]>
 ): Promise<string> {
     const sources = []
-    for (const { actorName } of contracts) {
-        const actor = actors.find(actor => actor.actorName === actorName)
-        sources.push(
-            actor
-                ? await actorSource(actor, wireNames.get(actorName) ?? [])
-                : { declarations: "", descriptor: actorDescriptor(actorName) }
-        )
-    }
-    const exampleType = contracts[0]?.actorName
+    for (const actor of actors) sources.push(await actorSource(actor, wireNames.get(actor.actorName)!))
     const exampleActor = actors[0]?.actorName
-    return `${usageComment("Types for actor state and methods.", exampleType && `type State = actors.${exampleType}.State`)}
+    return `${usageComment("Types for actor state and methods.", exampleActor && `type State = actors.${exampleActor}.State`)}
 export declare namespace actors {
 ${sources.map(source => source.declarations).join("\n")}
 }
@@ -57,9 +47,9 @@ ${methodTypes(actor.actorName, actor.rpc.methods, stubName, methodsName)}
     }
 }
 
-function actorDescriptor(actorName: string, rpc?: string): string {
+function actorDescriptor(actorName: string, rpc: string): string {
     return `[${JSON.stringify(actorName)}]: {
-    ${rpc ? `${rpc},` : ""}
+    ${rpc},
     ${usageComment("Allow a frontend connection after your backend checks the user's access.", `const grant = await actors.${actorName}.prepareWebsocket({ actorId: "actor-id", metadata })`)}
     prepareWebsocket(
         authorization: Omit<actors.${actorName}.Authorization, "actorName">,

@@ -1,18 +1,13 @@
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
-import type { SocketContract } from "../../wire/contract.js"
 import type { PublicActorContract } from "../../wire/public-contract.js"
 
-import { generateTypeScript } from "./typescript-generator.js"
+import { generateClientArtifacts } from "./client-artifacts.js"
 
-async function generateClient(
-    input: readonly SocketContract[] | PublicActorContract,
-    directory: string
-): Promise<void> {
-    const artifacts = await generateTypeScript(input)
+async function generateClient(input: PublicActorContract, directory: string): Promise<void> {
+    const artifacts = await generateClientArtifacts(input)
     await mkdir(directory, { recursive: true })
-    await rm(path.join(directory, "index.ts"), { force: true })
     await rm(path.join(directory, "runtime"), { recursive: true, force: true })
     for (const [file, contents] of artifacts) {
         const destination = path.join(directory, file)

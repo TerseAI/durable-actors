@@ -65,9 +65,9 @@
             "default": "./dist/compiler/actor-compiler.js"
         },
         "./codegen": {
-            "types": "./dist/compiler/generators/typescript-generator.d.ts",
-            "import": "./dist/compiler/generators/typescript-generator.js",
-            "default": "./dist/compiler/generators/typescript-generator.js"
+            "types": "./dist/compiler/generators/client-artifacts.d.ts",
+            "import": "./dist/compiler/generators/client-artifacts.js",
+            "default": "./dist/compiler/generators/client-artifacts.js"
         }
     },
     "files": [
