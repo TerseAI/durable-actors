@@ -1,16 +1,29 @@
-import { build } from "esbuild"
+import { type Loader, type Plugin, build } from "esbuild"
+import { realpathSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { ACTOR_ARTIFACT_VERSION } from "../actor/schema.js"
 
 import { ActorCompiler } from "./actor-compiler.js"
 import type { CompilerOptions } from "./types.js"
 
-async function buildActor(entrypoint: string, outfile: string, options: CompilerOptions = {}): Promise<void> {
+async function buildActor(entrypoint: string, outfile: string, options: CompilerOptions & { local?: boolean } = {}) {
+    const compilation = new ActorCompiler().compileDeployment(entrypoint, options)
+    await bundleActor(entrypoint, outfile, compilation, options)
+    return compilation.contract
+}
+
+async function bundleActor(
+    entrypoint: string,
+    outfile: string,
+    compilation: ReturnType<ActorCompiler["compileDeployment"]>,
+    options: CompilerOptions & { local?: boolean } = {}
+) {
     if (!outfile.endsWith(".mjs")) throw new Error("actor build output must use the .mjs extension")
     const source = path.resolve(entrypoint)
-    const schemas = new ActorCompiler().compile(source, options)
+    const { schemas, sources } = compilation
     const result = await build({
         stdin: {
             contents: `import * as actors from ${JSON.stringify(source)};
@@ -24,7 +37,11 @@ async function buildActor(entrypoint: string, outfile: string, options: Compiler
         outfile,
         tsconfig: options.configFile,
         bundle: true,
-        external: ["durable-actors", "durable-actors/*"],
+        external: options.local
+            ? [fileURLToPath(new URL("../*", import.meta.url))]
+            : ["durable-actors", "durable-actors/*"],
+        plugins: [analyzedSources(sources), ...(options.local ? [localSdkImports()] : [])],
+        sourcemap: options.local ? "inline" : false,
         platform: "node",
         format: "esm",
         target: "esnext",
@@ -36,4 +53,48 @@ async function buildActor(entrypoint: string, outfile: string, options: Compiler
     await writeFile(outfile, result.outputFiles[0]!.contents)
 }
 
-export { buildActor }
+function analyzedSources(sources: ReadonlyMap<string, string>): Plugin {
+    const files = new Map([...sources].map(([file, contents]) => [realpathSync(file), contents]))
+    const loaders: Record<string, Loader> = {
+        ".ts": "ts",
+        ".tsx": "tsx",
+        ".mts": "ts",
+        ".cts": "ts",
+        ".js": "js",
+        ".jsx": "jsx",
+        ".mjs": "js",
+        ".cjs": "js",
+        ".json": "json"
+    }
+    return {
+        name: "analyzed-actor-sources",
+        setup(builder) {
+            builder.onLoad({ filter: /\.[cm]?[jt]sx?$|\.json$/ }, args => {
+                const contents = files.get(args.path)
+                const loader = loaders[path.extname(args.path)]
+                return contents === undefined || loader === undefined
+                    ? undefined
+                    : { contents, loader, resolveDir: path.dirname(args.path) }
+            })
+        }
+    }
+}
+
+function localSdkImports(): Plugin {
+    return {
+        name: "local-sdk-imports",
+        setup(builder) {
+            builder.onResolve({ filter: /^durable-actors(?:\/|$)/ }, async args => {
+                if (args.pluginData === "resolving-sdk") return undefined
+                const resolved = await builder.resolve(args.path, {
+                    kind: args.kind,
+                    resolveDir: args.resolveDir,
+                    pluginData: "resolving-sdk"
+                })
+                return { path: resolved.path, external: true, errors: resolved.errors }
+            })
+        }
+    }
+}
+
+export { buildActor, bundleActor }

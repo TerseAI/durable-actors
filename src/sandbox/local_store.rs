@@ -135,18 +135,6 @@ impl LocalHostStore {
         }).await
     }
 
-    pub async fn resume_config(&self, config: &str) -> Result<()> {
-        let config = config.to_owned();
-        self.run(move |connection| {
-            connection.execute(
-                "UPDATE deployments SET retiring = 0 WHERE config = ?1",
-                [config],
-            )?;
-            Ok(())
-        })
-        .await
-    }
-
     pub async fn shutdown(&self) -> Result<()> {
         self.run(|connection| {
             let transaction = connection.transaction()?;

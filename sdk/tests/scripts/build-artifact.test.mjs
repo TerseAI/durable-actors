@@ -15,6 +15,31 @@ import { buildActor } from "../../dist/compiler/actor-build.js"
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
 
+test("one actor build returns the matching public contract", async t => {
+    const root = await project(t)
+    await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async read(): Promise<number> { return 7 } }')
+    const contract = await buildActor(path.join(root, "src/actors.ts"), path.join(root, "actors.mjs"))
+    assert.equal(contract?.actors[0].actorName, "Counter")
+    assert.equal(contract.actors[0].rpc.methods[0].name, "read")
+    assert.match(await readFile(path.join(root, "actors.mjs"), "utf8"), /Counter/)
+})
+
+test("bundling uses the analyzed source even when files change during a build", async t => {
+    const root = await project(t)
+    const entrypoint = path.join(root, "src/actors.ts")
+    await writeFile(entrypoint, 'import { Actor } from "durable-actors"; export class Counter extends Actor { async read(): Promise<number> { return 7 } }')
+    const { ActorCompiler } = await import("../../dist/compiler/actor-compiler.js")
+    const compilation = new ActorCompiler().compileDeployment(entrypoint)
+    await writeFile(entrypoint, 'import { Actor } from "durable-actors"; export class Replacement extends Actor {}')
+    const { bundleActor } = await import("../../dist/compiler/actor-build.js")
+    const outfile = path.join(root, "actors.mjs")
+    await bundleActor(entrypoint, outfile, compilation)
+    const artifact = await readFile(outfile, "utf8")
+    assert.match(artifact, /Counter/)
+    assert.doesNotMatch(artifact, /Replacement/)
+    assert.equal(compilation.contract.actors[0].actorName, "Counter")
+})
+
 test("deployment builds produce code and a contract without executing customer code", async t => {
     const root = await project(t)
     await writeFile(
@@ -29,6 +54,21 @@ test("deployment builds produce code and a contract without executing customer c
     assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
     await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
     await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/actors.ts", output]), /JSON-compatible/)
+})
+
+test("local bundles resolve the same SDK even outside the project directory", async t => {
+    const root = await project(t)
+    const output = await mkdtemp(path.join(os.tmpdir(), "local-actor-code-"))
+    t.after(() => rm(output, { recursive: true, force: true }))
+    await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async read(): Promise<number> { return 7 } }')
+    await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/actors.ts", output, "local"])
+    await run("bun", [
+        "--eval",
+        `import assert from 'node:assert/strict';
+        import { Actor } from ${JSON.stringify(path.join(sdk, "dist/index.js"))};
+        const { actors } = await import(${JSON.stringify(path.join(output, "actors.mjs"))});
+        assert.equal(Object.getPrototypeOf(actors.Counter.prototype), Actor.prototype);`
+    ])
 })
 
 test("built actors run without source, compiler, or TypeScript loader", { timeout: 30_000 }, async t => {

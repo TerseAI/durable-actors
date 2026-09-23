@@ -11,6 +11,7 @@ mod inspection;
 mod inspection_tests;
 mod issuer;
 mod local;
+mod local_build;
 mod process;
 pub(crate) use process::actor_idle_timeout_seconds;
 mod protocol;

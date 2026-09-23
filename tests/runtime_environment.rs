@@ -54,14 +54,14 @@ async fn control_plane_accepts_new_configuration_names() -> Result<()> {
 #[tokio::test]
 async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
     let mut child = runtime()
         .arg("dev")
         .env("DURABLE_ACTORS_PROJECT", project.path())
         .envs([
             ("DURABLE_ACTORS_PROJECT_ID", "new-project"),
             ("DURABLE_ACTORS_PORT", "0"),
-            ("DURABLE_ACTORS_ENTRYPOINT", "actors.ts"),
+            ("DURABLE_ACTORS_ENTRYPOINT", "actors.mjs"),
             ("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1"),
             ("DURABLE_ACTORS_SECRET", "preferred-secret"),
             ("DURABLE_ACTORS_API_KEY", "new-key"),

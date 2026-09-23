@@ -22,6 +22,7 @@ for (let trial = 0; trial < trials; trial++) {
         await writeFile(path.join(project, "actors.ts"), `import { Actor, Persisted } from ${JSON.stringify(path.join(sdk, "dist/index.js"))};
 export class Counter extends Actor { @Persisted count = 0; async increment() { return ++this.count; } }`);
         await writeFile(path.join(project, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, skipLibCheck: true }, include: ["actors.ts"] }));
+        const startupStarted = performance.now();
         runtime = spawn(binary, ["dev", "--project-id", "benchmark", "--project", project, "--entrypoint", "actors.ts", "--port", "0", "--ready-fd", "3", "--sdk-host", path.join(sdk, "dist/host.js")], {
             env: { ...process.env, DURABLE_ACTORS_PARENT_LIFETIME_STDIN: "1", RUST_LOG: "error" },
             stdio: ["pipe", "pipe", "inherit", "pipe"],
@@ -34,6 +35,7 @@ export class Counter extends Actor { @Persisted count = 0; async increment() { r
         for await (const chunk of runtime.stdio[3]) chunks.push(chunk);
         assert.ok(chunks.length > 0, `runtime exited before readiness: ${logs}`);
         const connection = JSON.parse(Buffer.concat(chunks).toString());
+        const startupMs = Math.round(performance.now() - startupStarted);
         const settings = { projectId: connection.projectId, controlPlaneUrl: connection.controlPlaneUrl, apiKey: connection.apiKey };
         async function invoke(id, expected = 1) {
             const start = performance.now();
@@ -46,7 +48,7 @@ export class Counter extends Actor { @Persisted count = 0; async increment() { r
         await new Promise(resolve => setTimeout(resolve, 100));
         const warmDuringBurstMs = await invoke("warm", 3);
         const burstMs = await burst;
-        console.log(JSON.stringify({ trial: trial + 1, coldMs, warmMs, burstMs, warmDuringBurstMs }));
+        console.log(JSON.stringify({ trial: trial + 1, startupMs, coldMs, warmMs, burstMs, warmDuringBurstMs }));
         runtime.stdin.end();
         assert.equal((await exited)[0], 0);
     } finally {

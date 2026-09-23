@@ -24,7 +24,7 @@ async function watchActorSources(
     let timer: ReturnType<typeof setTimeout> | undefined
     let updates = Promise.resolve()
     watcher.on("all", (_event, changedPath) => {
-        if (!/\.(?:ts|tsx|mts|cts)$/u.test(changedPath)) return
+        if (!/\.(?:[cm]?[jt]sx?|json|ya?ml)$/u.test(changedPath) && path.basename(changedPath) !== "bun.lock") return
         clearTimeout(timer)
         timer = setTimeout(() => {
             updates = updates.then(refresh).catch(reportWatchError)

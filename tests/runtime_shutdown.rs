@@ -26,14 +26,14 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
 
 async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .args([
             "dev",
             "--port",
             "0",
             "--entrypoint",
-            "actors.ts",
+            "actors.mjs",
             "--api-key",
             "test-key",
         ])
@@ -100,6 +100,30 @@ async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
+async fn local_source_watcher_rebuilds_and_retains_the_last_successful_code() -> Result<()> {
+    let output = timeout(
+        Duration::from_secs(90),
+        Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/scripts/local-reload.mjs"
+            ))
+            .arg(env!("CARGO_BIN_EXE_durable-actors"))
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    ensure!(
+        output.status.success(),
+        "local reload failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> Result<()> {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
@@ -144,6 +168,14 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         const fs = await import('node:fs/promises');
         const source = new URL('actors.ts', import.meta.url);
         const original = await fs.readFile(source, 'utf8');
+        await fs.writeFile(source, 'this is invalid TypeScript');
+        assert.equal(await new RemoteActorClient().invoke('Counter', 'fresh', 'label', []), 'before');
+        const rejected = await fetch(`${{origin}}/v1/projects/default/deployment`, {{
+            method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
+            body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+        }});
+        assert.notEqual(rejected.status, 200);
+        assert.equal(await new RemoteActorClient().invoke('Counter', 'after-error', 'label', []), 'before');
         await fs.writeFile(source, original.replace('return "before"', 'return "after"'));
         const deployed = await fetch(`${{origin}}/v1/projects/default/deployment`, {{
             method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},

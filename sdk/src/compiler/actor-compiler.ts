@@ -31,41 +31,58 @@ class ActorCompiler {
     }
 
     compile(entrypoint: string, options: CompilerOptions = {}) {
-        const { program, source, sdk, schemas } = this.analyze(entrypoint, options)
-        const checker = program.getTypeChecker()
-        const actors = discoverActors(source, checker, sdk).actors
-        return schemas.map(schema => ({
-            ...schema,
-            contract: socketContract(
-                checker,
-                actors.find(actor => actor.name!.text === schema.actorName)!,
-                schema
-            )
-        }))
+        return this.describe(entrypoint, options).schemas
     }
 
     compileContract(entrypoint: string, options: CompilerOptions = {}): PublicActorContract {
-        const { program, source, sdk, schemas } = this.analyze(entrypoint, options)
-        const checker = program.getTypeChecker()
-        const actors = discoverActors(source, checker, sdk).actors
-        return {
+        return this.compileDeployment(entrypoint, options).contract
+    }
+
+    compileDeployment(entrypoint: string, options: CompilerOptions = {}) {
+        const { checker, actors, schemas, program } = this.describe(entrypoint, options)
+        const contract: PublicActorContract = {
             version: 1,
             actors: [...schemas]
                 .sort((left, right) =>
                     left.actorName < right.actorName ? -1 : left.actorName > right.actorName ? 1 : 0
                 )
-                .map(schema => {
-                    const actor = actors.find(actor => actor.name!.text === schema.actorName)!
-                    const socket = socketContract(checker, actor, schema)
-                    return {
-                        actorName: schema.actorName,
-                        socket: {
-                            ...socket,
-                            schema: extractPublicSchema(socket.schema, ["Metadata", "Incoming", "Outgoing", "State"])
-                        },
-                        rpc: rpcContract(checker, actor)
-                    }
-                })
+                .map(schema => ({
+                    actorName: schema.actorName,
+                    socket: {
+                        ...schema.contract,
+                        schema: extractPublicSchema(schema.contract.schema, [
+                            "Metadata",
+                            "Incoming",
+                            "Outgoing",
+                            "State"
+                        ])
+                    },
+                    rpc: rpcContract(
+                        checker,
+                        actors.find(actor => actor.name!.text === schema.actorName)!
+                    )
+                }))
+        }
+        const sources = new Map(program.getSourceFiles().map(file => [file.fileName, file.text]))
+        return { schemas, contract, sources }
+    }
+
+    private describe(entrypoint: string, options: CompilerOptions) {
+        const { program, source, sdk, schemas } = this.analyze(entrypoint, options)
+        const checker = program.getTypeChecker()
+        const actors = discoverActors(source, checker, sdk).actors
+        return {
+            program,
+            checker,
+            actors,
+            schemas: schemas.map(schema => ({
+                ...schema,
+                contract: socketContract(
+                    checker,
+                    actors.find(actor => actor.name!.text === schema.actorName)!,
+                    schema
+                )
+            }))
         }
     }
 

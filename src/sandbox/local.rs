@@ -257,7 +257,6 @@ impl LocalRuntime {
                 changes.changed().await?;
             }
         }
-        self.store.resume_config(config).await?;
         Ok(HostTermination {
             provider: "local".into(),
             resource_ids: hosts.into_iter().map(|(_, id)| id).collect(),

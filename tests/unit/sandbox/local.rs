@@ -233,6 +233,12 @@ async fn deployment_retirement_cancels_pending_hosts_and_allows_a_replacement() 
     fixture.stopped(&pending).await?;
     fixture.provider.wait_ready(&other.host_id).await?;
     let mut replacement = pending.clone();
+    assert!(
+        tokio::time::timeout(DEADLINE, fixture.provider.ensure_host(&pending))
+            .await?
+            .is_err()
+    );
+    replacement.host_config_key = "replacement-config".into();
     replacement.host_id = HostId::new("host-replacement");
     replacement.session_id = "replacement".into();
     fixture.release(&replacement)?;

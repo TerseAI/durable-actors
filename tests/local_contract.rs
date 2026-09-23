@@ -13,7 +13,7 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
     let project = tempfile::Builder::new()
         .prefix("actor's project ")
         .tempdir()?;
-    std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
     let file = project.path().join("contract.json");
     let contract: Value =
         serde_json::from_str(include_str!("../sdk/tests/fixtures/public-contract.json"))?;
@@ -42,13 +42,13 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
 #[tokio::test]
 async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
     let file = project.path().join("contract.json");
     std::fs::write(&file, r#"{"version":99,"actors":[]}"#)?;
     let output = timeout(
         Duration::from_secs(5),
         Command::new(env!("CARGO_BIN_EXE_durable-actors"))
-            .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .args(["dev", "--port", "0", "--entrypoint", "actors.mjs"])
             .env("DURABLE_ACTORS_PROJECT_ID", "default")
             .env("DURABLE_ACTORS_SECRET", "test-key")
             .arg("--project-id")
@@ -82,7 +82,7 @@ impl LocalRuntime {
     async fn start(project: &Path, contract: Option<&Path>) -> Result<Self> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
-            .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .args(["dev", "--port", "0", "--entrypoint", "actors.mjs"])
             .arg("--project-id")
             .arg("default")
             .arg("--project")

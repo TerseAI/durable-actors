@@ -30,7 +30,7 @@ use crate::{
 
 use super::{
     ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, ControlPlaneService,
-    admin::{AdminRegistry, AdminService, HostLaunchSpec, LocalAdminRegistry},
+    admin::{AdminService, HostLaunchSpec, LocalAdminRegistry},
     contracts::PublicActorContract,
     public_api,
     service::SandboxHostProvisioner,
@@ -120,6 +120,7 @@ pub async fn serve_local(
         &storage,
         provider.clone(),
         &api_key,
+        &directory,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
@@ -291,6 +292,7 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     api_key: &str,
+    directory: &Path,
 ) -> Result<tonic::service::Routes> {
     let contract = options.contract.as_deref().map(read_contract).transpose()?;
     let issuer = local_issuer()?;
@@ -311,9 +313,6 @@ async fn local_routes(
         secret_refs: vec![],
     };
     let registry = Arc::new(LocalAdminRegistry::default());
-    registry
-        .register_deployment(&spec, contract.as_ref())
-        .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
@@ -335,8 +334,18 @@ async fn local_routes(
         provisioner,
     )
     .with_runtime_access(storage.access.clone())
+    .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
+        project.to_owned(),
+        directory.canonicalize()?.join("code"),
+        Arc::new(super::local_build::BunCodeCompiler::new(
+            options.sdk_host.clone(),
+        )),
+    )))
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
+    service
+        .deploy_source(&admin, &spec, contract.as_ref())
+        .await?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
             .with_traces(service.traces.clone());

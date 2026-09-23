@@ -41,8 +41,10 @@ async fn retirement_and_shutdown_reject_reservations_until_their_lifecycle_allow
     );
     assert!(store.reserve(&self::request("two")).await.is_err());
     store.finish(&claim.token, "retired").await?;
-    store.resume_config("config").await?;
-    assert!(store.reserve(&request).await?.created);
+    assert!(store.reserve(&request).await.is_err());
+    let mut replacement = request.clone();
+    replacement.host_config_key = "new-config".into();
+    assert!(store.reserve(&replacement).await?.created);
     store.shutdown().await?;
     assert!(store.reserve(&self::request("two")).await.is_err());
     drop(store);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -51,12 +51,11 @@ test("dev validates its configured storage and port before launching", async t =
         )
 })
 
-test("dev compiles the project contract before launching and cleans it up when the runtime exits", async t => {
+test("dev passes actor sources to the runtime and redeploys watched changes", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor project")
-    await mkdir(path.join(project, "node_modules"), { recursive: true })
-    await symlink(sdk, path.join(project, "node_modules/durable-actors"), "dir")
+    await mkdir(project)
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     const source = path.join(project, "actors.ts")
     await writeFile(
@@ -67,14 +66,16 @@ test("dev compiles the project contract before launching and cleans it up when t
     await writeFile(
         executable,
         `#!/usr/bin/env node
-import { createWriteStream, readFileSync, appendFileSync } from "node:fs"
+import { createWriteStream, appendFileSync } from "node:fs"
 import { createServer } from "node:http"
 const args = process.argv.slice(2)
-const index = args.indexOf("--contract")
-if (index < 0) throw new Error("No public contract supplied to runtime")
-const file = args[index + 1]
-let updates = 0
-const server = createServer((_request, response) => { updates++; response.end("{}") })
+const updates = []
+const server = createServer(async (request, response) => {
+    let body = ""
+    for await (const chunk of request) body += chunk
+    updates.push({ method: request.method, path: request.url, body: JSON.parse(body) })
+    response.end("{}")
+})
 let controlPlaneUrl = "http://127.0.0.1:7100"
 if (process.env.TEST_WATCH_SOURCE) {
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
@@ -91,7 +92,7 @@ if (process.env.TEST_WATCH_SOURCE) {
     setTimeout(() => appendFileSync(process.env.TEST_WATCH_SOURCE, "\\n// source changed"), 400)
     setTimeout(() => { server.close(); console.log(JSON.stringify({ updates })) }, 2500)
 } else {
-    console.log(JSON.stringify({ args, file, contract: JSON.parse(readFileSync(file, "utf8")) }))
+    console.log(JSON.stringify({ args }))
 }
 process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
@@ -108,16 +109,11 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     const args = [cli, "dev", "--port", "0"]
     const { stdout } = await run(process.execPath, args, { cwd: directory, env })
     const result = JSON.parse(stdout)
-    assert.equal(result.contract.actors[0].actorName, "Room")
-    assert.deepEqual(
-        result.contract.actors[0].rpc.methods.map((method: { name: string }) => method.name),
-        ["hello"]
-    )
-    assert.ok(result.args.includes(project))
+    assert.equal(result.args[result.args.indexOf("--project") + 1], project)
+    assert.equal(result.args[result.args.indexOf("--entrypoint") + 1], "actors.ts")
     const sdkHostIndex = result.args.indexOf("--sdk-host")
     assert.notEqual(sdkHostIndex, -1, "development mode must provide its host module")
     assert.equal(result.args[sdkHostIndex + 1], path.join(sdk, "dist/host.js"))
-    await assert.rejects(readFile(result.file), { code: "ENOENT" })
 
     const { DURABLE_ACTORS_PROJECT_ID, ...withoutProjectId } = env
     const local = await run(process.execPath, args, { cwd: directory, env: withoutProjectId })
@@ -134,24 +130,25 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         (error: Error & { code: number; stdout: string }) => error
     )
     assert.equal(failure.code, 7)
-    await assert.rejects(readFile(JSON.parse(failure.stdout).file), { code: "ENOENT" })
     const watching = await run(process.execPath, args, {
         cwd: directory,
         env: { ...env, TEST_WATCH_SOURCE: source }
     })
-    assert.ok(
-        JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates > 0,
-        "development mode watches sources by default"
-    )
+    const updates = JSON.parse(watching.stdout.trim().split("\n").at(-1)!).updates
+    assert.ok(updates.length > 0, "development mode watches sources by default")
+    assert.deepEqual(updates[0], {
+        method: "PUT",
+        path: "/v1/projects/default/deployment",
+        body: {
+            imageRef: "local",
+            workingDirectory: await realpath(project),
+            actorEntrypoint: "actors.ts",
+            secretRefs: []
+        }
+    })
     const notWatching = await run(process.execPath, [...args, "--no-watch"], {
         cwd: directory,
         env: { ...env, TEST_WATCH_SOURCE: source }
     })
-    assert.equal(JSON.parse(notWatching.stdout).updates, 0, "--no-watch prevents source-triggered redeployments")
-
-    await writeFile(
-        source,
-        'import { Actor } from "durable-actors"; export class Room extends Actor { async hello(value: Date): Promise<Date> { return value } }'
-    )
-    await assert.rejects(run(process.execPath, args, { cwd: directory, env }), /JSON-compatible/)
+    assert.deepEqual(JSON.parse(notWatching.stdout).updates, [], "--no-watch prevents source-triggered redeployments")
 })

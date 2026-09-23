@@ -113,7 +113,7 @@ struct LocalRuntime {
 impl LocalRuntime {
     async fn start(filter: Option<&str>) -> Result<Self> {
         let project = tempfile::tempdir()?;
-        std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+        std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args([
@@ -123,7 +123,7 @@ impl LocalRuntime {
                 "--port",
                 "0",
                 "--entrypoint",
-                "actors.ts",
+                "actors.mjs",
             ])
             .arg("--project")
             .arg(project.path())

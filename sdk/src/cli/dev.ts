@@ -1,7 +1,5 @@
 import { Command, InvalidArgumentError, Option } from "commander"
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import path from "node:path"
+import { realpath } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
@@ -72,22 +70,14 @@ const developmentEnvironment = z.object({
 
 async function runDev(options: DevOptions): Promise<number> {
     const project = await realpath(options.project)
-    const contract = await compileContract(project, options.entrypoint)
-    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-contract-"))
-    try {
-        const file = path.join(directory, "contract.json")
-        await writeFile(file, JSON.stringify(contract))
-        return await runDevRuntime(options, project, file)
-    } finally {
-        await rm(directory, { recursive: true, force: true })
-    }
+    return runDevRuntime(options, project)
 }
 
-async function runDevRuntime(options: DevOptions, project: string, contractFile: string): Promise<number> {
+async function runDevRuntime(options: DevOptions, project: string): Promise<number> {
     const executable = await fetchRuntimeExecutablePath()
     const runtime = startRustRuntime(
         executable,
-        [...devArguments(options), "--contract", contractFile, "--ready-fd", "3"],
+        [...devArguments(options), "--ready-fd", "3"],
         runtimeEnvironment(executable),
         true,
         true
@@ -104,7 +94,7 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
     try {
         if (options.watch) {
             watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
-                publishLocalContract(options, project, await client)
+                publishLocalCode(options, project, await client)
             )
         }
         await client
@@ -118,26 +108,18 @@ async function runDevRuntime(options: DevOptions, project: string, contractFile:
     }
 }
 
-async function publishLocalContract(
+async function publishLocalCode(
     options: DevOptions,
     project: string,
     client: Pick<ControlPlaneClient, "registerDeployment">
 ): Promise<void> {
-    const contract = await compileContract(project, options.entrypoint)
     await client.registerDeployment({
         imageRef: "local",
         workingDirectory: project,
         actorEntrypoint: options.entrypoint,
-        secretRefs: [],
-        contract
+        secretRefs: []
     })
     console.log("Updated local actors.")
-}
-
-async function compileContract(project: string, entrypoint: string) {
-    const { ActorCompiler } = await import("../compiler/actor-compiler.js")
-    const { parsePublicContract } = await import("../compiler/validate-public-contract.js")
-    return parsePublicContract(new ActorCompiler().compileContract(path.resolve(project, entrypoint)))
 }
 
 function devArguments(options: DevOptions): string[] {
