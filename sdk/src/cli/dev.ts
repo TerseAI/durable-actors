@@ -1,5 +1,6 @@
 import { Command, InvalidArgumentError, Option } from "commander"
-import { realpath } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
@@ -33,7 +34,16 @@ export function registerDevCommand(program: Command): void {
                 .argParser(portNumber)
                 .default(7100)
         )
-        .addHelpText("after", "\nConfigure development in .env; DURABLE_ACTORS_PROJECT_ID defaults to local.")
+        .addHelpText(
+            "after",
+            `
+Run from your actor project directory; dev loads src/actors.ts by default.
+No configuration is required. Optional overrides in .env:
+  DURABLE_ACTORS_PROJECT     project directory (default: current directory)
+  DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: src/actors.ts)
+
+Create a project with: durable-actors init my-project`
+        )
         .action(async (options: { watch: boolean; port: number }) => {
             process.exitCode = await runDev(developmentOptions(options, process.env))
         })
@@ -69,8 +79,34 @@ const developmentEnvironment = z.object({
 })
 
 async function runDev(options: DevOptions): Promise<number> {
-    const project = await realpath(options.project)
+    const project = await developmentProject(options)
     return runDevRuntime(options, project)
+}
+
+async function developmentProject(options: DevOptions): Promise<string> {
+    const directory = path.resolve(options.project)
+    if (!(await developmentPathStats(directory))?.isDirectory())
+        throw new Error(
+            `No actor project directory found at ${directory}.\n` +
+                "Run from your actor project directory, or set DURABLE_ACTORS_PROJECT in .env.\n" +
+                "Create a project with: durable-actors init my-project"
+        )
+    const project = await realpath(directory)
+    const entrypoint = path.resolve(project, options.entrypoint)
+    if (!(await developmentPathStats(entrypoint))?.isFile())
+        throw new Error(
+            `No actor source file found at ${entrypoint}.\n` +
+                "Run from your actor project directory, or set DURABLE_ACTORS_PROJECT and DURABLE_ACTORS_ENTRYPOINT in .env.\n" +
+                "Create a project with: durable-actors init my-project"
+        )
+    return project
+}
+
+async function developmentPathStats(candidate: string) {
+    return stat(candidate).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined
+        throw error
+    })
 }
 
 async function runDevRuntime(options: DevOptions, project: string): Promise<number> {
