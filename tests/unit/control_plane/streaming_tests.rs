@@ -3,7 +3,6 @@ use super::*;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
     control_plane::{ActorTokenPurpose, ControlPlaneClient, admin::LocalAdminRegistry},
-    grpc::ActorHostGrpcService,
     host::{ActorHost, HostEndpoint},
     host_leases::{HostLeaseRegistry, HostLeaseRequest},
 };
@@ -250,7 +249,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn generated_backend_grant_works_with_a_native_websocket() -> Result<()> {
+async fn generated_backend_calls_http_and_authorizes_a_native_websocket() -> Result<()> {
     let mut stack = Stack::start().await?;
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
     let script = stack.directory.path().join("browser-test.mjs");
@@ -267,8 +266,14 @@ import {{ build }} from 'esbuild';
 const directory = {directory};
 await generateClient(new ActorCompiler().compileContract(directory + '/actors.ts'), directory + '/generated');
 await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/backend.mjs',
-    bundle:true,platform:'node',format:'esm',external:['durable-actors/generated']}});
-const {{ actors }} = await import(directory + '/backend.mjs');
+    bundle:true,platform:'node',format:'esm'}});
+const {{ actors, createActorTransport, ActorInvocationError }} = await import(directory + '/backend.mjs');
+const transport = createActorTransport({{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
+const counter = actors.Counter.get('counter-1', transport);
+assert.equal(await counter.readHistory(), '');
+assert.equal(await counter.appendHistory(), 'saved');
+assert.equal(await counter.readHistory(), 'saved');
+await assert.rejects(counter.fail(), error => error instanceof ActorInvocationError && error.code === 'actor_error');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
     {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
@@ -669,18 +674,18 @@ impl Stack {
                 )),
                 stop: tokio_util::sync::CancellationToken::new(),
             });
-        let grpc_sockets = local_sockets.clone();
+        let http_sockets = local_sockets.clone();
         tasks.spawn(async move {
-            let routes = tonic::service::Routes::from(socket_routes).add_service(
-                ActorHostGrpcService::new(
+            let routes = socket_routes.merge(
+                crate::host::http::ActorHostHttpService::new(
                     serving_host,
                     "00000000-0000-4000-8000-000000000001".into(),
                     auth,
-                    grpc_sockets,
+                    http_sockets,
                 )
-                .into_service(),
+                .router(),
             );
-            let _ = axum::serve(host_listener, routes.into_axum_router()).await;
+            let _ = axum::serve(host_listener, routes).await;
         });
         Ok(Self {
             issuer,
@@ -935,10 +940,7 @@ fn socket_key(grant: &serde_json::Value) -> Result<String> {
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> Result<()> {
-    use crate::grpc::proto::{
-        PublishSocketEffectsRequest, actor_host_service_client::ActorHostServiceClient,
-    };
+async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut socket = stack.connect().await?;
     receive(&mut socket).await?;
@@ -955,91 +957,99 @@ async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> R
         .error_for_status()?
         .json()
         .await?;
-    let channel =
-        crate::grpc::transport::channel(target["route"].as_str().context("route missing")?)?;
-    let mut client = ActorHostServiceClient::new(channel);
-    let command = PublishSocketEffectsRequest {
-        actor: Some(stack.actor.clone().into()),
-        owner_epoch: target["ownerEpoch"].as_u64().context("epoch missing")?,
-        effects_json: serde_json::to_vec(&vec![crate::actor::ActorSocketEffect::Broadcast {
-            message: crate::actor::ActorSocketMessage::Text {
-                data: "{\"notice\":\"hello\"}".into(),
-            },
-            except_connection_ids: vec![],
-            tags: vec![],
-            tag_match: Default::default(),
-        }])?,
-    };
+    let route = target["route"].as_str().context("route missing")?;
     let token = target["token"].as_str().context("token missing")?;
-    client
-        .publish_socket_effects(crate::grpc::transport::request(command.clone(), token)?)
+    let epoch = target["ownerEpoch"].as_u64().context("epoch missing")?;
+    let url = format!("{route}/v1/projects/default/actors/Counter/counter-1");
+    let invocation = serde_json::json!({"requestId":"http-change", "ownerEpoch":epoch, "method":"change", "args":[]});
+    assert_eq!(
+        http.post(format!("{url}/invoke"))
+            .json(&invocation)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let reply: serde_json::Value = http
+        .post(format!("{url}/invoke"))
+        .bearer_auth(token)
+        .json(&invocation)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
         .await?;
+    assert_eq!(
+        reply,
+        serde_json::json!({"type":"completed", "result":null})
+    );
+    let update = receive(&mut socket).await?;
+    assert_eq!(update["changes"]["count"], 2);
+    let command = serde_json::json!({"ownerEpoch":epoch, "effects":[{"type":"broadcast", "message":{"type":"text", "data":"{\"notice\":\"hello\"}"}, "except_connection_ids":[], "tags":[]}]});
+    assert_eq!(
+        http.post(format!("{url}/socket-effects"))
+            .bearer_auth(token)
+            .json(&command)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
     assert_eq!(
         receive(&mut socket).await?,
         serde_json::json!({"notice":"hello"})
     );
-    for wrong in [
-        PublishSocketEffectsRequest {
-            owner_epoch: command.owner_epoch + 1,
-            ..command.clone()
-        },
-        PublishSocketEffectsRequest {
-            actor: Some(
-                crate::actor::ActorKey {
-                    project_id: "default".into(),
-                    actor_name: "Counter".into(),
-                    actor_id: "another".into(),
-                }
-                .into(),
-            ),
-            ..command.clone()
-        },
-    ] {
+    for (actor_id, owner_epoch) in [("counter-1", epoch + 1), ("another", epoch)] {
+        let mut wrong = invocation.clone();
+        wrong["ownerEpoch"] = owner_epoch.into();
         assert_eq!(
-            client
-                .publish_socket_effects(crate::grpc::transport::request(wrong, token)?)
-                .await
-                .unwrap_err()
-                .code(),
-            tonic::Code::PermissionDenied
-        );
-    }
-    assert_eq!(
-        http.post(format!(
-            "{}/v1/projects/default/actors/Counter/counter-1/socket-effects",
-            stack.gateway
-        ))
-        .bearer_auth("test-api-key")
-        .json(&serde_json::json!({"effects":[]}))
-        .send()
-        .await?
-        .status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
-    let grant = stack.grant(serde_json::json!({}), 10_000).await?;
-    let host_url = grant["websocketUrl"]
-        .as_str()
-        .unwrap()
-        .replacen("ws:", "http:", 1);
-    assert_eq!(
-        http.post(host_url)
-            .json(&serde_json::json!({"effects":[]}))
+            http.post(format!(
+                "{route}/v1/projects/default/actors/Counter/{actor_id}/invoke"
+            ))
+            .bearer_auth(token)
+            .json(&wrong)
             .send()
             .await?
             .status(),
-        reqwest::StatusCode::METHOD_NOT_ALLOWED
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let mut wrong = command.clone();
+        wrong["ownerEpoch"] = owner_epoch.into();
+        assert_eq!(
+            http.post(format!(
+                "{route}/v1/projects/default/actors/Counter/{actor_id}/socket-effects"
+            ))
+            .bearer_auth(token)
+            .json(&wrong)
+            .send()
+            .await?
+            .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+    }
+    let mut malformed = invocation.clone();
+    malformed["args"] = serde_json::json!({});
+    assert_eq!(
+        http.post(format!("{url}/invoke"))
+            .bearer_auth(token)
+            .json(&malformed)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
     );
     stack
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
     assert_eq!(
-        client
-            .publish_socket_effects(crate::grpc::transport::request(command, token)?)
-            .await
-            .unwrap_err()
-            .code(),
-        tonic::Code::Unavailable
+        http.post(format!("{url}/socket-effects"))
+            .bearer_auth(token)
+            .json(&command)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
     );
     stack.child.kill().await?;
     Ok(())

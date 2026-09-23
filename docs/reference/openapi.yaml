@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-    title: durable-actors control plane API
+    title: durable-actors HTTP API
     version: "1"
     description: |
         Manage durable-actors deployments, find actor hosts, and inspect activity.
@@ -132,7 +132,7 @@ paths:
             operationId: findActor
             tags: [Actors]
             summary: Find an actor host
-            description: Resolves placement, starts a host if needed, and issues credentials for direct gRPC calls. Requires an active deployment.
+            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
@@ -142,6 +142,99 @@ paths:
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke:
+        servers:
+            - url: "{actorHost}"
+              description: Use the route returned by findActor.
+              variables:
+                  actorHost: { default: "http://127.0.0.1:7101" }
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: invokeActor
+            tags: [Actors]
+            summary: Invoke a method on the owning host
+            security: [{ ActorTicket: [] }]
+            description: |
+                Send the discovery token and ownerEpoch to the discovered host origin.
+                The host validates the actor, host session and ownership epoch before dispatch.
+                Socket effects are delivered by the host before a completed response.
+                Only HTTP 401 or an explicit reroute permits rediscovery and one retry.
+                Network errors, other HTTP failures and failed outcomes must not be retried automatically.
+                requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/ActorInvocation" }
+                        examples:
+                            increment:
+                                value: { requestId: request-1, ownerEpoch: 3, method: increment, args: [2] }
+            responses:
+                "200":
+                    description: Explicit execution outcome, including actor failures. A completed result includes null for void methods.
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/ActorInvocationReply" }
+                            examples:
+                                completed: { value: { type: completed, result: 7 } }
+                                failed: { value: { type: failed, code: actor_error, message: Method failed } }
+                                reroute: { value: { type: reroute } }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { description: Ticket rejected before dispatch. Refresh discovery once. }
+                "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "415": { description: Expected application/json. }
+                "422": { description: Invalid invocation document. }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects:
+        servers:
+            - url: "{actorHost}"
+              description: Use the route returned by findActor.
+              variables:
+                  actorHost: { default: "http://127.0.0.1:7101" }
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: publishActorSocketEffects
+            tags: [WebSockets]
+            summary: Deliver socket effects to the owning host
+            security: [{ ActorTicket: [] }]
+            description: Used by backend broadcasts. Actor method effects are already delivered by invokeActor. Do not retry an uncertain delivery. Maximum body size is 32 MiB.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            additionalProperties: false
+                            required: [ownerEpoch, effects]
+                            properties:
+                                ownerEpoch: { type: integer, minimum: 1, maximum: 9007199254740991 }
+                                effects:
+                                    type: array
+                                    items: { $ref: "#/components/schemas/ActorSocketEffect" }
+                        examples:
+                            broadcast:
+                                value:
+                                    ownerEpoch: 3
+                                    effects:
+                                        - type: broadcast
+                                          message: { type: text, data: '"hello"' }
+                                          except_connection_ids: []
+                                          tags: []
+            responses:
+                "204": { description: Effects delivered. }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { description: Ticket rejected. }
+                "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "415": { description: Expected application/json. }
+                "422": { description: Invalid effects document. }
+                "503": { description: Delivery unavailable; some effects may already have been applied. }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -393,6 +486,10 @@ components:
             type: http
             scheme: bearer
             description: Required when DURABLE_ACTORS_SECRET is set on the server. Never send it to browsers.
+        ActorTicket:
+            type: http
+            scheme: bearer
+            description: Short-lived actor capability returned by findActor. Never use the application API key at the actor host.
         SocketTicket:
             type: apiKey
             in: query
@@ -662,6 +759,55 @@ components:
             required: ["$ref"]
             properties:
                 $ref: { type: string, description: Reference into rpc.schema. }
+        ActorInvocation:
+            type: object
+            additionalProperties: false
+            required: [requestId, ownerEpoch, method, args]
+            properties:
+                requestId: { type: string, minLength: 1, maxLength: 255 }
+                ownerEpoch: { type: integer, minimum: 1, maximum: 9007199254740991 }
+                method: { type: string, minLength: 1, maxLength: 128 }
+                args: { type: array, items: {} }
+        ActorInvocationReply:
+            oneOf:
+                - type: object
+                  required: [type, result]
+                  properties:
+                      type: { const: completed }
+                      result: {}
+                - type: object
+                  required: [type, code, message]
+                  properties:
+                      type: { const: failed }
+                      code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
+                      message: { type: string }
+                - type: object
+                  required: [type]
+                  properties:
+                      type: { const: reroute }
+        ActorSocketEffect:
+            type: object
+            description: Host-validated socket effect. Broadcasts require message, except_connection_ids and tags; connection-specific effects require connection_id.
+            required: [type]
+            properties:
+                type: { enum: [state_snapshot, state_update, send, broadcast, close, reject, set_metadata, set_tags] }
+                connection_id: { type: string }
+                message:
+                    type: object
+                    required: [type, data]
+                    properties:
+                        type: { enum: [text, binary] }
+                        data: { type: string, description: UTF-8 text or base64-encoded binary. }
+                except_connection_ids: { type: array, items: { type: string }, maxItems: 128 }
+                tags: { type: array, items: { type: string }, maxItems: 128 }
+                tag_match: { enum: [all, any] }
+                metadata: {}
+                state: { type: object }
+                changes: { type: object }
+                removed: { type: array, items: { type: string } }
+                version: { type: integer, minimum: 0 }
+                code: { type: integer, description: "1000 or 3000–4999." }
+                reason: { type: string }
         FindActorRequest:
             type: object
             additionalProperties: false
@@ -684,7 +830,7 @@ components:
             required: [homeRegion, route, token, ownerEpoch, expiresAtMs]
             properties:
                 homeRegion: { type: string }
-                route: { type: string, format: uri, description: HTTP(S) origin of the actor gRPC host. }
+                route: { type: string, format: uri, description: HTTP(S) origin of the actor HTTP host. }
                 token: { type: string, description: Bearer token for actor RPCs. }
                 ownerEpoch: { type: integer, minimum: 0 }
                 expiresAtMs: { type: integer, format: int64 }

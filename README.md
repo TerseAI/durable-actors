@@ -14,7 +14,7 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.4.2+.
+Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
 
 ### Create your actor project in your directory of choice
 
@@ -29,10 +29,10 @@ Running dev will also start a watch, every-time you make a change to an actor an
 
 ### Connect your application
 
-In your separate application project's directory (ex: node server), install the SDK:
+In your separate application project's directory (ex: node server), install the generator as a development dependency:
 
 ```sh
-pnpm add durable-actors
+pnpm add -D durable-actors
 ```
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
@@ -42,8 +42,6 @@ Then generate your client from the same application directory:
 ```sh
 pnpm exec durable-actors generate
 ```
-
-This contract will match perfectly the actor you have defined!
 
 Now you may call your actor and access the state.
 

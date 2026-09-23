@@ -27,7 +27,6 @@ async function buildTemplate(template) {
         new URL("../templates/pnpm-workspace.yaml", import.meta.url),
         new URL("pnpm-workspace.yaml", destination)
     )
-    await copyFile(new URL("../../LICENSE.md", import.meta.url), new URL("LICENSE.md", destination))
     const metadata = JSON.parse(await readFile(new URL("package.json", destination), "utf8"))
     metadata.dependencies["durable-actors"] = version
     await writeFile(new URL("package.json", destination), JSON.stringify(metadata, null, 4) + "\n")

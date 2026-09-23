@@ -1,29 +1,10 @@
-import { performance } from "node:perf_hooks"
+import type { TelemetrySink } from "../client-runtime/telemetry.js"
 
-type TelemetryEvent = Record<string, boolean | number | string | undefined>
-type TelemetrySink = (event: TelemetryEvent) => void
-
-class LatencyTimeline {
-    private readonly origin: number
-    private readonly milestones: Record<string, number> = { started_at_ms: 0 }
-
-    constructor(private readonly now: () => number = () => performance.now()) {
-        this.origin = this.now()
-    }
-
-    mark(name: string): void {
-        this.milestones[`${name}_at_ms`] = Math.max(0, Math.round(this.now() - this.origin))
-    }
-
-    finish(): Record<string, number> {
-        this.mark("completed")
-        return { ...this.milestones }
-    }
-}
+export { LatencyTimeline } from "../client-runtime/telemetry.js"
+export type { TelemetryEvent, TelemetrySink } from "../client-runtime/telemetry.js"
 
 const stderrTelemetry: TelemetrySink = event => {
     if (process.env.DURABLE_ACTORS_TELEMETRY === "1") process.stderr.write(`${JSON.stringify(event)}\n`)
 }
 
-export { LatencyTimeline, stderrTelemetry }
-export type { TelemetryEvent, TelemetrySink }
+export { stderrTelemetry }

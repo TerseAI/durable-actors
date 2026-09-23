@@ -569,8 +569,8 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
         let first = tokio::spawn(async move {
             if socket {
                 caller
-                    .handle_socket_event(
-                        ActorSocketInvocation {
+                    .submit(
+                        ActorOperation::Socket(ActorSocketInvocation {
                             request_id: "first".into(),
                             actor: ActorKey {
                                 project_id: "default".into(),
@@ -584,7 +584,7 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
                                 },
                             },
                             connections: Vec::new(),
-                        },
+                        }),
                         1,
                     )
                     .await
@@ -1342,7 +1342,9 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         },
         connections: Vec::new(),
     };
-    let result = host.handle_socket_event(invocation("committed"), 1).await?;
+    let result = host
+        .submit(ActorOperation::Socket(invocation("committed")), 1)
+        .await?;
 
     assert!(matches!(
         result,
@@ -1352,14 +1354,17 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
     assert!(!state.writes.lock().unwrap().is_empty());
 
     state.failures.store(1, Ordering::SeqCst);
-    let failed = host.handle_socket_event(invocation("failed"), 1).await?;
+    let failed = host
+        .submit(ActorOperation::Socket(invocation("failed")), 1)
+        .await?;
     assert!(
         matches!(failed, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
     );
 
     host.drain(Duration::from_secs(1)).await?;
     assert_eq!(
-        host.handle_socket_event(invocation("drained"), 1).await?,
+        host.submit(ActorOperation::Socket(invocation("drained")), 1)
+            .await?,
         ActorExecutionResult::HostUnavailable
     );
     assert_eq!(state.writes.lock().unwrap().len(), 2);

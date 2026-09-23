@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { cloneJson } from "./client-runtime/json.js"
 import { ActorSerializationError } from "./errors.js"
 
 type JsonPrimitive = string | number | boolean | null
@@ -10,17 +11,6 @@ function cloneJsonObject(value: unknown, label: string): JsonObject {
     const cloned = cloneJson(value, label)
     if (!isJsonObject(cloned)) throw new ActorSerializationError(`${label} must be a JSON object`)
     return cloned
-}
-
-function cloneJson(value: unknown, label: string): JsonValue {
-    try {
-        const encoded = JSON.stringify(value)
-        if (encoded === undefined) throw new ActorSerializationError(`${label} must be JSON serializable`)
-        return JSON.parse(encoded) as JsonValue
-    } catch (error) {
-        if (error instanceof ActorSerializationError) throw error
-        throw new ActorSerializationError(`${label} must be JSON serializable`, { cause: error })
-    }
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {
