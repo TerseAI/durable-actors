@@ -1,6 +1,6 @@
 # Actors
 
-Requires Node.js 22.19.0+, pnpm, and Bun 1.4.2+ on your PATH.
+Requires Node.js 22.19.0+, pnpm, and Bun 1.3.9+ on your PATH.
 
 ```sh
 pnpm install

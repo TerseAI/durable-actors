@@ -11,6 +11,42 @@ const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
 
+for (const template of ["actor", "chat", "ai-chat", "documents"]) {
+    test(`init ${template} scaffolds a project named after its destination`, async t => {
+        const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-metadata-"))
+        t.after(() => rm(directory, { recursive: true, force: true }))
+        const name = `custom-${template}`
+        const project = path.join(directory, name)
+        await run(process.execPath, [cli, "init", name, "--template", template], { cwd: directory })
+        const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
+        const files = [".gitignore", "README.md", "package.json", "pnpm-workspace.yaml", "src", "tsconfig.json"]
+        if (template !== "actor") files.push(".env.example", "index.html")
+        assert.deepEqual((await readdir(project)).sort(), files.sort())
+        assert.equal(metadata.name, name)
+        assert.equal(metadata.private, true)
+    })
+}
+
+for (const [directoryName, packageName] of [
+    ["My Actors", "my-actors"],
+    ["Sam's actors", "sam-s-actors"],
+    [".Actors", "actors"],
+    ["api.v2_actors", "api.v2_actors"],
+    ["你好", "durable-actors-example-actor"],
+    ["node_modules", "durable-actors-example-actor"],
+    ["favicon.ico", "durable-actors-example-actor"],
+    ["a".repeat(220), "a".repeat(214)]
+] as const) {
+    test(`init normalizes the package name for ${directoryName}`, async t => {
+        const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-name-"))
+        t.after(() => rm(directory, { recursive: true, force: true }))
+        const project = path.join(directory, directoryName)
+        await run(process.execPath, [cli, "init", project])
+        const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
+        assert.equal(metadata.name, packageName)
+    })
+}
+
 test("init presents copyable next steps with optional terminal color", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-output-"))
     t.after(() => rm(directory, { recursive: true, force: true }))

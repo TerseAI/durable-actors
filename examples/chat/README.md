@@ -4,7 +4,7 @@ An Express + React chatroom backed by a durable actor. Messages appear in every 
 
 ## Run locally
 
-Requires Node.js 22.19+ and Bun 1.4.2+.
+Requires Node.js 22.19+ and Bun 1.3.9+.
 
 ```sh
 npx durable-actors init chat-example --template chat
