@@ -43,10 +43,6 @@ Then generate your client from the same application directory:
 pnpm exec durable-actors generate
 ```
 
-The generated directory contains the typed client and its runtime. Commit the whole directory; applications that only call actors do not need `durable-actors` in production. You can also run `pnpm dlx durable-actors generate` without adding the SDK to the application’s dependencies or lockfile. Pin the CLI version when using this in CI.
-
-Regenerate after changing actor contracts or upgrading the generator to pick up runtime fixes.
-
 Now you may call your actor and access the state.
 
 ```ts
