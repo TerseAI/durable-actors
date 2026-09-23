@@ -1,11 +1,14 @@
 import { useState } from "react"
 
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "./components/ui/command.js"
+import { cn } from "./lib/utils.js"
 
 export interface FilterSuggestion {
+    id?: string
     group: string
     value: string
     hint?: string
+    keywords?: string[]
 }
 
 interface FilterComboboxProps {
@@ -13,12 +16,14 @@ interface FilterComboboxProps {
     placeholder: string
     value: string
     onChange: (value: string) => void
+    onSelectSuggestion?: (suggestion: FilterSuggestion) => void
     suggestions: FilterSuggestion[]
     limit?: number
+    className?: string
 }
 
 // A free-text filter whose suggestions come from what is on screen; cmdk owns the listbox keyboard model.
-export function FilterCombobox({ label, placeholder, value, onChange, suggestions, limit = 8 }: FilterComboboxProps) {
+export function FilterCombobox({ label, placeholder, value, onChange, onSelectSuggestion, suggestions, limit = 8, className }: FilterComboboxProps) {
     const [open, setOpen] = useState(false)
     const matches = matchSuggestions(suggestions, value, limit)
     const groups = matches.reduce((grouped, suggestion) => grouped.set(suggestion.group, [...(grouped.get(suggestion.group) ?? []), suggestion]), new Map<string, FilterSuggestion[]>())
@@ -28,7 +33,7 @@ export function FilterCombobox({ label, placeholder, value, onChange, suggestion
             label={label}
             shouldFilter={false}
             loop
-            className="la-combobox la:relative la:overflow-visible la:bg-transparent"
+            className={cn("la-combobox la:relative la:overflow-visible la:bg-transparent", className)}
             onKeyDown={event => {
                 if (event.key === "Escape") setOpen(false)
                 if (event.key === "ArrowDown") setOpen(true)
@@ -54,10 +59,11 @@ export function FilterCombobox({ label, placeholder, value, onChange, suggestion
                         <CommandGroup key={group} heading={group}>
                             {items.map(suggestion => (
                                 <CommandItem
-                                    key={suggestion.value}
-                                    value={`${group}:${suggestion.value}`}
+                                    key={suggestion.id ?? `${group}:${suggestion.value}`}
+                                    value={suggestion.id ?? `${group}:${suggestion.value}`}
                                     onSelect={() => {
-                                        onChange(suggestion.value)
+                                        if (onSelectSuggestion) onSelectSuggestion(suggestion)
+                                        else onChange(suggestion.value)
                                         setOpen(false)
                                     }}
                                 >
@@ -75,12 +81,14 @@ export function FilterCombobox({ label, placeholder, value, onChange, suggestion
 
 export function matchSuggestions(suggestions: FilterSuggestion[], value: string, limit: number): FilterSuggestion[] {
     const needle = value.trim().toLocaleLowerCase()
+    const terms = needle.split(/\s+/u).filter(Boolean)
     const seen = new Set<string>()
     const matches: FilterSuggestion[] = []
     for (const suggestion of suggestions) {
-        const key = `${suggestion.group}:${suggestion.value}`
-        const text = suggestion.value.toLocaleLowerCase()
-        if (seen.has(key) || text === needle || (needle && !text.includes(needle))) continue
+        const key = suggestion.id ?? `${suggestion.group}:${suggestion.value}`
+        const text = [suggestion.value, ...(suggestion.keywords ?? [])].join(" ").toLocaleLowerCase()
+        const exactValue = suggestion.value.toLocaleLowerCase() === needle && !suggestion.keywords?.length
+        if (seen.has(key) || exactValue || !terms.every(term => text.includes(term))) continue
         seen.add(key)
         matches.push(suggestion)
     }

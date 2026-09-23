@@ -258,6 +258,14 @@
     padding-left: 34px;
     caret-color: var(--foreground);
 }
+.la-observer-lookup {
+    width: 360px;
+    max-width: 100%;
+    border: 1px solid var(--input);
+}
+.la-observer-lookup [data-slot="command-input-wrapper"] {
+    border-bottom: 0;
+}
 .la-observer-table-frame {
     border: 1px solid var(--border);
     border-radius: 8px;
