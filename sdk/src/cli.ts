@@ -12,7 +12,7 @@ import { registerStartCommand } from "./cli/start.js"
 import { actorEnvironment } from "./environment.js"
 
 try {
-    config({ quiet: true })
+    config({ path: [".env.local", ".env"], quiet: true })
     Object.assign(process.env, actorEnvironment(process.env))
     const program = new Command()
         .name("durable-actors")
