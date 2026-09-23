@@ -111,7 +111,7 @@ jobs:
             - run: pnpm --dir sdk build
             - run: cargo build --locked
             - name: Run WebSocket and restart integration tests
-              run: cargo test --locked -- --ignored
+              run: cargo test --locked -- --ignored --skip request_traces::bigquery::live
 
     npm-ci:
         name: Test npm package

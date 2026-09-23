@@ -111,7 +111,7 @@ jobs:
               run: node --test sdk/tests/scripts/build-artifact.test.mjs
             - run: cargo build --locked
             - name: Run WebSocket and restart integration tests
-              run: cargo test --locked -- --ignored
+              run: cargo test --locked -- --ignored --skip request_traces::bigquery::live
             - name: Check the Express and React example
               working-directory: examples/chat
               run: |
