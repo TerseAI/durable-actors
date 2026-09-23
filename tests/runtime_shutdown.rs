@@ -138,7 +138,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         assert.equal(await client.invoke('Counter', 'one', 'increment', []), before + 1);
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
         const origin = process.env.DURABLE_ACTORS_CONTROL_PLANE_URL;
-        const apiKey = process.env.DURABLE_ACTORS_API_KEY;
+        const apiKey = process.env.DURABLE_ACTORS_SECRET;
         const workingDirectory = (await import('node:path')).dirname((await import('node:url')).fileURLToPath(import.meta.url));
         assert.equal(await client.invoke('Counter', 'one', 'label', []), 'before');
         const fs = await import('node:fs/promises');
@@ -192,7 +192,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             .env("DURABLE_ACTORS_DATA_DIR", "state")
             .env("DURABLE_ACTORS_STORAGE", "local")
             .env("DURABLE_ACTORS_PROJECT_ID", "default")
-            .env("DURABLE_ACTORS_API_KEY", "local-test-key")
+            .env("DURABLE_ACTORS_SECRET", "local-test-key")
             .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
@@ -209,7 +209,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
                 .arg(before.to_string())
                 .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
                 .env("DURABLE_ACTORS_PROJECT_ID", "default")
-                .env("DURABLE_ACTORS_API_KEY", "local-test-key")
+                .env("DURABLE_ACTORS_SECRET", "local-test-key")
                 .env("DURABLE_ACTORS_TELEMETRY", "0")
                 .kill_on_drop(true)
                 .output(),

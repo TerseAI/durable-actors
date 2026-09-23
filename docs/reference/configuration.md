@@ -30,7 +30,7 @@ Used by `dev`.
 
 The server also requires the API key and a publicly reachable `DURABLE_ACTORS_CONTROL_PLANE_URL` from the connection section.
 
-`durable-actors start` passes `DURABLE_ACTORS_SECRET` to the runtime as `DURABLE_ACTORS_API_KEY`. When launching the native executable or container directly, set `DURABLE_ACTORS_API_KEY` yourself.
+Set `DURABLE_ACTORS_SECRET` when using `durable-actors start`, the native executable, or the container. The SDK also accepts `DURABLE_ACTORS_API_KEY`, with `DURABLE_ACTORS_SECRET` taking precedence.
 
 | Variable                            | Default                                                 | Meaning                                                                            |
 | ----------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -44,6 +44,8 @@ The server also requires the API key and a publicly reachable `DURABLE_ACTORS_CO
 | `MODAL_TOKEN_ID`                    | Required                                                | Token ID for the Modal workspace containing your images.                           |
 | `MODAL_TOKEN_SECRET`                | Required                                                | Modal token secret.                                                                |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY`    | Required; generated for local development               | Base64-encoded Ed25519 PKCS#8 signing key. Reuse across restarts.                  |
+
+When importing the runtime image into Modal, clear its Docker entrypoint with `modal.Image.from_registry(..., add_python="3.12").entrypoint([])` so the provider can run its build, actor, and replica commands.
 
 ## Advanced settings
 

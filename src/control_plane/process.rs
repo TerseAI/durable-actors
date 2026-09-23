@@ -223,10 +223,10 @@ impl ControlPlaneProcessConfig {
             !jwt_max_lifetime.is_zero(),
             "DURABLE_ACTORS_JWT_MAX_TTL_SECONDS must be positive"
         );
-        let api_key = required(&mut get, "DURABLE_ACTORS_API_KEY")?;
+        let api_key = required(&mut get, "DURABLE_ACTORS_SECRET")?;
         ensure!(
             api_key.trim() == api_key,
-            "DURABLE_ACTORS_API_KEY has surrounding whitespace"
+            "DURABLE_ACTORS_SECRET has surrounding whitespace"
         );
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;

@@ -128,7 +128,7 @@ impl LocalRuntime {
             .arg("--project")
             .arg(project.path())
             .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
-            .env("DURABLE_ACTORS_API_KEY", "test-key")
+            .env("DURABLE_ACTORS_SECRET", "test-key")
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

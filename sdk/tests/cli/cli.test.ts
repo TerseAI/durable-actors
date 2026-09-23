@@ -30,7 +30,7 @@ test("observe serves a local UI using environment settings", { timeout: 10_000 }
         ...process.env,
         DURABLE_ACTORS_PROJECT_ID: "default",
         DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-        DURABLE_ACTORS_API_KEY: "observe-key"
+        DURABLE_ACTORS_SECRET: "observe-key"
     }
     const child = spawn(process.execPath, [cli, "observe", "--no-open"], {
         env,
@@ -73,7 +73,7 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
         ...process.env,
         DURABLE_ACTORS_PROJECT_ID: "default",
         DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-        DURABLE_ACTORS_API_KEY: "wrong"
+        DURABLE_ACTORS_SECRET: "wrong"
     }
     const failure = (message: RegExp) => (error: unknown) => {
         const result = error as Error & { code: number; stdout: string; stderr: string }
@@ -138,7 +138,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         ...process.env,
         DURABLE_ACTORS_PROJECT_ID: "default",
         DURABLE_ACTORS_BINARY: binary,
-        DURABLE_ACTORS_API_KEY: "dev-key",
+        DURABLE_ACTORS_SECRET: "dev-key",
         DURABLE_ACTORS_PROJECT: project,
         DURABLE_ACTORS_PORT: "7200",
         DURABLE_ACTORS_ENTRYPOINT: "actors.ts",
@@ -146,7 +146,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         DURABLE_ACTORS_DATA_DIR: "/tmp/actor-state"
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
-    assert.doesNotMatch(stdout, /export DURABLE_ACTORS_API_KEY=/u)
+    assert.doesNotMatch(stdout, /export DURABLE_ACTORS_SECRET=/u)
     assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
         "dev",
         "--project-id",
@@ -171,11 +171,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
     assert.equal(args[args.indexOf("--port") + 1], "7300")
     assert.equal(args[args.indexOf("--storage") + 1], "gcs")
     assert.equal(args[args.indexOf("--api-key") + 1], "dev-key")
-    const { DURABLE_ACTORS_API_KEY, ...withoutKey } = env
+    const { DURABLE_ACTORS_SECRET, ...withoutKey } = env
     const envFile = path.join(project, ".env")
-    await writeFile(envFile, "DURABLE_ACTORS_API_KEY=env-file-key\n")
+    await writeFile(envFile, "DURABLE_ACTORS_SECRET=env-file-key\n")
     const configuredFromFile = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })
-    assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_ACTORS_API_KEY=/u)
+    assert.doesNotMatch(configuredFromFile.stdout, /export DURABLE_ACTORS_SECRET=/u)
     assert.equal(JSON.parse(configuredFromFile.stdout).includes("env-file-key"), true)
     await rm(envFile)
     const generated = await run(process.execPath, [cli, "dev"], { cwd: project, env: withoutKey })

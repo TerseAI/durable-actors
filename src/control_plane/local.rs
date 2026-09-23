@@ -40,7 +40,7 @@ use super::{
 pub struct DevOptions {
     #[arg(long, env = "DURABLE_ACTORS_PROJECT_ID", default_value = "local")]
     pub project_id: String,
-    #[arg(long, env = "DURABLE_ACTORS_API_KEY")]
+    #[arg(long, env = "DURABLE_ACTORS_SECRET")]
     pub api_key: Option<String>,
     #[arg(long, env = "DURABLE_ACTORS_PROJECT", default_value = ".")]
     pub project: PathBuf,

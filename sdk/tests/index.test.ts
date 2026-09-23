@@ -39,11 +39,11 @@ test("actor calls read environment settings lazily without a setup function", ()
             "--eval",
             `
             import assert from "node:assert/strict";
-            for (const key of ["DURABLE_ACTORS_API_KEY", "DURABLE_ACTORS_HOME_REGION", "DURABLE_ACTORS_CONTROL_PLANE_URL"]) delete process.env[key];
+            for (const key of ["DURABLE_ACTORS_SECRET", "DURABLE_ACTORS_HOME_REGION", "DURABLE_ACTORS_CONTROL_PLANE_URL"]) delete process.env[key];
             const { Actor, ActorInvocationError } = await import(${JSON.stringify(entrypoint)});
             Object.assign(process.env, {
                 DURABLE_ACTORS_PROJECT_ID: "default",
-                DURABLE_ACTORS_API_KEY: "backend-key",
+                DURABLE_ACTORS_SECRET: "backend-key",
                 DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
             });
             const requests = [];

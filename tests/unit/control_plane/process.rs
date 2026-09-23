@@ -47,7 +47,7 @@ async fn server_carries_websocket_upgrades() -> Result<()> {
 fn parses_the_minimal_storage_configuration() -> Result<()> {
     let values = HashMap::from([
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-        ("DURABLE_ACTORS_API_KEY", "api-key"),
+        ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
         ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
         ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),

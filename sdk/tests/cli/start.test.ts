@@ -101,7 +101,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
         ...process.env,
         DURABLE_ACTORS_PROJECT_ID: "default",
         DURABLE_ACTORS_BINARY: executable,
-        DURABLE_ACTORS_API_KEY: "test-key",
+        DURABLE_ACTORS_SECRET: "test-key",
         DURABLE_ACTORS_PROJECT: project,
         DURABLE_ACTORS_ENTRYPOINT: "actors.ts"
     }

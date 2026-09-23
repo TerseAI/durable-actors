@@ -127,13 +127,13 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     const original = {
         project: process.env.DURABLE_ACTORS_PROJECT_ID,
         url: process.env.DURABLE_ACTORS_CONTROL_PLANE_URL,
-        key: process.env.DURABLE_ACTORS_API_KEY
+        key: process.env.DURABLE_ACTORS_SECRET
     }
     t.after(() => {
         for (const [key, value] of Object.entries({
             DURABLE_ACTORS_PROJECT_ID: original.project,
             DURABLE_ACTORS_CONTROL_PLANE_URL: original.url,
-            DURABLE_ACTORS_API_KEY: original.key
+            DURABLE_ACTORS_SECRET: original.key
         })) {
             if (value === undefined) delete process.env[key]
             else process.env[key] = value
@@ -141,7 +141,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     })
     process.env.DURABLE_ACTORS_PROJECT_ID = options.projectId
     process.env.DURABLE_ACTORS_CONTROL_PLANE_URL = options.controlPlaneUrl
-    process.env.DURABLE_ACTORS_API_KEY = options.apiKey
+    process.env.DURABLE_ACTORS_SECRET = options.apiKey
     assert.deepEqual(await actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } }), {
         websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
         homeRegion: "north-america-east",

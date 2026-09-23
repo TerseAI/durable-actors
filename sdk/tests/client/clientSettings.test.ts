@@ -80,7 +80,7 @@ test("environment and explicit client settings report the same validation errors
 function environmentFor(settings: DurableActorsClientOptions): NodeJS.ProcessEnv {
     return {
         DURABLE_ACTORS_PROJECT_ID: settings.projectId,
-        DURABLE_ACTORS_API_KEY: settings.apiKey,
+        DURABLE_ACTORS_SECRET: settings.apiKey,
         DURABLE_ACTORS_HOME_REGION: settings.homeRegion,
         DURABLE_ACTORS_CONTROL_PLANE_URL: settings.controlPlaneUrl
     }

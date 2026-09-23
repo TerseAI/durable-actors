@@ -12,7 +12,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 const cli = path.join(sdk, "dist/cli.js")
-const env = { ...process.env, DURABLE_ACTORS_PROJECT_ID: "default", DURABLE_ACTORS_API_KEY: "contract-key" }
+const env = { ...process.env, DURABLE_ACTORS_PROJECT_ID: "default", DURABLE_ACTORS_SECRET: "contract-key" }
 
 test("generate --remote uses .env settings and exported environment overrides", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-local-"))
@@ -36,30 +36,30 @@ test("generate --remote uses .env settings and exported environment overrides", 
     const envFile = path.join(directory, ".env")
     await writeFile(
         envFile,
-        `DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_API_KEY=local-key\n`
+        `DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`
     )
     const fileEnv = { ...process.env }
-    for (const key of ["DURABLE_ACTORS_PROJECT_ID", "DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_API_KEY"])
+    for (const key of ["DURABLE_ACTORS_PROJECT_ID", "DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_SECRET"])
         delete fileEnv[key]
     const localEnv = {
         ...process.env,
         DURABLE_ACTORS_PROJECT_ID: "default",
         DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-        DURABLE_ACTORS_API_KEY: "local-key"
+        DURABLE_ACTORS_SECRET: "local-key"
     }
     const result = await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/)
     assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
     await writeFile(
         envFile,
-        "DURABLE_ACTORS_PROJECT_ID=wrong\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_API_KEY=wrong\n"
+        "DURABLE_ACTORS_PROJECT_ID=wrong\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_SECRET=wrong\n"
     )
     await run(process.execPath, [cli, "generate", "--remote"], { cwd: directory, env: localEnv })
     assert.deepEqual(requests, Array(2).fill("/v1/projects/default/deployment/contract"))
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
-            env: { ...localEnv, DURABLE_ACTORS_API_KEY: "" }
+            env: { ...localEnv, DURABLE_ACTORS_SECRET: "" }
         }),
         /DURABLE_ACTORS_SECRET/
     )
@@ -199,7 +199,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
     await assert.rejects(
         run(process.execPath, [cli, "generate", "--remote"], {
             cwd: directory,
-            env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin, DURABLE_ACTORS_API_KEY: "" }
+            env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin, DURABLE_ACTORS_SECRET: "" }
         }),
         /DURABLE_ACTORS_SECRET/
     )
