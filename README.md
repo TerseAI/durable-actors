@@ -14,19 +14,15 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.4.2+. Install the CLI once:
-
-```sh
-pnpm add --global durable-actors
-```
+Install Node.js 22.19+, pnpm, and Bun 1.4.2+.
 
 ### Create your actor project in your directory of choice
 
 ```sh
-durable-actors init my-actors
+npx durable-actors init my-actors
 cd my-actors
 pnpm install
-durable-actors dev // this will run the server locally on your machine
+pnpm exec durable-actors dev # Run the server locally on your machine
 ```
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
@@ -44,7 +40,7 @@ Local CLI commands and backend clients default to project `local` at `http://127
 Then generate your client from the same application directory:
 
 ```sh
-durable-actors generate
+pnpm exec durable-actors generate
 ```
 
 This contract will match perfectly the actor you have defined!
@@ -84,7 +80,7 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `durable-actors generate` in your application and use its generated client:
+After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
