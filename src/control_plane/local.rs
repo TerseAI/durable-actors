@@ -103,12 +103,16 @@ pub async fn serve_local(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let storage = local_storage(&options, &directory, &origin).await?;
-    let provider = Arc::new(LocalSandboxProvider::new(
-        std::env::current_exe()?,
-        project.clone(),
-        storage.runtime.clone(),
-        options.sdk_host.clone(),
-    ));
+    let provider = Arc::new(
+        LocalSandboxProvider::new(
+            std::env::current_exe()?,
+            project.clone(),
+            storage.runtime.clone(),
+            options.sdk_host.clone(),
+            directory.join("local-hosts.sqlite3"),
+        )
+        .await?,
+    );
     let routes = local_routes(
         &options,
         &project,
