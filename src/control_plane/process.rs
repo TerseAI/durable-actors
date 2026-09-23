@@ -319,6 +319,16 @@ fn sandbox_provider_config(
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
     let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 5, 0, 32)?;
+    let maximum = pool_number(get, "DURABLE_ACTORS_SPARE_MAX", 32, 0, 128)?;
+    let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 64, 0, 4096)?;
+    ensure!(
+        idle <= maximum,
+        "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_MAX"
+    );
+    ensure!(
+        idle <= fleet_maximum,
+        "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
+    );
     let regions = get("DURABLE_ACTORS_SPARE_REGIONS")
         .unwrap_or_else(|| "north-america-east".into())
         .split(',')
@@ -339,6 +349,16 @@ fn sandbox_provider_config(
         pool: crate::sandbox::pool::PoolConfig {
             kind: crate::sandbox::SpareKind::Actor,
             idle,
+            maximum,
+            fleet_maximum,
+            max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 8, 1, 128)?,
+            shrink_after_seconds: pool_number(
+                get,
+                "DURABLE_ACTORS_SPARE_SHRINK_SECONDS",
+                300,
+                30,
+                3600,
+            )?,
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {

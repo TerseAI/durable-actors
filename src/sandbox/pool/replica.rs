@@ -97,7 +97,7 @@ impl PoolStore {
             tx.commit().await?;
             return Ok(result);
         }
-        let available = tx.query_opt("UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, expires_at = clock_timestamp() + interval '120 seconds' WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND kind = 'replica' AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING name, handle", &[&key, &host]).await?;
+        let available = tx.query_opt("WITH demand AS (INSERT INTO durable_actors_pool_events (pool_key, event_kind, identity) VALUES ($1, 'acquire', $2) ON CONFLICT DO NOTHING) UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, expires_at = clock_timestamp() + interval '120 seconds' WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND kind = 'replica' AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING name, handle", &[&key, &host]).await?;
         let result = match available {
             Some(row) => Reservation::Ready(decode_handle(&row)?),
             None => {

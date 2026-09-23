@@ -1,6 +1,9 @@
 use super::*;
 use crate::postgres::testing::with_postgres;
 
+#[path = "pool_sizing.rs"]
+mod sizing;
+
 fn pool(database: PostgresDatabase) -> Arc<SparePool> {
     SparePool::new(
         database,
@@ -12,13 +15,7 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
             )
             .unwrap(),
         ),
-        PoolConfig {
-            kind: SpareKind::Actor,
-            idle: 1,
-            idle_ttl_seconds: 600,
-            regions: vec!["region".into()],
-            resources: ResourceLimits::default(),
-        },
+        config(1),
     )
 }
 
@@ -63,9 +60,9 @@ async fn expired_claims_and_outdated_runtime_spares_cannot_be_reused() -> Result
 control_route: String::new(),
 control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-expired".into(), route: "https://spare.test".into(), canonical_region: "region".into() };
            assert!(pool.remember("host", "revision", &spare).await.is_err());
-           let old = pool.store.reserve("old-runtime", 1).await?.unwrap();
-           let current = pool.store.reserve("current-runtime", 1).await?.unwrap();
-           pool.store.retire_unwanted(&["current-runtime".into()], 1).await?;
+           let old = reserve(&pool.store, "old-runtime", 1).await?.unwrap();
+           let current = reserve(&pool.store, "current-runtime", 1).await?.unwrap();
+           pool.store.retire_unwanted(&["current-runtime".into()], true).await?;
            let retiring = pool.store.retiring().await?;
            assert!(retiring.iter().any(|s| s.name == old));
            assert!(retiring.iter().any(|s| s.name == spare.name));
@@ -83,7 +80,7 @@ async fn concurrent_pool_claims_are_exclusive_and_never_return_assigned_sandboxe
         );
         let key = "runtime-a/region-a/1000/1024";
         let names =
-            futures_util::future::try_join_all((0..8).map(|_| store.reserve(key, 2))).await?;
+            futures_util::future::try_join_all((0..8).map(|_| reserve(&store, key, 2))).await?;
         let names = names.into_iter().flatten().collect::<Vec<_>>();
         assert_eq!(names.len(), 2);
         assert!(store.claim(key, "host-early", "revision").await?.is_none());
@@ -134,8 +131,8 @@ async fn zero_capacity_and_runtime_changes_retire_only_unassigned_spares() -> Re
             PostgresDatabase::connect(&fixture.url).await?,
             SpareKind::Actor,
         );
-        assert!(store.reserve("runtime", 0).await?.is_none());
-        let name = store.reserve("runtime", 1).await?.unwrap();
+        assert!(reserve(&store, "runtime", 0).await?.is_none());
+        let name = reserve(&store, "runtime", 1).await?.unwrap();
         let spare = SpareHandle {
             control_route: String::new(),
             control_token: String::new(),
@@ -145,7 +142,7 @@ async fn zero_capacity_and_runtime_changes_retire_only_unassigned_spares() -> Re
             canonical_region: "region".into(),
         };
         store.publish("runtime", &spare, 600).await?;
-        store.retire_unwanted(&[], 0).await?;
+        store.retire_unwanted(&[], false).await?;
         assert!(store.claim("runtime", "host", "rev").await?.is_none());
         assert_eq!(store.retiring().await?.len(), 1);
         assert!(!store.publish("runtime", &spare, 600).await?);
@@ -174,7 +171,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 })
                 .await?;
             let key = pool.key(image, "region");
-            let name = pool.store.reserve(&key, 1).await?.unwrap();
+            let name = reserve(&pool.store, &key, 1).await?.unwrap();
             pool.store
                 .publish(
                     &key,
@@ -208,3 +205,28 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
     })
     .await
 }
+
+fn config(idle: u32) -> PoolConfig {
+    PoolConfig {
+        kind: SpareKind::Actor,
+        idle,
+        maximum: idle,
+        fleet_maximum: 64,
+        max_starting: 8,
+        shrink_after_seconds: 300,
+        idle_ttl_seconds: 600,
+        regions: vec!["region".into()],
+        resources: ResourceLimits::default(),
+    }
+}
+
+pub(super) async fn reserve(store: &PoolStore, key: &str, target: u32) -> Result<Option<String>> {
+    Ok(store
+        .replenish(key, &config(target), 1)
+        .await?
+        .into_iter()
+        .next())
+}
+
+#[path = "pool_replenishment.rs"]
+mod replenishment;
