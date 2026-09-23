@@ -41,8 +41,6 @@ pnpm add durable-actors
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
 
-If you choose a different project or port, copy those connection settings printed by `dev` into the application's `.env` or `.env.local` file. The CLI loads both automatically: exported environment variables take precedence over `.env.local`, which takes precedence over `.env`.
-
 Then generate your client from the same application directory:
 
 ```sh
