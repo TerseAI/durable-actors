@@ -67,15 +67,11 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		}
 	}()
 	phases.SandboxScheduledAtMS = p.elapsed()
-	_, code, err := p.api.Resolve(ctx, request.CodeSnapshot)
-	if err != nil {
-		return hostHandle{}, err
-	}
 	environment := hostEnvironment(request)
 	environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
 	environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 	group, assignmentContext := errgroup.WithContext(ctx)
-	group.Go(func() error { return sb.Mount(assignmentContext, code) })
+	group.Go(func() error { return sb.Mount(assignmentContext, request.CodeSnapshot) })
 	var handle hostHandle
 	group.Go(func() error {
 		var err error

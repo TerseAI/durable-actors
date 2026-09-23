@@ -51,6 +51,23 @@ func TestAssignmentRequiresActorAndPublishedCodeBeforeCallingModal(t *testing.T)
 	}
 }
 
+func TestClaimedSpareLoadsCodeWithoutResourceDiscovery(t *testing.T) {
+	sb := &fakeSandbox{}
+	api := &fakeAPI{found: sb, resolveErr: errors.New("resource discovery unavailable")}
+	request := testRequest()
+	request.Spare = &spareHandle{ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
+	handle, err := newTestProvider(api).ensureHost(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if api.resolves != 0 {
+		t.Fatal("claimed spare required resource discovery")
+	}
+	if sb.mounted != request.CodeSnapshot || handle.HostID != request.HostID || handle.OwnerEpoch != 42 {
+		t.Fatal("published code was not assigned to the claimed host")
+	}
+}
+
 func TestMountAndAssignmentOverlapAndFailureTerminatesTheClaimedSpare(t *testing.T) {
 	sb := &fakeSandbox{mountErr: errors.New("mount failed"), mountStarted: make(chan struct{}), assignmentStarted: make(chan struct{})}
 	api := &fakeAPI{found: sb}
@@ -75,7 +92,7 @@ func testRequest() ensureRequest {
 
 type fakeAPI struct {
 	created, found                         sandbox
-	createErr, findErr                     error
+	createErr, findErr, resolveErr         error
 	creates, finds, resolves, succeedAfter int
 	params                                 *modal.SandboxCreateParams
 	name                                   string
@@ -83,7 +100,7 @@ type fakeAPI struct {
 
 func (a *fakeAPI) Resolve(_ context.Context, id string) (*modal.App, *modal.Image, error) {
 	a.resolves++
-	return &modal.App{}, &modal.Image{ImageID: id}, nil
+	return &modal.App{}, &modal.Image{ImageID: id}, a.resolveErr
 }
 func (a *fakeAPI) Secret(_ context.Context, name string) (*modal.Secret, error) {
 	return &modal.Secret{Name: name}, nil
@@ -187,8 +204,8 @@ func TestHostIdentityUsesOnlyRevisionAndSession(t *testing.T) {
 }
 
 func (a *fakeAPI) ByID(ctx context.Context, id string) (sandbox, error) { return a.Find(ctx, id) }
-func (s *fakeSandbox) Mount(ctx context.Context, image *modal.Image) error {
-	s.mounted = image.ImageID
+func (s *fakeSandbox) Mount(ctx context.Context, snapshotID string) error {
+	s.mounted = snapshotID
 	if s.mountStarted != nil {
 		close(s.mountStarted)
 		select {

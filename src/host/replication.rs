@@ -73,10 +73,27 @@ impl ActorReplication {
         let membership = initial.ready().await?;
         self.storage.ensure_authority()?;
         self.storage.runtime.enable_replication(membership)?;
+        let replicas = self.storage.runtime.local_replica_members(&scope);
         ready.send_replace(true);
         tracing::info!(event = "actor_replication_ready", actor = %scope.actor.storage_key());
-        self.maintain(scope, reports).await;
+        tokio::join!(self.preconnect(&replicas), self.maintain(scope, reports));
         Ok(())
+    }
+
+    async fn preconnect(&self, replicas: &[crate::replication::ReplicaTarget]) {
+        futures_util::future::join_all(replicas.iter().map(|replica| async {
+            let started = Instant::now();
+            let result = self.storage.transport.preconnect(&replica.url).await;
+            tracing::debug!(
+                event = "replica_preconnect",
+                host_id = %replica.host_id,
+                region = %replica.region,
+                connected = result.is_ok(),
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                error = result.err().map(|error| error.to_string()),
+            );
+        }))
+        .await;
     }
 
     async fn maintain(&self, scope: ReplicaScope, mut reports: mpsc::UnboundedReceiver<String>) {

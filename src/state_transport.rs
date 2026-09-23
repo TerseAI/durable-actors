@@ -34,6 +34,15 @@ impl GrpcStateTransport {
         Self::default()
     }
 
+    pub(crate) async fn preconnect(&self, origin: &str) -> Result<()> {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            self.channels.preconnect(origin),
+        )
+        .await??;
+        Ok(())
+    }
+
     pub(crate) async fn capability(
         &self,
         url: &str,
