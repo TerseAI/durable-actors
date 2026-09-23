@@ -9,7 +9,7 @@ fn host_needs_no_local_state_directory() -> Result<()> {
         config.executor_socket,
         PathBuf::from("/tmp/durable-actors-executor.sock")
     );
-    assert_eq!(config.host_idle_timeout, Duration::from_secs(60));
+    assert_eq!(config.host_idle_timeout, Duration::from_secs(10));
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
     Ok(())
 }

@@ -25,7 +25,7 @@ use super::{ActorHost, HostEndpoint, HostLeaseMaintainer, LeaseRenewalTask};
 
 const HOST_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_ACTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 10_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
