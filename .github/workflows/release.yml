@@ -221,8 +221,10 @@ jobs:
             - name: Check the packaged SDK and native bundle
               env:
                   DURABLE_ACTORS_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
+                  DURABLE_ACTORS_TEST_OBSERVER_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-observer-${{ needs.preflight.outputs.version }}.tgz
               run: |
                   node --test tests/scripts/build-runtime.test.mjs
+                  npm pkg set "pnpm.overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
                   pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
                   pnpm --dir examples/chat exec durable-actors generate src/actors.ts
                   pnpm --dir examples/chat build
