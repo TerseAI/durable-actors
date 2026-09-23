@@ -111,53 +111,6 @@ impl HostProvisioner for FakeRetiringProvisioner {
 #[tokio::test]
 async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
 -> Result<()> {
-    use crate::grpc::proto::{
-        self,
-        actor_host_service_server::{ActorHostService, ActorHostServiceServer},
-    };
-    use tokio_stream::wrappers::TcpListenerStream;
-
-    struct Host {
-        auth: ActorJwtVerifier,
-        peers: Arc<Mutex<std::collections::HashSet<std::net::SocketAddr>>>,
-    }
-    #[tonic::async_trait]
-    impl ActorHostService for Host {
-        async fn publish_socket_effects(
-            &self,
-            _: tonic::Request<crate::grpc::proto::PublishSocketEffectsRequest>,
-        ) -> Result<tonic::Response<crate::grpc::proto::Empty>, tonic::Status> {
-            Err(tonic::Status::unimplemented(
-                "fixture does not publish socket effects",
-            ))
-        }
-
-        async fn activate(
-            &self,
-            request: Request<proto::ActivateActorRequest>,
-        ) -> Result<Response<proto::ActivateActorReply>, Status> {
-            self.peers
-                .lock()
-                .unwrap()
-                .insert(request.remote_addr().unwrap());
-            let principal = self.auth.authenticate(&request).await?;
-            assert!(principal.invocation.is_none());
-            assert_eq!(request.get_ref().actor.as_ref().unwrap().actor_id, "one");
-            Ok(Response::new(proto::ActivateActorReply { owner_epoch: 42 }))
-        }
-        async fn invoke(
-            &self,
-            _: Request<proto::HostInvokeActorRequest>,
-        ) -> Result<Response<proto::InvokeActorReply>, Status> {
-            Err(Status::unimplemented("unused"))
-        }
-        async fn handle_socket(
-            &self,
-            _: Request<proto::HostSocketEventRequest>,
-        ) -> Result<Response<proto::InvokeActorReply>, Status> {
-            Err(Status::unimplemented("unused"))
-        }
-    }
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
@@ -191,25 +144,19 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
         }
     }
     let issuer = test_issuer()?;
-    let invocation_auth = ActorJwtVerifier::for_scope(
-        issuer.verifier_keys_json()?,
-        "issuer",
-        "invocation",
-        ActorTokenPurpose::Invocation,
-        Duration::from_secs(60),
-    )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let route = format!("http://{}", listener.local_addr()?);
-    let peers = Arc::new(Mutex::new(std::collections::HashSet::new()));
-    let host_peers = peers.clone();
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let host_requests = requests.clone();
     let server = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(ActorHostServiceServer::new(Host {
-                auth: invocation_auth,
-                peers: host_peers,
-            }))
-            .serve_with_incoming(TcpListenerStream::new(listener))
-            .await
+        axum::serve(
+            listener,
+            axum::Router::new().fallback(move || {
+                host_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }
+            }),
+        )
+        .await
     });
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
@@ -253,7 +200,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     assert!(placements.get(&actor.storage_key()).await?.is_none());
     service.resolve_actor_route(&actor, None, None).await?;
     assert_eq!(
-        peers.lock().unwrap().len(),
+        requests.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "readiness must eliminate the extra activation RPC"
     );

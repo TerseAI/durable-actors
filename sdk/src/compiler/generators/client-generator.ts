@@ -11,25 +11,13 @@ async function generateClient(
     directory: string
 ): Promise<void> {
     const artifacts = await generateTypeScript(input)
-    const contracts = "actors" in input ? input.actors.map(actor => actor.socket) : input
     await mkdir(directory, { recursive: true })
-    for (const [file, contents] of artifacts) await writeFile(path.join(directory, file), contents)
-    for (const file of ["frontend.ts", "backend.ts", "proxy.ts", "socket.ts", "rpc.ts"])
-        await rm(path.join(directory, file), { force: true })
-    for (const { actorName } of contracts)
-        for (const suffix of [
-            "actor.ts",
-            "frontend.ts",
-            "backend.ts",
-            "proxy.ts",
-            "socket.ts",
-            "rpc.ts",
-            "validators.js",
-            "validators.d.ts",
-            "proxy-validators.js",
-            "proxy-validators.d.ts"
-        ])
-            await rm(path.join(directory, `${actorName}.${suffix}`), { force: true })
+    await rm(path.join(directory, "runtime"), { recursive: true, force: true })
+    for (const [file, contents] of artifacts) {
+        const destination = path.join(directory, file)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await writeFile(destination, contents)
+    }
 }
 
 export { generateClient }
