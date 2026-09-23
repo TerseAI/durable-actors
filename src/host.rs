@@ -1,6 +1,7 @@
 mod actor_host;
 mod actor_runtime;
 mod assignment;
+pub(crate) mod http;
 mod lease_maintenance;
 mod process;
 mod queues;

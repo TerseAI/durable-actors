@@ -3,7 +3,6 @@ use crate::{
     actor::ActorKey,
     bucket::{Bucket, FileBucket},
     control_plane::ActorJwtIssuer,
-    grpc::proto::{self, actor_host_service_client::ActorHostServiceClient},
     host::HostId,
 };
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
@@ -162,7 +161,11 @@ async fn run_activation(
         anyhow::Ok(())
     })
     .await??;
-    let mut client = ActorHostServiceClient::connect(route).await?;
+    let client = reqwest::Client::new();
+    let actor_url = format!(
+        "{route}/v1/projects/{}/actors/{}/{}",
+        actor.project_id, actor.actor_name, actor.actor_id
+    );
     let response = tokio::time::timeout(Duration::from_secs(1), ready_response).await??;
     assert_eq!(response.host_id, host_id);
     assert_eq!(response.session_id, session);
@@ -175,41 +178,13 @@ async fn run_activation(
         ("increment", before + 1),
         ("read", before + 1),
     ] {
-        let result = client
-            .invoke(authorized(
-                proto::HostInvokeActorRequest {
-                    invocation: Some(proto::InvokeActorRequest {
-                        request_id: uuid::Uuid::new_v4().to_string(),
-                        actor: Some(actor.clone().into()),
-                        method: method.into(),
-                        args_json: b"[]".to_vec(),
-                    }),
-                    owner_epoch: epoch,
-                },
-                &token,
-            )?)
-            .await?
-            .into_inner();
-        let Some(proto::invoke_actor_reply::Result::Completed(value)) = result.result else {
-            anyhow::bail!("invocation failed: {result:?}")
-        };
-        assert_eq!(serde_json::from_slice::<i64>(&value.result_json)?, expected);
+        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
+        assert_eq!(
+            result,
+            serde_json::json!({"type":"completed", "result":expected})
+        );
     }
-    let other = ActorKey {
-        actor_id: "other".into(),
-        ..actor.clone()
-    };
-    assert!(
-        client
-            .activate(authorized(
-                proto::ActivateActorRequest {
-                    actor: Some(other.into())
-                },
-                &token
-            )?)
-            .await
-            .is_err()
-    );
+    assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(10), task).await???;
     assert!(
@@ -217,14 +192,6 @@ async fn run_activation(
         "actor host created a local snapshot spool"
     );
     Ok(())
-}
-
-fn authorized<T>(message: T, token: &str) -> Result<tonic::Request<T>> {
-    let mut request = tonic::Request::new(message);
-    request
-        .metadata_mut()
-        .insert("authorization", format!("Bearer {token}").parse()?);
-    Ok(request)
 }
 
 fn issuer() -> Result<ActorJwtIssuer> {

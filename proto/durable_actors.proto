@@ -2,13 +2,6 @@ syntax = "proto3";
 
 package durable_actors.v1;
 
-service ActorHostService {
-  rpc Activate(ActivateActorRequest) returns (ActivateActorReply);
-  rpc Invoke(HostInvokeActorRequest) returns (InvokeActorReply);
-  rpc HandleSocket(HostSocketEventRequest) returns (InvokeActorReply);
-  rpc PublishSocketEffects(PublishSocketEffectsRequest) returns (Empty);
-}
-
 service ActorControlPlaneService {
   rpc Execute(ControlPlaneRequest) returns (ControlPlaneReply);
 }
@@ -21,66 +14,7 @@ message ControlPlaneReply {
   bytes reply_json = 1;
 }
 
-message ActorKey {
-  string project_id = 4;
-  reserved 1;
-  string actor_name = 2;
-  string actor_id = 3;
-}
-
-message InvokeActorRequest {
-  reserved 5;
-
-  string request_id = 1;
-  ActorKey actor = 2;
-  string method = 3;
-  bytes args_json = 4;
-}
-
-message HostInvokeActorRequest {
-  InvokeActorRequest invocation = 1;
-  uint64 owner_epoch = 2;
-}
-
-message HostSocketEventRequest {
-  string request_id = 1;
-  ActorKey actor = 2;
-  bytes event_json = 3;
-  bytes connections_json = 4;
-  uint64 owner_epoch = 5;
-}
-
-message InvokeActorReply {
-  oneof result {
-    ActorCompleted completed = 1;
-    ActorFailed failed = 2;
-    Reroute reroute = 3;
-  }
-}
-
-message ActorCompleted {
-  bytes result_json = 1;
-  bytes socket_effects_json = 2;
-}
-
-message ActorFailed {
-  string code = 1;
-  string message = 2;
-}
-
-message Reroute {}
-
-message ActivateActorRequest { ActorKey actor = 1; }
-message ActivateActorReply {
-  uint64 owner_epoch = 1;
-}
-
 message Empty {}
-message PublishSocketEffectsRequest {
-  ActorKey actor = 1;
-  uint64 owner_epoch = 2;
-  bytes effects_json = 3;
-}
 
 service SnapshotService {
   rpc Read(Empty) returns (SnapshotData);

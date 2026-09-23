@@ -107,6 +107,6 @@ for (const template of ["actor", "chat", "ai-chat", "documents"]) {
         const project = path.join(directory, template)
         await run(process.execPath, [cli, "init", project, "--template", template])
         const { stdout } = await run("pnpm", ["config", "get", "allowBuilds", "--json"], { cwd: project })
-        assert.deepEqual(JSON.parse(stdout), { esbuild: true, protobufjs: true })
+        assert.deepEqual(JSON.parse(stdout), { esbuild: true })
     })
 }

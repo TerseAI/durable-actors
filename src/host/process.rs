@@ -17,7 +17,7 @@ use crate::{
     actor::{ActorExecutorConnection, ActorExecutorListener},
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
-    grpc::ActorHostGrpcService,
+    host::http::ActorHostHttpService,
     host_leases::MAX_HOST_LEASE_DURATION_MS,
 };
 
@@ -116,13 +116,13 @@ pub(super) async fn serve_assigned_host(
     let mut actor_stopped = host.stopped();
     let mut socket_activity = sockets.registry.activity();
 
-    let service = ActorHostGrpcService::new(
+    let service = ActorHostHttpService::new(
         host.clone(),
         config.session_id.clone(),
         invocation_auth,
         sockets.clone(),
     )
-    .into_service();
+    .router();
     let initialized = async {
         let (verifier, owner_epoch) =
             initialize_executor(&config, &executor_connection, &host, &sockets).await?;
@@ -178,9 +178,9 @@ pub(super) async fn serve_assigned_host(
             ),
             stop: socket_stop.clone(),
         });
-    let routes = tonic::service::Routes::from(socket_routes).add_service(service);
+    let routes = socket_routes.merge(service);
     let mut server = Box::pin(async move {
-        axum::serve(listener, routes.into_axum_router())
+        axum::serve(listener, routes)
             .with_graceful_shutdown(async move { server_stop.cancelled().await })
             .await
             .context("serve actor host endpoints")

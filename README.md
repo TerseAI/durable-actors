@@ -29,10 +29,10 @@ Running dev will also start a watch, every-time you make a change to an actor an
 
 ### Connect your application
 
-In your separate application project's directory (ex: node server), install the SDK:
+In your separate application project's directory (ex: node server), install the generator as a development dependency:
 
 ```sh
-pnpm add durable-actors
+pnpm add -D durable-actors
 ```
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
@@ -43,7 +43,9 @@ Then generate your client from the same application directory:
 pnpm exec durable-actors generate
 ```
 
-This contract will match perfectly the actor you have defined!
+The generated directory contains the typed client and its runtime. Commit the whole directory; applications that only call actors do not need `durable-actors` in production. You can also run `pnpm dlx durable-actors generate` without adding the SDK to the application’s dependencies or lockfile. Pin the CLI version when using this in CI.
+
+Regenerate after changing actor contracts or upgrading the generator to pick up runtime fixes.
 
 Now you may call your actor and access the state.
 

@@ -50,7 +50,7 @@ ${methodTypes(actor.actorName, actor.rpc.methods, stubName, methodsName)}
 }`,
         descriptor: actorDescriptor(
             actor.actorName,
-            `get(actorId: string, transport?: import("durable-actors/backend").ActorRpcTransport): ${stub} {
+            `get(actorId: string, transport?: import("./runtime/index.js").ActorRpcTransport): ${stub} {
         return $createActorStub<${stub}>(${JSON.stringify(actor.actorName)}, actorId, ${JSON.stringify(descriptors)}, transport)
     }`
         )
@@ -63,9 +63,9 @@ function actorDescriptor(actorName: string, rpc?: string): string {
     ${usageComment("Allow a frontend connection after your backend checks the user's access.", `const grant = await actors.${actorName}.prepareWebsocket({ actorId: "actor-id", metadata })`)}
     prepareWebsocket(
         authorization: Omit<actors.${actorName}.Authorization, "actorName">,
-        options: import("durable-actors/proxy").SocketProxyOptions = {},
-        dependencies: import("durable-actors/proxy").SocketProxyDependencies = {}
-    ): Promise<import("durable-actors/proxy").SocketGrant> {
+        options: import("./runtime/index.js").SocketProxyOptions = {},
+        dependencies: import("./runtime/index.js").SocketProxyDependencies = {}
+    ): Promise<import("./runtime/index.js").SocketGrant> {
         return new ActorProxy(options, dependencies).handle({ ...authorization, actorName: ${JSON.stringify(actorName)} })
     }
 }`

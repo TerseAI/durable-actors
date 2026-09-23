@@ -133,15 +133,6 @@ impl ActorHost {
             .await
     }
 
-    pub(crate) async fn handle_socket_event(
-        &self,
-        invocation: ActorSocketInvocation,
-        owner_epoch: u64,
-    ) -> Result<ActorExecutionResult> {
-        self.submit(ActorOperation::Socket(invocation), owner_epoch)
-            .await
-    }
-
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
         tokio::time::timeout(timeout, async {
             let (reply, done) = oneshot::channel();
