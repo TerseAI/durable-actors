@@ -39,12 +39,7 @@ In your separate application project's directory (ex: node server), install the 
 pnpm add durable-actors
 ```
 
-Copy the three settings printed by `dev` into that application's `.env` file:
-
-```dotenv
-DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100
-DURABLE_ACTORS_SECRET='<paste the secret printed by dev>'
-```
+Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
 
 Then generate your client from the same application directory:
 

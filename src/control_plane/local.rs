@@ -95,10 +95,6 @@ pub async fn serve_local(
         .await
         .context("bind local runtime; use --port to select another port")?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let api_key = options
-        .api_key
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let storage = local_storage(&options, &directory, &origin).await?;
     let provider = Arc::new(
         LocalSandboxProvider::new(
@@ -116,14 +112,13 @@ pub async fn serve_local(
         &origin,
         &storage,
         provider.clone(),
-        &api_key,
         &directory,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
     let ready = notify_launcher(
         &origin,
-        &api_key,
+        options.api_key.as_deref(),
         &storage.region,
         &options.project_id,
         options.ready_fd,
@@ -131,7 +126,12 @@ pub async fn serve_local(
     if ready.is_ok() {
         anstream::println!(
             "{}",
-            styled_local_ready_message(&origin, &directory, &options.project_id, &api_key)
+            styled_local_ready_message(
+                &origin,
+                &directory,
+                &options.project_id,
+                options.api_key.as_deref()
+            )
         );
     }
     server.run_until(shutdown, ready).await
@@ -288,7 +288,6 @@ async fn local_routes(
     origin: &str,
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
-    api_key: &str,
     directory: &Path,
 ) -> Result<tonic::service::Routes> {
     let issuer = local_issuer()?;
@@ -338,7 +337,7 @@ async fn local_routes(
         )),
     )))
     .with_traces(storage.traces.clone());
-    let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
+    let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
@@ -364,7 +363,7 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
 
 fn notify_launcher(
     origin: &str,
-    api_key: &str,
+    api_key: Option<&str>,
     region: &str,
     project_id: &str,
     ready_fd: Option<i32>,
@@ -383,7 +382,7 @@ fn styled_local_ready_message(
     origin: &str,
     directory: &Path,
     project_id: &str,
-    secret: &str,
+    secret: Option<&str>,
 ) -> String {
     let styles = LocalReadyStyles {
         title: Style::new().bold().fg_color(Some(AnsiColor::Cyan.into())),
@@ -401,7 +400,7 @@ fn local_ready_message(origin: &str, directory: &Path, project_id: &str) -> Stri
         origin,
         directory,
         project_id,
-        "generated-secret",
+        None,
         LocalReadyStyles::default(),
     )
 }
@@ -410,7 +409,7 @@ fn format_local_ready_message(
     origin: &str,
     directory: &Path,
     project_id: &str,
-    secret: &str,
+    secret: Option<&str>,
     styles: LocalReadyStyles,
 ) -> String {
     let LocalReadyStyles {
@@ -420,19 +419,24 @@ fn format_local_ready_message(
         label,
         command,
     } = styles;
-    let credentials = local_credentials_instructions(secret, styles);
+    let credentials = local_authentication_instructions(secret);
+    let project = if project_id == "local" {
+        String::new()
+    } else {
+        format!("     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n")
+    };
     format!(
-        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate --remote{command:#}\n\n  Start your application backend with this .env loaded.\n",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n{project}     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate --remote{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
     )
 }
 
-fn local_credentials_instructions(secret: &str, styles: LocalReadyStyles) -> String {
-    let command = styles.command;
-    let quote = if secret.contains('\'') { '"' } else { '\'' };
-    format!(
-        "     {command}DURABLE_ACTORS_SECRET={quote}{secret}{quote}{command:#}\n\n     Update the secret after restarting this actor server."
-    )
+fn local_authentication_instructions(secret: Option<&str>) -> &'static str {
+    if secret.is_some() {
+        "     Authentication is enabled. Set DURABLE_ACTORS_SECRET in your backend to the same value."
+    } else {
+        "     Authentication is disabled. No secret is needed for local development."
+    }
 }
 
 #[derive(Clone, Copy, Default)]

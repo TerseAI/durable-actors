@@ -10,8 +10,8 @@ import { actorEnvironment } from "./environment.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
-    projectId: string
-    /** Generated if omitted; available in `runtime.connection`. */
+    projectId?: string
+    /** Enables local authentication when set; omitted by default. */
     apiKey?: string
     entrypoint: string
     /** Project directory; defaults to the current directory. */
@@ -28,7 +28,11 @@ export interface LocalActorOptions {
 const connectionSchema = z.object({
     projectId: z.string().min(1),
     controlPlaneUrl: z.string().url(),
-    apiKey: z.string().min(1),
+    apiKey: z
+        .string()
+        .min(1)
+        .nullish()
+        .transform(value => value ?? undefined),
     storageRegion: z.string().min(1),
     pid: z.number().int().positive()
 })
@@ -44,7 +48,7 @@ export interface LocalActorRuntime {
 
 /** Starts a local server and waits until ready. */
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
-    validateProjectId(options.projectId)
+    if (options.projectId !== undefined) validateProjectId(options.projectId)
     const child = launch(await fetchRuntimeExecutablePath(), options)
     const { closed, stop } = lifecycle(child)
     try {
@@ -66,8 +70,7 @@ function launch(executable: string, options: LocalActorOptions) {
         executable,
         [
             "dev",
-            "--project-id",
-            options.projectId,
+            ...(options.projectId === undefined ? [] : ["--project-id", options.projectId]),
             ...(options.apiKey === undefined ? [] : ["--api-key", options.apiKey]),
             "--project",
             project,

@@ -73,7 +73,7 @@ const updates = []
 const server = createServer(async (request, response) => {
     let body = ""
     for await (const chunk of request) body += chunk
-    updates.push({ method: request.method, path: request.url, body: JSON.parse(body) })
+    updates.push({ method: request.method, path: request.url, authorization: request.headers.authorization ?? null, body: JSON.parse(body) })
     response.end("{}")
 })
 let controlPlaneUrl = "http://127.0.0.1:7100"
@@ -82,10 +82,10 @@ if (process.env.TEST_WATCH_SOURCE) {
     controlPlaneUrl = "http://127.0.0.1:" + server.address().port
 }
 createWriteStream(null, { fd: 3 }).end(JSON.stringify({
-    projectId: "default",
+    projectId: process.env.DURABLE_ACTORS_PROJECT_ID ?? "local",
     pid: process.pid,
     controlPlaneUrl,
-    apiKey: "test-key",
+    apiKey: process.env.DURABLE_ACTORS_SECRET ?? null,
     storageRegion: "local"
 }))
 if (process.env.TEST_WATCH_SOURCE) {
@@ -139,6 +139,7 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     assert.deepEqual(updates[0], {
         method: "PUT",
         path: "/v1/projects/default/deployment",
+        authorization: "Bearer test-key",
         body: {
             imageRef: "local",
             workingDirectory: await realpath(project),
@@ -146,6 +147,20 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
             secretRefs: []
         }
     })
+    const unauthenticated = await run(process.execPath, args, {
+        cwd: directory,
+        env: {
+            ...env,
+            DURABLE_ACTORS_PROJECT_ID: undefined,
+            DURABLE_ACTORS_SECRET: undefined,
+            DURABLE_ACTORS_API_KEY: undefined,
+            TEST_WATCH_SOURCE: source
+        }
+    })
+    const localUpdates = JSON.parse(unauthenticated.stdout.trim().split("\n").at(-1)!).updates
+    assert.ok(localUpdates.length > 0)
+    assert.equal(localUpdates[0].path, "/v1/projects/local/deployment")
+    assert.equal(localUpdates[0].authorization, null)
     const notWatching = await run(process.execPath, [...args, "--no-watch"], {
         cwd: directory,
         env: { ...env, TEST_WATCH_SOURCE: source }

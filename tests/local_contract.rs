@@ -19,8 +19,7 @@ async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_o
         .prefix("actor's project ")
         .tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
-    let runtime = LocalRuntime::start(project.path()).await?;
-    let first_api_key = runtime.api_key.clone();
+    let runtime = LocalRuntime::start(project.path(), None).await?;
     let first: Value = runtime.contract().await?.error_for_status()?.json().await?;
     assert_eq!(first["contract"]["actors"][0]["actorName"], "Counter");
     assert_eq!(
@@ -33,14 +32,38 @@ async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_o
         project.path(),
         "async reset(): Promise<number> { return 0 }",
     )?;
-    let runtime = LocalRuntime::start(project.path()).await?;
-    assert_ne!(runtime.api_key, first_api_key);
+    let runtime = LocalRuntime::start(project.path(), None).await?;
     let second: Value = runtime.contract().await?.error_for_status()?.json().await?;
     assert_eq!(
         second["contract"]["actors"][0]["rpc"]["methods"][0]["name"],
         "reset"
     );
     assert_ne!(second["contractHash"], first["contractHash"]);
+    runtime.stop().await
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn dev_enforces_a_secret_set_in_the_environment() -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+    let runtime = LocalRuntime::start(project.path(), Some("optional-secret")).await?;
+    assert_eq!(runtime.contract().await?.status(), 401);
+    let url = format!("{}/v1/projects/local/deployment/contract", runtime.origin);
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client.get(&url).bearer_auth("wrong").send().await?.status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(&url)
+            .bearer_auth("optional-secret")
+            .send()
+            .await?
+            .status(),
+        200
+    );
     runtime.stop().await
 }
 
@@ -74,82 +97,109 @@ async fn dev_rejects_an_invalid_actor_contract_before_publishing_readiness() -> 
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+    let runtime = LocalRuntime::start(project.path(), None).await?;
+    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
+    let backend = format!(
+        "import {{ createActorTransport }} from {}; const client = createActorTransport({{ controlPlaneUrl: process.argv[1] }}); if (await client.invoke('Counter', 'one', 'read', []) !== 1) throw new Error('unexpected result');",
+        serde_json::to_string(&sdk.join("backend.js"))?
+    );
+    let output = timeout(
+        Duration::from_secs(30),
+        Command::new("node")
+            .args(["--input-type=module", "--eval", &backend, &runtime.origin])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    ensure!(
+        output.status.success(),
+        "backend failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let consumer = tempfile::tempdir()?;
+    let output = Command::new("node")
+        .arg(sdk.join("cli.js"))
+        .args(["generate", "--remote"])
+        .current_dir(consumer.path())
+        .env_remove("DURABLE_ACTORS_PROJECT_ID")
+        .env_remove("DURABLE_ACTORS_SECRET")
+        .env_remove("DURABLE_ACTORS_API_KEY")
+        .env("DURABLE_ACTORS_CONTROL_PLANE_URL", &runtime.origin)
+        .kill_on_drop(true)
+        .output()
+        .await?;
+    ensure!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(consumer.path().join("generated/index.ts").exists());
+    runtime.stop().await
+}
+
 struct LocalRuntime {
     child: Child,
     output: BufReader<ChildStdout>,
     origin: String,
-    api_key: String,
 }
 
 impl LocalRuntime {
-    async fn start(project: &Path) -> Result<Self> {
+    async fn start(project: &Path, api_key: Option<&str>) -> Result<Self> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .arg("--sdk-host")
             .arg(local_project::sdk_host())
-            .arg("--project-id")
-            .arg("default")
             .arg("--project")
             .arg(project)
+            .env_remove("DURABLE_ACTORS_PROJECT_ID")
             .env_remove("DURABLE_ACTORS_SECRET")
             .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(api_key) = api_key {
+            command.env("DURABLE_ACTORS_SECRET", api_key);
+        }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        let (origin, startup_output) = timeout(Duration::from_secs(20), async {
+        let origin = timeout(Duration::from_secs(20), async {
             let mut line = String::new();
-            let mut startup_output = String::new();
             let mut origin = None;
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
                     "runtime exited before readiness: {line}"
                 );
-                startup_output.push_str(&line);
                 if let Some((_, value)) = line.split_once("  Ready  ") {
                     origin = Some(value.trim().to_owned());
                 }
-                if line.trim_start().starts_with("DURABLE_ACTORS_SECRET=") {
-                    return Ok::<_, anyhow::Error>((
-                        origin.context("missing origin")?,
-                        startup_output,
-                    ));
+                if line.contains("durable-actors generate --remote") {
+                    return origin.context("missing origin");
                 }
                 line.clear();
             }
         })
         .await??;
-        let api_key = startup_output
-            .lines()
-            .find_map(|line| {
-                line.trim()
-                    .strip_prefix("DURABLE_ACTORS_SECRET='")?
-                    .strip_suffix('\'')
-            })
-            .context("missing generated shared secret in .env output")?
-            .to_owned();
-        ensure!(api_key.len() >= 32, "generated shared secret is too short");
-        assert!(!project.join(".durable-actors/api-key").exists());
-        assert!(!project.join(".durable-actors/runtime.json").exists());
         Ok(Self {
             child,
             output,
             origin,
-            api_key,
         })
     }
 
     async fn contract(&self) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
             .get(format!(
-                "{}/v1/projects/default/deployment/contract",
+                "{}/v1/projects/local/deployment/contract",
                 self.origin
             ))
-            .bearer_auth(&self.api_key)
             .send()
             .await?)
     }
@@ -162,7 +212,6 @@ impl LocalRuntime {
         })
         .await??;
         ensure!(status.success(), "runtime exited with {status}: {output}");
-        assert!(!output.contains(&self.api_key));
         Ok(())
     }
 }

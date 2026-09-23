@@ -16,7 +16,7 @@ Define your actors in `src/actors.ts`. The starter contains a counter with persi
 In your separate application project's directory:
 
 1. Run `pnpm add durable-actors`.
-2. Copy the project ID, URL, and shared secret printed by the actor server into your application’s `.env` file.
+2. Use the local defaults: project `local`, URL `http://127.0.0.1:7100`, and no secret. If you configure a different project, port, or optional secret on the actor server, put matching settings in your application’s `.env` file.
 3. Run `pnpm exec durable-actors generate --remote`; the CLI loads `.env` automatically.
 
 Your application backend can then use the generated client:

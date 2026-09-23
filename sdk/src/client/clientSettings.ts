@@ -8,9 +8,15 @@ function configuredSettings(options: unknown) {
     if (!result.success)
         throw new ActorConfigurationError(`durable-actors client settings are invalid: ${result.error.message}`)
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(controlPlaneUrl).hostname)
+    const projectId = result.data.projectId ?? (local ? "local" : undefined)
+    if (projectId === undefined)
+        throw new ActorConfigurationError(
+            "durable-actors client settings are invalid: projectId is required for remote connections"
+        )
     return {
         credential: result.data.apiKey,
-        projectId: result.data.projectId,
+        projectId,
         homeRegion: result.data.homeRegion,
         controlPlaneUrl
     }
@@ -38,8 +44,8 @@ function validateOrigin(origin: string): string {
 }
 
 const clientOptionsSchema = z.strictObject({
-    projectId: projectIdSchema,
-    apiKey: z.string().trim().min(1),
+    projectId: projectIdSchema.optional(),
+    apiKey: z.string().trim().min(1).optional(),
     homeRegion: z
         .string()
         .regex(/^[A-Za-z0-9._-]+$/u)
@@ -47,4 +53,8 @@ const clientOptionsSchema = z.strictObject({
     controlPlaneUrl: z.string().url()
 })
 
-export { configuredSettings }
+function authorizationHeaders(credential: string | undefined): Record<string, string> {
+    return credential === undefined ? {} : { authorization: `Bearer ${credential}` }
+}
+
+export { authorizationHeaders, configuredSettings }

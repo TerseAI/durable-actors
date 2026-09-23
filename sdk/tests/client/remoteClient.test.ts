@@ -8,54 +8,60 @@ import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
 import { ActorInvocationError } from "../../src/errors.js"
 
-test("API-key clients invoke, connect, and broadcast", async () => {
-    const requests: string[] = []
-    const client = new RemoteActorClient(undefined, {
-        environment: {
-            DURABLE_ACTORS_PROJECT_ID: "default",
-            DURABLE_ACTORS_SECRET: "backend-key",
-            DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
-        },
-        telemetry: () => {},
-        fetch: async (url, options) => {
-            requests.push(String(url))
-            assert.equal(new Headers(options?.headers).get("authorization"), "Bearer backend-key")
-            const socket = String(url).endsWith("/find-websocket")
-            assert.deepEqual(JSON.parse(String(options?.body)), socket ? { metadata: {} } : {})
-            if (socket)
+for (const local of [false, true]) {
+    test(`${local ? "Unauthenticated local" : "API-key"} clients invoke, connect, and broadcast`, async () => {
+        const requests: string[] = []
+        const client = new RemoteActorClient(undefined, {
+            environment: local
+                ? {}
+                : {
+                      DURABLE_ACTORS_PROJECT_ID: "default",
+                      DURABLE_ACTORS_SECRET: "backend-key",
+                      DURABLE_ACTORS_CONTROL_PLANE_URL: "https://control.example.com"
+                  },
+            telemetry: () => {},
+            fetch: async (url, options) => {
+                requests.push(String(url))
+                assert.equal(new Headers(options?.headers).get("authorization"), local ? null : "Bearer backend-key")
+                const socket = String(url).endsWith("/find-websocket")
+                assert.deepEqual(JSON.parse(String(options?.body)), socket ? { metadata: {} } : {})
+                if (socket)
+                    return Response.json({
+                        websocketUrl: "wss://host.example.com/v1/socket?key=socket-ticket",
+                        key: "socket-ticket"
+                    })
                 return Response.json({
-                    websocketUrl: "wss://host.example.com/v1/socket?key=socket-ticket",
-                    key: "socket-ticket"
-                })
-            return Response.json({
-                route: "https://host.example.com",
-                token: "invocation-ticket",
-                ownerEpoch: 1,
+                    route: "https://host.example.com",
+                    token: "invocation-ticket",
+                    ownerEpoch: 1,
 
-                expiresAtMs: 4_000_000_000_000
-            })
-        },
-        actorHost: {
-            async publish() {},
-            async invoke(target, invocation) {
-                assert.equal(target.token, "invocation-ticket")
-                assert.equal(invocation.actorId, "one")
-                return { type: "completed", result: 7, effects: [] }
+                    expiresAtMs: 4_000_000_000_000
+                })
+            },
+            actorHost: {
+                async publish() {},
+                async invoke(target, invocation) {
+                    assert.equal(target.token, "invocation-ticket")
+                    assert.equal(invocation.actorId, "one")
+                    return { type: "completed", result: 7, effects: [] }
+                }
+            },
+            async connectWebSocket(url) {
+                assert.equal(url, "wss://host.example.com/v1/socket?key=socket-ticket")
+                return {} as ActorConnection
             }
-        },
-        async connectWebSocket(url) {
-            assert.equal(url, "wss://host.example.com/v1/socket?key=socket-ticket")
-            return {} as ActorConnection
-        }
+        })
+        assert.equal(await client.invoke("Counter", "one", "increment", []), 7)
+        await client.connect("Counter", "one", {})
+        await client.broadcast("Counter", "one", "updated")
+        const origin = local ? "http://127.0.0.1:7100" : "https://control.example.com"
+        const project = local ? "local" : "default"
+        assert.deepEqual(requests, [
+            `${origin}/v1/projects/${project}/actors/Counter/one/find-actor`,
+            `${origin}/v1/projects/${project}/actors/Counter/one/find-websocket`
+        ])
     })
-    assert.equal(await client.invoke("Counter", "one", "increment", []), 7)
-    await client.connect("Counter", "one", {})
-    await client.broadcast("Counter", "one", "updated")
-    assert.deepEqual(requests, [
-        "https://control.example.com/v1/projects/default/actors/Counter/one/find-actor",
-        "https://control.example.com/v1/projects/default/actors/Counter/one/find-websocket"
-    ])
-})
+}
 
 test("target expiry uses real time even when workflow Date.now is frozen", async () => {
     const originalNow = Date.now

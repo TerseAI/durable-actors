@@ -28,7 +28,7 @@ export function registerDevCommand(program: Command): void {
         .description("Run local actors and reload code changes")
         .option("--no-watch", "disable automatic code reload")
         .addOption(
-            new Option("--port <number>", "loopback port (0 selects a free port)")
+            new Option("--port <number>", "localhost port (0 selects a free port)")
                 .env("DURABLE_ACTORS_PORT")
                 .argParser(portNumber)
                 .default(7100)
@@ -85,7 +85,16 @@ async function runDevRuntime(options: DevOptions, project: string): Promise<numb
     const connection = runtimeConnection(runtime.readiness!, runtime.exited)
     const settings = connection.then(value =>
         configuredSettings(
-            z.object({ projectId: z.string(), controlPlaneUrl: z.string(), apiKey: z.string() }).parse(value)
+            z
+                .object({
+                    projectId: z.string(),
+                    controlPlaneUrl: z.string(),
+                    apiKey: z
+                        .string()
+                        .nullish()
+                        .transform(value => value ?? undefined)
+                })
+                .parse(value)
         )
     )
     const client = settings.then(settings => new ControlPlaneClient(settings, fetch))

@@ -125,21 +125,23 @@ pub(crate) trait AdminRegistry: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct AdminService {
-    api_key: String,
+    api_key: Option<String>,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
 }
 
 impl AdminService {
     pub(crate) fn new(
-        api_key: String,
+        api_key: Option<String>,
         registry: std::sync::Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
     ) -> Result<Self> {
-        ensure!(
-            !api_key.is_empty() && api_key.trim() == api_key,
-            "API key is invalid"
-        );
+        if let Some(api_key) = &api_key {
+            ensure!(
+                !api_key.is_empty() && api_key.trim() == api_key,
+                "API key is invalid"
+            );
+        }
         Ok(Self {
             api_key,
             registry,
@@ -177,13 +179,16 @@ impl AdminService {
     }
 
     pub(crate) fn authenticate(&self, authorization: &str) -> Result<()> {
+        let Some(api_key) = &self.api_key else {
+            return Ok(());
+        };
         let token = authorization
             .strip_prefix("Bearer ")
             .context("admin credential must use Bearer authentication")?;
         ensure!(
             !token.is_empty()
                 && token.trim() == token
-                && bool::from(token.as_bytes().ct_eq(self.api_key.as_bytes())),
+                && bool::from(token.as_bytes().ct_eq(api_key.as_bytes())),
             "admin credential is invalid"
         );
         Ok(())

@@ -16,7 +16,7 @@ import type { JsonValue } from "../json.js"
 
 import { GrpcActorHostTransport } from "./actorHostGrpc.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./actorHostGrpc.js"
-import { configuredSettings } from "./clientSettings.js"
+import { authorizationHeaders, configuredSettings } from "./clientSettings.js"
 import { SocketConnection } from "./socketConnection.js"
 import { LatencyTimeline, stderrTelemetry } from "./telemetry.js"
 import type { TelemetrySink } from "./telemetry.js"
@@ -99,7 +99,7 @@ class RemoteActorClient {
             `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/find-websocket`,
             {
                 method: "POST",
-                headers: { authorization: `Bearer ${this.settings.credential}`, "content-type": "application/json" },
+                headers: { ...authorizationHeaders(this.settings.credential), "content-type": "application/json" },
                 body: JSON.stringify({
                     metadata: attachment,
                     homeRegion: this.settings.homeRegion
@@ -236,7 +236,7 @@ class RemoteActorClient {
                 method: "POST",
                 headers: {
                     accept: "application/json",
-                    authorization: `Bearer ${this.settings.credential}`,
+                    ...authorizationHeaders(this.settings.credential),
                     "x-request-id": invocation.requestId,
                     "content-type": "application/json"
                 },
@@ -359,14 +359,14 @@ type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "act
 
 interface RemoteActorSettings {
     readonly projectId: string
-    readonly credential: string
+    readonly credential: string | undefined
     readonly homeRegion?: string
     readonly controlPlaneUrl: string
 }
 
 interface DurableActorsClientOptions {
-    readonly projectId: string
-    readonly apiKey: string
+    readonly projectId?: string
+    readonly apiKey?: string
     readonly homeRegion?: string
     readonly controlPlaneUrl: string
 }

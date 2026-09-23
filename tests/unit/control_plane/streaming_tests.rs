@@ -584,7 +584,7 @@ impl Stack {
         let gateway = serve_gateway(
             &mut tasks,
             service,
-            AdminService::new("test-api-key".into(), registry, issuer.clone())?,
+            AdminService::new(Some("test-api-key".into()), registry, issuer.clone())?,
         )
         .await?;
         let token = issuer

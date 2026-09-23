@@ -116,3 +116,18 @@ for (const quiet of [false, true]) {
         )
     })
 }
+
+test("local runtime defaults accept an unauthenticated server", async () => {
+    await fixture(
+        `const fs = require("node:fs");
+        require("node:assert/strict").equal(process.argv.includes("--project-id"), false);
+        fs.writeSync(3, JSON.stringify({projectId:"local", controlPlaneUrl:"http://127.0.0.1:7100", apiKey:null, storageRegion:"local", pid:process.pid}));
+        fs.closeSync(3);
+        process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`,
+        async () => {
+            const runtime = await startLocalActors({ entrypoint: "src/actors.ts" })
+            assert.equal(runtime.connection.apiKey, undefined)
+            await runtime.stop()
+        }
+    )
+})
