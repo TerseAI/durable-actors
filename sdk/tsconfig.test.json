@@ -8,5 +8,5 @@
         "rootDir": "."
     },
     "include": ["src/**/*.ts", "tests/**/*.ts"],
-    "exclude": []
+    "exclude": ["tests/fixtures/next-client"]
 }

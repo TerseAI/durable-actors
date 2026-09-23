@@ -17,7 +17,7 @@ function registerGenerateCommand(program: Command): void {
         .command("generate")
         .argument("[entrypoint]", "actor source file to compile instead of fetching from the server")
         .description("Generate actor clients from the running server or an explicit source file")
-        .option("--out-dir <directory>", "generated source directory", "generated")
+        .option("--out-dir <directory>", "generated JavaScript and declaration directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
         .option("--control-plane-url <url>", "control-plane origin (overrides DURABLE_ACTORS_CONTROL_PLANE_URL)")
         .addHelpText("after", connectionHelp)

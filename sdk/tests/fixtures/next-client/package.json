@@ -1,0 +1,14 @@
+{
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "next": "*",
+        "react": "*",
+        "react-dom": "*"
+    },
+    "devDependencies": {
+        "typescript": "*",
+        "@types/react": "*",
+        "@types/node": "*"
+    }
+}

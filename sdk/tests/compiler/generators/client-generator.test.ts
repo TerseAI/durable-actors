@@ -75,7 +75,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     checkTypes(consumer)
     const proxyFile = path.join(directory, "proxy.mjs")
     await build({
-        entryPoints: [path.join(directory, "index.ts")],
+        entryPoints: [path.join(directory, "index.js")],
         bundle: true,
         platform: "node",
         format: "esm",
@@ -211,7 +211,7 @@ test("generates backend contracts for actors without outgoing application messag
             ],
             directory
         )
-        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export type Outgoing = never/)
+        assert.match(await readFile(path.join(directory, "index.d.ts"), "utf8"), /type Outgoing = never/)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -258,9 +258,9 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             })),
             directory
         )
-        checkTypes(path.join(directory, "index.ts"))
+        checkTypes(path.join(directory, "index.d.ts"))
         await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -268,7 +268,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             logLevel: "silent"
         })
         await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "node",
             format: "esm",
@@ -306,13 +306,13 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             ],
             directory
         )
-        const source = await readFile(path.join(directory, "index.ts"), "utf8")
+        const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
         assert.doesNotMatch(source, /durable-actors\/browser|createClient|export const clients/)
         assert.match(source, /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
-        assert.deepEqual((await readdir(directory)).sort(), ["index.ts", "runtime"])
+        assert.deepEqual((await readdir(directory)).sort(), ["index.d.ts", "index.js", "package.json", "runtime"])
         assert.doesNotMatch(source, /validators/)
-        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export const actors/)
+        assert.match(await readFile(path.join(directory, "index.d.ts"), "utf8"), /export declare const actors/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(
             consumer,
@@ -330,7 +330,7 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
         )
         checkTypes(consumer)
         const bundle = await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -373,10 +373,9 @@ test("each actor module exposes complete unprefixed contract types", async t => 
         })),
         directory
     )
-    const source = await readFile(path.join(directory, "index.ts"), "utf8")
-    for (const name of ["Counter", "Room"]) assert.ok(source.includes(`export namespace ${name} {`))
-    for (const type of ["Metadata", "Incoming", "Outgoing", "State"])
-        assert.ok(source.includes(`export interface ${type} {`))
+    const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
+    for (const name of ["Counter", "Room"]) assert.ok(source.includes(`namespace ${name} {`))
+    for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) assert.ok(source.includes(`interface ${type} {`))
     assert.match(source, /count: number/)
     assert.doesNotMatch(source, /ActorNames|FieldCount/)
     assert.doesNotMatch(source, /ActorConnection|createClient|export const clients/)
@@ -464,7 +463,7 @@ function checkTypes(consumer: string): void {
     const options: ts.CompilerOptions = {
         strict: true,
         noEmit: true,
-        skipLibCheck: true,
+        skipLibCheck: false,
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -487,10 +486,17 @@ test("regeneration replaces managed runtime files and preserves application file
     const runtime = path.join(directory, "runtime")
     const files = await readdir(runtime)
     await writeFile(path.join(runtime, "stale.js"), "throw new Error('stale runtime')")
-    await writeFile(path.join(runtime, "client.ts"), "throw new Error('edited runtime')")
+    await writeFile(path.join(runtime, "client.js"), "throw new Error('edited runtime')")
+    await writeFile(path.join(directory, "index.ts"), "export const actors = {}")
     await writeFile(path.join(directory, "backend.ts"), "export const application = true")
     await generateClient([], directory)
     assert.deepEqual(await readdir(runtime), files)
-    assert.match(await readFile(path.join(runtime, "client.ts"), "utf8"), /class HttpActorClient/)
+    const consumer = path.join(directory, "consumer.ts")
+    await writeFile(
+        consumer,
+        'import { actors, ActorProxy } from "./index.js"; const proxy: typeof ActorProxy = ActorProxy'
+    )
+    checkTypes(consumer)
+    assert.match(await readFile(path.join(runtime, "client.js"), "utf8"), /class HttpActorClient/)
     assert.equal(await readFile(path.join(directory, "backend.ts"), "utf8"), "export const application = true")
 })

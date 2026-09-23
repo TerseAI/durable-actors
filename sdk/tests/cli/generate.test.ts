@@ -39,7 +39,7 @@ test("generate accepts a control-plane URL overriding environment settings and d
         env: localEnv
     })
     assert.match(result.stdout, /Generated 1 actor contract/u)
-    assert.match(await readFile(path.join(directory, "generated/index.ts"), "utf8"), /export const actors/u)
+    assert.match(await readFile(path.join(directory, "generated/index.js"), "utf8"), /export const actors/u)
     assert.deepEqual(requests, ["/v1/projects/local/deployment/contract"])
 })
 
@@ -80,7 +80,7 @@ test("generate defaults to the server using .env settings and exported environme
     }
     const result = await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/)
-    assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
+    assert.ok((await readdir(path.join(directory, "generated"))).includes("index.js"))
     await writeFile(
         envFile,
         "DURABLE_ACTORS_PROJECT_ID=wrong\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_SECRET=wrong\n"
@@ -123,7 +123,7 @@ test("generate loads .env.local before .env and preserves exported environment o
     await writeFile(localFile, `DURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`)
     const result = await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/u)
-    assert.match(await readFile(path.join(directory, "generated/index.ts"), "utf8"), /export const actors/u)
+    assert.match(await readFile(path.join(directory, "generated/index.js"), "utf8"), /export const actors/u)
     assert.deepEqual(requests, ["/v1/projects/local/deployment/contract"])
 
     await writeFile(
@@ -198,11 +198,12 @@ test("a separate consumer generates identical clients from the deployed contract
     const local = path.join(author, "generated")
     const entries = await readdir(local, { recursive: true })
     const files = entries.filter(file => file !== "runtime")
-    for (const file of ["index.ts"]) assert.ok(files.includes(file), `missing ${file}`)
+    for (const file of ["index.js", "index.d.ts", "runtime/index.js", "runtime/index.d.ts"])
+        assert.ok(files.includes(file), `missing ${file}`)
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
-    assert.ok(files.includes("runtime/index.ts"))
+    assert.ok(files.includes("runtime/index.js"))
     const requests: string[] = []
     const publication = {
         contractHash: `sha256:${"a".repeat(64)}`,
@@ -258,7 +259,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-errors-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "generated"))
-    await writeFile(path.join(directory, "generated/index.ts"), "keep existing output")
+    await writeFile(path.join(directory, "generated/index.js"), "keep existing output")
     const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
     let status = 200
     let body: unknown = {
@@ -298,8 +299,8 @@ test("generate rejects remote errors and invalid inputs before changing output",
     status = 404
     body = { error: { code: "contract_not_found", message: "No public actor contract is published" } }
     await assert.rejects(generate(), /No public actor contract is published/)
-    assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.ts"])
-    assert.equal(await readFile(path.join(directory, "generated/index.ts"), "utf8"), "keep existing output")
+    assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.js"])
+    assert.equal(await readFile(path.join(directory, "generated/index.js"), "utf8"), "keep existing output")
 })
 
 test("generate needs no project or secret for a local server", async t => {

@@ -138,7 +138,8 @@ async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Re
         "CLI failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(consumer.path().join("generated/index.ts").exists());
+    assert!(consumer.path().join("generated/index.js").exists());
+    assert!(consumer.path().join("generated/index.d.ts").exists());
     runtime.stop().await
 }
 

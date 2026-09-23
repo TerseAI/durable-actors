@@ -12,6 +12,7 @@ async function generateClient(
 ): Promise<void> {
     const artifacts = await generateTypeScript(input)
     await mkdir(directory, { recursive: true })
+    await rm(path.join(directory, "index.ts"), { force: true })
     await rm(path.join(directory, "runtime"), { recursive: true, force: true })
     for (const [file, contents] of artifacts) {
         const destination = path.join(directory, file)

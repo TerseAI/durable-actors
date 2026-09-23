@@ -27,9 +27,9 @@ test("public codegen returns the same typed artifacts as file generation", async
 
     const files = await generateTypeScript(contracts)
     assert.deepEqual(await readdir(directory), [])
-    assert.ok(files.has("runtime/client.ts"))
-    assert.ok(files.has("runtime/index.ts"))
-    assert.match(files.get("index.ts"), /userId: string/)
+    assert.ok(files.has("runtime/client.js"))
+    assert.ok(files.has("runtime/index.js"))
+    assert.match(files.get("index.d.ts"), /userId: string/)
     await generateClient(contracts, directory)
     for (const [name, contents] of files) {
         assert.equal(await readFile(path.join(directory, name), "utf8"), contents)
@@ -39,8 +39,8 @@ test("public codegen returns the same typed artifacts as file generation", async
 test("public codegen supports projects without actors", async () => {
     const { generateTypeScript } = await import("durable-actors/codegen")
     const files = await generateTypeScript([])
-    assert.ok(files.has("runtime/client.ts"))
-    assert.ok(files.has("runtime/index.ts"))
+    assert.ok(files.has("runtime/client.js"))
+    assert.ok(files.has("runtime/index.js"))
 })
 
 test("public contract generation writes a backend module and a self-contained runtime", async t => {
@@ -76,11 +76,11 @@ test("public contract generation writes a backend module and a self-contained ru
         ]
     }
     const files = await generateTypeScript(contract)
-    assert.ok(files.has("runtime/client.ts"))
-    assert.ok(files.has("runtime/index.ts"))
-    assert.match(files.get("index.ts"), /export const actors/)
-    assert.doesNotMatch(files.get("index.ts"), /export const clients|createClient/)
-    assert.match(files.get("index.ts"), /export class ActorProxy/)
+    assert.ok(files.has("runtime/client.js"))
+    assert.ok(files.has("runtime/index.js"))
+    assert.match(files.get("index.js"), /export const actors/)
+    assert.doesNotMatch(files.get("index.js"), /export const clients|createClient/)
+    assert.match(files.get("index.js"), /export class ActorProxy/)
     await generateClient(contract, directory)
     assert.deepEqual((await readdir(directory, { recursive: true })).filter(file => file !== "runtime").sort(), [...files.keys()].sort())
     for (const [file, source] of files) assert.equal(await readFile(path.join(directory, file), "utf8"), source)

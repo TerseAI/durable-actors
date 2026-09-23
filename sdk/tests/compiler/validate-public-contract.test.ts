@@ -104,7 +104,7 @@ test("contract validation permits schema-like property names and recursive local
     }
     assert.deepEqual(parsePublicContract(document), document)
     const files = await generateTypeScript(document)
-    const code = files.get("index.ts")!
+    const code = files.get("index.d.ts")!
     assert.match(code, /next\?: SendMessageResult/)
     const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
     const variables = source.statements
