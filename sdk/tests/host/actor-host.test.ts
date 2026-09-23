@@ -7,17 +7,18 @@ import { createInterface } from "node:readline"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 
+import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorSession, parseHostSettings, serializeWithinBytes } from "../../src/host/actor-host.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 
-test("discovers actors only inside the first execution Worker", { timeout: 5_000 }, async () => {
+test("loads a prepared JavaScript artifact only inside the first execution Worker", { timeout: 5_000 }, async () => {
     const root = await mkdtemp("/tmp/actor-discovery-")
-    const entrypoint = `${root}/actors.ts`
-    const fixture = fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url))
+    const entrypoint = `${root}/actors.js`
+    const fixture = await actorBundle()
     await writeFile(`${root}/package.json`, JSON.stringify({ type: "module" }))
     await writeFile(
         entrypoint,
-        `import { isMainThread } from "node:worker_threads"; if (isMainThread) throw new Error("customer code loaded in supervisor"); export { SessionCounter } from ${JSON.stringify(fixture)};`
+        `import { isMainThread } from "node:worker_threads"; if (isMainThread) throw new Error("customer code loaded in supervisor"); export * from ${JSON.stringify(fixture)};`
     )
     const server = createServer(socket => {
         const lines = createInterface({ input: socket })
@@ -49,7 +50,7 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_ACTORS_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
-            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url)),
+            DURABLE_ACTORS_ENTRYPOINT: await actorBundle(),
             DURABLE_ACTORS_HOST_STARTUP_MS: "20"
         }),
         () => ({
@@ -121,7 +122,7 @@ test("the actor session carries only owned execution commands", async t => {
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_ACTORS_EXECUTOR_SOCKET: socketPath,
-            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_ENTRYPOINT: await actorBundle()
         }),
         options => {
             const supervisor = new ActorWorkerSupervisor(options)
@@ -284,7 +285,7 @@ test("a failed session connection cleans up the speculative Worker", async () =>
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_ACTORS_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
-            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_ENTRYPOINT: await actorBundle()
         }),
         () => ({
             async ready() {
@@ -348,7 +349,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_ACTORS_EXECUTOR_SOCKET: `${root}/executor.sock`,
-            DURABLE_ACTORS_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+            DURABLE_ACTORS_ENTRYPOINT: await actorBundle()
         }),
         () => ({
             ready: async () => ["SessionCounter"],
@@ -367,3 +368,14 @@ test("reports resident instances when the Rust host advertises support", { timeo
         await rm(root, { recursive: true, force: true })
     }
 })
+
+let preparedFixture: Promise<string> | undefined
+
+function actorBundle(): Promise<string> {
+    return (preparedFixture ??= (async () => {
+        const source = fileURLToPath(new URL("../fixtures/actorSession.ts", import.meta.url))
+        const output = fileURLToPath(new URL("../fixtures/actorSession.mjs", import.meta.url))
+        await buildActor(source, output, { local: true })
+        return output
+    })())
+}

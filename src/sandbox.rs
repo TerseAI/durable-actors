@@ -11,6 +11,7 @@ use crate::host::HostId;
 
 mod command_process;
 mod local;
+mod local_store;
 pub(crate) mod pool;
 
 pub(crate) use local::LocalSandboxProvider;

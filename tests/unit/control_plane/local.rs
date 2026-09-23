@@ -49,7 +49,6 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     let options = DevOptions {
         project_id: "default".into(),
         api_key: Some("test-key".into()),
-        contract: None,
         project: cwd.clone(),
         port: 0,
         data_dir: Some(relative.into()),

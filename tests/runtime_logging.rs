@@ -1,3 +1,6 @@
+#[path = "support/local_project.rs"]
+mod local_project;
+
 use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
@@ -8,6 +11,7 @@ use tokio::{
 };
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()> {
     let runtime = LocalRuntime::start(None).await?;
     let client = reqwest::Client::new();
@@ -70,6 +74,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
 }
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn local_request_logs_respect_rust_log() -> Result<()> {
     let runtime = LocalRuntime::start(Some("warn")).await?;
     reqwest::get(format!("{}/healthz", runtime.origin))
@@ -113,7 +118,7 @@ struct LocalRuntime {
 impl LocalRuntime {
     async fn start(filter: Option<&str>) -> Result<Self> {
         let project = tempfile::tempdir()?;
-        std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+        local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args([
@@ -125,6 +130,8 @@ impl LocalRuntime {
                 "--entrypoint",
                 "actors.ts",
             ])
+            .arg("--sdk-host")
+            .arg(local_project::sdk_host())
             .arg("--project")
             .arg(project.path())
             .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
@@ -138,7 +145,7 @@ impl LocalRuntime {
         }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        let origin = timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
+        let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
         Ok(Self {
             _project: project,
             child,

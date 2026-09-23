@@ -30,8 +30,7 @@ use crate::{
 
 use super::{
     ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, ControlPlaneService,
-    admin::{AdminRegistry, AdminService, HostLaunchSpec, LocalAdminRegistry},
-    contracts::PublicActorContract,
+    admin::{AdminService, HostLaunchSpec, LocalAdminRegistry},
     public_api,
     service::SandboxHostProvisioner,
 };
@@ -65,8 +64,6 @@ pub struct DevOptions {
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
     pub sdk_host: Option<PathBuf>,
-    #[arg(long, hide = true)]
-    pub contract: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -103,12 +100,16 @@ pub async fn serve_local(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
     let storage = local_storage(&options, &directory, &origin).await?;
-    let provider = Arc::new(LocalSandboxProvider::new(
-        std::env::current_exe()?,
-        project.clone(),
-        storage.runtime.clone(),
-        options.sdk_host.clone(),
-    ));
+    let provider = Arc::new(
+        LocalSandboxProvider::new(
+            std::env::current_exe()?,
+            project.clone(),
+            storage.runtime.clone(),
+            options.sdk_host.clone(),
+            directory.join("local-hosts.sqlite3"),
+        )
+        .await?,
+    );
     let routes = local_routes(
         &options,
         &project,
@@ -116,6 +117,7 @@ pub async fn serve_local(
         &storage,
         provider.clone(),
         &api_key,
+        &directory,
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
@@ -287,8 +289,8 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     api_key: &str,
+    directory: &Path,
 ) -> Result<tonic::service::Routes> {
-    let contract = options.contract.as_deref().map(read_contract).transpose()?;
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -307,9 +309,6 @@ async fn local_routes(
         secret_refs: vec![],
     };
     let registry = Arc::new(LocalAdminRegistry::default());
-    registry
-        .register_deployment(&spec, contract.as_ref())
-        .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
@@ -331,8 +330,16 @@ async fn local_routes(
         provisioner,
     )
     .with_runtime_access(storage.access.clone())
+    .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
+        project.to_owned(),
+        directory.canonicalize()?.join("code"),
+        Arc::new(super::local_build::BunCodeCompiler::new(
+            options.sdk_host.clone(),
+        )),
+    )))
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
+    service.deploy_source(&admin, &spec, None).await?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
             .with_traces(service.traces.clone());
@@ -340,11 +347,6 @@ async fn local_routes(
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
-}
-
-fn read_contract(path: &Path) -> Result<PublicActorContract> {
-    let bytes = std::fs::read(path).context("read local actor contract")?;
-    PublicActorContract::new(serde_json::from_slice(&bytes).context("parse local actor contract")?)
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

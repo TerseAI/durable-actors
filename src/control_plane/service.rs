@@ -45,9 +45,18 @@ pub struct ControlPlaneService {
     registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
+    local_builds: Option<Arc<super::local_build::LocalBuilds>>,
 }
 
 impl ControlPlaneService {
+    pub(super) fn with_local_builds(
+        mut self,
+        builds: Arc<super::local_build::LocalBuilds>,
+    ) -> Self {
+        self.local_builds = Some(builds);
+        self
+    }
+
     pub(crate) fn with_runtime_access(
         mut self,
         access: Arc<crate::bucket::access::RuntimeAccess>,
@@ -75,6 +84,7 @@ impl ControlPlaneService {
             registry,
             provisioner,
             socket_events: None,
+            local_builds: None,
         }
     }
 
@@ -134,10 +144,18 @@ impl ControlPlaneService {
         let _update = self.deployment_update.lock().await;
         source.validate()?;
         let previous = admin.current_deployment(&source.project_id).await?;
-        let (prepared, mut compiled_contract) = self
-            .provisioner
-            .prepare_deployment(source, previous.as_ref(), self.default_region())
-            .await?;
+        let local_build = match &self.local_builds {
+            Some(builds) => Some(builds.prepare(source).await?),
+            None => None,
+        };
+        let (prepared, mut compiled_contract) = match &local_build {
+            Some(build) => (build.spec.clone(), Some(build.contract.clone())),
+            None => {
+                self.provisioner
+                    .prepare_deployment(source, previous.as_ref(), self.default_region())
+                    .await?
+            }
+        };
         if compiled_contract.is_none() && prepared.code_snapshot.is_some() {
             previous
                 .as_ref()
@@ -155,12 +173,17 @@ impl ControlPlaneService {
                 "supplied actor contract differs from compiled actor code"
             );
         }
-        self.register_deployment(
-            admin,
-            &prepared,
-            compiled_contract.as_ref().or(supplied_contract),
-        )
-        .await
+        let changed = self
+            .register_deployment(
+                admin,
+                &prepared,
+                compiled_contract.as_ref().or(supplied_contract),
+            )
+            .await?;
+        if let Some(build) = local_build {
+            build.commit().await;
+        }
+        Ok(changed)
     }
 
     pub(super) async fn delete_deployment(
@@ -786,13 +809,10 @@ impl HostProvisioner for SandboxHostProvisioner {
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
     )> {
-        let Some(image) = &self.runtime_image else {
-            ensure!(
-                source.image_ref == "local",
-                "local control plane requires a local deployment"
-            );
-            return Ok((source.clone(), None));
-        };
+        let image = self
+            .runtime_image
+            .as_ref()
+            .context("hosted code preparation requires a runtime image")?;
         let input = super::admin::DeploymentSource::from(source);
         if let Some(previous) = previous.filter(|old| {
             old.source.as_ref() == Some(&input)

@@ -7,11 +7,11 @@ import { parseHostSettings } from "../../src/host/actor-host.js"
 test("a managed socket needs no local actor credentials", () => {
     const settings = parseHostSettings({
         DURABLE_ACTORS_EXECUTOR_SOCKET: "/tmp/durable-actors.sock",
-        DURABLE_ACTORS_ENTRYPOINT: "src/custom-actors.ts"
+        DURABLE_ACTORS_ENTRYPOINT: "dist/custom-actors.mjs"
     })
 
     assert.equal(settings.socketPath, "/tmp/durable-actors.sock")
-    assert.equal(settings.actorEntrypoint, "src/custom-actors.ts")
+    assert.equal(settings.actorEntrypoint, "dist/custom-actors.mjs")
     assert.equal(settings.startupTimeoutMs, 10_000)
     assert.equal(settings.actorIdleTimeoutMs, 60_000)
 })

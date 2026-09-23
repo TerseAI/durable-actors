@@ -1,3 +1,6 @@
+#[path = "support/local_project.rs"]
+mod local_project;
+
 use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
@@ -52,11 +55,14 @@ async fn control_plane_accepts_new_configuration_names() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
     let mut child = runtime()
         .arg("dev")
+        .arg("--sdk-host")
+        .arg(local_project::sdk_host())
         .env("DURABLE_ACTORS_PROJECT", project.path())
         .envs([
             ("DURABLE_ACTORS_PROJECT_ID", "new-project"),

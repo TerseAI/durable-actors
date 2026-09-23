@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks"
-import { fileURLToPath } from "node:url"
 import { parentPort, workerData } from "node:worker_threads"
 
 import { Actor, findActorDefinition, registerActorClass } from "../actor/actor.js"
@@ -36,7 +35,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
     try {
         if (assigned) throw new Error("customer code already assigned")
         assigned = true
-        const actorNames = await loadActorEntrypoint(data.moduleUrl, data.schemas)
+        const actorNames = await loadActorEntrypoint(data.moduleUrl)
         let runtime: ActorRuntime | undefined
 
         port!.on("message", (message: ActorWorkerRequest) => {
@@ -116,17 +115,11 @@ function getConnections(): Promise<readonly SocketConnection[]> {
     })
 }
 
-async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSchema[] | undefined): Promise<string[]> {
-    if (schemas !== undefined) return registerActors(await loadTypeScript(moduleUrl), schemas)
+async function loadActorEntrypoint(moduleUrl: string): Promise<string[]> {
     const artifact = await import(moduleUrl)
     if (artifact.version !== ACTOR_ARTIFACT_VERSION || !Array.isArray(artifact.schemas) || !artifact.actors)
         throw new ActorConfigurationError("invalid actor artifact; redeploy using matching SDK and runtime versions")
     return registerActors(artifact.actors, artifact.schemas)
-}
-
-async function loadTypeScript(moduleUrl: string): Promise<Record<string, unknown>> {
-    requireTypeScriptSource(fileURLToPath(moduleUrl))
-    return await import(moduleUrl)
 }
 
 function registerActors(actorModule: Record<string, unknown>, schemas: readonly ActorSchema[]): string[] {
@@ -158,9 +151,4 @@ function registerActors(actorModule: Record<string, unknown>, schemas: readonly 
 
 function isActorClass(value: unknown): value is ActorClass {
     return typeof value === "function" && value.prototype instanceof Actor
-}
-
-function requireTypeScriptSource(filePath: string): void {
-    if (!/\.(?:ts|tsx|mts|cts)$/u.test(filePath) || /\.d\.[cm]?ts$/u.test(filePath))
-        throw new ActorConfigurationError("actor entrypoint must be a TypeScript source file")
 }

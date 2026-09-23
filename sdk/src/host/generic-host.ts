@@ -84,7 +84,7 @@ async function waitForCode(entrypoint: string): Promise<void> {
 
 const assignmentSchema = z.object({
     type: z.literal("load"),
-    entrypoint: z.string().endsWith(".mjs").refine(isAbsolute, "entrypoint must be absolute"),
+    entrypoint: z.string().refine(isAbsolute, "entrypoint must be absolute"),
     actorIdleTimeoutMs: z.number().int().positive().max(86_400_000)
 })
 

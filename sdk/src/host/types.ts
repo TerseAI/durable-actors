@@ -1,5 +1,4 @@
 import type { ActorIdentity } from "../actor/identity.js"
-import type { ActorSchema } from "../actor/schema.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 
 import type {
@@ -35,7 +34,6 @@ type ActorWorkerSupervisorFactory = (
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
-    readonly actorSchemas: readonly ActorSchema[] | undefined
     readonly actorIdleTimeoutMs?: number
     readonly createWorker?: ActorWorkerFactory
 }
@@ -45,7 +43,6 @@ interface ResidentActorWorkerOptions {
     readonly sequenceBase: number
     readonly onActiveActorsChange: () => void
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
     readonly worker?: ActorWorkerHandle
     readonly createWorker: ActorWorkerFactory

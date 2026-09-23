@@ -7,7 +7,7 @@ import { test } from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
 
-import type { ActorSchema } from "../../src/actor/schema.js"
+import { ACTOR_ARTIFACT_VERSION } from "../../src/actor/schema.js"
 import { ActorConfigurationError, ActorDefinitionError } from "../../src/errors.js"
 import { resolveActorEntrypoint } from "../../src/host/actor-host.js"
 import type { ActorWorkerMessage } from "../../src/host/protocol.js"
@@ -28,37 +28,7 @@ test("resolves the conventional built actor entrypoint", async () => {
 })
 
 test("rejects a configured actor entrypoint that does not exist", async () => {
-    await assert.rejects(resolveActorEntrypoint("./missing-actors.ts"), ActorConfigurationError)
-})
-
-test("uses the built entrypoint by default even when TypeScript source is present", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-compiled-"))
-    const previousDirectory = process.cwd()
-    try {
-        await mkdir(path.join(root, "src"))
-        await mkdir(path.join(root, "dist"))
-        await writeFile(path.join(root, "src/actors.ts"), "export {}\n")
-        await writeFile(path.join(root, "dist/actors.mjs"), "export {}\n")
-        process.chdir(root)
-        assert.equal(
-            await realpath(fileURLToPath(await resolveActorEntrypoint(undefined))),
-            await realpath(path.join(root, "dist/actors.mjs"))
-        )
-    } finally {
-        process.chdir(previousDirectory)
-        await rm(root, { recursive: true, force: true })
-    }
-})
-
-test("rejects configured JavaScript actor entrypoints", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-javascript-entrypoint-"))
-    try {
-        const entrypoint = path.join(root, "actors.js")
-        await writeFile(entrypoint, "export {}\n")
-        await assert.rejects(resolveActorEntrypoint(entrypoint), /TypeScript source/)
-    } finally {
-        await rm(root, { recursive: true, force: true })
-    }
+    await assert.rejects(resolveActorEntrypoint("./missing-actors.mjs"), ActorConfigurationError)
 })
 
 test("rejects an incompatible built actor artifact", async () => {
@@ -75,23 +45,20 @@ test("rejects an incompatible built actor artifact", async () => {
 test("loads only actors from an entrypoint with mixed exports", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-mixed-entrypoint-"))
     try {
-        const entrypoint = path.join(root, "mixed.mts")
+        const entrypoint = path.join(root, "mixed.mjs")
         const sdk = new URL("../../src/index.js", import.meta.url).href
         await writeFile(
             entrypoint,
             `import { Actor } from ${JSON.stringify(sdk)}
-            export { Actor }
-            export const limit = 10
-            export const empty = null
-            export const callback = () => 1
-            export function helper() { return limit }
-            export class Utility { value = 1 }
-            export default { limit }
-            export class MixedRoom extends Actor {}
-            export class MixedCounter extends Actor {}`
+            const limit = 10
+            class Utility { value = 1 }
+            class MixedRoom extends Actor {}
+            class MixedCounter extends Actor {}
+            export const actors = { Actor, limit, empty: null, callback: () => 1, helper: () => limit, Utility, default: { limit }, MixedRoom, MixedCounter }
+            export const version = ${ACTOR_ARTIFACT_VERSION}
+            export const schemas = ${JSON.stringify(["MixedCounter", "MixedRoom"].map(actorName => ({ actorName, fields: [] })))}`
         )
-        const schemas = ["MixedCounter", "MixedRoom"].map(actorName => ({ actorName, fields: [] }))
-        assert.deepEqual(await loadActorNames(pathToFileURL(entrypoint).href, schemas), ["MixedCounter", "MixedRoom"])
+        assert.deepEqual(await loadActorNames(pathToFileURL(entrypoint).href), ["MixedCounter", "MixedRoom"])
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -101,20 +68,27 @@ test("rejects invalid actor exports while ignoring unrelated exports", async () 
     const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-invalid-entrypoint-"))
     try {
         const sdk = new URL("../../src/index.js", import.meta.url).href
-        for (const [name, declaration, message] of [
-            ["default", "export default class Counter extends Actor {}", /named exports/],
-            ["alias", "class Counter extends Actor {}; export { Counter as Renamed }", /same class name/],
-            ["indirect", "class Base extends Actor {}; export class Counter extends Base {}", /directly extends Actor/],
-            ["non-actor", "export class Utility {}", /named actor exports/]
+        for (const [name, declaration, actors, message] of [
+            ["default", "class Counter extends Actor {}", "{ default: Counter }", /named exports/],
+            ["alias", "class Counter extends Actor {}", "{ Renamed: Counter }", /same class name/],
+            [
+                "indirect",
+                "class Base extends Actor {}; class Counter extends Base {}",
+                "{ Counter }",
+                /directly extends Actor/
+            ],
+            ["non-actor", "class Utility {}", "{ Utility }", /named actor exports/]
         ] as const) {
-            const entrypoint = path.join(root, `${name}.mts`)
+            const entrypoint = path.join(root, `${name}.mjs`)
             await writeFile(
                 entrypoint,
                 `import { Actor } from ${JSON.stringify(sdk)}
-                export const helper = 1
-                ${declaration}`
+                ${declaration}
+                export const version = ${ACTOR_ARTIFACT_VERSION}
+                export const schemas = []
+                export const actors = { helper: 1, ...${actors} }`
             )
-            await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href, []), error => {
+            await assert.rejects(loadActorNames(pathToFileURL(entrypoint).href), error => {
                 assert.ok(error instanceof ActorDefinitionError)
                 assert.match(error.message, message)
                 return true
@@ -125,9 +99,9 @@ test("rejects invalid actor exports while ignoring unrelated exports", async () 
     }
 })
 
-async function loadActorNames(moduleUrl: string, schemas?: readonly ActorSchema[]): Promise<readonly string[]> {
+async function loadActorNames(moduleUrl: string): Promise<readonly string[]> {
     const worker = new Worker(new URL("../../src/host/actor-worker.js", import.meta.url), {
-        workerData: { moduleUrl, schemas }
+        workerData: { moduleUrl }
     })
     try {
         const [message] = (await once(worker, "message", { signal: AbortSignal.timeout(5_000) })) as [
