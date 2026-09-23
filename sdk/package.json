@@ -106,7 +106,7 @@
         "esbuild": "^0.28.2",
         "import-meta-resolve": "^4.2.0",
         "json-schema-to-typescript": "^16.0.0",
-        "durable-actors-observer": "workspace:0.1.0",
+        "durable-actors-observer": "workspace:*",
         "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",

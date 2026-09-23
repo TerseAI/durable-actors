@@ -268,7 +268,7 @@ importers:
         specifier: ^18.0.0
         version: 18.0.0
       durable-actors-observer:
-        specifier: workspace:0.1.0
+        specifier: workspace:*
         version: link:../packages/observer-ui
       esbuild:
         specifier: ^0.28.2
