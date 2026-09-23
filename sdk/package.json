@@ -112,12 +112,14 @@
         "tar": "^7.5.22",
         "typescript": "~5.9.3",
         "typescript-json-schema": "^0.68.0",
+        "validate-npm-package-name": "^6.0.2",
         "vite": "^8.3.0",
         "ws": "^8.18.3",
         "zod": "^4.3.6"
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
+        "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
         "protobufjs": "^7.6.6",
         "typedoc": "^0.28.20",

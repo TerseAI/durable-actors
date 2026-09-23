@@ -14,7 +14,7 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.4.2+.
+Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
 
 ### Create your actor project in your directory of choice
 

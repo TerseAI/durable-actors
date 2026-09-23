@@ -44,7 +44,7 @@ async function bundleActor(
         sourcemap: options.local ? "inline" : false,
         platform: "node",
         format: "esm",
-        target: "esnext",
+        target: "es2022",
         keepNames: true,
         write: false,
         logLevel: "silent"

@@ -1,5 +1,5 @@
 {
-    "name": "my-actors",
+    "name": "durable-actors-example-actor",
     "private": true,
     "type": "module",
     "engines": {

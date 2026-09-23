@@ -4,7 +4,7 @@ An Express + React app that streams replies with the Vercel AI SDK and saves con
 
 ## Run locally
 
-Requires Node.js 22.19+, Bun 1.4.2+, and an OpenAI API key.
+Requires Node.js 22.19+, Bun 1.3.9+, and an OpenAI API key.
 
 ```sh
 npx durable-actors init ai-chat-example --template ai-chat
