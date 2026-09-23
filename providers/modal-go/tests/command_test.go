@@ -115,8 +115,8 @@ func TestDeploymentBuildPublishesAfterCompilationAndAlwaysStopsTheBuilder(t *tes
 		if err := runCommand(context.Background(), input, &output, factory, time.Now); err != nil {
 			t.Fatal(err)
 		}
-		if api.params.MemoryMiB != 4096 || api.params.MemoryLimitMiB != 4096 {
-			t.Fatalf("compiler needs a dedicated 4 GiB sandbox: %+v", api.params)
+		if api.params.MemoryMiB != 0 || api.params.MemoryLimitMiB != 0 {
+			t.Fatalf("compiler must use Modal's default memory allocation without an explicit hard cap: %+v", api.params)
 		}
 		if len(sb.calls) < 3 || sb.calls[0] != "build:/project:src/actors.ts" || sb.calls[len(sb.calls)-2] != "terminate" || sb.calls[len(sb.calls)-1] != "detach" {
 			t.Fatalf("build lifecycle: %v, %s", sb.calls, output.String())
