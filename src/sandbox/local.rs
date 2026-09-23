@@ -455,10 +455,6 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
             directory.path().join("ready").display().to_string(),
         ),
         (
-            "DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS",
-            request.actor_idle_timeout_seconds.to_string(),
-        ),
-        (
             "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS",
             request.host_idle_timeout_ms.to_string(),
         ),

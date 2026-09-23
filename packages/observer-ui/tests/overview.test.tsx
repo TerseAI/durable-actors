@@ -6,6 +6,7 @@ import { requestSummary } from "../src/overview-data.js"
 
 const trace = (durationMs: number, outcome: RequestTrace["outcome"]): RequestTrace => ({
     sequence: 1,
+    projectId: "default",
     requestId: "request",
     hostId: "host",
     sessionId: "session",

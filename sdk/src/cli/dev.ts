@@ -6,6 +6,7 @@ import { z } from "zod"
 
 import { projectIdSchema } from "../actor/identity.js"
 import { configuredSettings } from "../client/clientSettings.js"
+import { projectSdkModule } from "../projectSdk.js"
 import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
 
 import { type ActorSourceWatcher, watchActorSources } from "./actor-source-watcher.js"
@@ -80,6 +81,8 @@ const developmentEnvironment = z.object({
 
 async function runDev(options: DevOptions): Promise<number> {
     const project = await developmentProject(options)
+    const local = await projectSdkModule(project, "./cli/dev.js", import.meta.url)
+    if (local !== undefined) return (await import(local)).runDev({ ...options, project })
     return runDevRuntime(options, project)
 }
 

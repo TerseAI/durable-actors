@@ -29,6 +29,7 @@ const page: RequestTracePage = {
     records: [
         {
             sequence: 2,
+            projectId: "default",
             requestId: "r2",
             hostId: "h",
             sessionId: "s",
@@ -44,6 +45,7 @@ const page: RequestTracePage = {
         },
         {
             sequence: 1,
+            projectId: "default",
             requestId: "r1",
             hostId: "h",
             sessionId: "s",

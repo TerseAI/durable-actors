@@ -15,6 +15,12 @@ import type { ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest } from "./
 const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
 
+let exiting = false
+// Bun 1.3 can drain microtasks after process.exit().
+process.once("exit", () => {
+    exiting = true
+})
+
 let assigned = false
 const invocation = new AsyncLocalStorage<number>()
 const publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
@@ -86,7 +92,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
 }
 
 function post(message: ActorWorkerMessage): void {
-    port!.postMessage(message)
+    if (!exiting) port!.postMessage(message)
 }
 
 function allowNextInvocation(): void {

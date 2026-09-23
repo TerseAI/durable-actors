@@ -4,7 +4,7 @@ An Express + React app that streams replies with the Vercel AI SDK and saves con
 
 ## Run locally
 
-Requires Node.js 22.19+, Bun 1.4.2+, and an OpenAI API key.
+Requires Node.js 22.19+, Bun 1.3.9+, and an OpenAI API key.
 
 ```sh
 npx durable-actors init ai-chat-example --template ai-chat
@@ -32,25 +32,20 @@ Open [localhost:3000](http://127.0.0.1:3000), send a message, and reload after t
 [ChatHistory](src/actors.ts) keeps one conversation per actor ID:
 
 ```ts
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
 export class ChatHistory extends Actor {
-    @Persisted private messages: ChatMessage[] = []
+    @Persisted private messages: UIMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: ChatMessage) {
+    async append(message: UIMessage) {
         this.messages.push(message)
         return this.messages
     }
-}
-
-export type ChatMessage = {
-    id: string
-    role: "system" | "user" | "assistant"
-    parts: { type: "text"; text: string }[]
 }
 ```
 
@@ -58,7 +53,7 @@ export type ChatMessage = {
 
 The [Express backend](src/backend.ts) appends the user message, sends the saved conversation to the model, and streams the reply. It saves the assistant message when the reply completes.
 
-The [React client](src/Chat.tsx) loads saved messages and uses `useChat` to display the stream. This demo saves text only; in-progress streams are not resumed after a reload.
+The [React client](src/Chat.tsx) loads saved messages and uses `useChat` to display the stream. In-progress streams are not resumed after a reload.
 
 The lobby is shared and has no authentication. Add authentication and chat ownership checks before using it for private conversations.
 

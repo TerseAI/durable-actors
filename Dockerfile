@@ -33,12 +33,12 @@ COPY examples/documents/package.json ./examples/documents/package.json
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY packages/observer-ui ./packages/observer-ui
 COPY sdk/src ./sdk/src
+COPY sdk/scripts/build-client-runtime.mjs ./sdk/scripts/build-client-runtime.mjs
+COPY sdk/LICENSE.md ./sdk/LICENSE.md
 COPY sdk/tsconfig*.json ./sdk/
-COPY proto ./proto
 RUN pnpm --dir packages/observer-ui build \
-    && pnpm --dir sdk generate:proto \
-    && pnpm --dir sdk exec tsc -p tsconfig.build.json \
-    && cp proto/durable_actors.proto sdk/dist/generated/durable_actors.proto
+    && pnpm --dir sdk build:client \
+    && pnpm --dir sdk exec tsc -p tsconfig.build.json
 
 FROM oven/bun:1.4.2 AS bun
 

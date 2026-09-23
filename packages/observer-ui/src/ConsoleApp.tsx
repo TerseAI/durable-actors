@@ -17,7 +17,12 @@ const views = [
     { id: "websockets", label: "WebSockets", icon: Cable }
 ] as const
 
-export function ConsoleApp({ client, toggleTheme }: { client: ObserverClient; toggleTheme: () => void }) {
+export interface ConsoleAppProps {
+    client: ObserverClient
+    toggleTheme: () => void
+}
+
+export function ConsoleApp({ client, toggleTheme }: ConsoleAppProps) {
     const [view, setView] = useState<(typeof views)[number]["id"]>("overview")
     const [actor, setActor] = useState<string>()
     const [timeRange, setTimeRange] = useState<TimeRange>(defaultTimeRange)

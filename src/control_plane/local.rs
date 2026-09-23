@@ -312,10 +312,9 @@ async fn local_routes(
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
         invocation_jwt_audience: "durable-actors-invoke".into(),
-        actor_idle_timeout_seconds: super::process::actor_idle_timeout_seconds(&mut |name| {
+        host_idle_timeout_ms: crate::host::host_idle_timeout_ms(&mut |name| {
             std::env::var(name).ok()
         })?,
-        host_idle_timeout_ms: 300_000,
     };
     let provisioner = Arc::new(
         SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)
@@ -343,7 +342,7 @@ async fn local_routes(
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
             .with_traces(service.traces.clone());
     let public = public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin))
+        .merge(super::inspection::local_router(inspector, admin))
         .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
@@ -426,7 +425,7 @@ fn format_local_ready_message(
         format!("     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n")
     };
     format!(
-        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n{project}     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate --remote{command:#}\n\n  Start your application backend with this .env loaded.\n",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n{project}     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
     )
 }

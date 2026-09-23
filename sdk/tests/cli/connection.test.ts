@@ -28,9 +28,9 @@ test("local CLI requests and event streams omit authorization without a secret",
     assert.deepEqual(paths, [
         "/v1/projects/local/deployment/contract",
         "/v1/projects/local/deployment",
-        "/v1/observe/actors",
-        "/v1/observe/events",
-        "/v1/observe/requests/events"
+        "/v1/projects/local/observe/actors",
+        "/v1/projects/local/observe/events",
+        "/v1/projects/local/observe/requests/events"
     ])
 })
 

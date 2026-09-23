@@ -25,25 +25,13 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         }),
     };
 
-    assert!(validate_activation(&principal, &host_id, &principal.session_id).is_err());
-    let mut activation = principal.clone();
-    activation.invocation = None;
-    assert!(validate_activation(&activation, &host_id, &activation.session_id).is_ok());
-    assert!(validate_activation(&activation, &host_id, "another-session").is_err());
-    assert!(
-        validate_activation(
-            &activation,
-            &HostId::new("another-host"),
-            &activation.session_id
-        )
-        .is_err()
-    );
-
-    assert!(validate_host_request(&principal, &host_id, &actor, 3).is_ok());
+    assert!(validate_host_request(&principal, &host_id, "another-session", &actor, 3).is_err());
+    assert!(validate_host_request(&principal, &host_id, &principal.session_id, &actor, 3).is_ok());
     assert!(
         validate_host_request(
             &principal,
             &host_id,
+            &principal.session_id,
             &ActorKey {
                 project_id: "another-project".into(),
                 ..actor.clone()
@@ -52,11 +40,12 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         )
         .is_err()
     );
-    assert!(validate_host_request(&principal, &host_id, &actor, 4).is_err());
+    assert!(validate_host_request(&principal, &host_id, &principal.session_id, &actor, 4).is_err());
     assert!(
         validate_host_request(
             &principal,
             &host_id,
+            &principal.session_id,
             &ActorKey {
                 actor_id: "other".into(),
                 ..actor

@@ -6,10 +6,13 @@ async fn live_snapshot_only_offers_a_resume_cursor() -> Result<()> {
     let store = SqliteTracePersistence::in_memory();
     store.append(&[event("a"), event("b"), event("c")]).await?;
     let page = store
-        .replay(&ReplayQuery {
-            limit: 2,
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                limit: 2,
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(page.records.len(), 2);
     assert_eq!(page.cursor, 3);
@@ -24,10 +27,13 @@ async fn live_snapshot_resumes_with_late_arrivals() -> Result<()> {
     let store = SqliteTracePersistence::new(directory.path().join("traces.sqlite3"));
     store.append(&[event("a"), event("b"), event("c")]).await?;
     let first = store
-        .replay(&ReplayQuery {
-            limit: 2,
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                limit: 2,
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(
         first
@@ -39,10 +45,13 @@ async fn live_snapshot_resumes_with_late_arrivals() -> Result<()> {
     );
     store.append(&[event("late")]).await?;
     let replay = store
-        .replay(&ReplayQuery {
-            cursor: Some(first.resume_cursor),
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                cursor: Some(first.resume_cursor),
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(replay.records.len(), 1);
     assert_eq!(replay.records[0].event.event_id, "late");
@@ -134,6 +143,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
         host_id: "host".into(),
         session_id: "session".into(),
         trace: RequestTrace {
+            project_id: "default".into(),
             request_id: "same-request".into(),
             actor_name: "Counter".into(),
             actor_id: "one".into(),
@@ -155,14 +165,17 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
         retention: 3,
         ..SqliteTracePersistence::in_memory()
     };
-    let initial = store.replay(&ReplayQuery::default()).await?;
+    let initial = store.replay("default", &ReplayQuery::default()).await?;
     store.append(&[event("a"), event("b"), event("c")]).await?;
     let first = store
-        .replay(&ReplayQuery {
-            cursor: Some(initial.resume_cursor.clone()),
-            limit: 2,
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                cursor: Some(initial.resume_cursor.clone()),
+                limit: 2,
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(
         first
@@ -174,20 +187,26 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
     );
     assert!(first.next_cursor.is_some());
     let last = store
-        .replay(&ReplayQuery {
-            cursor: Some(first.resume_cursor),
-            limit: 2,
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                cursor: Some(first.resume_cursor),
+                limit: 2,
+                ..Default::default()
+            },
+        )
         .await?;
     assert_eq!(last.records[0].event.event_id, "c");
     assert!(last.next_cursor.is_none());
     store.append(&[event("d")]).await?;
     let reset = store
-        .replay(&ReplayQuery {
-            cursor: Some(initial.resume_cursor),
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                cursor: Some(initial.resume_cursor),
+                ..Default::default()
+            },
+        )
         .await?;
     assert!(reset.reset);
     assert_eq!(reset.records.len(), 3);
@@ -197,16 +216,18 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
 
 #[tokio::test]
 async fn cursor_survives_reopening() -> Result<()> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("traces.sqlite3");
     let store = SqliteTracePersistence::new(path.clone());
     store.append(&[event("a"), event("b")]).await?;
     let first = store
-        .replay(&ReplayQuery {
-            limit: 1,
-            ..Default::default()
-        })
+        .replay(
+            "default",
+            &ReplayQuery {
+                limit: 1,
+                ..Default::default()
+            },
+        )
         .await?;
     drop(store);
     let store = SqliteTracePersistence::new(path);
@@ -215,19 +236,7 @@ async fn cursor_survives_reopening() -> Result<()> {
         cursor: Some(first.resume_cursor),
         ..Default::default()
     };
-    let replay = store.replay(&query).await?;
-    assert_eq!(replay.records.len(), 1);
-    assert_eq!(replay.records[0].event.event_id, "c");
-    let previous_format = serde_json::json!({
-        "generation": first.epoch, "position": first.cursor,
-        "direction": "forward", "watermark": first.cursor, "time": 0, "pruned": 0
-    });
-    let replay = store
-        .replay(&ReplayQuery {
-            cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&previous_format)?)),
-            ..Default::default()
-        })
-        .await?;
+    let replay = store.replay("default", &query).await?;
     assert_eq!(replay.records.len(), 1);
     assert_eq!(replay.records[0].event.event_id, "c");
     Ok(())
@@ -239,10 +248,13 @@ impl SqliteTracePersistence {
             return Ok(Vec::new());
         }
         let mut events: Vec<_> = self
-            .replay(&ReplayQuery {
-                limit: limit.min(500),
-                ..Default::default()
-            })
+            .replay(
+                "default",
+                &ReplayQuery {
+                    limit: limit.min(500),
+                    ..Default::default()
+                },
+            )
             .await?
             .records
             .into_iter()
@@ -260,19 +272,29 @@ async fn existing_sqlite_events_survive_the_query_schema_migration() -> Result<(
     {
         let connection = Connection::open(&path)?;
         connection.execute_batch("CREATE TABLE traces (position INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, event TEXT NOT NULL); PRAGMA user_version = 1;")?;
+        let mut unscoped = serde_json::to_value(event("unscoped"))?;
+        unscoped.as_object_mut().unwrap().remove("projectId");
+        connection.execute(
+            "INSERT INTO traces (position, event_id, event) VALUES (41, 'unscoped', ?1)",
+            [serde_json::to_string(&unscoped)?],
+        )?;
         connection.execute(
             "INSERT INTO traces (position, event_id, event) VALUES (42, ?1, ?2)",
             params!["saved", serde_json::to_string(&event("saved"))?],
         )?;
     }
     let store = SqliteTracePersistence::new(path);
-    let page = store.replay(&ReplayQuery::default()).await?;
+    let page = store.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), 1);
     assert_eq!(page.records[0].sequence, 42);
     assert_eq!(page.records[0].event.event_id, "saved");
     store.append(&[event("new")]).await?;
     assert_eq!(
-        store.replay(&ReplayQuery::default()).await?.records[0].sequence,
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .records[0]
+            .sequence,
         43
     );
     Ok(())

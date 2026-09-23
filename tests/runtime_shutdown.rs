@@ -30,6 +30,77 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
     assert_shutdown(None).await
 }
 
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(
+        project.path(),
+        "@Persisted count = 0;
+         async increment(): Promise<number> { return ++this.count }
+         async read(): Promise<number> { return this.count }
+         async processId(): Promise<number> { return process.pid }",
+    )?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
+        .args([
+            "dev",
+            "--port",
+            "0",
+            "--entrypoint",
+            "actors.ts",
+            "--project-id",
+            "default",
+            "--api-key",
+            "test-key",
+        ])
+        .arg("--sdk-host")
+        .arg(local_project::sdk_host())
+        .arg("--project")
+        .arg(project.path())
+        .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
+        .env("DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS", "500")
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
+    let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
+    let logs = tokio::spawn(async move {
+        let mut remaining = String::new();
+        output.read_to_string(&mut remaining).await?;
+        Ok::<_, std::io::Error>(remaining)
+    });
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let result = timeout(
+        Duration::from_secs(20),
+        Command::new("node")
+            .arg(root.join("tests/fixtures/host-idle-client.mjs"))
+            .arg(root.join("sdk/dist/client/remoteClient.js"))
+            .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
+            .env("DURABLE_ACTORS_PROJECT_ID", "default")
+            .env("DURABLE_ACTORS_SECRET", "test-key")
+            .env("DURABLE_ACTORS_TELEMETRY", "0")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    drop(child.stdin.take());
+    let status = timeout(Duration::from_secs(10), child.wait()).await??;
+    let logs = logs.await??;
+    ensure!(
+        status.success(),
+        "local runtime shutdown failed: {status}: {logs}"
+    );
+    let result = result??;
+    ensure!(
+        result.status.success(),
+        "idle host calls failed: {}\n{logs}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(())
+}
+
 async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;

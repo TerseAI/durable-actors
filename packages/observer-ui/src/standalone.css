@@ -7,13 +7,6 @@
     background: var(--background);
     font-synthesis: none;
     -webkit-font-smoothing: antialiased;
-    --console-sidebar: #f5f5f3;
-    --console-selected: #e8eae5;
-    --console-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.dark {
-    --console-sidebar: #131512;
-    --console-selected: #272d25;
 }
 @layer base {
     * {

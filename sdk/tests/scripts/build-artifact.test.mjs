@@ -130,9 +130,9 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     t.after(() => socket.destroy())
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
     const receive = async () => JSON.parse((await lines.next()).value)
-    assert.deepEqual(await receive(), { type: "attach", protocol: 17, actor_names: ["BuiltCounter"] })
+    assert.deepEqual(await receive(), { type: "attach", protocol: 18, actor_names: ["BuiltCounter"] })
     const send = message => socket.write(JSON.stringify(message) + "\n")
-    send({ type: "attached", protocol: 17 })
+    send({ type: "attached", protocol: 18 })
     const actor = { project_id: "default", actor_name: "BuiltCounter", actor_id: "counter" }
     const invoke = (messageId, state) =>
         send({
@@ -185,6 +185,22 @@ test("actor builds report invalid persistence annotations before deployment", as
     const root = await project(t)
     await writeFile(path.join(root, "src/actors.ts"), `import { Actor } from "durable-actors"; export class Counter extends Actor { count = 0 }`)
     await assert.rejects(buildActor(path.join(root, "src/actors.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
+})
+
+test("an exiting actor reports failure before publishing its result and state", { timeout: 15_000 }, async t => {
+    const root = await project(t)
+    await writeFile(
+        path.join(root, "src/actors.ts"),
+        'import { Actor, Persisted } from "durable-actors"; export class Exiting extends Actor { @Persisted count = 0; async stop(): Promise<void> { this.count++; process.exit(1) } }'
+    )
+    const artifact = path.join(root, "actors.mjs")
+    await buildActor(path.join(root, "src/actors.ts"), artifact)
+    const script = fileURLToPath(new URL("../fixtures/invoke-exiting-actor.mjs", import.meta.url))
+    const { stdout } = await run("bun", [script, artifact], { timeout: 10_000 })
+    const reply = JSON.parse(stdout)
+    assert.equal(reply.type, "failed")
+    assert.equal(reply.code, "actor_worker_failed")
+    assert.match(reply.message, /exited with code 1/)
 })
 
 async function project(t) {

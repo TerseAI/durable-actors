@@ -9,7 +9,7 @@ fn host_needs_no_local_state_directory() -> Result<()> {
         config.executor_socket,
         PathBuf::from("/tmp/durable-actors-executor.sock")
     );
-    assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
+    assert_eq!(config.host_idle_timeout, Duration::from_secs(10));
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
     Ok(())
 }
@@ -93,6 +93,15 @@ fn startup_timings_begin_with_only_configuration_loaded() {
 
 #[tokio::test]
 async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
+    assert_activity_prevents_idle_shutdown(true).await
+}
+
+#[tokio::test]
+async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
+    assert_activity_prevents_idle_shutdown(false).await
+}
+
+async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
     let mut server = Box::pin(std::future::pending::<Result<()>>());
     let mut executor = Box::pin(std::future::pending::<Result<()>>());
     let mut shutdown = Box::pin(std::future::pending::<()>());
@@ -101,9 +110,9 @@ async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
         .kill_on_drop(true)
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
-    let (_activity_sender, mut activity) = tokio::sync::watch::channel(0);
+    let (requests, mut activity) = tokio::sync::watch::channel(usize::from(!socket));
     let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
-    let (sockets, mut socket_activity) = tokio::sync::watch::channel(1);
+    let (sockets, mut socket_activity) = tokio::sync::watch::channel(usize::from(socket));
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
         executor.as_mut(),
@@ -118,7 +127,11 @@ async fn open_sockets_prevent_idle_host_shutdown() -> Result<()> {
             .await
             .is_err()
     );
-    sockets.send_replace(0);
+    if socket {
+        sockets.send_replace(0);
+    } else {
+        requests.send_replace(0);
+    }
     tokio::time::timeout(Duration::from_secs(1), stopped.as_mut()).await??;
     drop(stopped);
     javascript.kill().await?;

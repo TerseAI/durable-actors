@@ -33,6 +33,7 @@ func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 
 func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
+	request.HostIdleTimeoutMS = 75000
 	request.ActorIsNew = true
 	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
@@ -56,6 +57,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if sb.assignment["DURABLE_ACTORS_ENTRYPOINT"] != "/customer/actors.mjs" {
 		t.Fatal(sb.assignment)
+	}
+	if sb.assignment["DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"] != "75000" {
+		t.Fatal("host idle timeout was not passed to the assigned sandbox")
 	}
 }
 

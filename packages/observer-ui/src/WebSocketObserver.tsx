@@ -18,7 +18,7 @@ import type { SocketSession, SocketSessionStatus } from "./socket-sessions.js"
 import { defaultTimeRange, rangeLabel, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
-interface WebSocketObserverProps {
+export interface WebSocketObserverProps {
     client: ObserverClient
     onSelectActor?: (actorName: string) => void
     timeRange?: TimeRange

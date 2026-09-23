@@ -1,6 +1,6 @@
 {
     "name": "durable-actors",
-    "version": "0.3.1",
+    "version": "0.4.0",
     "description": "Provider-neutral actors for sandbox compute",
     "type": "module",
     "license": "MIT",
@@ -34,38 +34,40 @@
         "durable-actors": "dist/cli.js"
     },
     "exports": {
-        "./generated": {
-            "types": "./dist/generated.d.ts",
-            "browser": "./dist/generated.browser.js",
-            "import": "./dist/generated.js"
-        },
         "./backend": {
             "types": "./dist/backend.d.ts",
-            "import": "./dist/backend.js"
+            "import": "./dist/backend.js",
+            "default": "./dist/backend.js"
         },
         "./dev": {
             "types": "./dist/localRuntime.d.ts",
-            "import": "./dist/localRuntime.js"
+            "import": "./dist/localRuntime.js",
+            "default": "./dist/localRuntime.js"
         },
         "./proxy": {
             "types": "./dist/proxy.d.ts",
-            "import": "./dist/proxy.js"
+            "import": "./dist/proxy.js",
+            "default": "./dist/proxy.js"
         },
         ".": {
             "types": "./dist/index.d.ts",
-            "import": "./dist/index.js"
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
         },
         "./host": {
             "types": "./dist/host.d.ts",
-            "import": "./dist/host.js"
+            "import": "./dist/host.js",
+            "default": "./dist/host.js"
         },
         "./compiler": {
             "types": "./dist/compiler/actor-compiler.d.ts",
-            "import": "./dist/compiler/actor-compiler.js"
+            "import": "./dist/compiler/actor-compiler.js",
+            "default": "./dist/compiler/actor-compiler.js"
         },
         "./codegen": {
             "types": "./dist/compiler/generators/typescript-generator.d.ts",
-            "import": "./dist/compiler/generators/typescript-generator.js"
+            "import": "./dist/compiler/generators/typescript-generator.js",
+            "default": "./dist/compiler/generators/typescript-generator.js"
         }
     },
     "files": [
@@ -74,41 +76,42 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "pnpm run build:observer && pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_actors.proto dist/generated/durable_actors.proto && node scripts/build-template.mjs && pnpm --dir .. install --offline --frozen-lockfile --ignore-scripts",
-        "generate:proto": "rm -rf src/generated && proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_actors.proto",
+        "build": "pnpm run build:observer && pnpm run build:client && tsc -p tsconfig.build.json && node scripts/build-template.mjs && pnpm --dir .. install --offline --frozen-lockfile --ignore-scripts",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs",
+        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_actors.proto .test-dist/src/generated/durable_actors.proto && node scripts/test.mjs",
+        "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "build:observer": "pnpm --filter durable-actors-observer build",
-        "docs": "typedoc --options typedoc.json"
+        "docs": "typedoc --options typedoc.json",
+        "build:client": "node scripts/build-client-runtime.mjs"
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
-        "@grpc/grpc-js": "^1.14.4",
-        "@grpc/proto-loader": "^0.8.1",
         "@types/json-schema": "^7.0.15",
         "ajv": "^8.20.0",
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
         "dotenv": "^18.0.0",
+        "durable-actors-observer": "workspace:*",
         "esbuild": "^0.28.2",
+        "import-meta-resolve": "^4.2.0",
         "json-schema-to-typescript": "^16.0.0",
-        "durable-actors-observer": "workspace:0.1.0",
         "open": "^10.2.0",
         "prettier": "^3.9.6",
         "tar": "^7.5.22",
         "typescript": "~5.9.3",
         "typescript-json-schema": "^0.68.0",
+        "validate-npm-package-name": "^6.0.2",
         "vite": "^8.3.0",
         "ws": "^8.18.3",
         "zod": "^4.3.6"
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
+        "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
         "typedoc": "^0.28.20",
         "typedoc-plugin-missing-exports": "^4.1.4"

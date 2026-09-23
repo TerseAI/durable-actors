@@ -5,9 +5,42 @@ import { ControlPlaneClient } from "../../src/cli/control-plane.js"
 
 const connection = { projectId: "default", controlPlaneUrl: "https://control.example", credential: "admin-key" }
 
+test("observability reads and streams use the configured project", async () => {
+    const requests: string[] = []
+    const client = new ControlPlaneClient({ ...connection, projectId: "hosted-project" }, async (url, options) => {
+        requests.push(String(url))
+        return options?.headers && new Headers(options.headers).get("accept") === "text/event-stream"
+            ? new Response("event: inventory\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+            : Response.json({ actors: [] })
+    })
+    const signal = new AbortController().signal
+    await client.checkConnection()
+    await client.listActors()
+    await client.listRequests(new URLSearchParams({ limit: "1" }))
+    await client.getMetrics(new URLSearchParams())
+    await client.listQueueWaits(new URLSearchParams())
+    await client.listWebSockets(new URLSearchParams())
+    await client.openActorStream(signal)
+    await client.openRequestStream(signal, "cursor")
+    assert.deepEqual(
+        requests,
+        [
+            "actors",
+            "actors",
+            "requests?limit=1",
+            "metrics",
+            "queue-waits",
+            "websockets",
+            "events",
+            "requests/events?after=cursor"
+        ].map(path => `https://control.example/v1/projects/hosted-project/observe/${path}`)
+    )
+})
+
 test("connection checks work before any deployment exists", async () => {
     const client = new ControlPlaneClient(connection, async input => {
-        if (String(input) === "https://control.example/v1/observe/actors") return Response.json({ actors: [] })
+        if (String(input) === "https://control.example/v1/projects/default/observe/actors")
+            return Response.json({ actors: [] })
         return Response.json({ error: { message: "deployment not found" } }, { status: 404 })
     })
     await client.checkConnection()
@@ -40,8 +73,26 @@ test("HTTP failures retain their status with JSON, non-JSON, or malformed error 
             connection,
             async () => new Response(body, { status: 409, statusText: "Conflict" })
         )
-        await assert.rejects(client.getContract(), { message: `Control-plane request failed (HTTP 409): ${message}` })
+        await assert.rejects(client.getContract(), {
+            message: `Control-plane request failed (HTTP 409): ${message}\nGET https://control.example/v1/projects/default/deployment/contract`
+        })
     }
+})
+
+test("missing contract endpoints identify the server and project without exposing credentials", async () => {
+    const client = new ControlPlaneClient(
+        connection,
+        async () => new Response(null, { status: 404, statusText: "Not Found" })
+    )
+    await assert.rejects(client.getContract(), error => {
+        const message = (error as Error).message
+        assert.match(message, /HTTP 404.*Not Found/u)
+        assert.match(message, /GET https:\/\/control\.example\/v1\/projects\/default\/deployment\/contract/u)
+        assert.match(message, /durable-actors dev/u)
+        assert.match(message, /DURABLE_ACTORS_PROJECT_ID/u)
+        assert.doesNotMatch(message, /admin-key/u)
+        return true
+    })
 })
 
 test("successful responses must contain JSON", async () => {
@@ -71,7 +122,7 @@ test("transport failures do not retry writes and warn that their outcome is unkn
 test("live inventory streams carry server-side credentials and cancellation", async () => {
     const controller = new AbortController()
     const client = new ControlPlaneClient(connection, async (url, options) => {
-        assert.equal(url, "https://control.example/v1/observe/events")
+        assert.equal(url, "https://control.example/v1/projects/default/observe/events")
         assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
         assert.equal(new Headers(options?.headers).get("accept"), "text/event-stream")
         assert.equal(options?.signal, controller.signal)
@@ -93,7 +144,7 @@ test("live inventory rejects denied responses and non-streaming upstreams", asyn
 test("request traces stream through the authenticated control-plane client", async () => {
     const controller = new AbortController()
     const client = new ControlPlaneClient(connection, async (url, options) => {
-        assert.equal(url, "https://control.example/v1/observe/requests/events")
+        assert.equal(url, "https://control.example/v1/projects/default/observe/requests/events")
         assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
         assert.equal(options?.signal, controller.signal)
         return new Response("event: requests\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } })
@@ -107,7 +158,7 @@ test("request history uses bounded filters with server-side credentials", async 
     const client = new ControlPlaneClient(connection, async (url, options) => {
         assert.equal(
             url,
-            "https://control.example/v1/observe/requests?actorId=one&outcome=failed&limit=100&cursor=opaque%2Bcursor"
+            "https://control.example/v1/projects/default/observe/requests?actorId=one&outcome=failed&limit=100&cursor=opaque%2Bcursor"
         )
         assert.equal(options?.method, "GET")
         assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
@@ -125,7 +176,7 @@ for (const [method, path] of [
 ] as const) {
     test(`${path} reads use typed routes and server-side credentials`, async () => {
         const client = new ControlPlaneClient(connection, async (url, options) => {
-            assert.equal(url, `https://control.example/v1/observe/${path}?fromMs=10&toMs=20`)
+            assert.equal(url, `https://control.example/v1/projects/default/observe/${path}?fromMs=10&toMs=20`)
             assert.equal(options?.method, "GET")
             assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
             return Response.json({ saved: true })

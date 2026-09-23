@@ -629,7 +629,7 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     f.runtime
         .register_activation(&f.actor, &first, "us-east", true)
         .await?;
-    let initial = f.runtime.actor_inventory().await?;
+    let initial = f.runtime.actor_inventory(&f.actor.project_id).await?;
     assert!(matches!(
         initial[0].instances[0].status,
         ActorResidency::Unknown
@@ -645,7 +645,7 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     f.runtime
         .renew_activation(&f.actor, &first, inventory)
         .await?;
-    let live = f.runtime.actor_inventory().await?;
+    let live = f.runtime.actor_inventory(&f.actor.project_id).await?;
     assert_eq!(live[0].live, 1);
     assert_eq!(
         live[0].instances[0].waiting.as_ref().unwrap()[0].operation,
@@ -658,7 +658,7 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     f.runtime
         .release_activation(&f.actor, &first.id, &first.session_id)
         .await?;
-    let dormant = f.runtime.actor_inventory().await?;
+    let dormant = f.runtime.actor_inventory(&f.actor.project_id).await?;
     assert_eq!(dormant[0].dormant, 1);
     assert!(dormant[0].instances[0].waiting.as_ref().unwrap().is_empty());
     Ok(())

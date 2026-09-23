@@ -177,6 +177,7 @@ export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
 
 export interface RequestTrace {
+    projectId: string
     metadata?: unknown
     eventId?: string
     sequence: number
@@ -243,6 +244,8 @@ export function isTrace(value: unknown): value is RequestTrace {
     if (!value || typeof value !== "object") return false
     const trace = value as RequestTrace
     return (
+        typeof trace.projectId === "string" &&
+        /^[A-Za-z0-9._-]{1,64}$/u.test(trace.projectId) &&
         [trace.requestId, trace.hostId, trace.sessionId, trace.actorName, trace.actorId, trace.operation].every(value => typeof value === "string") &&
         (trace.eventId === undefined || (typeof trace.eventId === "string" && trace.eventId.length > 0)) &&
         nonnegativeInteger(trace.sequence) &&

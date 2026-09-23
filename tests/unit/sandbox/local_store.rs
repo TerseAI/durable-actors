@@ -80,7 +80,6 @@ fn request(id: &str) -> EnsureHostRequest {
         working_directory: "/project".into(),
         actor_entrypoint: None,
         secret_refs: vec![],
-        actor_idle_timeout_seconds: 60,
         host_idle_timeout_ms: 300_000,
     }
 }

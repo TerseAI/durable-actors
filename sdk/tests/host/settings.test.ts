@@ -13,27 +13,6 @@ test("a managed socket needs no local actor credentials", () => {
     assert.equal(settings.socketPath, "/tmp/durable-actors.sock")
     assert.equal(settings.actorEntrypoint, "dist/custom-actors.mjs")
     assert.equal(settings.startupTimeoutMs, 10_000)
-    assert.equal(settings.actorIdleTimeoutMs, 60_000)
-})
-
-test("resident actor idle timeout uses seconds and is bounded", () => {
-    assert.equal(
-        parseHostSettings({
-            DURABLE_ACTORS_EXECUTOR_SOCKET: "/tmp/durable-actors.sock",
-            DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS: "10"
-        }).actorIdleTimeoutMs,
-        10_000
-    )
-    for (const value of ["0", "-1", "1.5", "86401", "not-a-number"]) {
-        assert.throws(
-            () =>
-                parseHostSettings({
-                    DURABLE_ACTORS_EXECUTOR_SOCKET: "/tmp/durable-actors.sock",
-                    DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS: value
-                }),
-            ActorConfigurationError
-        )
-    }
 })
 
 test("actor-host startup timeout is configurable and bounded", () => {

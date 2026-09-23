@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -55,7 +55,8 @@ test("dev passes actor sources to the runtime and redeploys watched changes", as
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-dev-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "actor project")
-    await mkdir(project)
+    await mkdir(path.join(project, "node_modules"), { recursive: true })
+    await symlink(sdk, path.join(project, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(project, "package.json"), '{"type":"module"}')
     const source = path.join(project, "actors.ts")
     await writeFile(

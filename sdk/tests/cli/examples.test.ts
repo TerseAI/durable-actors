@@ -1,12 +1,33 @@
+import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises"
+import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
+
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
+
+test("the README ChatHistory contract compiles with the AI SDK", async t => {
+    const project = await mkdtemp(path.resolve(sdk, "../.durable-actors-example-"))
+    t.after(() => rm(project, { recursive: true, force: true }))
+    await symlink(path.resolve(sdk, "../examples/ai-chat/node_modules"), path.join(project, "node_modules"))
+    await writeFile(path.join(project, "package.json"), '{"type":"module"}')
+    const readme = await readFile(path.resolve(sdk, "../README.md"), "utf8")
+    const source = readme.split("## Define an Actor")[1].match(/```ts\n([\s\S]*?)```/)![1]
+    const entrypoint = path.join(project, "actors.ts")
+    await writeFile(entrypoint, source)
+    const contract = new ActorCompiler().compileContract(entrypoint)
+    const [actor] = contract.actors
+    assert.equal(actor.actorName, "ChatHistory")
+    assert.deepEqual(
+        actor.rpc.methods.map(method => method.name),
+        ["append", "load"]
+    )
+})
 
 for (const template of ["chat", "ai-chat", "documents"]) {
     test(
@@ -26,7 +47,7 @@ for (const template of ["chat", "ai-chat", "documents"]) {
                 path.join(project, "node_modules")
             )
             await run("npm", ["run", "build"], { cwd: project })
-            await run(process.execPath, [path.join(sdk, "dist/cli.js"), "generate"], { cwd: project })
+            await run(process.execPath, [path.join(sdk, "dist/cli.js"), "generate", "src/actors.ts"], { cwd: project })
         }
     )
 }

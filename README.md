@@ -14,40 +14,36 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.4.2+. Install the CLI once:
-
-```sh
-pnpm add --global durable-actors
-```
+Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
 
 ### Create your actor project in your directory of choice
 
 ```sh
-durable-actors init my-actors
+npx durable-actors init my-actors
 cd my-actors
 pnpm install
-durable-actors dev // this will run the server locally on your machine
+# Or with npm:
+npm install
+npx durable-actors dev # Run the server locally on your machine
 ```
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
 
 ### Connect your application
 
-In your separate application project's directory (ex: node server), install the SDK:
+In your separate application project's directory (ex: node server), install the generator as a development dependency:
 
 ```sh
-pnpm add durable-actors
+pnpm install --save-dev durable-actors
+# Or with npm:
+npm install --save-dev durable-actors
 ```
-
-Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
 
 Then generate your client from the same application directory:
 
 ```sh
-durable-actors generate
+npx durable-actors generate
 ```
-
-This contract will match perfectly the actor you have defined!
 
 Now you may call your actor and access the state.
 
@@ -62,7 +58,15 @@ For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborativ
 
 ## Define an Actor
 
-Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
+Install `ai` in your actor project:
+
+```sh
+pnpm install ai
+# Or with npm:
+npm install ai
+```
+
+Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
 ```ts
 import type { UIMessage } from "ai"
@@ -84,7 +88,7 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `durable-actors generate` in your application and use its generated client:
+After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"

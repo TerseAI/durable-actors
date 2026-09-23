@@ -55,8 +55,7 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 
 | Variable                                    | Default              | Meaning                                                                                                                                                                                                         |
 | ------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS` | `60`                 | Actor idle time before hibernation; 1–86400 seconds. Applies locally too.                                                                                                                                       |
-| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`       | `300000`             | Unused cloud host lifetime; 1–86400000 ms.                                                                                                                                                                      |
+| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`      | `10000`              | Host idle time before shutdown; 1–86400000 ms. Applies locally too. Running requests and open WebSockets keep the host alive.                                                                                   |
 | `DURABLE_ACTORS_HOST_STARTUP_MS`            | `10000`              | Positive actor-host startup timeout in milliseconds.                                                                                                                                                            |
 | `DURABLE_ACTORS_SPARE_IDLE`                 | `5`                  | Ready sandboxes per role, image, region, and resource configuration; 0–32. Zero creates hosts on demand. Servers sharing PostgreSQL must use matching pool settings. Named Modal secrets bypass the actor pool. |
 | `DURABLE_ACTORS_SPARE_REGIONS`              | `north-america-east` | Comma-separated regions for ready actor hosts.                                                                                                                                                                  |
@@ -84,7 +83,7 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | Variable                         | Default                   | Meaning                                                                                        |
 | -------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
 | `RUST_LOG`                       | `info`                    | Runtime log filter, such as `warn` or `debug`; the packaged container supplies its own filter. |
-| `DURABLE_ACTORS_TELEMETRY`       | Enabled                   | Set to `0` to disable SDK invocation telemetry on standard error.                              |
+| `DURABLE_ACTORS_TELEMETRY`       | Disabled                  | Set to `1` to enable SDK invocation telemetry on standard error; unset or `0` keeps it disabled. |
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 | `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |

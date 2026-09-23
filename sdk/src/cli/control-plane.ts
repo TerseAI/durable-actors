@@ -16,7 +16,7 @@ class ControlPlaneClient {
     ) {}
 
     async checkConnection(): Promise<void> {
-        await this.requestJson("GET", "/v1/observe/actors", undefined, 10_000)
+        await this.requestJson("GET", `${this.projectPath()}/observe/actors`, undefined, 10_000)
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
@@ -28,22 +28,22 @@ class ControlPlaneClient {
     }
 
     listActors(): Promise<unknown> {
-        return this.requestJson("GET", "/v1/observe/actors")
+        return this.requestJson("GET", `${this.projectPath()}/observe/actors`)
     }
 
     async openActorStream(signal: AbortSignal): Promise<Response> {
-        return this.openStream("/v1/observe/events", signal)
+        return this.openStream(`${this.projectPath()}/observe/events`, signal)
     }
 
     async openRequestStream(signal: AbortSignal, after?: string): Promise<Response> {
         const query = after ? `?${new URLSearchParams({ after })}` : ""
-        return this.openStream(`/v1/observe/requests/events${query}`, signal)
+        return this.openStream(`${this.projectPath()}/observe/requests/events${query}`, signal)
     }
 
     listRequests(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/requests${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/requests${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal
@@ -51,13 +51,19 @@ class ControlPlaneClient {
     }
 
     getMetrics(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
-        return this.requestJson("GET", `/v1/observe/metrics${query.size ? `?${query}` : ""}`, undefined, 30_000, signal)
+        return this.requestJson(
+            "GET",
+            `${this.projectPath()}/observe/metrics${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
     }
 
     listQueueWaits(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/queue-waits${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/queue-waits${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal
@@ -67,7 +73,7 @@ class ControlPlaneClient {
     listWebSockets(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/websockets${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/websockets${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal
@@ -113,7 +119,7 @@ class ControlPlaneClient {
                 `Cannot complete ${method} ${pathname} at ${controlPlaneUrl}. Check the URL and runtime.${method === "GET" ? "" : " The request may have reached the server."}`
             )
         })
-        return readResponse(response)
+        return readResponse(response, method, `${controlPlaneUrl}${pathname}`)
     }
 }
 
@@ -121,15 +127,20 @@ function createControlPlaneClient(env: NodeJS.ProcessEnv, request: typeof fetch)
     return new ControlPlaneClient(connection(env), request)
 }
 
-async function readResponse(response: Response): Promise<unknown> {
+async function readResponse(response: Response, method: string, url: string): Promise<unknown> {
     const result: unknown = await response.json().catch(() => {
         if (response.ok) throw new Error(`Control plane returned invalid JSON (HTTP ${response.status}).`)
         return undefined
     })
-    if (!response.ok)
+    if (!response.ok) {
+        const hint =
+            response.status === 404 && url.endsWith("/deployment/contract")
+                ? "\nCheck the control-plane URL and DURABLE_ACTORS_PROJECT_ID. For local development, run durable-actors dev in the actor project and wait for Ready."
+                : ""
         throw new Error(
-            `Control-plane request failed (HTTP ${response.status}): ${errorMessage(result) ?? response.statusText}`
+            `Control-plane request failed (HTTP ${response.status}): ${errorMessage(result) ?? response.statusText}\n${method} ${url}${hint}`
         )
+    }
     return result
 }
 

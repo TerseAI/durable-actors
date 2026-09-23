@@ -15,7 +15,7 @@ import type { ClassMetrics, OverviewMetrics } from "./overview-metrics.js"
 import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
-interface OverviewProps {
+export interface OverviewProps {
     client: ObserverClient
     onSelectActor: (actorName: string) => void
     timeRange?: TimeRange

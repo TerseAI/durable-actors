@@ -23,7 +23,10 @@ async function buildTemplate(template) {
         })
     // npm excludes .gitignore; init restores its name after copying the template.
     await copyFile(new URL(".gitignore", source), new URL("gitignore", destination))
-    await copyFile(new URL("../../LICENSE.md", import.meta.url), new URL("LICENSE.md", destination))
+    await copyFile(
+        new URL("../templates/pnpm-workspace.yaml", import.meta.url),
+        new URL("pnpm-workspace.yaml", destination)
+    )
     const metadata = JSON.parse(await readFile(new URL("package.json", destination), "utf8"))
     metadata.dependencies["durable-actors"] = version
     await writeFile(new URL("package.json", destination), JSON.stringify(metadata, null, 4) + "\n")

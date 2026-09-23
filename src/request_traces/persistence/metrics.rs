@@ -4,12 +4,17 @@ use crate::request_traces::metrics::{
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
-pub(super) fn overview(connection: &mut Connection, range: &TimeRange) -> Result<OverviewMetrics> {
+pub(super) fn overview(
+    connection: &mut Connection,
+    project_id: &str,
+    range: &TimeRange,
+) -> Result<OverviewMetrics> {
     let mut statement = connection.prepare(include_str!("overview.sql"))?;
     let rows = statement.query_map(
         params![
             range.from_ms.map(|ms| ms as i64),
-            range.to_ms.map(|ms| ms as i64)
+            range.to_ms.map(|ms| ms as i64),
+            project_id
         ],
         |row| {
             let attempts: i64 = row.get(2)?;
@@ -37,6 +42,7 @@ pub(super) fn overview(connection: &mut Connection, range: &TimeRange) -> Result
 
 pub(super) fn queue_waits(
     connection: &mut Connection,
+    project_id: &str,
     query: &QueueWaitQuery,
 ) -> Result<Vec<QueueWaitRow>> {
     let mut statement = connection.prepare(include_str!("queue_waits.sql"))?;
@@ -44,7 +50,8 @@ pub(super) fn queue_waits(
         params![
             query.from_ms.map(|ms| ms as i64),
             query.to_ms.map(|ms| ms as i64),
-            query.actor_name
+            query.actor_name,
+            project_id
         ],
         |row| {
             Ok(QueueWaitRow {
@@ -61,13 +68,15 @@ pub(super) fn queue_waits(
 
 pub(super) fn websockets(
     connection: &mut Connection,
+    project_id: &str,
     range: &TimeRange,
 ) -> Result<Vec<SocketSession>> {
     let mut statement = connection.prepare(include_str!("websockets.sql"))?;
     let rows = statement.query_map(
         params![
             range.from_ms.map(|ms| ms as i64),
-            range.to_ms.map(|ms| ms as i64)
+            range.to_ms.map(|ms| ms as i64),
+            project_id
         ],
         |row| {
             let connect_event: Option<String> = row.get(7)?;

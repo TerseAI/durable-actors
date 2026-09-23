@@ -231,7 +231,6 @@ fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> 
             control_plane_url: "http://control".into(),
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
-            actor_idle_timeout_seconds: 60,
             host_idle_timeout_ms: 60_000,
         },
         issuer.clone(),

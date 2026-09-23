@@ -21,6 +21,9 @@
 !pnpm-workspace.yaml
 !sdk
 !sdk/package.json
+!sdk/LICENSE.md
+!sdk/scripts
+!sdk/scripts/build-client-runtime.mjs
 !sdk/tsconfig*.json
 !sdk/src
 !sdk/src/**

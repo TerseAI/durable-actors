@@ -3,7 +3,7 @@ WITH events AS (
         json_extract(event, '$.connectionId') AS connection_id,
         json_extract(event, '$.kind') AS kind,
         json_extract(event, '$.operation') AS operation
-    FROM traces
+    FROM traces WHERE project_id = ?3
 )
 SELECT connection_id, actor_name, actor_id, MIN(host_id) AS host_id,
     MIN(CASE WHEN operation = 'onConnect' THEN started_at_ms END) AS opened_at_ms,

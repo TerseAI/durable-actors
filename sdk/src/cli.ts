@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander"
 import { config } from "dotenv"
-import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
+import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { styleText } from "node:util"
+import validatePackageName from "validate-npm-package-name"
 
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
@@ -12,7 +13,7 @@ import { registerStartCommand } from "./cli/start.js"
 import { actorEnvironment } from "./environment.js"
 
 try {
-    config({ quiet: true })
+    config({ path: [".env.local", ".env"], quiet: true })
     Object.assign(process.env, actorEnvironment(process.env))
     const program = new Command()
         .name("durable-actors")
@@ -53,11 +54,25 @@ async function initializeProject(directory: string, options: { template: string 
             force: false
         })
         await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
+        await nameProject(destination)
     } catch (error) {
         await rm(destination, { recursive: true, force: true })
         throw error
     }
     console.log(projectInstructions(destination, options.template))
+}
+
+async function nameProject(destination: string): Promise<void> {
+    const manifest = path.join(destination, "package.json")
+    const metadata = JSON.parse(await readFile(manifest, "utf8"))
+    const name = path
+        .basename(destination)
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^[._-]+|[._-]+$/g, "")
+        .slice(0, 214)
+    if (validatePackageName(name).validForNewPackages) metadata.name = name
+    await writeFile(manifest, JSON.stringify(metadata, null, 4) + "\n")
 }
 
 function projectInstructions(destination: string, template: string): string {
@@ -90,7 +105,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
     ${styleText("cyan", "pnpm install")}
 
   ${styleText("bold", "Start the actor server")}
-    ${styleText("cyan", "durable-actors dev")}
+    ${styleText("cyan", "pnpm exec durable-actors dev")}
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.

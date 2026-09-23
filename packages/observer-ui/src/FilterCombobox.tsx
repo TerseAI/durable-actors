@@ -11,7 +11,7 @@ export interface FilterSuggestion {
     keywords?: string[]
 }
 
-interface FilterComboboxProps {
+export interface FilterComboboxProps {
     label: string
     placeholder: string
     value: string
