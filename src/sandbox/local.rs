@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tempfile::TempDir;
 use tokio::{
     process::{Child, ChildStdin, Command},
-    sync::{Semaphore, watch},
+    sync::watch,
 };
 use tokio_util::{
     sync::{CancellationToken, DropGuard},
@@ -21,8 +21,6 @@ use crate::{
     clock::{Clock, SystemClock},
     placement::ObjectPlacementStore,
 };
-
-const CONCURRENT_STARTS: usize = 4;
 
 pub(crate) struct LocalSandboxProvider {
     runtime: Arc<LocalRuntime>,
@@ -45,7 +43,6 @@ impl LocalSandboxProvider {
                 project,
                 sdk_host,
                 store: LocalHostStore::open(database).await?,
-                launches: Semaphore::new(CONCURRENT_STARTS),
                 tasks: TaskTracker::new(),
                 changes: watch::channel(()).0,
                 stop: stop.clone(),
@@ -229,7 +226,6 @@ struct LocalRuntime {
     project: PathBuf,
     sdk_host: Option<PathBuf>,
     store: LocalHostStore,
-    launches: Semaphore,
     tasks: TaskTracker,
     changes: watch::Sender<()>,
     stop: CancellationToken,
@@ -278,11 +274,6 @@ impl LocalRuntime {
     async fn serve_host(&self, request: &EnsureHostRequest, token: &str) -> Result<()> {
         let retired = self.retired(token);
         tokio::pin!(retired);
-        let permit = tokio::select! {
-            biased;
-            result = &mut retired => { result?; anyhow::bail!("local actor startup was retired"); },
-            permit = self.launches.acquire() => permit?,
-        };
         let mut host = self.spawn_host(request)?;
         let result = async {
             tokio::select! {
@@ -292,7 +283,6 @@ impl LocalRuntime {
             }
             let lease = host.lease.as_ref().context("local readiness omitted lease")?;
             ensure!(self.store.publish(token, lease, host.owner_epoch).await?, "local actor startup was retired");
-            drop(permit);
             self.changes.send_replace(());
             tokio::select! {
                 biased;

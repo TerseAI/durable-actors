@@ -87,50 +87,28 @@ async fn duplicate_requests_share_startup_even_when_the_first_caller_disconnects
 }
 
 #[tokio::test]
-async fn only_four_cold_launches_run_at_once_and_warm_hosts_bypass_the_limit() -> Result<()> {
+async fn a_cold_burst_starts_together_while_warm_hosts_remain_available() -> Result<()> {
     let fixture = LocalFixture::new().await?;
     let warm = fixture.request("warm");
     fixture.release(&warm)?;
     fixture.start(&warm).await??;
-    let requests: Vec<_> = (0..4)
+    let requests: Vec<_> = (0..16)
         .map(|i| fixture.request(&format!("cold-{i}")))
         .collect();
-    let mut starting: Vec<_> = requests
+    let starting: Vec<_> = requests
         .iter()
         .map(|request| fixture.start(request))
         .collect();
     for request in &requests {
         fixture.started(request).await?;
     }
-    let queued = fixture.request("queued");
-    let fifth = fixture.start(&queued);
-    tokio::time::timeout(DEADLINE, async {
-        while fixture
-            .provider
-            .runtime
-            .store
-            .host(queued.host_id.as_str())
-            .await?
-            .is_none()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        anyhow::Ok(())
-    })
-    .await??;
-    assert!(!fixture.marker(&queued, "started").exists());
     tokio::time::timeout(DEADLINE, fixture.start(&warm)).await???;
-    fixture.release(&requests[0])?;
-    starting.remove(0).await??;
-    fixture.started(&queued).await?;
-    for request in &requests[1..] {
+    for request in &requests {
         fixture.release(request)?;
     }
-    fixture.release(&queued)?;
     for task in starting {
         task.await??;
     }
-    fifth.await??;
     fixture.provider.shutdown().await;
     Ok(())
 }
@@ -251,7 +229,7 @@ async fn deployment_retirement_cancels_pending_hosts_and_allows_a_replacement() 
 }
 
 #[tokio::test]
-async fn shutdown_reaps_running_hosts_and_cancels_queued_launches() -> Result<()> {
+async fn shutdown_reaps_every_host_in_a_pending_burst() -> Result<()> {
     let fixture = LocalFixture::new().await?;
     let requests: Vec<_> = (0..6)
         .map(|i| fixture.request(&format!("host-{i}")))
@@ -260,27 +238,15 @@ async fn shutdown_reaps_running_hosts_and_cancels_queued_launches() -> Result<()
         .iter()
         .map(|request| fixture.start(request))
         .collect();
-    tokio::time::timeout(DEADLINE, async {
-        loop {
-            let count = requests
-                .iter()
-                .filter(|request| fixture.marker(request, "started").exists())
-                .count();
-            if count == 4 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await?;
+    for request in &requests {
+        fixture.started(request).await?;
+    }
     tokio::time::timeout(DEADLINE, fixture.provider.shutdown()).await?;
     for task in starting {
         assert!(task.await?.is_err());
     }
     for request in &requests {
-        if fixture.marker(request, "started").exists() {
-            fixture.stopped(request).await?;
-        }
+        fixture.stopped(request).await?;
     }
     assert!(
         fixture

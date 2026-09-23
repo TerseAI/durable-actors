@@ -1,7 +1,6 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -128,9 +127,7 @@ impl LocalCodeCompiler for BunCodeCompiler {
         if let Some(host) = &self.sdk_host {
             command.env("DURABLE_ACTORS_SDK_HOST", host);
         }
-        let result = tokio::time::timeout(Duration::from_secs(120), command.output())
-            .await
-            .context("local actor build timed out")??;
+        let result = command.output().await.context("run local actor build")?;
         ensure!(
             result.status.success(),
             "local actor build failed: {}",
