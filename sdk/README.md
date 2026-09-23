@@ -33,6 +33,7 @@ In your separate application project's directory (ex: node server), install the 
 
 ```sh
 pnpm add -D durable-actors
+pnpm add zod@4
 ```
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
@@ -43,7 +44,7 @@ Then generate your client from the same application directory:
 pnpm exec durable-actors generate
 ```
 
-The generated directory contains the typed client and its runtime. Commit the whole directory; applications that only call actors do not need `durable-actors` in production. You can also run `pnpm dlx durable-actors generate` without adding the SDK to the application’s dependencies or lockfile. Pin the CLI version when using this in CI.
+The generated directory contains the typed client and its runtime. Commit the whole directory; its only runtime dependency is Zod 4. Applications that only call actors do not need `durable-actors` in production. You can also run `pnpm dlx durable-actors generate` without adding the SDK to the application’s dependencies or lockfile. Pin the CLI version when using this in CI.
 
 Regenerate after changing actor contracts or upgrading the generator to pick up runtime fixes.
 

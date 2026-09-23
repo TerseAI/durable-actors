@@ -72,7 +72,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         }
 `
     )
-    checkTypes(consumer)
+    await checkTypes(consumer)
     const proxyFile = path.join(directory, "proxy.mjs")
     await build({
         entryPoints: [path.join(directory, "index.ts")],
@@ -258,7 +258,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             })),
             directory
         )
-        checkTypes(path.join(directory, "index.ts"))
+        await checkTypes(path.join(directory, "index.ts"))
         await build({
             entryPoints: [path.join(directory, "index.ts")],
             bundle: true,
@@ -328,7 +328,7 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             // @ts-expect-error socket-only contracts have no RPC stub
             actors.Room.get("lobby")`
         )
-        checkTypes(consumer)
+        await checkTypes(consumer)
         const bundle = await build({
             entryPoints: [path.join(directory, "index.ts")],
             bundle: true,
@@ -404,7 +404,7 @@ test("each actor module exposes complete unprefixed contract types", async t => 
         const wrong: Authorization = { actorName: "Counter", actorId: "one", metadata }
     `
     )
-    checkTypes(consumer)
+    await checkTypes(consumer)
 })
 
 test("readable contract types preserve recursive metadata and helper-name collisions", async t => {
@@ -457,10 +457,13 @@ test("readable contract types preserve recursive metadata and helper-name collis
         const wrong: Incoming = "wrong"
     `
     )
-    checkTypes(consumer)
+    await checkTypes(consumer)
 })
 
-function checkTypes(consumer: string): void {
+async function checkTypes(consumer: string): Promise<void> {
+    const modules = path.join(path.dirname(consumer), "node_modules")
+    await mkdir(modules, { recursive: true })
+    await symlink(path.dirname(fileURLToPath(import.meta.resolve("zod/package.json"))), path.join(modules, "zod"))
     const options: ts.CompilerOptions = {
         strict: true,
         noEmit: true,

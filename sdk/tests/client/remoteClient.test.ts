@@ -6,7 +6,35 @@ import { test } from "node:test"
 
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
-import { ActorInvocationError } from "../../src/errors.js"
+import { ActorInvocationError, ActorProtocolError } from "../../src/errors.js"
+
+test("invalid discovery epochs and deadlines fail before host dispatch", async () => {
+    for (const field of ["ownerEpoch", "expiresAtMs"]) {
+        for (const value of [0, -1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1]) {
+            const client = new RemoteActorClient(undefined, {
+                environment: {},
+                telemetry: () => {},
+                fetch: async () =>
+                    Response.json({
+                        route: "https://host.example.com",
+                        token: "ticket",
+                        ownerEpoch: 1,
+                        expiresAtMs: 4_000_000_000_000,
+                        [field]: value
+                    }),
+                actorHost: {
+                    async invoke() {
+                        return assert.fail("invalid target reached actor host")
+                    },
+                    async publish() {
+                        assert.fail("invalid target reached actor host")
+                    }
+                }
+            })
+            await assert.rejects(client.invoke("Counter", "one", "increment", []), ActorProtocolError)
+        }
+    }
+})
 
 for (const local of [false, true]) {
     test(`${local ? "Unauthenticated local" : "API-key"} clients invoke, connect, and broadcast`, async () => {

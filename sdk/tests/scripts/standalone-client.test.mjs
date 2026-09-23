@@ -2,11 +2,12 @@ import { build } from "esbuild"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import ts from "typescript"
 
@@ -14,7 +15,7 @@ import { generateClient } from "../../dist/compiler/generators/client-generator.
 
 const run = promisify(execFile)
 
-test("generated clients typecheck and run with or without bundling in an application with no dependencies", { timeout: 30_000 }, async t => {
+test("generated clients typecheck and run with or without bundling in an application with only Zod installed", { timeout: 30_000 }, async t => {
     const directory = await standaloneProject(t)
     await checkTypes(directory)
     await checkServerCalls(t, directory)
@@ -24,7 +25,10 @@ test("generated clients typecheck and run with or without bundling in an applica
 async function standaloneProject(t) {
     const directory = await mkdtemp(path.join(os.tmpdir(), "standalone-actors-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    await writeFile(path.join(directory, "package.json"), '{"type":"module"}')
+    const zodDirectory = path.dirname(fileURLToPath(import.meta.resolve("zod/package.json")))
+    const { version } = JSON.parse(await readFile(path.join(zodDirectory, "package.json"), "utf8"))
+    await writeFile(path.join(directory, "package.json"), JSON.stringify({ type: "module", dependencies: { zod: version } }))
+    await cp(zodDirectory, path.join(directory, "node_modules/zod"), { recursive: true })
     const contract = JSON.parse(await readFile(new URL("../fixtures/public-contract.json", import.meta.url), "utf8"))
     await generateClient(contract, path.join(directory, "generated"))
     return directory

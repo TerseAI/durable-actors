@@ -1,9 +1,36 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
+import { ActorProtocolError } from "../src/errors.js"
 import { SocketProxy } from "../src/proxy.js"
 
 const actors = { Room: {} }
+
+test("malformed socket grants report a protocol error", async () => {
+    const grant = {
+        websocketUrl: "wss://host.example/socket?key=ticket",
+        homeRegion: "local",
+        connectByMs: 1000,
+        authorizedUntilMs: 900000
+    }
+    for (const invalid of [
+        { websocketUrl: "not a URL" },
+        { websocketUrl: "https://host.example/socket" },
+        { connectByMs: "1000" },
+        { authorizedUntilMs: 1.5 },
+        { authorizedUntilMs: Number.MAX_SAFE_INTEGER + 1 },
+        { homeRegion: "" }
+    ]) {
+        const proxy = new SocketProxy(
+            actors,
+            {},
+            {
+                fetch: async () => Response.json({ ...grant, ...invalid })
+            }
+        )
+        await assert.rejects(proxy.handle({ actorName: "Room", actorId: "one", metadata: {} }), ActorProtocolError)
+    }
+})
 
 test("socket grants use environment settings and prefer the shared secret over the API key", async t => {
     const environment = process.env
