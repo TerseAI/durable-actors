@@ -29,7 +29,7 @@ pnpm install
 durable-actors dev // this will run the server locally on your machine
 ```
 
-`dev` compiles `src/actors.ts` and its imports once before the server is ready. New actors load that prepared bundle. Saving source or configuration changes rebuilds the bundle and restarts actors with their committed state intact. A failed build leaves the current code running; only the latest successful build is retained. Use `--no-watch` to disable automatic rebuilds.
+Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
 
 ### Connect your application
 

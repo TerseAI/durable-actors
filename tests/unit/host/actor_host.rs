@@ -185,11 +185,11 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
         let writes = state.writes.lock().unwrap();
         assert_eq!(writes.len(), 2);
         assert_eq!(
-            StateSnapshot::decode(&writes[0])?.state,
+            serde_json::from_str::<Value>(StateSnapshot::decode(&writes[0])?.state.get())?,
             json!({"count": 1})
         );
         assert_eq!(
-            StateSnapshot::decode(&writes[1])?.state,
+            serde_json::from_str::<Value>(StateSnapshot::decode(&writes[1])?.state.get())?,
             json!({"count": 2})
         );
         Ok::<_, anyhow::Error>(())
