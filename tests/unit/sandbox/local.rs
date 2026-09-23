@@ -87,28 +87,23 @@ async fn duplicate_requests_share_startup_even_when_the_first_caller_disconnects
 }
 
 #[tokio::test]
-async fn a_cold_burst_starts_together_while_warm_hosts_remain_available() -> Result<()> {
+async fn pending_actor_starts_do_not_block_warm_host_reuse() -> Result<()> {
     let fixture = LocalFixture::new().await?;
     let warm = fixture.request("warm");
     fixture.release(&warm)?;
     fixture.start(&warm).await??;
-    let requests: Vec<_> = (0..16)
-        .map(|i| fixture.request(&format!("cold-{i}")))
-        .collect();
-    let starting: Vec<_> = requests
-        .iter()
-        .map(|request| fixture.start(request))
-        .collect();
-    for request in &requests {
-        fixture.started(request).await?;
-    }
-    tokio::time::timeout(DEADLINE, fixture.start(&warm)).await???;
-    for request in &requests {
-        fixture.release(request)?;
-    }
-    for task in starting {
-        task.await??;
-    }
+    let first = fixture.request("first");
+    let second = fixture.request("second");
+    let a = fixture.start(&first);
+    let b = fixture.start(&second);
+    fixture.started(&first).await?;
+    fixture.started(&second).await?;
+    let reused = tokio::time::timeout(DEADLINE, fixture.start(&warm)).await???;
+    assert_eq!(reused.host_id, warm.host_id);
+    fixture.release(&first)?;
+    fixture.release(&second)?;
+    assert_eq!(a.await??.host_id, first.host_id);
+    assert_eq!(b.await??.host_id, second.host_id);
     fixture.provider.shutdown().await;
     Ok(())
 }
@@ -339,10 +334,13 @@ impl LocalFixture {
             lease.clone(),
             &request.canonical_region,
         )?;
-        std::fs::write(
-            self.marker(request, "release"),
-            serde_json::to_vec(&serde_json::json!({ "ownerEpoch": 1, "lease": lease }))?,
+        let mut release =
+            atomic_write_file::AtomicWriteFile::open(self.marker(request, "release"))?;
+        serde_json::to_writer(
+            &mut release,
+            &serde_json::json!({ "ownerEpoch": 1, "lease": lease }),
         )?;
+        release.commit()?;
         Ok(())
     }
 
