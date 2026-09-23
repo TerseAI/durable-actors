@@ -23,6 +23,8 @@
     --danger: #c42525;
     --warning: #946000;
     --shadow-control: 0 1px 2px rgb(0 0 0 / 0.04);
+    --console-sidebar: #f5f5f3;
+    --console-selected: #e8eae5;
 }
 .dark {
     color-scheme: dark;
@@ -48,4 +50,6 @@
     --danger: #ff7777;
     --warning: #e8bc66;
     --shadow-control: 0 1px 2px rgb(0 0 0 / 0.16);
+    --console-sidebar: #131512;
+    --console-selected: #272d25;
 }

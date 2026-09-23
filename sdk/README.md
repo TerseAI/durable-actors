@@ -41,6 +41,8 @@ npm install --save-dev durable-actors
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
 
+`durable-actors observe` never requires a secret when connecting to `durable-actors dev`, even when application routes use one. The dev runtime binds only to localhost; hosted observability still uses the server's configured authentication.
+
 Then generate your client from the same application directory:
 
 ```sh

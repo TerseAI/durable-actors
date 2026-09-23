@@ -7,7 +7,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const manifestFiles = {
     cargoLock: "Cargo.lock",
     cargoToml: "Cargo.toml",
-    npmPackage: "sdk/package.json"
+    npmPackage: "sdk/package.json",
+    observerPackage: "packages/observer-ui/package.json"
 }
 
 export const releaseManifestPaths = Object.values(manifestFiles)
@@ -47,7 +48,8 @@ export function stampReleaseVersion(manifests, version) {
     return {
         cargoLock: replaceOne(manifests.cargoLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.lock"),
         cargoToml: replaceOne(manifests.cargoToml, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.toml"),
-        npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json")
+        npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json"),
+        observerPackage: replaceOne(manifests.observerPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "packages/observer-ui/package.json")
     }
 }
 
@@ -74,7 +76,8 @@ function manifestVersions(manifests) {
             path: manifestFiles.cargoLock,
             version: matchVersion(manifests.cargoLock, /^\[\[package\]\]\nname = "durable-actors"\nversion = "([^"]+)"/mu, manifestFiles.cargoLock)
         },
-        { path: manifestFiles.npmPackage, version: JSON.parse(manifests.npmPackage).version }
+        { path: manifestFiles.npmPackage, version: JSON.parse(manifests.npmPackage).version },
+        { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version }
     ]
 }
 

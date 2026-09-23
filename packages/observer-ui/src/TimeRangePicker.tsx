@@ -10,7 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover
 import { rangeLabel, relativePresets, resolveRange, sameRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
-interface TimeRangePickerProps {
+export interface TimeRangePickerProps {
     value: TimeRange
     onChange: (range: TimeRange) => void
     allowAll?: boolean
