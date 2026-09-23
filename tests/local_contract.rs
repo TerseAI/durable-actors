@@ -1,3 +1,6 @@
+#[path = "support/local_project.rs"]
+mod local_project;
+
 use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
@@ -9,65 +12,65 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart() -> Result<()> {
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_on_restart()
+-> Result<()> {
     let project = tempfile::Builder::new()
         .prefix("actor's project ")
         .tempdir()?;
-    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
-    let file = project.path().join("contract.json");
-    let contract: Value =
-        serde_json::from_str(include_str!("../sdk/tests/fixtures/public-contract.json"))?;
-    std::fs::write(&file, serde_json::to_vec(&contract)?)?;
-    let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+    let runtime = LocalRuntime::start(project.path()).await?;
     let first_api_key = runtime.api_key.clone();
     let first: Value = runtime.contract().await?.error_for_status()?.json().await?;
-    assert_eq!(first["contract"], contract);
+    assert_eq!(first["contract"]["actors"][0]["actorName"], "Counter");
+    assert_eq!(
+        first["contract"]["actors"][0]["rpc"]["methods"][0]["name"],
+        "read"
+    );
     runtime.stop().await?;
 
-    let mut changed = contract.clone();
-    changed["actors"][0]["rpc"]["methods"][0]["name"] = "reset".into();
-    std::fs::write(&file, serde_json::to_vec(&changed)?)?;
-    let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
+    local_project::write_actor(
+        project.path(),
+        "async reset(): Promise<number> { return 0 }",
+    )?;
+    let runtime = LocalRuntime::start(project.path()).await?;
     assert_ne!(runtime.api_key, first_api_key);
     let second: Value = runtime.contract().await?.error_for_status()?.json().await?;
-    assert_eq!(second["contract"], changed);
+    assert_eq!(
+        second["contract"]["actors"][0]["rpc"]["methods"][0]["name"],
+        "reset"
+    );
     assert_ne!(second["contractHash"], first["contractHash"]);
-    runtime.stop().await?;
-
-    let runtime = LocalRuntime::start(project.path(), None).await?;
-    assert_eq!(runtime.contract().await?.status(), 404);
     runtime.stop().await
 }
 
 #[tokio::test]
-async fn dev_rejects_an_invalid_contract_before_publishing_readiness() -> Result<()> {
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn dev_rejects_an_invalid_actor_contract_before_publishing_readiness() -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
-    let file = project.path().join("contract.json");
-    std::fs::write(&file, r#"{"version":99,"actors":[]}"#)?;
+    local_project::write_actor(
+        project.path(),
+        "async read(): Promise<Date> { return new Date() }",
+    )?;
     let output = timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(20),
         Command::new(env!("CARGO_BIN_EXE_durable-actors"))
-            .args(["dev", "--port", "0", "--entrypoint", "actors.mjs"])
-            .env("DURABLE_ACTORS_PROJECT_ID", "default")
+            .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
             .env("DURABLE_ACTORS_SECRET", "test-key")
+            .arg("--sdk-host")
+            .arg(local_project::sdk_host())
             .arg("--project-id")
             .arg("default")
             .arg("--project")
             .arg(project.path())
-            .arg("--contract")
-            .arg(file)
             .kill_on_drop(true)
             .output(),
     )
     .await??;
     assert!(!output.status.success());
     let logs = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        logs.contains("unsupported public actor contract version"),
-        "{logs}"
-    );
-    assert!(!project.path().join(".durable-actors/runtime.json").exists());
+    assert!(logs.contains("JSON-compatible"), "{logs}");
+    assert!(!logs.contains("  Ready  "), "{logs}");
     Ok(())
 }
 
@@ -79,10 +82,12 @@ struct LocalRuntime {
 }
 
 impl LocalRuntime {
-    async fn start(project: &Path, contract: Option<&Path>) -> Result<Self> {
+    async fn start(project: &Path) -> Result<Self> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
-            .args(["dev", "--port", "0", "--entrypoint", "actors.mjs"])
+            .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
+            .arg("--sdk-host")
+            .arg(local_project::sdk_host())
             .arg("--project-id")
             .arg("default")
             .arg("--project")
@@ -93,12 +98,9 @@ impl LocalRuntime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(contract) = contract {
-            command.arg("--contract").arg(contract);
-        }
         let mut child = command.spawn()?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-        let (origin, startup_output) = timeout(Duration::from_secs(5), async {
+        let (origin, startup_output) = timeout(Duration::from_secs(20), async {
             let mut line = String::new();
             let mut startup_output = String::new();
             let mut origin = None;

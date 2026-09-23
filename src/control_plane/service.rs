@@ -149,7 +149,7 @@ impl ControlPlaneService {
             None => None,
         };
         let (prepared, mut compiled_contract) = match &local_build {
-            Some(build) => (build.spec.clone(), build.contract.clone()),
+            Some(build) => (build.spec.clone(), Some(build.contract.clone())),
             None => {
                 self.provisioner
                     .prepare_deployment(source, previous.as_ref(), self.default_region())
@@ -809,13 +809,10 @@ impl HostProvisioner for SandboxHostProvisioner {
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
     )> {
-        let Some(image) = &self.runtime_image else {
-            ensure!(
-                source.image_ref == "local",
-                "local control plane requires a local deployment"
-            );
-            return Ok((source.clone(), None));
-        };
+        let image = self
+            .runtime_image
+            .as_ref()
+            .context("hosted code preparation requires a runtime image")?;
         let input = super::admin::DeploymentSource::from(source);
         if let Some(previous) = previous.filter(|old| {
             old.source.as_ref() == Some(&input)

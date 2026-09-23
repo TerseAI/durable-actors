@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/local_project.rs"]
+mod local_project;
+
 use std::{process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, ensure};
@@ -10,33 +13,38 @@ use tokio::{
 };
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn interrupt_exits_while_the_parent_stdin_pipe_is_open() -> Result<()> {
     assert_shutdown(Some("-INT")).await
 }
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn terminate_exits_while_the_parent_stdin_pipe_is_open() -> Result<()> {
     assert_shutdown(Some("-TERM")).await
 }
 
 #[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
     assert_shutdown(None).await
 }
 
 async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
-    std::fs::write(project.path().join("actors.mjs"), "export {}\n")?;
+    local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .args([
             "dev",
             "--port",
             "0",
             "--entrypoint",
-            "actors.mjs",
+            "actors.ts",
             "--api-key",
             "test-key",
         ])
+        .arg("--sdk-host")
+        .arg(local_project::sdk_host())
         .arg("--project-id")
         .arg("default")
         .arg("--project")
@@ -49,7 +57,7 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
         .spawn()?;
     let mut parent_stdin = child.stdin.take();
     let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
-    timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
+    timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     if let Some(signal) = signal {
@@ -232,7 +240,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
             .kill_on_drop(true)
             .spawn()?;
         let mut output = BufReader::new(runtime.stdout.take().context("runtime stdout")?);
-        let origin = timeout(Duration::from_secs(5), wait_until_ready(&mut output)).await??;
+        let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
         assert!(!shell_directory.path().join("state/runtime.json").exists());
         let result = timeout(
             Duration::from_secs(30),

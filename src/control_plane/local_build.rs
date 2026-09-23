@@ -59,20 +59,10 @@ impl LocalBuilds {
             .actor_entrypoint
             .as_deref()
             .unwrap_or("src/actors.ts");
-        let contract = if entrypoint.ends_with(".mjs") {
-            tokio::fs::symlink(
-                self.project.join(entrypoint).canonicalize()?,
-                directory.path().join("actors.mjs"),
-            )
+        let contract = self
+            .compiler
+            .compile(&self.project, entrypoint, directory.path())
             .await?;
-            None
-        } else {
-            Some(
-                self.compiler
-                    .compile(&self.project, entrypoint, directory.path())
-                    .await?,
-            )
-        };
         let mut spec = source.clone();
         spec.source = Some(DeploymentSource::from(source));
         spec.actor_entrypoint = Some(directory.path().join("actors.mjs").display().to_string());
@@ -86,7 +76,7 @@ impl LocalBuilds {
 
 pub(super) struct PreparedLocalBuild {
     pub spec: HostLaunchSpec,
-    pub contract: Option<PublicActorContract>,
+    pub contract: PublicActorContract,
     directory: TempDir,
 }
 

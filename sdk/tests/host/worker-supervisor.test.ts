@@ -7,7 +7,7 @@ import { test } from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import type { SocketEffect } from "../../src/actor/socketProtocol.js"
-import { prepareActorEntrypoint } from "../../src/host/actor-host.js"
+import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorWorker, ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 
 const actorIdentity = {
@@ -34,10 +34,9 @@ test("correlates overlapping worker replies and socket lookups without idle evic
             async increment() { this.broadcast("increment"); return ++this.count }
         }`
     )
-    const entrypoint = pathToFileURL(file).href
+    const entrypoint = await buildConsumer(root)
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint),
         actorIdleTimeoutMs: 25
     })
     const events: string[] = []
@@ -92,10 +91,10 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
         await worker.warm()
         const root = await createTypeScriptConsumer("WarmCounter")
         try {
-            const moduleUrl = pathToFileURL(path.join(root, "src/actors.ts")).href
-            worker.load({ moduleUrl, schemas: await prepareActorEntrypoint(moduleUrl) }, () => {})
+            const moduleUrl = await buildConsumer(root)
+            worker.load({ moduleUrl }, () => {})
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
-            assert.throws(() => worker.load({ moduleUrl, schemas: [] }, () => {}), /already assigned/)
+            assert.throws(() => worker.load({ moduleUrl }, () => {}), /already assigned/)
             const command = invokeCommand("one", "WarmCounter")
             assert.deepEqual(
                 await worker.execute({ type: "hydrate", actor: command.actor, state: { count: 41 } }, () => {}),
@@ -118,10 +117,9 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
 
 test("an executor never accepts a second actor identity, even after eviction", async () => {
     const root = await createTypeScriptConsumer("BoundCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint)
+        actorEntrypointUrl: entrypoint
     })
     try {
         const first = invokeCommand("first", "BoundCounter")
@@ -138,7 +136,7 @@ test("an executor never accepts a second actor identity, even after eviction", a
 
 test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const consumerRoot = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(consumerRoot)
     try {
         await exerciseActiveActors(entrypoint)
         await exerciseIdleRecycling(entrypoint)
@@ -150,10 +148,9 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
 
 test("reports a new actor only after its Worker is ready", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     const supervisor = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint)
+        actorEntrypointUrl: entrypoint
     })
     try {
         const starting = supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
@@ -179,10 +176,9 @@ watch(new URL(".", import.meta.url), (_, name) => {
     if (name === "stop") { ${action} }
 })`
         )
-        const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+        const entrypoint = await buildConsumer(root)
         const supervisor = new ActorWorkerSupervisor({
-            actorEntrypointUrl: entrypoint,
-            actorSchemas: await prepareActorEntrypoint(entrypoint)
+            actorEntrypointUrl: entrypoint
         })
         try {
             await supervisor.handle(invokeCommand("counter-1", "SessionCounter"), () => {})
@@ -204,12 +200,11 @@ watch(new URL(".", import.meta.url), (_, name) => {
 
 test("starts one speculative Worker and gives it to the first actor", async () => {
     const consumerRoot = await createTypeScriptConsumer("PreloadedCounter")
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(consumerRoot)
     const created: number[] = []
     try {
         const runtime = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
-            actorSchemas: await prepareActorEntrypoint(entrypoint),
             createWorker: () => {
                 created.push(created.length + 1)
                 return {
@@ -240,10 +235,9 @@ test("starts one speculative Worker and gives it to the first actor", async () =
 
 test("thrown methods and socket handlers roll back state without restarting the worker", async () => {
     const root = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     const supervisor = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint)
+        actorEntrypointUrl: entrypoint
     })
     const seen: number[] = []
     supervisor.onActiveActorsChange(() => seen.push(supervisor.activeActors().length))
@@ -300,8 +294,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
         }
     })
     const supervisor = new ActorWorkerSupervisor({
-        actorEntrypointUrl: "file:///unused.ts",
-        actorSchemas: [],
+        actorEntrypointUrl: "file:///unused.mjs",
         actorIdleTimeoutMs: 50,
         createWorker: () => {
             created += 1
@@ -328,12 +321,11 @@ test("expires an unused speculative Worker without replenishing it", async () =>
 
 test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer("CancelledCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     const command = invokeCommand("counter-1", "CancelledCounter")
     try {
         const runtime = new ActorWorkerSupervisor({
-            actorEntrypointUrl: entrypoint,
-            actorSchemas: await prepareActorEntrypoint(entrypoint)
+            actorEntrypointUrl: entrypoint
         })
         await runtime.ready()
         const pending = runtime.handle(command, () => {})
@@ -354,13 +346,12 @@ test("eviction during Worker startup settles the invocation and allows recovery"
 
 test("discards a failed preload before accepting the first actor", async () => {
     const root = await createTypeScriptConsumer("RetryPreloadCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     let created = 0
     let terminated = 0
     try {
         const runtime = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
-            actorSchemas: await prepareActorEntrypoint(entrypoint),
             createWorker: () => {
                 const failed = created++ === 0
                 return {
@@ -395,8 +386,7 @@ test("discards a failed preload before accepting the first actor", async () => {
 test("closing the supervisor terminates an unused Worker and rejects new work", async () => {
     let terminated = 0
     const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: "file:///unused.ts",
-        actorSchemas: [],
+        actorEntrypointUrl: "file:///unused.mjs",
         createWorker: () => ({
             state: "ready",
 
@@ -424,11 +414,10 @@ test("an actor module that fails inside a Worker returns a failure without hangi
         "FailedImportCounter",
         'import { isMainThread } from "node:worker_threads"\nif (!isMainThread) throw new Error("worker import failed")'
     )
-    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
+    const entrypoint = await buildConsumer(root)
     try {
         const runtime = new ActorWorkerSupervisor({
-            actorEntrypointUrl: entrypoint,
-            actorSchemas: await prepareActorEntrypoint(entrypoint)
+            actorEntrypointUrl: entrypoint
         })
         try {
             const reply = await runtime.handle(invokeCommand("counter-1", "FailedImportCounter"), () => {})
@@ -444,8 +433,7 @@ test("an actor module that fails inside a Worker returns a failure without hangi
 
 async function exerciseActiveActors(entrypoint: string): Promise<void> {
     const runtime = new ActorWorkerSupervisor({
-        actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint)
+        actorEntrypointUrl: entrypoint
     })
     assert.deepEqual(await runtime.ready(), ["SessionCounter"])
 
@@ -497,7 +485,6 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
 async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint),
         actorIdleTimeoutMs: 10
     })
     const connection = { id: "socket-1", metadata: { userId: "user-1" }, tags: [] }
@@ -561,7 +548,6 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
 async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
-        actorSchemas: await prepareActorEntrypoint(entrypoint),
         actorIdleTimeoutMs: 10
     })
     assert.deepEqual(
@@ -593,6 +579,13 @@ async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
         ),
         { type: "invoked", result: 9, state: { count: 9 } }
     )
+}
+
+async function buildConsumer(root: string): Promise<string> {
+    const entrypoint = path.join(root, "src/actors.ts")
+    const output = path.join(root, "src/actors.mjs")
+    await buildActor(entrypoint, output, { local: true })
+    return pathToFileURL(output).href
 }
 
 async function createTypeScriptConsumer(actorName = "SessionCounter", preamble = ""): Promise<string> {
@@ -659,7 +652,6 @@ test("residency reports actual workers and drops evicted and failed instances", 
     let fail = false
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.mjs",
-        actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
 
@@ -688,7 +680,6 @@ test("residency reports actual workers and drops evicted and failed instances", 
 test("residency subscribers see worker creation and eviction immediately", async () => {
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.mjs",
-        actorSchemas: undefined,
         createWorker: () => ({
             state: "ready",
 
@@ -715,7 +706,6 @@ test("activity resets the idle timeout without publishing dormant residency", as
     context.mock.timers.enable({ apis: ["setTimeout"] })
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.mjs",
-        actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",
@@ -752,7 +742,6 @@ test("a running request stays resident beyond the idle timeout", async context =
     let block = false
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.mjs",
-        actorSchemas: undefined,
         actorIdleTimeoutMs: 10_000,
         createWorker: () => ({
             state: "ready",

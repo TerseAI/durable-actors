@@ -826,6 +826,24 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
         directory.join("tsconfig.json"),
         r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true,"types":["node"],"typeRoots":["../node_modules/@types"]},"include":["actors.ts"]}"#,
     )?;
+    let code = directory.join("built");
+    let build = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("bun")
+            .arg(sdk.join("compiler/deployment-build.js"))
+            .arg(directory)
+            .arg("actors.ts")
+            .arg(&code)
+            .arg("local")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    ensure!(
+        build.status.success(),
+        "actor build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let socket = directory.join("executor.sock");
     let listener = ActorExecutorListener::bind(&socket).await?;
     let bootstrap = directory.join("host.mjs");
@@ -838,7 +856,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     )?;
     let child = tokio::process::Command::new("bun")
         .arg(bootstrap)
-        .env("DURABLE_ACTORS_ENTRYPOINT", entrypoint)
+        .env("DURABLE_ACTORS_ENTRYPOINT", code.join("actors.mjs"))
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env("TEST_ACTOR_SECRET", "injected")
         .kill_on_drop(true)

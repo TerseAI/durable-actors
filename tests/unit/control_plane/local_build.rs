@@ -34,7 +34,7 @@ async fn builds_preserve_the_current_code_until_successful_publication_and_keep_
         first.spec.source.as_ref().unwrap().actor_entrypoint,
         source.actor_entrypoint
     );
-    assert!(first.contract.is_some());
+    assert_eq!(first.contract.document()["version"], 1);
     first.commit().await;
     compiler.fail.store(true, Ordering::SeqCst);
     assert!(builds.prepare(&source).await.is_err());
@@ -57,32 +57,6 @@ async fn builds_preserve_the_current_code_until_successful_publication_and_keep_
         1
     );
     assert_eq!(compiler.calls.load(Ordering::SeqCst), 4);
-    Ok(())
-}
-
-#[tokio::test]
-async fn prepared_modules_keep_their_import_resolution_without_running_the_compiler() -> Result<()>
-{
-    let root = tempfile::tempdir()?;
-    let compiler = Arc::new(Compiler::default());
-    let builds = LocalBuilds::new(
-        root.path().into(),
-        root.path().join("code"),
-        compiler.clone(),
-    );
-    let mut source = source(root.path());
-    source.actor_entrypoint = Some("actors.mjs".into());
-    std::fs::write(root.path().join("actors.mjs"), "export const actors = {}")?;
-    let prepared = builds.prepare(&source).await?;
-    assert_eq!(
-        std::fs::canonicalize(prepared.spec.actor_entrypoint.as_ref().unwrap())?,
-        std::fs::canonicalize(root.path().join("actors.mjs"))?
-    );
-    assert_eq!(
-        std::fs::read_to_string(prepared.spec.actor_entrypoint.as_ref().unwrap())?,
-        "export const actors = {}"
-    );
-    assert_eq!(compiler.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 

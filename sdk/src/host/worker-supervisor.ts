@@ -2,7 +2,6 @@ import { Worker } from "node:worker_threads"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorKey } from "../actor/identity.js"
-import type { ActorSchema } from "../actor/schema.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import { errorMessage } from "../errors.js"
 
@@ -32,7 +31,6 @@ const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
 
 class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
-    private readonly actorSchemas: readonly ActorSchema[] | undefined
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
     private resident: ResidentActorWorker | undefined
@@ -47,7 +45,6 @@ class ActorWorkerSupervisor {
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
-        this.actorSchemas = options.actorSchemas
         this.actorIdleTimeoutMs = options.actorIdleTimeoutMs ?? DEFAULT_ACTOR_IDLE_TIMEOUT_MS
         this.createWorker = options.createWorker ?? ((data, onStateChange) => new ActorWorker(data, onStateChange))
         if (!Number.isInteger(this.actorIdleTimeoutMs) || this.actorIdleTimeoutMs <= 0) {
@@ -123,9 +120,7 @@ class ActorWorkerSupervisor {
     }
 
     private preload(): ActorWorkerHandle {
-        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl, schemas: this.actorSchemas }, () =>
-            this.notifyActiveActorsChange()
-        )
+        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl }, () => this.notifyActiveActorsChange())
         this.speculativeWorker = worker
         this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
         this.speculativeTimer.unref()
@@ -159,7 +154,6 @@ class ActorWorkerSupervisor {
                 identity: command.actor,
                 sequenceBase: this.lastSequence,
                 moduleUrl: this.actorEntrypointUrl,
-                schemas: this.actorSchemas,
                 idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
@@ -204,7 +198,6 @@ class ResidentActorWorker {
     readonly identity: ActorIdentity
     readonly sequenceBase: number
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[] | undefined
     readonly idleTimeoutMs: number
     readonly createWorker: ActorWorkerFactory
     readonly onIdle: (actor: ResidentActorWorker) => void
@@ -218,7 +211,6 @@ class ResidentActorWorker {
         this.identity = { ...options.identity }
         this.sequenceBase = options.sequenceBase
         this.moduleUrl = options.moduleUrl
-        this.schemas = options.schemas
         this.idleTimeoutMs = options.idleTimeoutMs
         this.createWorker = options.createWorker
         this.onIdle = options.onIdle
@@ -235,10 +227,7 @@ class ResidentActorWorker {
         if (this.worker === undefined && command.resident_only) return { type: "state_required" }
         if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
         this.idleTimer = undefined
-        this.worker ??= this.createWorker(
-            { moduleUrl: this.moduleUrl, schemas: this.schemas },
-            this.onActiveActorsChange
-        )
+        this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl }, this.onActiveActorsChange)
         const worker = this.worker
         this.activeInvocations++
         this.onActiveActorsChange()

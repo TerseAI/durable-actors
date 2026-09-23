@@ -2,7 +2,6 @@ import { z } from "zod"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
-import type { ActorSchema } from "../actor/schema.js"
 import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
@@ -143,7 +142,6 @@ interface EvictedReply {
 
 interface ActorWorkerData {
     readonly moduleUrl: string
-    readonly schemas: readonly ActorSchema[] | undefined
 }
 
 type ActorWorkerRequest =

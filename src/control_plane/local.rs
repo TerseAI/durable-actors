@@ -31,7 +31,6 @@ use crate::{
 use super::{
     ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, ControlPlaneService,
     admin::{AdminService, HostLaunchSpec, LocalAdminRegistry},
-    contracts::PublicActorContract,
     public_api,
     service::SandboxHostProvisioner,
 };
@@ -65,8 +64,6 @@ pub struct DevOptions {
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
     pub sdk_host: Option<PathBuf>,
-    #[arg(long, hide = true)]
-    pub contract: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -294,7 +291,6 @@ async fn local_routes(
     api_key: &str,
     directory: &Path,
 ) -> Result<tonic::service::Routes> {
-    let contract = options.contract.as_deref().map(read_contract).transpose()?;
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -343,9 +339,7 @@ async fn local_routes(
     )))
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
-    service
-        .deploy_source(&admin, &spec, contract.as_ref())
-        .await?;
+    service.deploy_source(&admin, &spec, None).await?;
     let inspector =
         super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
             .with_traces(service.traces.clone());
@@ -353,11 +347,6 @@ async fn local_routes(
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
-}
-
-fn read_contract(path: &Path) -> Result<PublicActorContract> {
-    let bytes = std::fs::read(path).context("read local actor contract")?;
-    PublicActorContract::new(serde_json::from_slice(&bytes).context("parse local actor contract")?)
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

@@ -2,11 +2,10 @@ import { stringifyChunked } from "@discoveryjs/json-ext"
 import { stat } from "node:fs/promises"
 import { type Socket, createConnection } from "node:net"
 import path from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { pathToFileURL } from "node:url"
 import { z } from "zod"
 
 import type { ActorIdentity } from "../actor/identity.js"
-import type { ActorSchema } from "../actor/schema.js"
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
@@ -47,12 +46,8 @@ class ActorSession {
 
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
-        const actorSchemas = actorEntrypointUrl.endsWith(".mjs")
-            ? undefined
-            : await prepareActorEntrypoint(actorEntrypointUrl)
         const supervisor = this.createSupervisor({
             actorEntrypointUrl,
-            actorSchemas,
             actorIdleTimeoutMs: this.settings.actorIdleTimeoutMs
         })
         const commandHandler: ActorCommandHandler = (command, allowNextInvocation, publish, connections) =>
@@ -379,7 +374,6 @@ function sessionError(error: unknown): Error {
 
 async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
     const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
-    if (!entrypointPath.endsWith(".mjs")) requireTypeScriptSource(entrypointPath)
     await requireFile(
         entrypointPath,
         configured === undefined
@@ -387,16 +381,6 @@ async function resolveActorEntrypoint(configured: string | undefined): Promise<s
             : `configured actor entrypoint ${configured}`
     )
     return pathToFileURL(entrypointPath).href
-}
-
-async function prepareActorEntrypoint(moduleUrl: string): Promise<readonly ActorSchema[]> {
-    const { ActorCompiler } = await import("../compiler/actor-compiler.js")
-    return new ActorCompiler().compile(fileURLToPath(moduleUrl))
-}
-
-function requireTypeScriptSource(filePath: string): void {
-    if (!/\.(?:ts|tsx|mts|cts)$/u.test(filePath) || /\.d\.[cm]?ts$/u.test(filePath))
-        throw new ActorConfigurationError("actor entrypoint must be a TypeScript source file")
 }
 
 async function requireFile(filePath: string, label: string): Promise<void> {
@@ -452,12 +436,4 @@ const actorSessionSettingsSchema = z.object({
 
 const DEFAULT_ACTOR_ENTRYPOINT = "dist/actors.mjs"
 
-export {
-    ActorSession,
-    connectSocket,
-    parseHostSettings,
-    prepareActorEntrypoint,
-    resolveActorEntrypoint,
-    runActorHost,
-    serializeWithinBytes
-}
+export { ActorSession, connectSocket, parseHostSettings, resolveActorEntrypoint, runActorHost, serializeWithinBytes }
