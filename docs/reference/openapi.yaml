@@ -193,6 +193,7 @@ paths:
             summary: Get request history
             description: Newest first. Use nextCursor with the same filters for older records; replace previous records when reset=true.
             parameters:
+                - { $ref: "#/components/parameters/ProjectFilter" }
                 - name: actorName
                   in: query
                   schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
@@ -244,6 +245,7 @@ paths:
             summary: Get retained request metrics
             description: Counts include reroutes; success and p95 use non-rerouted attempts. Returns deployment totals and up to 499 actor classes from retained history.
             parameters:
+                - { $ref: "#/components/parameters/ProjectFilter" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
             responses:
@@ -264,6 +266,7 @@ paths:
             summary: Get queue wait statistics
             description: Up to 500 actor instances ordered by admitted request count, then actor name and ID. Includes non-rerouted attempts with a queue wait.
             parameters:
+                - { $ref: "#/components/parameters/ProjectFilter" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
                 - name: actorName
@@ -290,6 +293,7 @@ paths:
             summary: Get WebSocket session history
             description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
             parameters:
+                - { $ref: "#/components/parameters/ProjectFilter" }
                 - { $ref: "#/components/parameters/FromMs" }
                 - { $ref: "#/components/parameters/ToMs" }
             responses:
@@ -309,6 +313,187 @@ paths:
     /v1/observe/requests/events:
         get:
             operationId: streamRequestHistory
+            tags: [Observability]
+            summary: Stream request history
+            description: |
+                SSE requests events contain TracePage JSON. Resume with resumeCursor;
+                when reset=true, replace previous records. Error events contain text and close the stream.
+            parameters:
+                - name: after
+                  in: query
+                  description: resumeCursor; overrides Last-Event-ID.
+                  schema: { type: string, maxLength: 4096 }
+                - name: Last-Event-ID
+                  in: header
+                  description: Previous SSE event ID.
+                  schema: { type: string, maxLength: 4096 }
+            responses:
+                "200": { $ref: "#/components/responses/EventStream" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/actors:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: getActorInventoryForProject
+            tags: [Observability]
+            summary: Get actor activity
+            responses:
+                "200":
+                    description: Actor counts and connections.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/Inventory" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/observe/events:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: streamActorInventoryForProject
+            tags: [Observability]
+            summary: Stream actor activity
+            description: "SSE: inventory events contain Inventory JSON; error events contain text and close the stream."
+            responses:
+                "200": { $ref: "#/components/responses/EventStream" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+    /v1/projects/{project_id}/observe/requests:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listRequestHistoryForProject
+            tags: [Observability]
+            summary: Get request history
+            description: "Requires backend admin credentials and an authorized project proxy. SQLite and BigQuery use the same response contract. Newest first. Use nextCursor with the same filters for older records; replace previous records when reset=true."
+            parameters:
+                - name: actorName
+                  in: query
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - name: outcome
+                  in: query
+                  schema: { type: string, enum: [completed, failed, rejected, rerouted, interrupted] }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+                - name: limit
+                  in: query
+                  schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+                - name: cursor
+                  in: query
+                  description: nextCursor from the previous page.
+                  schema: { type: string, minLength: 1, maxLength: 4096 }
+            responses:
+                "200":
+                    description: Request records; nextCursor is null on the last page.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/TracePage" }
+                            examples:
+                                empty:
+                                    value:
+                                        {
+                                            epoch: "history-1",
+                                            cursor: 0,
+                                            capacity: 100,
+                                            evicted: 0,
+                                            dropped: 0,
+                                            persistenceFailed: false,
+                                            records: [],
+                                            nextCursor: null,
+                                            resumeCursor: "opaque-cursor",
+                                            reset: false
+                                        }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/metrics:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: getObserverMetricsForProject
+            tags: [Observability]
+            summary: Get retained request metrics
+            description: Counts include reroutes; success and p95 use non-rerouted attempts. Returns deployment totals and up to 499 actor classes from retained history.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/OverviewMetrics" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/queue-waits:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listQueueWaitsForProject
+            tags: [Observability]
+            summary: Get queue wait statistics
+            description: Up to 500 actor instances ordered by admitted request count, then actor name and ID. Includes non-rerouted attempts with a queue wait.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+                - name: actorName
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 48, pattern: "^[A-Za-z0-9._-]+$" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/QueueWaitRow" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/websockets:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: listWebSocketSessionsForProject
+            tags: [Observability]
+            summary: Get WebSocket session history
+            description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/SocketSession" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/observe/requests/events:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: streamRequestHistoryForProject
             tags: [Observability]
             summary: Stream request history
             description: |
@@ -398,6 +583,11 @@ components:
             in: query
             description: Inclusive upper bound in Unix milliseconds.
             schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        ProjectFilter:
+            name: projectId
+            in: query
+            description: Project scope; required for BigQuery reads unless supplied in the route.
+            schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
         ProjectId:
             name: project_id
             in: path
@@ -721,6 +911,7 @@ components:
                                                     id: { type: string }
                                                     operation: { type: string }
         TracePage:
+            description: Common observer envelope. BigQuery SSE returns reset snapshots; sequence and cursor are positions within that result, not ingestion offsets. BigQuery dropped and evicted counters are zero because they are not warehouse completeness measures.
             type: object
             required: [epoch, cursor, capacity, evicted, dropped, persistenceFailed, records, nextCursor, resumeCursor, reset]
             properties:
@@ -738,9 +929,11 @@ components:
             type: object
             required: [sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
             properties:
+                projectId: { type: string }
+                region: { type: string }
                 metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
                 sequence: { type: integer, minimum: 0 }
-                eventId: { type: string, format: uuid }
+                eventId: { type: string, minLength: 1, maxLength: 256, description: Stable producer event identity; separate from requestId. }
                 hostId: { type: string }
                 sessionId: { type: string }
                 requestId: { type: string }

@@ -9,7 +9,8 @@ pub(super) fn overview(connection: &mut Connection, range: &TimeRange) -> Result
     let rows = statement.query_map(
         params![
             range.from_ms.map(|ms| ms as i64),
-            range.to_ms.map(|ms| ms as i64)
+            range.to_ms.map(|ms| ms as i64),
+            range.project_id
         ],
         |row| {
             let attempts: i64 = row.get(2)?;
@@ -44,7 +45,8 @@ pub(super) fn queue_waits(
         params![
             query.from_ms.map(|ms| ms as i64),
             query.to_ms.map(|ms| ms as i64),
-            query.actor_name
+            query.actor_name,
+            query.project_id
         ],
         |row| {
             Ok(QueueWaitRow {
@@ -67,7 +69,8 @@ pub(super) fn websockets(
     let rows = statement.query_map(
         params![
             range.from_ms.map(|ms| ms as i64),
-            range.to_ms.map(|ms| ms as i64)
+            range.to_ms.map(|ms| ms as i64),
+            range.project_id
         ],
         |row| {
             let connect_event: Option<String> = row.get(7)?;

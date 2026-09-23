@@ -39,6 +39,12 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         )?
         .token;
     for path in [
+        "/v1/projects/default/observe/actors",
+        "/v1/projects/default/observe/requests",
+        "/v1/projects/default/observe/metrics",
+        "/v1/projects/default/observe/queue-waits",
+        "/v1/projects/default/observe/websockets",
+        "/v1/projects/default/observe/requests/events",
         "/v1/observe/actors",
         "/v1/observe/events",
         "/v1/observe/requests/events",
@@ -82,6 +88,14 @@ impl Fixture {
     }
 
     async fn start_with_traces(traces: crate::request_traces::TraceStore) -> Result<Self> {
+        let reader = Arc::new(traces.clone());
+        Self::start_with_reader(traces, reader).await
+    }
+
+    async fn start_with_reader(
+        traces: crate::request_traces::TraceStore,
+        reader: Arc<dyn crate::request_traces::reader::TraceReader>,
+    ) -> Result<Self> {
         let runtime = RuntimeFixture::new()?;
         let store = runtime.runtime.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -101,8 +115,9 @@ impl Fixture {
             issuer.clone(),
         )?;
         let changes = tokio::sync::watch::channel(()).0;
-        let inspector =
-            ActorInspector::new(store.clone(), changes.clone()).with_traces(traces.clone());
+        let inspector = ActorInspector::new(store.clone(), changes.clone())
+            .with_traces(traces.clone())
+            .with_reader(reader);
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
@@ -340,9 +355,14 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
         fixture
             .traces
             .record(
-                "host",
-                "session",
+                &crate::request_traces::sink::TraceScope {
+                    project_id: "default".into(),
+                    region: "test".into(),
+                    host_id: "host".into(),
+                    session_id: "session".into(),
+                },
                 vec![RequestTrace {
+                    event_id: uuid::Uuid::new_v4().to_string(),
                     request_id: id.into(),
                     actor_name: "Room".into(),
                     actor_id: "one".into(),
@@ -521,9 +541,14 @@ async fn record_request(
     fixture
         .traces
         .record(
-            "host",
-            "session",
+            &crate::request_traces::sink::TraceScope {
+                project_id: "default".into(),
+                region: "test".into(),
+                host_id: "host".into(),
+                session_id: "session".into(),
+            },
             vec![crate::request_traces::RequestTrace {
+                event_id: uuid::Uuid::new_v4().to_string(),
                 request_id: id.into(),
                 actor_name: actor_name.into(),
                 actor_id: actor_id.into(),
@@ -599,5 +624,86 @@ async fn typed_observer_metrics_validate_ranges_and_return_uncached_results() ->
             .status(),
         StatusCode::BAD_REQUEST
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn analytics_project_routes_scope_before_inventory_aggregation() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for project in ["one", "two"] {
+        let mut actor = fixture.actor("same");
+        actor.project_id = project.into();
+        fixture
+            .store
+            .register_activation(
+                &actor,
+                &HostLeaseRequest {
+                    id: fixture.host.clone(),
+                    session_id: "session".into(),
+                    route: "http://localhost:7101".into(),
+                    duration_ms: 60_000,
+                },
+                "north-america-east",
+                true,
+            )
+            .await?;
+    }
+    let response = fixture.get("/v1/projects/one/observe/actors").await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value = response.json().await?;
+    assert_eq!(value["actors"][0]["instances"].as_array().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn bigquery_preserves_the_history_and_sse_response_contract() -> Result<()> {
+    use crate::request_traces::bigquery::{
+        BigQueryReader, QueryExecutor, QueryPage, QuerySpec, ResultPage,
+    };
+    struct Executor;
+    #[async_trait::async_trait]
+    impl QueryExecutor for Executor {
+        async fn query(&self, query: QuerySpec) -> Result<QueryPage> {
+            assert_eq!(query.parameters["project_id"], "one");
+            let mut event = crate::request_traces::persistence::tests::event("event");
+            event.project_id = "one".into();
+            Ok(QueryPage {
+                rows: vec![serde_json::to_value(event)?],
+                next: None,
+            })
+        }
+        async fn page(&self, _: ResultPage, _: u32) -> Result<QueryPage> {
+            anyhow::bail!("no next page")
+        }
+    }
+    let reader = Arc::new(BigQueryReader::new(
+        Arc::new(Executor),
+        Arc::new(crate::clock::SystemClock),
+        "gcp.dataset.events".into(),
+        "test".into(),
+        30,
+        Duration::from_secs(15),
+        b"shared-key",
+    ));
+    let fixture =
+        Fixture::start_with_reader(crate::request_traces::TraceStore::default(), reader).await?;
+    let page: Value = fixture
+        .get("/v1/projects/one/observe/requests")
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page["records"][0]["eventId"], "event");
+    assert_eq!(page["records"][0]["sequence"], 1);
+    assert_eq!(page["cursor"], 1);
+    assert_eq!(page["capacity"], 100);
+    let mut stream = fixture
+        .get("/v1/projects/one/observe/requests/events")
+        .await?
+        .error_for_status()?;
+    let snapshot = stream_inventory(&mut stream).await?;
+    assert_eq!(snapshot["reset"], true);
+    assert_eq!(snapshot["records"], page["records"]);
+    assert_eq!(snapshot["nextCursor"], Value::Null);
     Ok(())
 }

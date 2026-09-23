@@ -33,7 +33,7 @@ async fn live_snapshot_resumes_with_late_arrivals() -> Result<()> {
         first
             .records
             .iter()
-            .map(|r| r.event.event_id.as_str())
+            .map(|r| r.event.trace.event_id.as_str())
             .collect::<Vec<_>>(),
         ["c", "b"]
     );
@@ -45,7 +45,7 @@ async fn live_snapshot_resumes_with_late_arrivals() -> Result<()> {
         })
         .await?;
     assert_eq!(replay.records.len(), 1);
-    assert_eq!(replay.records[0].event.event_id, "late");
+    assert_eq!(replay.records[0].event.trace.event_id, "late");
     Ok(())
 }
 
@@ -84,7 +84,7 @@ async fn failed_batches_do_not_partially_commit() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let store = SqliteTracePersistence::new(directory.path().join("traces.sqlite3"));
     store.run(|connection| {
-        connection.execute_batch("CREATE TRIGGER reject_bad BEFORE INSERT ON traces WHEN NEW.event_id = 'bad' BEGIN SELECT RAISE(ABORT, 'write failed'); END;")?;
+        connection.execute_batch("CREATE TRIGGER reject_bad BEFORE INSERT ON traces WHEN NEW.trace.event_id = 'bad' BEGIN SELECT RAISE(ABORT, 'write failed'); END;")?;
         Ok(())
     }).await?;
     assert!(store.append(&[event("good"), event("bad")]).await.is_err());
@@ -125,15 +125,20 @@ async fn a_corrupt_legacy_snapshot_is_not_silently_discarded() -> Result<()> {
 }
 
 fn ids(events: Vec<TraceEvent>) -> Vec<String> {
-    events.into_iter().map(|event| event.event_id).collect()
+    events
+        .into_iter()
+        .map(|event| event.trace.event_id)
+        .collect()
 }
 
-pub(super) fn event(id: &str) -> TraceEvent {
+pub(crate) fn event(id: &str) -> TraceEvent {
     TraceEvent {
-        event_id: id.into(),
+        project_id: "default".into(),
+        region: "test".into(),
         host_id: "host".into(),
         session_id: "session".into(),
         trace: RequestTrace {
+            event_id: id.into(),
             request_id: "same-request".into(),
             actor_name: "Counter".into(),
             actor_id: "one".into(),
@@ -168,7 +173,7 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
         first
             .records
             .iter()
-            .map(|r| r.event.event_id.as_str())
+            .map(|r| r.event.trace.event_id.as_str())
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
@@ -180,7 +185,7 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
             ..Default::default()
         })
         .await?;
-    assert_eq!(last.records[0].event.event_id, "c");
+    assert_eq!(last.records[0].event.trace.event_id, "c");
     assert!(last.next_cursor.is_none());
     store.append(&[event("d")]).await?;
     let reset = store
@@ -191,7 +196,7 @@ async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Res
         .await?;
     assert!(reset.reset);
     assert_eq!(reset.records.len(), 3);
-    assert_eq!(reset.records[0].event.event_id, "d");
+    assert_eq!(reset.records[0].event.trace.event_id, "d");
     Ok(())
 }
 
@@ -217,7 +222,7 @@ async fn cursor_survives_reopening() -> Result<()> {
     };
     let replay = store.replay(&query).await?;
     assert_eq!(replay.records.len(), 1);
-    assert_eq!(replay.records[0].event.event_id, "c");
+    assert_eq!(replay.records[0].event.trace.event_id, "c");
     let previous_format = serde_json::json!({
         "generation": first.epoch, "position": first.cursor,
         "direction": "forward", "watermark": first.cursor, "time": 0, "pruned": 0
@@ -229,7 +234,7 @@ async fn cursor_survives_reopening() -> Result<()> {
         })
         .await?;
     assert_eq!(replay.records.len(), 1);
-    assert_eq!(replay.records[0].event.event_id, "c");
+    assert_eq!(replay.records[0].event.trace.event_id, "c");
     Ok(())
 }
 
@@ -269,7 +274,7 @@ async fn existing_sqlite_events_survive_the_query_schema_migration() -> Result<(
     let page = store.replay(&ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), 1);
     assert_eq!(page.records[0].sequence, 42);
-    assert_eq!(page.records[0].event.event_id, "saved");
+    assert_eq!(page.records[0].event.trace.event_id, "saved");
     store.append(&[event("new")]).await?;
     assert_eq!(
         store.replay(&ReplayQuery::default()).await?.records[0].sequence,

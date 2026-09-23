@@ -51,7 +51,11 @@ pub(super) fn query(connection: &mut Connection, query: &HistoryQuery) -> Result
         None
     };
     Ok(TracePage {
-        resume_cursor: replay::resume_cursor(&metadata.generation, watermark)?,
+        resume_cursor: replay::resume_cursor(
+            &metadata.generation,
+            watermark,
+            query.project_id.clone(),
+        )?,
         epoch: metadata.generation,
         cursor: watermark,
         capacity: query.limit,
@@ -73,6 +77,7 @@ fn select(
     let mut clauses = vec!["position <= ?"];
     let mut values = vec![Value::Integer(watermark as i64)];
     for (clause, value) in [
+        ("project_id = ?", query.project_id.clone().map(Value::Text)),
         ("actor_name = ?", query.actor_name.clone().map(Value::Text)),
         ("actor_id = ?", query.actor_id.clone().map(Value::Text)),
         (

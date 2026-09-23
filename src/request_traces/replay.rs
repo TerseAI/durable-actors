@@ -2,12 +2,14 @@ use anyhow::{Result, ensure};
 
 #[derive(Clone)]
 pub(crate) struct ReplayQuery {
+    pub project_id: Option<String>,
     pub cursor: Option<String>,
     pub limit: usize,
 }
 impl Default for ReplayQuery {
     fn default() -> Self {
         Self {
+            project_id: None,
             cursor: None,
             limit: super::TRACE_CAPACITY,
         }
@@ -23,7 +25,11 @@ impl ReplayQuery {
             self.cursor.as_ref().is_none_or(|c| c.len() <= 4096),
             "invalid replay cursor"
         );
-        Ok(())
+        super::history::HistoryQuery {
+            project_id: self.project_id.clone(),
+            ..Default::default()
+        }
+        .validate()
     }
 }
 

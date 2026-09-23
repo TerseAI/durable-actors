@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -24,6 +24,34 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
         .route("/v1/observe/queue-waits", get(queue_waits))
         .route("/v1/observe/websockets", get(websocket_history))
         .route("/v1/observe/requests/events", get(request_events))
+        .route(
+            "/v1/projects/{project_id}/observe/actors",
+            get(actor_inventory),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/events",
+            get(actor_events),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/requests",
+            get(request_history),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/metrics",
+            get(overview_metrics),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/queue-waits",
+            get(queue_waits),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/websockets",
+            get(websocket_history),
+        )
+        .route(
+            "/v1/projects/{project_id}/observe/requests/events",
+            get(request_events),
+        )
         .with_state(InspectionApi { inspector, admin })
 }
 
@@ -35,7 +63,8 @@ struct InspectionApi {
 
 #[derive(Clone)]
 pub(super) struct ActorInspector {
-    traces: crate::request_traces::TraceStore,
+    traces: Arc<dyn crate::request_traces::reader::TraceReader>,
+    trace_changes: tokio::sync::watch::Sender<()>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: tokio::sync::watch::Sender<()>,
 }
@@ -45,28 +74,64 @@ impl ActorInspector {
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
         changes: tokio::sync::watch::Sender<()>,
     ) -> Self {
+        let traces = crate::request_traces::TraceStore::default();
         Self {
-            traces: crate::request_traces::TraceStore::default(),
+            trace_changes: traces.changes.clone(),
+            traces: Arc::new(traces),
             inventory,
             changes,
         }
     }
 
     pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
-        self.traces = traces;
+        self.trace_changes = traces.changes.clone();
+        self.traces = Arc::new(traces);
         self
+    }
+    pub(super) fn with_reader(
+        mut self,
+        reader: Arc<dyn crate::request_traces::reader::TraceReader>,
+    ) -> Self {
+        self.traces = reader;
+        self
+    }
+}
+
+fn project_scope(
+    path: &std::collections::HashMap<String, String>,
+    query: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    if let Some(project) = path.get("project_id") {
+        if query.as_ref().is_some_and(|query| query != project) {
+            return Err(ApiError::bad_request("conflicting project scope"));
+        }
+        crate::actor::ActorKey {
+            project_id: project.clone(),
+            actor_name: "Actor".into(),
+            actor_id: "id".into(),
+        }
+        .validate()
+        .map_err(ApiError::bad_request)?;
+        Ok(Some(project.clone()))
+    } else {
+        Ok(query)
     }
 }
 
 async fn actor_inventory(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let inventory = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state))
-        .await
-        .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
-        .map_err(ApiError::internal)?;
+    let project = project_scope(&path, None)?;
+    let inventory = tokio::time::timeout(
+        Duration::from_secs(25),
+        read_inventory(&state, project.as_deref()),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("Actor inventory timed out"))?
+    .map_err(ApiError::internal)?;
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(serde_json::json!({ "actors": inventory })),
@@ -74,16 +139,23 @@ async fn actor_inventory(
         .into_response())
 }
 
-async fn read_inventory(state: &InspectionApi) -> Result<Vec<crate::placement::ActorInventory>> {
+async fn read_inventory(
+    state: &InspectionApi,
+    project: Option<&str>,
+) -> Result<Vec<crate::placement::ActorInventory>> {
     let mut rows: std::collections::BTreeMap<_, _> = state
         .inspector
         .inventory
-        .actor_inventory()
+        .actor_inventory(project)
         .await?
         .into_iter()
         .map(|row| (row.actor_name.clone(), row))
         .collect();
-    if let Some(contract) = state.admin.deployment_contract("default").await? {
+    if let Some(contract) = state
+        .admin
+        .deployment_contract(project.unwrap_or("default"))
+        .await?
+    {
         if let Some(actors) = contract.contract["actors"].as_array() {
             for actor in actors {
                 if let Some(name) = actor["actorName"].as_str() {
@@ -102,6 +174,7 @@ async fn read_inventory(state: &InspectionApi) -> Result<Vec<crate::placement::A
 
 async fn actor_events(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
@@ -109,6 +182,7 @@ async fn actor_events(
     use tokio_stream::wrappers::ReceiverStream;
 
     authorized_admin(&state.admin, &headers)?;
+    let project = project_scope(&path, None)?;
     let mut changes = state.inspector.changes.subscribe();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
     tokio::spawn(async move {
@@ -116,7 +190,7 @@ async fn actor_events(
         loop {
             let result = tokio::select! {
                 _ = sender.closed() => return,
-                result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state)) => result,
+                result = tokio::time::timeout(Duration::from_secs(25), read_inventory(&state, project.as_deref())) => result,
             };
             let data = match result {
                 Ok(Ok(actors)) => serde_json::json!({"actors": actors}).to_string(),
@@ -159,11 +233,13 @@ async fn actor_events(
 
 async fn overview_metrics(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let Query(mut query) = query.map_err(ApiError::bad_request)?;
+    query.project_id = project_scope(&path, query.project_id.take())?;
     query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
@@ -176,11 +252,13 @@ async fn overview_metrics(
 
 async fn queue_waits(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::QueueWaitQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let Query(mut query) = query.map_err(ApiError::bad_request)?;
+    query.project_id = project_scope(&path, query.project_id.take())?;
     query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
@@ -193,11 +271,13 @@ async fn queue_waits(
 
 async fn websocket_history(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let Query(mut query) = query.map_err(ApiError::bad_request)?;
+    query.project_id = project_scope(&path, query.project_id.take())?;
     query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
@@ -210,11 +290,13 @@ async fn websocket_history(
 
 async fn request_history(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     query: Result<Query<crate::request_traces::history::HistoryQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let Query(mut query) = query.map_err(ApiError::bad_request)?;
+    query.project_id = project_scope(&path, query.project_id.take())?;
     query.validate().map_err(ApiError::bad_request)?;
     let page = state
         .inspector
@@ -240,6 +322,7 @@ struct RequestReplay {
 
 async fn request_events(
     State(state): State<InspectionApi>,
+    Path(path): Path<std::collections::HashMap<String, String>>,
     query: Result<Query<RequestReplay>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -255,16 +338,23 @@ async fn request_events(
             .map(str::to_owned)
     });
     let query = ReplayQuery {
+        project_id: project_scope(&path, None)?,
         cursor,
         ..Default::default()
     };
     query.validate().map_err(ApiError::bad_request)?;
     let store = state.inspector.traces;
     // Subscribe before reading so a commit between the read and wait is not missed.
-    let changes = store.changes.subscribe();
+    let changes = state.inspector.trace_changes.subscribe();
     let page = store.replay(&query).await.map_err(trace_query_error)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    tokio::spawn(stream_requests(store, changes, sender, page));
+    tokio::spawn(stream_requests(
+        store,
+        changes,
+        sender,
+        page,
+        query.project_id,
+    ));
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
@@ -277,16 +367,18 @@ async fn request_events(
 }
 
 async fn stream_requests(
-    store: crate::request_traces::TraceStore,
+    store: Arc<dyn crate::request_traces::reader::TraceReader>,
     mut changes: tokio::sync::watch::Receiver<()>,
     sender: tokio::sync::mpsc::Sender<Result<axum::response::sse::Event, std::convert::Infallible>>,
     mut page: crate::request_traces::TracePage,
+    project_id: Option<String>,
 ) {
     use crate::request_traces::replay::ReplayQuery;
     use axum::response::sse::Event;
     loop {
         let more = page.next_cursor.is_some();
         let query = ReplayQuery {
+            project_id: project_id.clone(),
             cursor: Some(page.resume_cursor.clone()),
             ..Default::default()
         };

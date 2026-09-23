@@ -3,6 +3,20 @@ use super::*;
 use std::sync::Mutex;
 
 #[tokio::test]
+async fn analytics_retries_keep_the_producer_event_id() -> Result<()> {
+    let store = TraceStore::default();
+    let mut value = serde_json::to_value(trace(1))?;
+    value["eventId"] = "producer-event".into();
+    let reported: RequestTrace = serde_json::from_value(value)?;
+    store.record(&scope(), vec![reported.clone()], 0).await?;
+    store.record(&scope(), vec![reported], 0).await?;
+    let page = serde_json::to_value(store.replay(&ReplayQuery::default()).await?)?;
+    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page["records"][0]["eventId"], "producer-event");
+    Ok(())
+}
+
+#[tokio::test]
 async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> {
     #[derive(Default)]
     struct RecordingPersistence(Mutex<Vec<Vec<TraceEvent>>>);
@@ -38,13 +52,13 @@ async fn persistence_receives_only_new_events_with_distinct_ids() -> Result<()> 
     let persistence = Arc::new(RecordingPersistence::default());
     let store = TraceStore::open(persistence.clone()).await?;
     for _ in 0..2 {
-        store.record("host", "session", vec![trace(1)], 0).await?;
+        store.record(&scope(), vec![trace(1)], 0).await?;
     }
     let batches = persistence.0.lock().unwrap();
     assert_eq!(batches.len(), 2);
     assert_eq!(batches[0].len(), 1);
     assert_eq!(batches[1].len(), 1);
-    assert_ne!(batches[0][0].event_id, batches[1][0].event_id);
+    assert_ne!(batches[0][0].trace.event_id, batches[1][0].trace.event_id);
     Ok(())
 }
 
@@ -85,7 +99,7 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     let mut writes = tokio::task::JoinSet::new();
     for id in 0..64 {
         let store = store.clone();
-        writes.spawn(async move { store.record("host", "session", vec![trace(id)], 0).await });
+        writes.spawn(async move { store.record(&scope(), vec![trace(id)], 0).await });
     }
     tokio::time::timeout(Duration::from_secs(5), async {
         while store.pending.available_permits() != 0 {
@@ -95,7 +109,7 @@ async fn stalled_persistence_has_a_bounded_backlog() -> Result<()> {
     .await?;
     tokio::time::timeout(
         Duration::from_millis(100),
-        store.record("host", "session", vec![trace(64)], 0),
+        store.record(&scope(), vec![trace(64)], 0),
     )
     .await??;
     assert_eq!(store.replay(&ReplayQuery::default()).await?.cursor, 0);
@@ -119,19 +133,14 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
     let open = || TraceStore::open(Arc::new(SqliteTracePersistence::new(path.clone())));
     let store = open().await?;
     store
-        .record(
-            "host",
-            "session",
-            (0..TRACE_CAPACITY + 2).map(trace).collect(),
-            3,
-        )
+        .record(&scope(), (0..TRACE_CAPACITY + 2).map(trace).collect(), 3)
         .await?;
     let before: Vec<_> = store
         .replay(&ReplayQuery::default())
         .await?
         .records
         .into_iter()
-        .map(|record| record.event.event_id)
+        .map(|record| record.event.trace.event_id)
         .collect();
     drop(store);
 
@@ -142,7 +151,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
             .await?
             .records
             .iter()
-            .map(|record| record.event.event_id.clone())
+            .map(|record| record.event.trace.event_id.clone())
             .collect::<Vec<_>>(),
         before
     );
@@ -160,9 +169,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
         .replay(&ReplayQuery::default())
         .await?
         .resume_cursor;
-    restored
-        .record("host", "session", vec![trace(999)], 0)
-        .await?;
+    restored.record(&scope(), vec![trace(999)], 0).await?;
     let delta = restored
         .replay(&ReplayQuery {
             cursor: Some(cursor),
@@ -208,7 +215,7 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
     }
     let store = TraceStore::open(Arc::new(FailingPersistence)).await?;
     let changes = store.changes.subscribe();
-    store.record("host", "session", vec![trace(1)], 2).await?;
+    store.record(&scope(), vec![trace(1)], 2).await?;
     assert_eq!(store.replay(&ReplayQuery::default()).await?.cursor, 0);
     assert_eq!(store.replay(&ReplayQuery::default()).await?.dropped, 2);
     assert_eq!(
@@ -247,7 +254,7 @@ async fn concurrent_batches_survive_reload_without_lost_updates() -> Result<()> 
     let mut writes = tokio::task::JoinSet::new();
     for id in 0..20 {
         let store = store.clone();
-        writes.spawn(async move { store.record("host", "session", vec![trace(id)], 1).await });
+        writes.spawn(async move { store.record(&scope(), vec![trace(id)], 1).await });
     }
     while let Some(result) = writes.join_next().await {
         result??;
@@ -265,14 +272,14 @@ async fn concurrent_batches_survive_reload_without_lost_updates() -> Result<()> 
     let persisted_ids: std::collections::HashSet<_> = page
         .records
         .iter()
-        .map(|record| &record.event.event_id)
+        .map(|record| &record.event.trace.event_id)
         .collect();
     let live = store.replay(&ReplayQuery::default()).await?;
     assert_eq!(
         persisted_ids,
         live.records
             .iter()
-            .map(|record| &record.event.event_id)
+            .map(|record| &record.event.trace.event_id)
             .collect()
     );
     Ok(())
@@ -329,8 +336,7 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
     let store = TraceStore::open(persistence.clone()).await?;
     let mut changes = store.changes.subscribe();
     let writer = store.clone();
-    let report =
-        tokio::spawn(async move { writer.record("host", "session", vec![trace(1)], 0).await });
+    let report = tokio::spawn(async move { writer.record(&scope(), vec![trace(1)], 0).await });
     tokio::time::timeout(Duration::from_secs(5), persistence.started.notified()).await?;
     assert_eq!(
         store.replay(&ReplayQuery::default()).await?.records.len(),
@@ -354,6 +360,7 @@ async fn cancelling_a_report_does_not_cancel_its_commit() -> Result<()> {
 
 fn trace(id: usize) -> RequestTrace {
     RequestTrace {
+        event_id: new_event_id(),
         request_id: id.to_string(),
         actor_name: "Counter".into(),
         actor_id: "one".into(),
@@ -372,7 +379,7 @@ fn trace(id: usize) -> RequestTrace {
 async fn history_keeps_distinct_requests_and_reports_expired_records() -> Result<()> {
     let store = TraceStore::default();
     for id in 0..TRACE_CAPACITY + 2 {
-        store.record("host", "session", vec![trace(id)], 0).await?;
+        store.record(&scope(), vec![trace(id)], 0).await?;
     }
     let page = store.replay(&ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), TRACE_CAPACITY);
@@ -406,7 +413,7 @@ fn trace_validation_rejects_invalid_timings() {
 #[tokio::test]
 async fn delivery_loss_is_visible_even_without_new_records() -> Result<()> {
     let store = TraceStore::default();
-    store.record("host", "session", vec![], 3).await?;
+    store.record(&scope(), vec![], 3).await?;
     assert_eq!(store.replay(&ReplayQuery::default()).await?.dropped, 3);
     Ok(())
 }
@@ -466,4 +473,13 @@ fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata
     );
     labelled.metadata = Some(oversized);
     assert!(labelled.validate().is_err());
+}
+
+fn scope() -> crate::request_traces::sink::TraceScope {
+    crate::request_traces::sink::TraceScope {
+        project_id: "default".into(),
+        region: "test".into(),
+        host_id: "host".into(),
+        session_id: "session".into(),
+    }
 }

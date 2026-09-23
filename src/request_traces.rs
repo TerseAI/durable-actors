@@ -9,10 +9,15 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+pub(crate) mod bigquery;
+pub(crate) mod config;
 pub(crate) mod history;
 pub(crate) mod metrics;
 pub(crate) mod persistence;
+pub(crate) mod pubsub;
+pub(crate) mod reader;
 pub(crate) mod replay;
+pub(crate) mod sink;
 use persistence::{SqliteTracePersistence, TracePersistence};
 use replay::ReplayQuery;
 
@@ -23,6 +28,8 @@ pub(crate) const TRACE_METADATA_LIMIT: usize = 4096;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RequestTrace {
+    #[serde(default = "new_event_id")]
+    pub event_id: String,
     pub request_id: String,
     pub actor_name: String,
     pub actor_id: String,
@@ -39,6 +46,14 @@ pub(crate) struct RequestTrace {
 
 impl RequestTrace {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.event_id.is_empty() && self.event_id.len() <= 256,
+            "invalid trace event ID"
+        );
+        ensure!(
+            self.started_at_ms <= 9_007_199_254_740_991,
+            "invalid trace timestamp"
+        );
         crate::actor::ActorKey {
             project_id: "trace-validation".into(),
             actor_name: self.actor_name.clone(),
@@ -101,8 +116,10 @@ pub(crate) enum RequestOutcome {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceEvent {
-    #[serde(default = "new_event_id")]
-    pub event_id: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub region: String,
     pub host_id: String,
     pub session_id: String,
     #[serde(flatten)]
@@ -113,7 +130,7 @@ fn new_event_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceRecord {
     pub sequence: u64,
@@ -121,7 +138,7 @@ pub(crate) struct TraceRecord {
     pub event: TraceEvent,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TracePage {
     pub epoch: String,
@@ -165,21 +182,12 @@ impl TraceStore {
 
     pub(crate) async fn record(
         &self,
-        host: &str,
-        session: &str,
+        scope: &sink::TraceScope,
         traces: Vec<RequestTrace>,
         dropped: u64,
     ) -> Result<()> {
         self.dropped.fetch_add(dropped, Ordering::Relaxed);
-        let events = traces
-            .into_iter()
-            .map(|trace| TraceEvent {
-                event_id: new_event_id(),
-                host_id: host.into(),
-                session_id: session.into(),
-                trace,
-            })
-            .collect();
+        let events = scope.events(traces);
         self.persist_detached(events).await
     }
 
@@ -352,6 +360,7 @@ impl RequestSpan {
             sender,
             started,
             trace: Some(RequestTrace {
+                event_id: new_event_id(),
                 request_id: invocation.request_id.clone(),
                 actor_name: invocation.actor.actor_name.clone(),
                 actor_id: invocation.actor.actor_id.clone(),

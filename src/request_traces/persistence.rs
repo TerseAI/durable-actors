@@ -129,8 +129,8 @@ impl TracePersistence for SqliteTracePersistence {
 
 fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 4, "unsupported request trace database version");
-    if version == 4 {
+    ensure!(version <= 5, "unsupported request trace database version");
+    if version == 5 {
         return Ok(());
     }
     let transaction = connection.transaction()?;
@@ -160,23 +160,25 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     transaction.execute_batch(
         "DROP VIEW IF EXISTS request_events; DROP VIEW IF EXISTS request_history;",
     )?;
-    transaction.pragma_update(None, "user_version", 4)?;
+    transaction.execute_batch(include_str!("persistence/project_scope.sql"))?;
+    transaction.pragma_update(None, "user_version", 5)?;
     transaction.commit()?;
     Ok(())
 }
 
 fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result<usize> {
-    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (event_id) DO NOTHING")?;
+    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (project_id, event_id) DO NOTHING")?;
     let mut inserted = 0;
     for event in events {
         let outcome = serde_json::to_value(event.trace.outcome)?;
         inserted += statement.execute(params![
-            event.event_id,
+            event.trace.event_id,
             serde_json::to_string(event)?,
             i64::try_from(event.trace.started_at_ms)?,
             event.trace.actor_name,
             event.trace.actor_id,
-            outcome.as_str()
+            outcome.as_str(),
+            event.project_id
         ])?;
     }
     Ok(inserted)
@@ -197,7 +199,7 @@ fn import_snapshot(transaction: &Transaction<'_>, path: &Path) -> Result<()> {
     for event in saved.history.records {
         transaction.execute(
             "INSERT INTO traces (event_id, event) VALUES (?1, ?2)",
-            params![event.event_id, serde_json::to_string(&event)?],
+            params![event.trace.event_id, serde_json::to_string(&event)?],
         )?;
     }
     Ok(())
@@ -216,7 +218,7 @@ struct LegacyHistory {
 
 #[cfg(test)]
 #[path = "../../tests/unit/request_traces/persistence/tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/request_traces/persistence/history_tests.rs"]

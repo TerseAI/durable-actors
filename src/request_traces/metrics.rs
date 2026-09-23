@@ -4,13 +4,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TimeRange {
+    pub project_id: Option<String>,
     pub from_ms: Option<u64>,
     pub to_ms: Option<u64>,
 }
 
 impl TimeRange {
+    pub(crate) fn history(&self) -> super::history::HistoryQuery {
+        super::history::HistoryQuery {
+            project_id: self.project_id.clone(),
+            from_ms: self.from_ms,
+            to_ms: self.to_ms,
+            ..Default::default()
+        }
+    }
     pub(crate) fn validate(&self) -> Result<()> {
         super::history::HistoryQuery {
+            project_id: self.project_id.clone(),
             from_ms: self.from_ms,
             to_ms: self.to_ms,
             ..Default::default()
@@ -22,6 +32,7 @@ impl TimeRange {
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct QueueWaitQuery {
+    pub project_id: Option<String>,
     pub from_ms: Option<u64>,
     pub to_ms: Option<u64>,
     pub actor_name: Option<String>,
@@ -30,6 +41,7 @@ pub(crate) struct QueueWaitQuery {
 impl QueueWaitQuery {
     pub(crate) fn validate(&self) -> Result<()> {
         super::history::HistoryQuery {
+            project_id: self.project_id.clone(),
             from_ms: self.from_ms,
             to_ms: self.to_ms,
             actor_name: self.actor_name.clone(),
@@ -39,7 +51,7 @@ impl QueueWaitQuery {
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClassMetrics {
     pub actor_name: String,
@@ -49,14 +61,14 @@ pub(crate) struct ClassMetrics {
     pub queue_p95: Option<f64>,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OverviewMetrics {
     pub total: ClassMetrics,
     pub classes: Vec<ClassMetrics>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueueWaitRow {
     pub actor_name: String,
@@ -66,7 +78,7 @@ pub(crate) struct QueueWaitRow {
     pub max_ms: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SocketSession {
     pub connection_id: String,

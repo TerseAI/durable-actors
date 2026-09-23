@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 struct Cursor {
+    #[serde(default)]
+    project_id: Option<String>,
     generation: String,
     position: u64,
 }
@@ -30,11 +32,23 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
     {
         return Err(InvalidTraceCursor.into());
     }
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.project_id != query.project_id)
+    {
+        return Err(InvalidTraceCursor.into());
+    }
     let reset = cursor
         .as_ref()
         .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
     let after = cursor.filter(|_| !reset).map(|c| c.position);
-    let mut records = select(&transaction, query.limit, after, metadata.head)?;
+    let mut records = select(
+        &transaction,
+        query.limit,
+        after,
+        metadata.head,
+        query.project_id.as_deref(),
+    )?;
     let more = after.is_some() && records.len() > query.limit;
     records.truncate(query.limit);
     let position = if more {
@@ -43,6 +57,7 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
         metadata.head
     };
     let resume_cursor = encode(&Cursor {
+        project_id: query.project_id.clone(),
         generation: metadata.generation.clone(),
         position,
     })?;
@@ -71,6 +86,7 @@ fn select(
     limit: usize,
     after: Option<u64>,
     head: u64,
+    project: Option<&str>,
 ) -> Result<Vec<TraceRecord>> {
     let order = if after.is_some() {
         "position ASC"
@@ -78,10 +94,15 @@ fn select(
         "started_at_ms DESC, position DESC"
     };
     let mut statement = transaction.prepare(&format!(
-        "SELECT position, event FROM traces WHERE position > ?1 AND position <= ?2 ORDER BY {order} LIMIT ?3"
+        "SELECT position, event FROM traces WHERE position > ?1 AND position <= ?2 AND (?4 IS NULL OR project_id = ?4) ORDER BY {order} LIMIT ?3"
     ))?;
     let rows = statement.query_map(
-        params![after.unwrap_or(0) as i64, head as i64, (limit + 1) as i64],
+        params![
+            after.unwrap_or(0) as i64,
+            head as i64,
+            (limit + 1) as i64,
+            project
+        ],
         |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
     )?;
     rows.map(|row| {
@@ -108,8 +129,13 @@ fn decode(value: &str) -> Result<Cursor> {
     Ok(cursor)
 }
 
-pub(super) fn resume_cursor(generation: &str, position: u64) -> Result<String> {
+pub(super) fn resume_cursor(
+    generation: &str,
+    position: u64,
+    project_id: Option<String>,
+) -> Result<String> {
     encode(&Cursor {
+        project_id,
         generation: generation.into(),
         position,
     })

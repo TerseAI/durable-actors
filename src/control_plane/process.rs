@@ -11,12 +11,15 @@ use crate::{
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
+pub use crate::request_traces::config::AnalyticsConfig;
+
 const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 
 pub struct ControlPlaneProcessConfig {
+    pub analytics: Option<AnalyticsConfig>,
     pub bind: SocketAddr,
     pub jwt_signing_key: String,
     pub jwt_key_id: String,
@@ -64,12 +67,26 @@ pub async fn serve_control_plane(
     warn_if_authentication_disabled(bind, config.api_key.as_deref());
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
-    let routes = control_plane_routes(config, stop).await?;
+    let analytics = match &config.analytics {
+        Some(settings) => Some(
+            settings
+                .build(config.api_key.as_deref().unwrap_or_default())
+                .await?,
+        ),
+        None => None,
+    };
+    let routes = control_plane_routes(config, stop, analytics.as_ref()).await?;
     info!(bind = %bind, "durable-actors control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .context("bind durable-actors control plane")?;
-    serve_routes(listener, routes, shutdown).await
+    let result = serve_routes(listener, routes, shutdown).await;
+    if let Some(analytics) = analytics
+        && let Err(error) = analytics.sink.flush().await
+    {
+        tracing::warn!(%error, "analytics shutdown flush incomplete");
+    }
+    result
 }
 
 fn warn_if_authentication_disabled(bind: SocketAddr, secret: Option<&str>) {
@@ -95,6 +112,7 @@ async fn serve_routes(
 async fn control_plane_routes(
     config: ControlPlaneProcessConfig,
     stop: tokio_util::sync::CancellationToken,
+    analytics: Option<&crate::request_traces::config::AnalyticsRuntime>,
 ) -> Result<tonic::service::Routes> {
     let issuer = super::ActorJwtIssuer::from_base64_pkcs8(
         &config.jwt_signing_key,
@@ -167,10 +185,16 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_socket_event_sink(socket_events);
     service.region = config.region;
+    if let Some(analytics) = analytics {
+        service = service.with_trace_sink(analytics.sink.clone());
+    }
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
-    let inspector =
+    let mut inspector =
         super::inspection::ActorInspector::new(storage.clone(), service.changes.clone())
             .with_traces(service.traces.clone());
+    if let Some(analytics) = analytics {
+        inspector = inspector.with_reader(analytics.reader.clone());
+    }
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.router());
@@ -256,7 +280,13 @@ impl ControlPlaneProcessConfig {
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
         let socket_event_sink = socket_event_sink_config(&mut get)?;
+        let analytics = AnalyticsConfig::from_lookup(&mut get)?;
+        ensure!(
+            analytics.is_none() || api_key.is_some(),
+            "analytics requires DURABLE_ACTORS_SECRET"
+        );
         Ok(Self {
+            analytics,
             bind,
             jwt_signing_key,
             jwt_key_id,

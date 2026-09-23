@@ -31,7 +31,7 @@ pub use local::{DevOptions, serve_local};
 #[cfg(test)]
 pub(crate) use self::auth::ActorInvocationCapability;
 pub use self::process::{
-    ControlPlaneProcessConfig, ControlPlaneStorageConfig, serve_control_plane,
+    AnalyticsConfig, ControlPlaneProcessConfig, ControlPlaneStorageConfig, serve_control_plane,
 };
 pub(crate) use self::{
     admin::PostgresAdminRegistry,

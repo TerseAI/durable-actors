@@ -147,6 +147,6 @@ async fn history_orders_by_event_time_then_sequence() -> Result<()> {
 fn ids(page: &TracePage) -> Vec<&str> {
     page.records
         .iter()
-        .map(|r| r.event.event_id.as_str())
+        .map(|r| r.event.trace.event_id.as_str())
         .collect()
 }

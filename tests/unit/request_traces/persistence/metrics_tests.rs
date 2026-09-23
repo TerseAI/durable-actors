@@ -6,6 +6,47 @@ use crate::request_traces::{
 };
 
 #[tokio::test]
+async fn analytics_queries_isolate_projects_before_aggregation() -> Result<()> {
+    let store = SqliteTracePersistence::in_memory();
+    for (project, duration) in [("one", 10.0), ("two", 90.0)] {
+        let mut value = serde_json::to_value(event(project))?;
+        value["projectId"] = project.into();
+        value["durationMs"] = duration.into();
+        value["queueWaitMs"] = duration.into();
+        value["kind"] = "websocket".into();
+        value["operation"] = "onMessage".into();
+        value["connectionId"] = "same-connection".into();
+        store.append(&[serde_json::from_value(value)?]).await?;
+    }
+    let scope = serde_json::json!({"projectId": "one"});
+    let metrics = store
+        .metrics(&serde_json::from_value(scope.clone())?)
+        .await?;
+    assert_eq!(metrics.total.count, 1);
+    assert_eq!(metrics.total.p95, Some(10.0));
+    let queue = store
+        .queue_waits(&serde_json::from_value(scope.clone())?)
+        .await?;
+    assert_eq!(queue[0].admitted, 1);
+    assert_eq!(queue[0].average_ms, 10.0);
+    let sockets = store
+        .websockets(&serde_json::from_value(scope.clone())?)
+        .await?;
+    assert_eq!(sockets[0].messages, 1);
+    let replay = store
+        .replay(&ReplayQuery {
+            project_id: Some("one".into()),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(replay.records.len(), 1);
+    let history = store.history(&serde_json::from_value(scope)?).await?;
+    assert_eq!(history.records.len(), 1);
+    assert_eq!(history.records[0].event.trace.duration_ms, 10.0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> Result<()> {
     let store = SqliteTracePersistence::in_memory();
     let mut events = Vec::new();
@@ -86,6 +127,7 @@ async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> 
     store.append(&events).await?;
     let metrics = store
         .metrics(&TimeRange {
+            project_id: None,
             from_ms: Some(1000),
             to_ms: Some(5000),
         })
@@ -109,6 +151,7 @@ async fn overview_counts_reroutes_but_percentiles_and_success_use_attempts() -> 
     assert_eq!((idle.success, idle.p95, idle.queue_p95), (None, None, None));
     let old = store
         .metrics(&TimeRange {
+            project_id: None,
             from_ms: Some(0),
             to_ms: Some(999),
         })
@@ -140,6 +183,7 @@ async fn queue_waits_group_admitted_attempts_and_filter_actor_and_time() -> Resu
     }
     store.append(&events).await?;
     let query = QueueWaitQuery {
+        project_id: None,
         from_ms: Some(1000),
         to_ms: Some(2000),
         actor_name: Some("Room".into()),
@@ -185,6 +229,7 @@ async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect
     store.append(&events).await?;
     let sessions = store
         .websockets(&TimeRange {
+            project_id: None,
             from_ms: Some(2000),
             to_ms: Some(4000),
         })
@@ -200,6 +245,7 @@ async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect
     assert!(
         store
             .websockets(&TimeRange {
+                project_id: None,
                 from_ms: Some(5001),
                 to_ms: None
             })
@@ -209,6 +255,7 @@ async fn websocket_history_keeps_full_sessions_overlapping_the_range_and_connect
     assert!(
         store
             .websockets(&TimeRange {
+                project_id: None,
                 from_ms: None,
                 to_ms: Some(999)
             })

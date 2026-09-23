@@ -215,3 +215,22 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ),
     ])
 }
+
+#[test]
+fn analytics_configuration_rejects_incomplete_or_unsafe_settings() {
+    for settings in [
+        vec![("DURABLE_ACTORS_ANALYTICS_PUBSUB_TOPIC", "wrong")],
+        vec![
+            ("DURABLE_ACTORS_ANALYTICS_BQ_TABLE", "gcp.data.events"),
+            ("DURABLE_ACTORS_ANALYTICS_ENVIRONMENT", "prod"),
+        ],
+        vec![("DURABLE_ACTORS_ANALYTICS_ENVIRONMENT", "prod")],
+    ] {
+        let mut values = process_environment();
+        values.extend(settings);
+        assert!(
+            ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
+                .is_err()
+        );
+    }
+}

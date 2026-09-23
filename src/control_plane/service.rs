@@ -35,6 +35,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 #[derive(Clone)]
 pub struct ControlPlaneService {
     deployment_update: Arc<tokio::sync::Mutex<()>>,
+    trace_sink: Arc<dyn crate::request_traces::sink::TraceSink>,
     pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: tokio::sync::watch::Sender<()>,
     pub(super) region: Option<String>,
@@ -72,9 +73,11 @@ impl ControlPlaneService {
         issuer: ActorJwtIssuer,
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
+        let traces = crate::request_traces::TraceStore::default();
         Self {
+            trace_sink: Arc::new(traces.clone()),
             deployment_update: Arc::new(tokio::sync::Mutex::new(())),
-            traces: crate::request_traces::TraceStore::default(),
+            traces,
             changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
             region: None,
@@ -97,7 +100,16 @@ impl ControlPlaneService {
     }
 
     pub(crate) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
+        self.trace_sink = Arc::new(traces.clone());
         self.traces = traces;
+        self
+    }
+
+    pub(crate) fn with_trace_sink(
+        mut self,
+        sink: Arc<dyn crate::request_traces::sink::TraceSink>,
+    ) -> Self {
+        self.trace_sink = sink;
         self
     }
 
@@ -469,11 +481,20 @@ impl ControlPlaneService {
                 );
                 for trace in &traces {
                     trace.validate()?;
+                    ensure!(
+                        trace.actor_name == principal.actor.actor_name
+                            && trace.actor_id == principal.actor.actor_id,
+                        "trace actor does not match authenticated host"
+                    );
                 }
-                self.traces
+                self.trace_sink
                     .record(
-                        principal.host_id.as_str(),
-                        &principal.session_id,
+                        &crate::request_traces::sink::TraceScope {
+                            project_id: principal.actor.project_id.clone(),
+                            host_id: principal.host_id.as_str().into(),
+                            session_id: principal.session_id.clone(),
+                            region: principal.region.clone(),
+                        },
                         traces,
                         dropped,
                     )

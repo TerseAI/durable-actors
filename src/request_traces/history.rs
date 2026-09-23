@@ -6,6 +6,7 @@ use super::{RequestOutcome, TRACE_CAPACITY};
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct HistoryQuery {
+    pub project_id: Option<String>,
     pub actor_name: Option<String>,
     pub actor_id: Option<String>,
     pub outcome: Option<RequestOutcome>,
@@ -19,6 +20,7 @@ pub(crate) struct HistoryQuery {
 impl Default for HistoryQuery {
     fn default() -> Self {
         Self {
+            project_id: None,
             actor_name: None,
             actor_id: None,
             outcome: None,
@@ -56,7 +58,7 @@ impl HistoryQuery {
             "fromMs must not exceed toMs"
         );
         crate::actor::ActorKey {
-            project_id: "history".into(),
+            project_id: self.project_id.clone().unwrap_or_else(|| "history".into()),
             actor_name: self.actor_name.clone().unwrap_or_else(|| "Actor".into()),
             actor_id: self.actor_id.clone().unwrap_or_else(|| "actor".into()),
         }
@@ -65,6 +67,7 @@ impl HistoryQuery {
 
     pub(super) fn filter_key(&self) -> Result<String> {
         Ok(serde_json::to_string(&(
+            &self.project_id,
             &self.actor_name,
             &self.actor_id,
             self.outcome,

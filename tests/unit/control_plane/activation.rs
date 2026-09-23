@@ -199,5 +199,15 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     invalid.lease.as_mut().unwrap().session_id = assignment.session_id.clone();
     invalid.lease.as_mut().unwrap().expires_at_ms = 1;
     assert!(ready_lease(&invalid, &assignment).is_err());
+    let mut trace = crate::request_traces::persistence::tests::event("producer-id").trace;
+    trace.actor_name = principal.actor.actor_name.clone();
+    trace.actor_id = principal.actor.actor_id.clone();
+    service.execute_command(&principal, ControlPlaneCommand::RequestTraces { traces: vec![trace.clone()], dropped: 0 }).await?;
+    let page = service.traces.replay(&crate::request_traces::replay::ReplayQuery::default()).await?;
+    assert_eq!(page.records[0].event.project_id, principal.actor.project_id);
+    assert_eq!(page.records[0].event.region, principal.region);
+    assert_eq!(page.records[0].event.trace.event_id, "producer-id");
+    trace.actor_id = "unauthorized".into();
+    assert!(service.execute_command(&principal, ControlPlaneCommand::RequestTraces { traces: vec![trace], dropped: 0 }).await.is_err());
     Ok(())
 }

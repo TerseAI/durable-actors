@@ -651,11 +651,14 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "chrono",
  "clap",
  "deadpool-postgres",
  "futures-util",
  "gcp_auth",
  "google-cloud-auth",
+ "google-cloud-gax",
+ "google-cloud-pubsub",
  "google-cloud-storage",
  "jsonwebtoken",
  "moka",
@@ -1109,6 +1112,34 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "google-cloud-pubsub"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb2a896aacdc4f03b5ef2ca5b3908080e39ff56cfc4663a23531c312a55787b5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "google-cloud-auth",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-iam-v1",
+ "google-cloud-wkt",
+ "http",
+ "prost",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3354,6 +3385,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
+ "hashbrown 0.15.5",
  "libc",
  "pin-project-lite",
  "tokio",

@@ -154,3 +154,7 @@ function Chat() {
 ## License
 
 MIT © 2026 Terse
+
+## Production analytics
+
+The observer supports a managed Pub/Sub → BigQuery pipeline with backend query caching and the existing UI contract. See [deployment configuration](deploy/analytics/README.md) and the [analytics architecture](docs/design/production-analytics.md). Local development continues to use SQLite.
