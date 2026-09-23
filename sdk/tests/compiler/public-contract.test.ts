@@ -54,14 +54,18 @@ test("public contracts survive JSON transport without actor source or dependency
     await rm(project.root, { recursive: true, force: true })
     const fetched = JSON.parse(serialized)
     const method = fetched.actors[0].rpc.methods.find((method: { name: string }) => method.name === "send")
-    const validate = new Ajv().compile({ ...fetched.actors[0].rpc.schema, ...method.parameters[0].type })
+    const validate = new Ajv()
+        .addKeyword("x-typescript")
+        .compile({ ...fetched.actors[0].rpc.schema, ...method.parameters[0].type })
     assert.equal(
         validate({ id: "1", text: "hello", status: "sent", reply: { id: "0", text: "hi", status: "pending" } }),
         true
     )
     assert.equal(validate({ id: "1", text: 42, status: "sent" }), false)
     assert.equal(validate({ id: "1", text: "hello", status: "wrong" }), false)
-    const validateResult = new Ajv().compile({ ...fetched.actors[0].rpc.schema, ...method.result.type })
+    const validateResult = new Ajv()
+        .addKeyword("x-typescript")
+        .compile({ ...fetched.actors[0].rpc.schema, ...method.result.type })
     assert.equal(validateResult({ id: "1", text: "hello", status: "sent" }), true)
     assert.equal(validateResult({ id: 1, text: "hello", status: "sent" }), false)
 })
@@ -88,7 +92,7 @@ test("captures optional, default, rest and nullable parameters and inferred prom
     assert.equal(unpack.parameters[0].name, "arg0")
     assert.equal(add.result.kind, "value")
     if (add.result.kind !== "value") assert.fail("expected result schema")
-    const ajv = new Ajv()
+    const ajv = new Ajv().addKeyword("x-typescript")
     const result = ajv.compile({ ...actor.rpc.schema, ...add.result.type })
     assert.equal(result(42), true)
     assert.equal(result("42"), false)
@@ -169,7 +173,9 @@ test("JSON dictionaries allow omitted entries", async t => {
     const [send] = rpc.methods
     if (send.result.kind !== "value") assert.fail("expected result schema")
     for (const type of [send.parameters[0].type, send.result.type]) {
-        const validate = new Ajv({ allowUnionTypes: true }).compile({ ...rpc.schema, ...type })
+        const validate = new Ajv({ allowUnionTypes: true })
+            .addKeyword("x-typescript")
+            .compile({ ...rpc.schema, ...type })
         const value = { omitted: undefined, nested: { omitted: undefined, retained: [null, true, 42, "hello"] } }
         assert.equal(validate(JSON.parse(JSON.stringify(value))), true)
         assert.equal(validate({}), true)

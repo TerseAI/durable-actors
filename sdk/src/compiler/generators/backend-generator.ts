@@ -3,6 +3,7 @@ import type { JSONSchema } from "json-schema-to-typescript"
 import ts from "typescript"
 
 import type { ActorApi, RpcContract, RpcMethod, TypeReference } from "../../wire/public-contract.js"
+import { schemaForTypeScript } from "../type-annotations.js"
 
 import { usageComment } from "./usage-comment.js"
 
@@ -89,14 +90,14 @@ ${namespaces.join("\n")}
 async function rpcDeclarations(rpc: RpcContract, wireNames: readonly string[]) {
     const { properties, definitions } = rpcSchemaTypes(rpc)
     const code = await compile(
-        {
+        schemaForTypeScript({
             ...rpc.schema,
             definitions,
             type: "object",
             properties,
             required: Object.keys(properties),
             additionalProperties: false
-        } as JSONSchema,
+        }) as JSONSchema,
         "RpcTypes",
         {
             $refOptions: { resolve: { file: false, http: false } },

@@ -6,6 +6,7 @@ import ts from "typescript"
 import { runtimeFiles } from "../../generated/client-runtime.js"
 import type { SocketContract } from "../../wire/contract.js"
 import type { PublicActorContract } from "../../wire/public-contract.js"
+import { schemaForTypeScript } from "../type-annotations.js"
 import { parsePublicContract } from "../validate-public-contract.js"
 
 import { backendSource } from "./backend-generator.js"
@@ -88,15 +89,17 @@ async function wireDeclarations(contract: SocketContract) {
         ])
     )
     const code = await compile(
-        inlineAnonymousReferences(
-            {
-                ...contract.schema,
-                type: "object",
-                additionalProperties: false,
-                properties,
-                required: Object.keys(properties)
-            },
-            contract.schema.definitions ?? {}
+        schemaForTypeScript(
+            inlineAnonymousReferences(
+                {
+                    ...contract.schema,
+                    type: "object",
+                    additionalProperties: false,
+                    properties,
+                    required: Object.keys(properties)
+                },
+                contract.schema.definitions ?? {}
+            ) as SocketContract["schema"]
         ) as JSONSchema,
         "ActorTypes",
         {

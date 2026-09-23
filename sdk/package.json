@@ -114,6 +114,7 @@
         "@types/react": "^19.3.0",
         "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
+        "ai": "7.0.97",
         "next": "^16.3.6",
         "react": "^19.3.0",
         "react-dom": "^19.3.0",
