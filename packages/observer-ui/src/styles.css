@@ -813,11 +813,14 @@
     margin-bottom: 16px;
 }
 
-.la-request-history-filters label {
+.la-request-history-field {
     display: grid;
     gap: 6px;
     flex: 1 1 180px;
     min-width: 0;
+}
+
+.la-request-history-field label {
     font-size: 13px;
     color: var(--muted-foreground);
 }

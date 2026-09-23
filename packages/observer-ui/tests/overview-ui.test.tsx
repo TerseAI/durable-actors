@@ -75,6 +75,8 @@ test("overview uses live inventory and retained traces, filters classes, and ope
     }
     const view = render(<Overview client={client} onSelectActor={actor => (selected = actor)} />)
     await view.findByRole("button", { name: "Inspect Room" })
+    assert.equal(view.getByRole("combobox", { name: "Filter by residency" }).getAttribute("data-slot"), "native-select")
+    assert.equal(view.getByRole("table", { name: "Actor class metrics" }).getAttribute("data-slot"), "table")
     assert.equal(view.getByLabelText("Actor instances").textContent, "4")
     assert.equal(view.getByLabelText("Open WebSocket connections").textContent, "1")
     assert.equal(view.getByLabelText("Retained requests").textContent, "—")

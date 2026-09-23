@@ -8,6 +8,7 @@ import type { ActorInstance, ActorInventory, ObserverClient } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useInventory } from "./observer-hooks.js"
 import { useQueueWaits } from "./queue-wait-history.js"
@@ -336,12 +337,12 @@ function ActorInstances({
                 <>
                     <div className="la-observer-filters">
                         <SearchField label="Search instances" placeholder="Search instance IDs…" value={query} onChange={setQuery} />
-                        <select className="la-observer-select" aria-label="Instance state" value={status} onChange={event => setStatus(event.target.value)}>
-                            <option value="all">All states</option>
-                            <option value="live">Live</option>
-                            <option value="dormant">Dormant</option>
-                            <option value="unknown">Unknown</option>
-                        </select>
+                        <NativeSelect className="la-observer-select" aria-label="Instance state" value={status} onChange={event => setStatus(event.target.value)}>
+                            <NativeSelectOption value="all">All states</NativeSelectOption>
+                            <NativeSelectOption value="live">Live</NativeSelectOption>
+                            <NativeSelectOption value="dormant">Dormant</NativeSelectOption>
+                            <NativeSelectOption value="unknown">Unknown</NativeSelectOption>
+                        </NativeSelect>
                     </div>
                     <div className="la-observer-table-frame">
                         {filtered.length ? (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 
 import { Pause, Play, RefreshCw } from "lucide-react"
 
@@ -8,6 +8,7 @@ import type { RequestHistoryQuery as HistoryFilters } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
@@ -260,6 +261,8 @@ function HistoryFilters({
     onSearch: (query: HistoryFilters) => void
     scoped: boolean
 }) {
+    const actorId = useId()
+    const outcomeId = useId()
     return (
         <form
             className="la-request-history-filters"
@@ -277,22 +280,22 @@ function HistoryFilters({
                 <TimeRangePicker value={range} onChange={onRangeChange} align="start" />
             </div>
             {!scoped && (
-                <label>
-                    Actor ID
-                    <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
-                </label>
+                <div className="la-request-history-field">
+                    <label htmlFor={actorId}>Actor ID</label>
+                    <Input id={actorId} name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
+                </div>
             )}
-            <label>
-                Outcome
-                <select className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
-                    <option value="">All outcomes</option>
+            <div className="la-request-history-field">
+                <label htmlFor={outcomeId}>Outcome</label>
+                <NativeSelect id={outcomeId} className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
+                    <NativeSelectOption value="">All outcomes</NativeSelectOption>
                     {["completed", "failed", "rejected", "rerouted", "interrupted"].map(outcome => (
-                        <option key={outcome} value={outcome}>
+                        <NativeSelectOption key={outcome} value={outcome}>
                             {outcome[0]!.toUpperCase() + outcome.slice(1)}
-                        </option>
+                        </NativeSelectOption>
                     ))}
-                </select>
-            </label>
+                </NativeSelect>
+            </div>
             <Button type="submit" variant="outline" disabled={loading}>
                 Search
             </Button>

@@ -8,7 +8,9 @@ import { SocketTimeline, durationLabel, shortId, statusLabel } from "./SocketTim
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInventory, ObserverClient } from "./client.js"
 import { Button } from "./components/ui/button.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useInventory } from "./observer-hooks.js"
 import { useSocketHistory } from "./socket-history.js"
 import { connectionKey, formatDuration, sessionDuration, sessionSummary, socketSessions } from "./socket-sessions.js"
@@ -106,12 +108,12 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
             <SummaryTiles summary={summary} ready={ready} history={history.supported && !!history.rows} range={range} />
             <div className="socket-filterbar">
                 <FilterCombobox label="Filter connections" placeholder="Filter by connection, actor, instance, or host…" value={query} onChange={setQuery} suggestions={suggestions} />
-                <select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value as SocketSessionStatus | "all")}>
-                    <option value="all">All statuses</option>
-                    <option value="open">Open</option>
-                    <option value="closed">Closed</option>
-                    <option value="lost">Lost</option>
-                </select>
+                <NativeSelect aria-label="Filter by status" size="sm" value={status} onChange={event => setStatus(event.target.value as SocketSessionStatus | "all")}>
+                    <NativeSelectOption value="all">All statuses</NativeSelectOption>
+                    <NativeSelectOption value="open">Open</NativeSelectOption>
+                    <NativeSelectOption value="closed">Closed</NativeSelectOption>
+                    <NativeSelectOption value="lost">Lost</NativeSelectOption>
+                </NativeSelect>
             </div>
             {history.supported && (
                 <section className="overview-panel socket-timeline-panel" aria-label="Connection timeline">
@@ -153,20 +155,20 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
             )}
             <div className="overview-panel">
                 <div className="overview-table-scroll" role="region" aria-label="WebSocket connections" tabIndex={0}>
-                    <table className="overview-table socket-table">
-                        <thead>
-                            <tr>
-                                <th scope="col">Status</th>
-                                <th scope="col">Connection</th>
-                                <th scope="col">Actor class</th>
-                                <th scope="col">Instance</th>
-                                <th scope="col">Opened</th>
-                                <th scope="col">Duration</th>
-                                <th scope="col">Messages</th>
-                                <th scope="col">Metadata</th>
-                            </tr>
-                        </thead>
-                        <tbody>
+                    <Table className="overview-table socket-table" aria-label="WebSocket connections">
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead scope="col">Status</TableHead>
+                                <TableHead scope="col">Connection</TableHead>
+                                <TableHead scope="col">Actor class</TableHead>
+                                <TableHead scope="col">Instance</TableHead>
+                                <TableHead scope="col">Opened</TableHead>
+                                <TableHead scope="col">Duration</TableHead>
+                                <TableHead scope="col">Messages</TableHead>
+                                <TableHead scope="col">Metadata</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
                             {visible.map(session => (
                                 <SessionRow
                                     key={JSON.stringify([session.actorName, session.actorId, session.connectionId])}
@@ -180,8 +182,8 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
                                     }}
                                 />
                             ))}
-                        </tbody>
-                    </table>
+                        </TableBody>
+                    </Table>
                 </div>
                 {!visible.length && (
                     <div className="overview-empty" role="status">
@@ -291,21 +293,21 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
     const duration = sessionDuration(session, now)
     const share = duration && longest ? Math.min(1, duration.ms / longest) : 0
     return (
-        <tr className="la-clickable-row" data-state={selected ? "selected" : undefined} onClick={event => onSelect(event.currentTarget.querySelector("button") ?? event.currentTarget)}>
-            <td>
+        <TableRow className="la-clickable-row" data-state={selected ? "selected" : undefined} onClick={event => onSelect(event.currentTarget.querySelector("button") ?? event.currentTarget)}>
+            <TableCell>
                 <span className={`socket-status socket-status-${session.status}`}>
                     <i className={`socket-swatch socket-swatch-${session.status}`} aria-hidden="true" />
                     {statusLabel(session.status)}
                 </span>
-            </td>
-            <td>
+            </TableCell>
+            <TableCell>
                 <button type="button" className="socket-connection" title={session.connectionId} aria-label={`Inspect connection ${session.connectionId}`}>
                     {shortId(session.connectionId)}
                 </button>
-            </td>
-            <td title={session.actorName}>{session.actorName}</td>
-            <td title={session.actorId}>{session.actorId}</td>
-            <td>
+            </TableCell>
+            <TableCell title={session.actorName}>{session.actorName}</TableCell>
+            <TableCell title={session.actorId}>{session.actorId}</TableCell>
+            <TableCell>
                 {session.openedAtMs === null ? (
                     <span title="The connect event is not in retained history">—</span>
                 ) : (
@@ -317,17 +319,17 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
                         {new Date(session.openedAtMs).toLocaleTimeString([], { hour12: false })}
                     </time>
                 )}
-            </td>
-            <td>
+            </TableCell>
+            <TableCell>
                 <span className="socket-duration">
                     <span>{durationLabel(session, now)}</span>
                     <i className={`socket-duration-bar socket-duration-${session.status}`} aria-hidden="true">
                         <b style={{ width: `${share * 100}%` }} />
                     </i>
                 </span>
-            </td>
-            <td>{session.messages.toLocaleString()}</td>
-            <td>
+            </TableCell>
+            <TableCell>{session.messages.toLocaleString()}</TableCell>
+            <TableCell>
                 {session.metadata === undefined ? (
                     <span title="No metadata was recorded for this connection">—</span>
                 ) : (
@@ -335,8 +337,8 @@ function SessionRow({ session, now, longest, selected, onSelect }: { session: So
                         {JSON.stringify(session.metadata)}
                     </code>
                 )}
-            </td>
-        </tr>
+            </TableCell>
+        </TableRow>
     )
 }
 
