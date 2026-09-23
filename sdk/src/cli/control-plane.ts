@@ -1,11 +1,12 @@
 import { validateProjectId } from "../actor/identity.js"
+import { authorizationHeaders } from "../client/clientSettings.js"
 
 import { connection } from "./connection.js"
 
 interface ControlPlaneConnection {
     projectId: string
     controlPlaneUrl: string
-    credential: string
+    credential: string | undefined
 }
 
 class ControlPlaneClient {
@@ -77,7 +78,7 @@ class ControlPlaneClient {
         const response = await this.request(`${this.connection.controlPlaneUrl}${path}`, {
             signal,
             redirect: "error",
-            headers: { authorization: `Bearer ${this.connection.credential}`, accept: "text/event-stream" }
+            headers: { ...authorizationHeaders(this.connection.credential), accept: "text/event-stream" }
         })
         if (!response.ok || !response.headers.get("content-type")?.startsWith("text/event-stream") || !response.body) {
             await response.body?.cancel()
@@ -101,7 +102,7 @@ class ControlPlaneClient {
         const response = await this.request(`${controlPlaneUrl}${pathname}`, {
             method,
             headers: {
-                authorization: `Bearer ${credential}`,
+                ...authorizationHeaders(credential),
                 ...(body === undefined ? {} : { "content-type": "application/json" })
             },
             body: body === undefined ? undefined : JSON.stringify(body),

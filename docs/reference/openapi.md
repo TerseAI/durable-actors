@@ -14,13 +14,12 @@ The specification is public. Authenticated endpoints require `Authorization: Bea
 
 ## Local development
 
-Run `durable-actors dev` and copy the printed connection settings into your backend's environment. Local development uses the same project-scoped endpoints as production. The default project ID is `local`; use your configured `DURABLE_ACTORS_PROJECT_ID` if you override it.
+Run `durable-actors dev`. Local requests need no authentication unless you explicitly set `DURABLE_ACTORS_SECRET`; when set, send it as a Bearer credential. Backend clients use the local defaults without environment settings. Local development uses the same project-scoped endpoints as production. The default project ID is `local`; use your configured `DURABLE_ACTORS_PROJECT_ID` if you override it.
 
 For example, request a WebSocket URL for `Room/lobby` in the default local project:
 
 ```sh
 curl --fail http://127.0.0.1:7100/v1/projects/local/actors/Room/lobby/find-websocket \
-  --header "Authorization: Bearer $DURABLE_ACTORS_SECRET" \
   --header 'Content-Type: application/json' \
   --data '{"metadata": null}'
 ```

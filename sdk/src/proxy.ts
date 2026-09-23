@@ -1,8 +1,9 @@
 /** @module durable-actors/proxy */
 import { z } from "zod"
 
-import { projectActorPath, validateActorComponent, validateProjectId } from "./actor/identity.js"
+import { projectActorPath, validateActorComponent } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
+import { authorizationHeaders, configuredSettings } from "./client/clientSettings.js"
 import { actorEnvironment } from "./environment.js"
 
 /** Overrides for the backend's DURABLE_ACTORS environment settings. */
@@ -47,7 +48,7 @@ type SocketGrant = z.infer<typeof socketGrantSchema>
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly projectId: string
     private readonly origin: string
-    private readonly apiKey: string
+    private readonly apiKey: string | undefined
     private readonly setupTimeoutMs: number
     private readonly fetchRequest: typeof globalThis.fetch
 
@@ -59,22 +60,10 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.setupTimeoutMs = options.setupTimeoutMs ?? 180000
         if (!Number.isSafeInteger(this.setupTimeoutMs) || this.setupTimeoutMs < 1000 || this.setupTimeoutMs > 600000)
             throw new Error("Socket setup timeout must be between one second and ten minutes")
-        const settings = proxySettings(options)
-        const url = new URL(settings.controlPlaneUrl)
-        if (
-            !["https:", "http:"].includes(url.protocol) ||
-            url.pathname !== "/" ||
-            url.search ||
-            url.hash ||
-            url.username ||
-            url.password
-        )
-            throw new Error("Control-plane URL must be an HTTP(S) origin")
-        this.origin = url.origin
-        this.apiKey = settings.apiKey ?? ""
-        if (typeof this.apiKey !== "string" || !this.apiKey || this.apiKey.trim() !== this.apiKey)
-            throw new Error("A backend shared secret is required; set DURABLE_ACTORS_SECRET or pass apiKey")
-        this.projectId = validateProjectId(settings.projectId)
+        const settings = configuredSettings(proxySettings(options))
+        this.origin = settings.controlPlaneUrl
+        this.apiKey = settings.credential
+        this.projectId = settings.projectId
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
@@ -102,7 +91,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
             `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/find-websocket`,
             {
                 method: "POST",
-                headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+                headers: { ...authorizationHeaders(this.apiKey), "content-type": "application/json" },
                 body: JSON.stringify({ metadata, authorizationLifetimeMs, homeRegion }),
                 signal: AbortSignal.timeout(this.setupTimeoutMs)
             }

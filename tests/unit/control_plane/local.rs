@@ -10,9 +10,9 @@ fn startup_message_has_clear_hierarchy_and_next_step() {
 
     assert!(message.starts_with("durable actors / local\n\n  Ready"));
     assert!(message.contains("Connect your application"));
-    assert!(message.contains("DURABLE_ACTORS_PROJECT_ID=local"));
+    assert!(message.contains("Project  local"));
     assert!(message.contains("DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:7100"));
-    assert!(message.contains("DURABLE_ACTORS_SECRET='generated-secret'"));
+    assert!(message.contains("Authentication is disabled"));
     assert!(
         message.find("1. Configure your client").unwrap()
             < message.find("2. Generate your client").unwrap()
@@ -36,9 +36,9 @@ fn startup_command_uses_the_configured_project_and_port() {
 
 #[test]
 fn credentials_print_a_dotenv_shared_secret() {
-    let message = local_credentials_instructions("Sam's-$secret #1", LocalReadyStyles::default());
+    let message =
+        local_credentials_instructions(Some("Sam's-$secret #1"), LocalReadyStyles::default());
     assert!(message.contains("DURABLE_ACTORS_SECRET=\"Sam's-$secret #1\""));
-    assert!(message.contains("Update the secret after restarting this actor server."));
 }
 
 #[tokio::test]

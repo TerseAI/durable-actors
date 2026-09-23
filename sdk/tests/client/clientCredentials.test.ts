@@ -26,3 +26,22 @@ test("client settings reject absent or empty project IDs", () => {
             /projectId/
         )
 })
+
+test("loopback clients default the project and allow an omitted API key", () => {
+    for (const host of ["127.0.0.1", "localhost", "[::1]"])
+        for (const protocol of ["http", "https"]) {
+            const settings = configuredSettings({ controlPlaneUrl: `${protocol}://${host}:7100` })
+            assert.equal(settings.projectId, "local")
+            assert.equal(settings.credential, undefined)
+            assert.equal(
+                configuredSettings({ controlPlaneUrl: `${protocol}://${host}:7100`, apiKey: "key" }).credential,
+                "key"
+            )
+        }
+})
+
+test("remote clients still require both project IDs and API keys", () => {
+    for (const host of ["actors.example", "localhost.example", "127.0.0.1.example", "192.168.1.1", "0.0.0.0"])
+        for (const settings of [{}, { projectId: "local" }, { apiKey: "key" }])
+            assert.throws(() => configuredSettings({ controlPlaneUrl: `http://${host}:7100`, ...settings }))
+})

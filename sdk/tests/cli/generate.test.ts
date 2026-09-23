@@ -61,7 +61,7 @@ test("generate --remote uses .env settings and exported environment overrides", 
             cwd: directory,
             env: { ...localEnv, DURABLE_ACTORS_SECRET: "" }
         }),
-        /DURABLE_ACTORS_SECRET/
+        /apiKey/
     )
     assert.equal(requests.length, 2)
 })
@@ -201,7 +201,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
             cwd: directory,
             env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: origin, DURABLE_ACTORS_SECRET: "" }
         }),
-        /DURABLE_ACTORS_SECRET/
+        /apiKey/
     )
     assert.equal(requests, 0)
     contract.version = 2
@@ -214,4 +214,29 @@ test("generate rejects remote errors and invalid inputs before changing output",
     await assert.rejects(generate(), /No public actor contract is published/)
     assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.ts"])
     assert.equal(await readFile(path.join(directory, "generated/index.ts"), "utf8"), "keep existing output")
+})
+
+test("generate --remote needs no project or secret for a local server", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-no-auth-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
+    const server = createServer((request, response) => {
+        assert.equal(request.url, "/v1/projects/local/deployment/contract")
+        assert.equal(request.headers.authorization, undefined)
+        response.end(JSON.stringify({ contractHash: `sha256:${"a".repeat(64)}`, contract }))
+    })
+    t.after(() => server.close())
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const environment = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))
+    )
+    const result = await run(process.execPath, [cli, "generate", "--remote"], {
+        cwd: directory,
+        env: {
+            ...environment,
+            DURABLE_ACTORS_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`
+        }
+    })
+    assert.match(result.stdout, /Generated 1 actor contract/)
 })

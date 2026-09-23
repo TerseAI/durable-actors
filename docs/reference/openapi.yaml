@@ -8,6 +8,7 @@ info:
         Project-scoped actor routes work in development and production. Run `durable-actors dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
+        Local development requires no authentication unless DURABLE_ACTORS_SECRET is set.
 servers:
     - url: http://127.0.0.1:7100
       description: Local server.

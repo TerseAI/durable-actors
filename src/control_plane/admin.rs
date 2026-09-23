@@ -125,7 +125,7 @@ pub(crate) trait AdminRegistry: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct AdminService {
-    api_key: String,
+    api_key: Option<String>,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
 }
@@ -141,10 +141,25 @@ impl AdminService {
             "API key is invalid"
         );
         Ok(Self {
-            api_key,
+            api_key: Some(api_key),
             registry,
             issuer,
         })
+    }
+
+    pub(super) fn for_local_development(
+        api_key: Option<String>,
+        registry: std::sync::Arc<dyn AdminRegistry>,
+        issuer: ActorJwtIssuer,
+    ) -> Result<Self> {
+        match api_key {
+            Some(api_key) => Self::new(api_key, registry, issuer),
+            None => Ok(Self {
+                api_key: None,
+                registry,
+                issuer,
+            }),
+        }
     }
 
     pub(super) fn issue_direct_socket(
@@ -177,13 +192,16 @@ impl AdminService {
     }
 
     pub(crate) fn authenticate(&self, authorization: &str) -> Result<()> {
+        let Some(api_key) = &self.api_key else {
+            return Ok(());
+        };
         let token = authorization
             .strip_prefix("Bearer ")
             .context("admin credential must use Bearer authentication")?;
         ensure!(
             !token.is_empty()
                 && token.trim() == token
-                && bool::from(token.as_bytes().ct_eq(self.api_key.as_bytes())),
+                && bool::from(token.as_bytes().ct_eq(api_key.as_bytes())),
             "admin credential is invalid"
         );
         Ok(())

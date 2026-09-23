@@ -304,19 +304,14 @@ pub(super) fn project_id(path: Path<ProjectPath>) -> Result<String, ApiError> {
 }
 
 pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
-    let authorization = authorization(headers)?;
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
     admin
         .authenticate(authorization)
         .map_err(|_| ApiError::unauthorized("admin credential was rejected"))?;
     Ok(())
-}
-
-fn authorization(headers: &HeaderMap) -> Result<&str, ApiError> {
-    headers
-        .get(header::AUTHORIZATION)
-        .ok_or_else(|| ApiError::unauthorized("bearer credential is required"))?
-        .to_str()
-        .map_err(|_| ApiError::unauthorized("bearer credential is invalid"))
 }
 
 #[derive(Deserialize, Serialize)]

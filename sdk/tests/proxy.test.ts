@@ -146,6 +146,31 @@ test("proxy requires JSON metadata and a backend API key", async () => {
                 controlPlaneUrl: "https://actors.example.com",
                 apiKey: ""
             }),
-        /shared secret/
+        /apiKey/
     )
+})
+
+test("local backend socket grants need no project or secret", async t => {
+    const environment = process.env
+    t.after(() => {
+        process.env = environment
+    })
+    process.env = Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith("DURABLE_ACTORS_")))
+    const proxy = new SocketProxy(
+        actors,
+        {},
+        {
+            fetch: async (url, init) => {
+                assert.equal(String(url), "http://127.0.0.1:7100/v1/projects/local/actors/Room/one/find-websocket")
+                assert.equal(new Headers(init?.headers).get("authorization"), null)
+                return Response.json({
+                    websocketUrl: "ws://127.0.0.1:7100/v1/socket?key=ticket",
+                    homeRegion: "local",
+                    connectByMs: 1000,
+                    authorizedUntilMs: 900000
+                })
+            }
+        }
+    )
+    await proxy.handle({ actorName: "Room", actorId: "one", metadata: {} })
 })

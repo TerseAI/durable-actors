@@ -13,51 +13,52 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../../dist/cli.js", import.meta.url))
 
-test("observe serves a local UI using environment settings", { timeout: 10_000 }, async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        requests.push(request.url!)
-        assert.equal(request.method, "GET")
-        assert.equal(request.headers.authorization, "Bearer observe-key")
-        response.setHeader("content-type", "application/json")
-        response.end(JSON.stringify({}))
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env = {
-        ...process.env,
-        DURABLE_ACTORS_PROJECT_ID: "default",
-        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-        DURABLE_ACTORS_SECRET: "observe-key"
-    }
-    const child = spawn(process.execPath, [cli, "observe", "--no-open"], {
-        env,
-        stdio: ["ignore", "pipe", "pipe"]
-    })
-    t.after(() => child.kill())
-    const exited = once(child, "exit")
-    const lines = createInterface({ input: child.stdout })
-    let url: string | undefined
-    for await (const line of lines) {
-        if (line.startsWith("Observe: ")) {
-            url = line.slice("Observe: ".length)
-            break
+for (const secret of [undefined, "observe-key"]) {
+    test(`observe serves a local UI ${secret ? "with" : "without"} authentication`, { timeout: 10_000 }, async t => {
+        const requests: string[] = []
+        const server = createServer((request, response) => {
+            requests.push(request.url!)
+            assert.equal(request.method, "GET")
+            assert.equal(request.headers.authorization, secret ? "Bearer observe-key" : undefined)
+            response.setHeader("content-type", "application/json")
+            response.end(JSON.stringify({}))
+        })
+        t.after(() => server.close())
+        server.listen(0, "127.0.0.1")
+        await once(server, "listening")
+        const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+        const env = {
+            ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))),
+            DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+            DURABLE_ACTORS_SECRET: secret
         }
-    }
-    assert.ok(url, "observer should print the local UI URL")
-    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
-    const response = await fetch(url)
-    assert.equal(response.status, 200)
-    assert.match(await response.text(), /src="\.\/app.js"/u)
-    assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
-    assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
-    child.kill("SIGTERM")
-    assert.deepEqual(await exited, [0, null])
-    await assert.rejects(fetch(url))
-    assert.deepEqual(requests, Array(2).fill("/v1/observe/actors"))
-})
+        const child = spawn(process.execPath, [cli, "observe", "--no-open"], {
+            env,
+            stdio: ["ignore", "pipe", "pipe"]
+        })
+        t.after(() => child.kill())
+        const exited = once(child, "exit")
+        const lines = createInterface({ input: child.stdout })
+        let url: string | undefined
+        for await (const line of lines) {
+            if (line.startsWith("Observe: ")) {
+                url = line.slice("Observe: ".length)
+                break
+            }
+        }
+        assert.ok(url, "observer should print the local UI URL")
+        assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
+        const response = await fetch(url)
+        assert.equal(response.status, 200)
+        assert.match(await response.text(), /src="\.\/app.js"/u)
+        assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
+        assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
+        child.kill("SIGTERM")
+        assert.deepEqual(await exited, [0, null])
+        await assert.rejects(fetch(url))
+        assert.deepEqual(requests, Array(2).fill("/v1/observe/actors"))
+    })
+}
 
 test("observe exits unsuccessfully without a greeting when authentication or transport fails", async t => {
     const server = createServer((_request, response) => {

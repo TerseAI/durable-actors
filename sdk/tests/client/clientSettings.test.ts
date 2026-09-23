@@ -1,10 +1,5 @@
 import assert from "node:assert/strict"
-import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import path from "node:path"
 import { test } from "node:test"
-import { promisify } from "node:util"
 
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
@@ -86,28 +81,15 @@ function environmentFor(settings: DurableActorsClientOptions): NodeJS.ProcessEnv
     }
 }
 
-test("clients require explicit credentials even if a discovery file exists", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "actors-no-discovery-"))
-    t.after(() => rm(directory, { recursive: true, force: true }))
-    await mkdir(path.join(directory, ".durable-actors"))
-    await writeFile(
-        path.join(directory, ".durable-actors/runtime.json"),
-        JSON.stringify({
-            controlPlaneUrl: "http://localhost:7100",
-            apiKey: "stale-key"
-        })
-    )
-    const source = `
-        import assert from 'node:assert/strict';
-        import { RemoteActorClient } from ${JSON.stringify(new URL("../../src/client/remoteClient.js", import.meta.url).href)};
-        import { SocketProxy } from ${JSON.stringify(new URL("../../src/proxy.js", import.meta.url).href)};
-        const client = new RemoteActorClient(undefined, {
-            environment: {},
-            connectWebSocket: async () => assert.fail('used file credentials')
-        });
-        await assert.rejects(client.connect('Counter', 'one', {}), /client settings are invalid/);
-        assert.throws(() => new SocketProxy({Room:{}}, {projectId:"default"}), /shared secret/);
-    `
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_")))
-    await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", source], { cwd: directory, env })
+test("backend clients default to unauthenticated local connections", async () => {
+    const client = new RemoteActorClient(undefined, {
+        environment: {},
+        fetch: async (url, init) => {
+            assert.equal(String(url), "http://127.0.0.1:7100/v1/projects/local/actors/Counter/one/find-websocket")
+            assert.equal(new Headers(init?.headers).get("authorization"), null)
+            return Response.json({ websocketUrl: "ws://127.0.0.1:7100/v1/socket?key=ticket" })
+        },
+        connectWebSocket: async () => ({}) as ActorConnection
+    })
+    await client.connect("Counter", "one", {})
 })
