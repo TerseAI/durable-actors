@@ -28,7 +28,7 @@ export class HttpActorClient {
     protected readonly now: () => number
     protected readonly monotonicNow: () => number
     protected readonly telemetry: TelemetrySink
-    protected readonly targets = new Map<string, Promise<ActorHostTarget>>()
+    protected readonly targets = new Map<string, TargetResolution>()
 
     constructor(options?: DurableActorsClientOptions, dependencies: HttpActorClientDependencies = {}) {
         this.beforeInvoke = dependencies.beforeInvoke ?? (() => {})
@@ -72,7 +72,7 @@ export class HttpActorClient {
     private async direct(
         target: ActorHostTarget,
         invocation: DirectActorInvocation,
-        retryReroute: boolean,
+        retryAvailable: boolean,
         timeline: LatencyTimeline
     ): Promise<unknown> {
         try {
@@ -83,26 +83,27 @@ export class HttpActorClient {
                 return reply.result
             }
             if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
-            if (reply.type === "unauthenticated" && !retryReroute) {
-                this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
+            this.invalidateTarget(invocation, target)
+            if (reply.type === "unauthenticated" && !retryAvailable) {
                 throw new ActorInvocationError(
                     "unauthenticated",
                     invocation.requestId,
                     "actor host rejected the refreshed invocation ticket"
                 )
             }
-            if (!retryReroute)
+            if (!retryAvailable)
                 throw new ActorInvocationError(
                     "unavailable",
                     invocation.requestId,
-                    "actor ownership changed repeatedly before execution"
+                    reply.type === "not_dispatched"
+                        ? "actor host could not be reached before execution"
+                        : "actor ownership changed repeatedly before execution"
                 )
-            this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
             const rerouted = await this.target(invocation, timeline)
             return this.direct(rerouted, invocation, false, timeline)
         } catch (error) {
             if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
-            this.targets.delete(actorKey(invocation.actorName, invocation.actorId))
+            this.invalidateTarget(invocation, target)
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
                 "outcome_unknown",
@@ -112,21 +113,35 @@ export class HttpActorClient {
         }
     }
 
+    private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
+        const key = actorKey(invocation.actorName, invocation.actorId)
+        const current = this.targets.get(key)
+        if (current?.target === target) this.targets.delete(key)
+    }
+
     protected async target(invocation: ActorAddress, timeline: LatencyTimeline): Promise<ActorHostTarget> {
         const key = actorKey(invocation.actorName, invocation.actorId)
         const current = this.targets.get(key)
         timeline.mark("target_cache_checked")
         if (current) {
-            const target = await current
+            const target = await current.promise
+            if (this.targets.get(key) !== current) return this.target(invocation, timeline)
             if (target.expiresAtMs > this.now() + TARGET_EXPIRATION_SAFETY_MS) return target
             this.targets.delete(key)
         }
-        const resolving = this.resolveTarget(invocation).catch(error => {
-            this.targets.delete(key)
-            throw error
-        })
+        const resolving: TargetResolution = {
+            promise: this.resolveTarget(invocation)
+                .then(target => {
+                    resolving.target = target
+                    return target
+                })
+                .catch(error => {
+                    if (this.targets.get(key) === resolving) this.targets.delete(key)
+                    throw error
+                })
+        }
         this.targets.set(key, resolving)
-        return resolving
+        return resolving.promise
     }
 
     private async resolveTarget(invocation: ActorAddress): Promise<ActorHostTarget> {
@@ -146,7 +161,7 @@ export class HttpActorClient {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
-                "outcome_unknown",
+                "unavailable",
                 invocation.requestId,
                 `control-plane HTTP request failed before dispatch: ${message}`
             )
@@ -236,6 +251,10 @@ function positiveInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0
 }
 type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
+interface TargetResolution {
+    readonly promise: Promise<ActorHostTarget>
+    target?: ActorHostTarget
+}
 type RemoteActorSettings = ReturnType<typeof configuredSettings>
 export interface HttpActorClientDependencies {
     readonly environment?: Environment
