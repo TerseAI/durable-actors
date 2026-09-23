@@ -8,6 +8,28 @@ import { promisify } from "node:util"
 
 import { startLocalActors } from "../src/localRuntime.js"
 
+import { installSdk } from "./fixtures/installed-sdk.js"
+
+test("starts the target project's SDK when called from another installation", async () => {
+    await fixture(
+        `const fs = require("node:fs");
+        fs.writeFileSync(__filename + ".host", process.argv[process.argv.indexOf("--sdk-host") + 1]);
+        fs.writeSync(3, JSON.stringify({projectId: "default", controlPlaneUrl:"http://127.0.0.1:7100", apiKey:"secret", storageRegion:"local", pid:process.pid}));
+        fs.closeSync(3);
+        process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`,
+        async binary => {
+            const project = path.join(path.dirname(binary), "project")
+            const sdk = await installSdk(project)
+            const runtime = await startLocalActors({ projectId: "default", project, entrypoint: "actors.ts" })
+            try {
+                assert.equal(await readFile(`${binary}.host`, "utf8"), path.join(sdk, "dist/host.js"))
+            } finally {
+                await runtime.stop()
+            }
+        }
+    )
+})
+
 async function fixture(source: string, run: (binary: string) => Promise<void>) {
     const directory = await mkdtemp(path.join(os.tmpdir(), "local-runtime-"))
     const binary = path.join(directory, "runtime")

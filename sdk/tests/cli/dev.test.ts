@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -86,6 +86,12 @@ test("dev resolves project and entrypoint settings from .env", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actor-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "project", "actors"), { recursive: true })
+    await mkdir(path.join(directory, "project", "node_modules"))
+    await symlink(
+        path.resolve(path.dirname(cli), ".."),
+        path.join(directory, "project", "node_modules/durable-actors"),
+        "dir"
+    )
     await writeFile(path.join(directory, "project", "actors", "index.ts"), "export {}")
     await writeFile(
         path.join(directory, ".env"),
