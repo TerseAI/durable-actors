@@ -49,25 +49,7 @@ Then generate your client from the same application directory:
 durable-actors generate
 ```
 
-Generation fetches the running server's published actor contract. The CLI loads `.env` automatically.
-
-To use another server, override the URL for one run:
-
-```sh
-durable-actors generate --control-plane-url https://actors.example.com
-```
-
-Remote servers require `DURABLE_ACTORS_PROJECT_ID`; set `DURABLE_ACTORS_SECRET` if the server enables authentication. The URL flag overrides `.env` and exported environment settings.
-
-To generate directly from local actor source without a running server, pass the entrypoint explicitly:
-
-```sh
-durable-actors generate ./src/actors.ts
-```
-
-Add `--config ./tsconfig.json` when the source needs a specific TypeScript configuration. Local source generation does not require connection settings.
-
-If generation returns HTTP 404, check the URL and project ID. For local development, run `durable-actors dev` in the actor project and wait for `Ready`; the native runtime's default host role does not serve the control-plane API.
+This contract will match perfectly the actor you have defined!
 
 Now you may call your actor and access the state.
 
