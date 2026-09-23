@@ -1,13 +1,16 @@
+/** @module durable-actors/proxy */
 import { z } from "zod"
 
 import { projectActorPath, validateActorComponent, validateProjectId } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
 import { actorEnvironment } from "./environment.js"
 
+/** Overrides for the backend's DURABLE_ACTORS environment settings. */
 interface SocketProxyOptions {
     readonly projectId?: string
     readonly controlPlaneUrl?: string
     readonly apiKey?: string
+    /** Defaults to 180000 ms; accepts 1000–600000 ms. */
     readonly setupTimeoutMs?: number
 }
 
@@ -19,6 +22,7 @@ interface ProxyActor<Metadata = unknown> {
     readonly types?: Metadata
 }
 
+/** Actor access your backend has already authorized. */
 type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
     [Name in keyof Actors & string]: {
         readonly actorName: Name
@@ -31,14 +35,15 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
 
 const socketGrantSchema = z.object({
     websocketUrl: z.url().refine(url => ["ws:", "wss:"].includes(new URL(url).protocol)),
-    transport: z.literal("websocket"),
     homeRegion: z.string().min(1),
     connectByMs: z.number().int(),
     authorizedUntilMs: z.number().int()
 })
 
+/** Browser connection URL and deadlines in Unix milliseconds. Treat the URL as a credential. */
 type SocketGrant = z.infer<typeof socketGrantSchema>
 
+/** Issues browser connection URLs from your backend. */
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly projectId: string
     private readonly origin: string
@@ -73,6 +78,10 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
+    /**
+     * Call after authenticating the user and checking actor access.
+     * Pass `websocketUrl` to the browser's `new WebSocket()`.
+     */
     async handle(authorization: SocketAuthorization<Actors>): Promise<SocketGrant> {
         const actorName = validateActorComponent("actor name", authorization.actorName)
         const actorId = validateActorComponent("actor ID", authorization.actorId)
@@ -90,11 +99,11 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
                 ? undefined
                 : validateActorComponent("home region", authorization.homeRegion)
         const response = await this.fetchRequest(
-            `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/connect`,
+            `${this.origin}${projectActorPath(this.projectId, actorName, actorId)}/find-websocket`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-                body: JSON.stringify({ transport: "websocket", metadata, authorizationLifetimeMs, homeRegion }),
+                body: JSON.stringify({ metadata, authorizationLifetimeMs, homeRegion }),
                 signal: AbortSignal.timeout(this.setupTimeoutMs)
             }
         )

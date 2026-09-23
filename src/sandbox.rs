@@ -99,7 +99,7 @@ pub struct EnsureHostRequest {
     pub resources: ResourceLimits,
     pub runtime_config: Option<String>,
 
-    pub code_revision: String,
+    pub host_config_key: String,
     pub canonical_region: String,
     pub host_id: HostId,
     pub session_id: String,
@@ -156,7 +156,7 @@ pub struct ActorHostProvisioning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminateHostsRequest {
-    pub code_revision: String,
+    pub host_config_key: String,
     pub canonical_regions: Vec<String>,
 }
 

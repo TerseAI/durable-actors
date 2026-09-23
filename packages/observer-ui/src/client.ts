@@ -1,5 +1,10 @@
 import { createParser } from "eventsource-parser"
 
+import { type OverviewMetrics, parseOverviewMetrics } from "./overview-metrics.js"
+import { type QueueWaitRow, queueWaitRows } from "./queue-wait.js"
+import { type SocketSessionRow, sessionRows } from "./socket-sessions.js"
+import type { ResolvedRange } from "./time-range.js"
+
 type ActorResidency = "live" | "dormant" | "unknown"
 
 interface ActorInstance {
@@ -19,7 +24,11 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
-    query?(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult>
+    getMetrics?(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics>
+    listQueueWaits?(query: ResolvedRange & { actorName?: string }, signal?: AbortSignal): Promise<QueueWaitRow[]>
+    listWebSockets?(range: ResolvedRange, signal?: AbortSignal): Promise<SocketSessionRow[]>
+
+    listRequests?(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage>
     watchRequests?(onPage: (page: RequestTracePage) => void, signal: AbortSignal, after?: string): Promise<void>
     watchActors?(onInventory: (inventory: ActorInventory) => void, signal: AbortSignal): Promise<void>
     listActors(signal?: AbortSignal): Promise<ActorInventory>
@@ -31,6 +40,18 @@ class HttpObserverClient implements ObserverClient {
         private readonly baseUrl: string = "/api/observe",
         private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)
     ) {}
+
+    async getMetrics(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics> {
+        return parseOverviewMetrics(await this.get(`metrics${queryString(range)}`, signal))
+    }
+
+    async listQueueWaits(query: ResolvedRange & { actorName?: string }, signal?: AbortSignal): Promise<QueueWaitRow[]> {
+        return queueWaitRows(await this.get(`queue-waits${queryString(query)}`, signal))
+    }
+
+    async listWebSockets(range: ResolvedRange, signal?: AbortSignal): Promise<SocketSessionRow[]> {
+        return sessionRows(await this.get(`websockets${queryString(range)}`, signal))
+    }
 
     async listActors(signal?: AbortSignal): Promise<ActorInventory> {
         const result = await this.get("actors", signal)
@@ -47,31 +68,10 @@ class HttpObserverClient implements ObserverClient {
         return this.watch(`requests/events${query}`, "requests", isTracePage, onPage, signal)
     }
 
-    async query(query: ObserverQuery, signal?: AbortSignal): Promise<ObserverQueryResult> {
-        const response = await this.request(`${this.baseUrl.replace(/\/$/u, "")}/query`, {
-            method: "POST",
-            credentials: "same-origin",
-            redirect: "error",
-            signal,
-            headers: { "content-type": "application/json", accept: "application/json" },
-            body: JSON.stringify(query)
-        })
-        if (!response.ok) throw new Error(`Observability query failed (HTTP ${response.status}).`)
-        const result: unknown = await response.json()
-        if (
-            !result ||
-            typeof result !== "object" ||
-            !("rows" in result) ||
-            !Array.isArray(result.rows) ||
-            result.rows.length > 500 ||
-            !("truncated" in result) ||
-            typeof result.truncated !== "boolean" ||
-            !result.rows.every(
-                row => row && typeof row === "object" && !Array.isArray(row) && Object.values(row).every(value => value === null || ["string", "boolean", "number"].includes(typeof value))
-            )
-        )
-            throw new Error("Invalid SQL query response")
-        return result as ObserverQueryResult
+    async listRequests(query: RequestHistoryQuery, signal?: AbortSignal): Promise<RequestTracePage> {
+        const result = await this.get(`requests${queryString(query)}`, signal)
+        if (!isTracePage(result)) throw new Error("Invalid request history response")
+        return result
     }
 
     private async watch<T>(path: string, eventName: string, validate: (value: unknown) => value is T, receive: (value: T) => void, signal: AbortSignal): Promise<void> {
@@ -133,6 +133,12 @@ class HttpObserverClient implements ObserverClient {
     }
 }
 
+function queryString(query: object): string {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value))
+    return params.size ? `?${params}` : ""
+}
+
 function isInventory(value: unknown): value is ActorInventory {
     if (!value || typeof value !== "object" || !("actors" in value) || !Array.isArray(value.actors)) return false
     return value.actors.every(
@@ -171,6 +177,7 @@ export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
 
 export interface RequestTrace {
+    metadata?: unknown
     eventId?: string
     sequence: number
     requestId: string
@@ -187,14 +194,14 @@ export interface RequestTrace {
     outcome: "completed" | "failed" | "rejected" | "rerouted" | "interrupted"
 }
 
-export type SqlValue = string | number | boolean | null
-export interface ObserverQuery {
-    sql: string
-    params: SqlValue[]
-}
-export interface ObserverQueryResult {
-    rows: Record<string, SqlValue>[]
-    truncated: boolean
+export interface RequestHistoryQuery {
+    actorName?: string
+    actorId?: string
+    outcome?: RequestTrace["outcome"]
+    fromMs?: number
+    toMs?: number
+    limit?: number
+    cursor?: string
 }
 
 export interface RequestTracePage {

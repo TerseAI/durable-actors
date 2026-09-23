@@ -116,15 +116,13 @@ impl ControlPlaneService {
     ) -> Result<bool> {
         let previous = admin.current_deployment(&spec.project_id).await?;
         spec.validate()?;
-        admin.validate_contract_registration(spec, contract).await?;
-        if let Some(previous) = previous
-            && previous != *spec
-        {
+        let replacing = previous.is_some();
+        if let Some(previous) = previous {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = admin.register_deployment(spec, contract).await?;
         self.changes.send_replace(());
-        Ok(changed)
+        Ok(changed || replacing)
     }
 
     pub(super) async fn deploy_source(
@@ -135,21 +133,18 @@ impl ControlPlaneService {
     ) -> Result<bool> {
         let _update = self.deployment_update.lock().await;
         source.validate()?;
-        admin
-            .validate_contract_registration(source, supplied_contract)
-            .await?;
         let previous = admin.current_deployment(&source.project_id).await?;
         let (prepared, mut compiled_contract) = self
             .provisioner
             .prepare_deployment(source, previous.as_ref(), self.default_region())
             .await?;
         if compiled_contract.is_none() && prepared.code_snapshot.is_some() {
-            let previous = previous
+            previous
                 .as_ref()
                 .filter(|old| old.code_snapshot == prepared.code_snapshot)
                 .context("compiled deployment has no matching source contract")?;
             let record = admin
-                .deployment_contract(&source.project_id, Some(&previous.code_revision))
+                .deployment_contract(&source.project_id)
                 .await?
                 .context("compiled deployment contract is missing")?;
             compiled_contract = Some(super::contracts::PublicActorContract::new(record.contract)?);
@@ -198,7 +193,7 @@ impl ControlPlaneService {
         {
             Ok(termination) => info!(
                 event = "actor_hosts_terminated",
-                code_revision = %spec.code_revision,
+                project_id = %spec.project_id,
                 provider = %termination.provider,
                 resource_count = termination.resource_ids.len(),
                 total_ms = elapsed_ms(started_at),
@@ -320,7 +315,7 @@ impl ControlPlaneService {
             actor,
             &target.lease.id,
             &target.lease.session_id,
-            &target.spec.host_revision(),
+            &target.spec.host_config_key(),
             &target.placement.home_region,
             target.placement.owner_epoch,
         )?;
@@ -494,9 +489,9 @@ impl ControlPlaneService {
                         &principal.host_id,
                         &principal.session_id,
                         principal
-                            .code_revision
+                            .host_config_key
                             .as_deref()
-                            .context("host revision missing")?,
+                            .context("host configuration missing")?,
                         &principal.region,
                         &principal.actor,
                     )?
@@ -559,7 +554,7 @@ impl ControlPlaneService {
             timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
         }
         let lease_checked = current.as_ref().is_some_and(|placement| {
-            host_matches_revision(&placement.owner, &spec.host_revision())
+            host_matches_config(&placement.owner, &spec.host_config_key())
         });
         let active = self.active_target(&current, &spec).await?;
         if lease_checked && let Some(timings) = timings.as_deref_mut() {
@@ -663,7 +658,7 @@ impl ControlPlaneService {
         let Some(placement) = current else {
             return Ok(None);
         };
-        if !host_matches_revision(&placement.owner, &spec.host_revision()) {
+        if !host_matches_config(&placement.owner, &spec.host_config_key()) {
             return Ok(None);
         }
         let lease = &placement.lease;
@@ -805,7 +800,6 @@ impl HostProvisioner for SandboxHostProvisioner {
                 && old.code_snapshot.is_some()
         }) {
             let mut prepared = previous.clone();
-            prepared.code_revision.clone_from(&source.code_revision);
             prepared.secret_refs.clone_from(&source.secret_refs);
             return Ok((prepared, None));
         }
@@ -817,7 +811,7 @@ impl HostProvisioner for SandboxHostProvisioner {
                 actor_entrypoint: input
                     .actor_entrypoint
                     .clone()
-                    .unwrap_or_else(|| "src/durable-objects.ts".into()),
+                    .unwrap_or_else(|| "src/actors.ts".into()),
                 canonical_region: region.into(),
             })
             .await?;
@@ -825,7 +819,6 @@ impl HostProvisioner for SandboxHostProvisioner {
         let prepared = HostLaunchSpec {
             project_id: source.project_id.clone(),
             source: Some(input),
-            code_revision: source.code_revision.clone(),
             image_ref: image.clone(),
             code_snapshot: Some(built.code_snapshot),
             working_directory: "/customer".into(),
@@ -882,12 +875,12 @@ impl HostProvisioner for SandboxHostProvisioner {
         if let Some(pool) = &self.pool {
             return Ok(HostTermination {
                 provider: "modal".into(),
-                resource_ids: pool.retire_revision(&spec.host_revision()).await?,
+                resource_ids: pool.retire_config(&spec.host_config_key()).await?,
             });
         }
         self.provider
             .terminate_hosts(&TerminateHostsRequest {
-                code_revision: spec.host_revision(),
+                host_config_key: spec.host_config_key(),
                 canonical_regions: regions.to_vec(),
             })
             .await
@@ -932,7 +925,7 @@ impl SandboxHostProvisioner {
                 pool.reserve_host(
                     &request.session_id,
                     request.host_id.as_str(),
-                    &spec.host_revision(),
+                    &spec.host_config_key(),
                 )
                 .await?;
             }
@@ -958,7 +951,7 @@ impl SandboxHostProvisioner {
                 let command = error.downcast_ref::<ProviderCommandFailure>();
                 warn!(
                     event = "actor_host_provisioning",
-                    code_revision = %spec.code_revision,
+                    project_id = %spec.project_id,
                     region,
                     host_id = %request.host_id,
                     started_at_ms = 0,
@@ -994,7 +987,7 @@ impl SandboxHostProvisioner {
                     .context("provider did not identify the assigned sandbox")?;
                 pool.remember(
                     lease.id.as_str(),
-                    &spec.host_revision(),
+                    &spec.host_config_key(),
                     &crate::sandbox::SpareHandle {
                         control_route: String::new(),
                         control_token: String::new(),
@@ -1025,7 +1018,7 @@ impl SandboxHostProvisioner {
         let lease_validated_at_ms = elapsed_ms(started_at);
         info!(
             event = "actor_host_provisioning",
-            code_revision = %spec.code_revision,
+            project_id = %spec.project_id,
             region,
             host_id = %lease.id,
             provider = provisioning.as_ref().map(|value| value.provider.as_str()).unwrap_or("unknown"),
@@ -1058,12 +1051,12 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
     ) -> Result<EnsureHostRequest> {
-        let revision = spec.host_revision();
-        let host_id = HostId::new(format!("host.v3.{}.{}", revision, uuid::Uuid::new_v4()));
+        let config_key = spec.host_config_key();
+        let host_id = HostId::new(format!("host.v3.{}.{}", config_key, uuid::Uuid::new_v4()));
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
-            .issue_host(&host_id, &session_id, &revision, region, actor)?
+            .issue_host(&host_id, &session_id, &config_key, region, actor)?
             .token;
         Ok(EnsureHostRequest {
             actor_is_new: false,
@@ -1072,7 +1065,7 @@ impl SandboxHostProvisioner {
             spare: None,
             resources: Default::default(),
             runtime_config: None,
-            code_revision: revision,
+            host_config_key: config_key,
             canonical_region: region.to_owned(),
             host_id,
             session_id,
@@ -1153,8 +1146,8 @@ fn validate_state_owner(
     Ok(())
 }
 
-fn host_matches_revision(host: &HostId, revision: &str) -> bool {
-    host.as_str().starts_with(&format!("host.v3.{revision}."))
+fn host_matches_config(host: &HostId, config_key: &str) -> bool {
+    host.as_str().starts_with(&format!("host.v3.{config_key}."))
 }
 
 fn validate_host_route(route: &str) -> Result<()> {

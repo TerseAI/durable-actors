@@ -10,30 +10,32 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { buildActor } from "../../dist/compiler/actor-build.js"
+
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)
 
 test("deployment builds produce code and a contract without executing customer code", async t => {
     const root = await project(t)
     await writeFile(
-        path.join(root, "src/durable-objects.ts"),
+        path.join(root, "src/actors.ts"),
         'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<number> { return 42 } }; throw new Error("customer code executed during build")'
     )
     const output = path.join(root, "published")
-    const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output])
+    const { stdout } = await run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/actors.ts", output])
     const contract = JSON.parse(stdout)
     assert.equal(contract.actors[0].actorName, "Counter")
     assert.equal(contract.actors[0].rpc.methods[0].name, "get")
     assert.match(await readFile(path.join(output, "actors.mjs"), "utf8"), /Counter/)
-    await writeFile(path.join(root, "src/durable-objects.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
-    await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/durable-objects.ts", output]), /JSON-compatible/)
+    await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async get(): Promise<Date> { return new Date() } }')
+    await assert.rejects(run("bun", [path.join(sdk, "dist/compiler/deployment-build.js"), root, "src/actors.ts", output]), /JSON-compatible/)
 })
 
 test("built actors run without source, compiler, or TypeScript loader", { timeout: 30_000 }, async t => {
     const root = await project(t)
     await writeFile(path.join(root, "src/increment.ts"), "export const increment = (amount: number) => amount + 1\n")
     await writeFile(
-        path.join(root, "src/durable-objects.ts"),
+        path.join(root, "src/actors.ts"),
         `import { isMainThread } from "node:worker_threads"
         import { Actor, Persisted, Ephemeral, Emittable } from "durable-actors"
         import { increment } from "./increment.js"
@@ -48,7 +50,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
             async invalidState() { this.count = "invalid" as never }
         }`
     )
-    await run(process.execPath, [path.join(sdk, "dist/cli.js"), "build"], { cwd: root })
+    await buildActor(path.join(root, "src/actors.ts"), path.join(root, "dist/actors.mjs"))
     assert.match(await readFile(path.join(root, "dist/actors.mjs"), "utf8"), /BuiltCounter/)
 
     const deployed = path.join(root, "deployed")
@@ -59,7 +61,7 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
     await rm(path.join(root, "dist"), { recursive: true })
     const socketPath = path.join(root, "host.sock")
     const bootstrap = path.join(root, "host.mjs")
-    await writeFile(bootstrap, `import { runDurableObjectHost } from ${JSON.stringify(new URL("../../dist/host.js", import.meta.url).href)}; await runDurableObjectHost()`)
+    await writeFile(bootstrap, `import { runActorHost } from ${JSON.stringify(new URL("../../dist/host.js", import.meta.url).href)}; await runActorHost()`)
     const server = createServer()
     t.after(() => server.close())
     const connected = once(server, "connection")
@@ -141,11 +143,8 @@ test("built actors run without source, compiler, or TypeScript loader", { timeou
 
 test("actor builds report invalid persistence annotations before deployment", async t => {
     const root = await project(t)
-    await writeFile(path.join(root, "src/durable-objects.ts"), `import { Actor } from "durable-actors"; export class Counter extends Actor { count = 0 }`)
-    await assert.rejects(run(process.execPath, [path.join(sdk, "dist/cli.js"), "build"], { cwd: root }), error => {
-        assert.match(error.stderr, /must declare exactly one of @Persisted or @Ephemeral/)
-        return true
-    })
+    await writeFile(path.join(root, "src/actors.ts"), `import { Actor } from "durable-actors"; export class Counter extends Actor { count = 0 }`)
+    await assert.rejects(buildActor(path.join(root, "src/actors.ts"), path.join(root, "dist/actors.mjs")), /must declare exactly one of @Persisted or @Ephemeral/)
 })
 
 async function project(t) {

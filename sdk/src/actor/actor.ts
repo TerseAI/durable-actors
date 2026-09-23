@@ -17,8 +17,11 @@ const asyncFunction = Object.getPrototypeOf(async () => {}).constructor
 const referenceClasses = new WeakMap<Function, ActorReferenceClass>()
 
 interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string> {
+    /** Accepts a joining connection on success. Call `socket.reject(4003, reason)` to deny it. */
     onConnect?(socket: ActorSocket<Metadata, Outgoing, Tag>): Promise<void>
+    /** Handles a parsed JSON message. */
     onMessage?(socket: ActorSocket<Metadata, Outgoing, Tag>, message: Incoming): Promise<void>
+    /** Runs after disconnection; may be skipped on server failure. */
     onDisconnect?(
         socket: ActorSocket<Metadata, Outgoing, Tag>,
         code: number,
@@ -27,11 +30,24 @@ interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming,
     ): Promise<void>
 }
 
+/**
+ * Base class for durable actors. Extend directly, with no required constructor arguments.
+ * Application methods must be async; instance fields require `@Persisted` or `@Ephemeral`.
+ * @typeParam Metadata - Connection metadata supplied by the backend.
+ * @typeParam Incoming - Application messages received by the actor.
+ * @typeParam Outgoing - Application messages sent by the actor.
+ * @typeParam Tag - Allowed connection tags.
+ */
 abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string> {
+    /** @internal */
     declare readonly [actorTypes]: { metadata: Metadata; incoming: Incoming; outgoing: Outgoing; tag: Tag }
 
     protected constructor() {}
 
+    /**
+     * Returns a backend reference. The first call starts the actor if needed.
+     * @param actorId - 1–128 ASCII letters, digits, dots, underscores, or hyphens.
+     */
     static get<TActorClass extends ActorClass>(
         this: ValidActorClass<TActorClass>,
         actorId: string
@@ -39,14 +55,19 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
         return getActorReference(this, validateActorComponent("actor ID", actorId))
     }
 
+    /** The bound actor ID; unavailable during construction. */
     protected get id(): string {
         return metadataFor(this).actorId
     }
 
+    /**
+     * Lists connections during an actor call. Includes a joining socket; excludes a disconnected one.
+     */
     protected getConnections(): Promise<readonly ActorSocket<Metadata, Outgoing, Tag>[]> {
         return actorConnections<Metadata, Outgoing, Tag>(this)
     }
 
+    /** Sends JSON to matching connections, including the sender by default. Messages are not saved. */
     protected broadcast(message: Outgoing, options?: ActorBroadcastOptions<Tag>): void {
         broadcastActor(this, message, options)
     }
@@ -243,9 +264,11 @@ type ActorReference<Instance extends AnyActor> = {
             : never
     ]: Instance[Key]
 } & {
+    /** Opens a backend socket. Attach listeners immediately; acceptance may still be pending. */
     connect(
         metadata: SocketMetadata<Instance>
     ): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, JsonObject>>
+    /** Sends to all connections without running actor code. Messages are not saved. */
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
 type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect"
@@ -253,11 +276,13 @@ type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["me
 type SocketIncoming<Instance extends AnyActor> = Instance[typeof actorTypes]["incoming"]
 type SocketOutgoing<Instance extends AnyActor> = Instance[typeof actorTypes]["outgoing"]
 type SocketTag<Instance extends AnyActor> = Instance[typeof actorTypes]["tag"]
+/** Socket type for an actor instance type, for example `ActorSocketOf<ChatRoom>`. */
 type ActorSocketOf<Instance extends AnyActor> = ActorSocket<
     SocketMetadata<Instance>,
     SocketOutgoing<Instance>,
     SocketTag<Instance>
 >
+/** Incoming message type for an actor instance type. */
 type ActorMessageOf<Instance extends AnyActor> = SocketIncoming<Instance>
 
 export { Actor, bindActorIdentity, findActorDefinition, registerActorClass }

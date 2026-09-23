@@ -143,29 +143,25 @@ test("console navigation opens the selected actor and real WebSocket metadata", 
     assert.ok(view.getByRole("button", { name: "Inspect connection socket-a" }))
 })
 
-test("with SQL history the overview reads metrics for the selected time range instead of the live window", async () => {
-    const queries: { sql: string; params: unknown[] }[] = []
+test("with saved history the overview reads metrics for the selected time range instead of the live window", async () => {
+    const queries: { fromMs?: number; toMs?: number }[] = []
     const client: ObserverClient = {
         listActors: async () => inventory,
         checkConnection: async () => {},
         watchRequests: async () => {
-            throw new Error("live stream must not be used when SQL history is available")
+            throw new Error("live stream must not be used when saved history is available")
         },
-        query: async query => {
+        getMetrics: async query => {
             queries.push(query)
             return {
-                rows: [
-                    { actor_name: "", total: 40, attempts: 38, completed: 37, p95_duration_ms: 120.5, p95_queue_wait_ms: 8 },
-                    { actor_name: "Room", total: 40, attempts: 38, completed: 37, p95_duration_ms: 120.5, p95_queue_wait_ms: 8 }
-                ],
-                truncated: false
+                total: { actorName: "", count: 40, success: (100 * 37) / 38, p95: 120.5, queueP95: 8 },
+                classes: [{ actorName: "Room", count: 40, success: (100 * 37) / 38, p95: 120.5, queueP95: 8 }]
             }
         }
     }
     const view = render(<Overview client={client} onSelectActor={() => {}} />)
     await waitFor(() => assert.equal(view.getByLabelText("Retained requests").textContent, "40"))
-    assert.match(queries[0]!.sql, /ROW_NUMBER\(\) OVER/u)
-    assert.equal(queries[0]!.params.length, 1)
+    assert.equal(typeof queries[0]!.fromMs, "number")
     const room = view.getByRole("button", { name: "Inspect Room" }).closest("tr")!
     assert.match(room.textContent!, /97\.37%/u)
     assert.match(room.textContent!, /120\.5 ms/u)
@@ -175,6 +171,6 @@ test("with SQL history the overview reads metrics for the selected time range in
     fireEvent.click(view.getByRole("button", { name: "Time range: Last hour" }))
     fireEvent.click(view.getByRole("button", { name: "All retained" }))
     await waitFor(() => assert.equal(queries.length, 2))
-    assert.deepEqual(queries[1]!.params, [])
+    assert.deepEqual(queries[1], {})
     assert.match(view.container.textContent!, /in retained history/u)
 })

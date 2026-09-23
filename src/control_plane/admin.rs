@@ -9,7 +9,7 @@ use subtle::ConstantTimeEq;
 use crate::postgres::PostgresDatabase;
 
 use super::ActorJwtIssuer;
-use super::contracts::{PublicActorContract, PublishedContract, check_contract_hash};
+use super::contracts::{PublicActorContract, PublishedContract};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +17,6 @@ pub(crate) struct HostLaunchSpec {
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentSource>,
-    pub code_revision: String,
     pub image_ref: String,
     #[serde(default)]
     pub code_snapshot: Option<String>,
@@ -45,13 +44,14 @@ impl From<&HostLaunchSpec> for DeploymentSource {
 }
 
 impl HostLaunchSpec {
-    pub(crate) fn host_revision(&self) -> String {
+    pub(crate) fn host_config_key(&self) -> String {
         let identity = serde_json::to_vec(&(
             &self.project_id,
-            &self.code_revision,
             &self.secret_refs,
             &self.image_ref,
             &self.code_snapshot,
+            &self.working_directory,
+            &self.actor_entrypoint,
         ))
         .expect("host identity is serializable");
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &identity);
@@ -60,7 +60,6 @@ impl HostLaunchSpec {
 
     pub(crate) fn validate(&self) -> Result<()> {
         validate_component("project ID", &self.project_id, 64)?;
-        validate_component("code revision", &self.code_revision, 128)?;
         if let Some(snapshot) = &self.code_snapshot {
             ensure!(
                 snapshot.starts_with("im-") && snapshot.len() <= 255,
@@ -118,11 +117,7 @@ pub(crate) trait AdminRegistry: Send + Sync {
         spec: &HostLaunchSpec,
         contract: Option<&PublicActorContract>,
     ) -> Result<bool>;
-    async fn deployment_contract(
-        &self,
-        project_id: &str,
-        revision: Option<&str>,
-    ) -> Result<Option<PublishedContract>>;
+    async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>>;
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>>;
     async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>>;
     async fn remove_deployment(&self, project_id: &str) -> Result<()>;
@@ -177,7 +172,7 @@ impl AdminService {
         }
         url.query_pairs_mut().append_pair("key", &key);
         Ok(
-            serde_json::json!({ "transport": "websocket", "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
+            serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),
         )
     }
 
@@ -217,41 +212,12 @@ impl AdminService {
     pub(crate) async fn deployment_contract(
         &self,
         project_id: &str,
-        revision: Option<&str>,
     ) -> Result<Option<PublishedContract>> {
-        if let Some(revision) = revision {
-            validate_component("code revision", revision, 128)?;
-        }
-        self.registry
-            .deployment_contract(project_id, revision)
-            .await
-    }
-
-    pub(crate) async fn validate_contract_registration(
-        &self,
-        spec: &HostLaunchSpec,
-        contract: Option<&PublicActorContract>,
-    ) -> Result<()> {
-        if let Some(contract) = contract {
-            let existing = self
-                .deployment_contract(&spec.project_id, Some(&spec.code_revision))
-                .await?;
-            check_contract_hash(
-                existing
-                    .as_ref()
-                    .map(|record| record.contract_hash.as_str()),
-                contract,
-            )?;
-        }
-        Ok(())
+        self.registry.deployment_contract(project_id).await
     }
 
     pub(crate) async fn remove_deployment(&self, project_id: &str) -> Result<()> {
         self.registry.remove_deployment(project_id).await
-    }
-
-    pub(crate) fn jwks_json(&self) -> Result<Vec<u8>> {
-        self.issuer.jwks_json()
     }
 }
 
@@ -287,44 +253,21 @@ impl AdminRegistry for LocalAdminRegistry {
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
         let state = state.entry(spec.project_id.clone()).or_default();
-        let mut changed = state.deployment.as_ref() != Some(spec);
-        if let Some(contract) = contract {
-            let existing = state
-                .contract
-                .as_ref()
-                .filter(|record| record.code_revision == spec.code_revision);
-            check_contract_hash(
-                existing.map(|record| record.contract_hash.as_str()),
-                contract,
-            )?;
-            changed |= existing.is_none();
-            state.contract = Some(PublishedContract::new(&spec.code_revision, contract));
-        }
-        if state
-            .contract
-            .as_ref()
-            .is_some_and(|record| record.code_revision != spec.code_revision)
-        {
-            state.contract = None;
-        }
+        let contract = contract.map(PublishedContract::new);
+        let changed = state.deployment.as_ref() != Some(spec) || state.contract != contract;
         state.deployment = Some(spec.clone());
+        state.contract = contract;
         Ok(changed)
     }
 
-    async fn deployment_contract(
-        &self,
-        project_id: &str,
-        revision: Option<&str>,
-    ) -> Result<Option<PublishedContract>> {
+    async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>> {
         let state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?;
         Ok(state
             .get(project_id)
-            .and_then(|state| state.contract.as_ref())
-            .filter(|record| revision.is_none_or(|revision| record.code_revision == revision))
-            .cloned())
+            .and_then(|record| record.contract.clone()))
     }
 
     async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
@@ -362,7 +305,7 @@ impl AdminRegistry for PostgresAdminRegistry {
     async fn remove_deployment(&self, project_id: &str) -> Result<()> {
         self.database
             .execute(
-                "DELETE FROM durable_object_deployment WHERE project_id = $1",
+                "DELETE FROM durable_actors_deployment WHERE project_id = $1",
                 &[&project_id],
             )
             .await?;
@@ -377,83 +320,37 @@ impl AdminRegistry for PostgresAdminRegistry {
         spec.validate()?;
         let mut client = self.database.connection().await?;
         let transaction = client.transaction().await?;
-        let changed = transaction
-            .execute(
-                "INSERT INTO durable_object_deployment \
-                   (project_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json) \
-                 VALUES ($8, $1, $2, $3, $4, $5, $6, $7) \
-                 ON CONFLICT (project_id) DO UPDATE SET \
-                   code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
-                   working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
-                   secret_refs = EXCLUDED.secret_refs, code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json, \
-                   updated_at = clock_timestamp() \
-                 WHERE (durable_object_deployment.code_revision, \
-                        durable_object_deployment.image_ref, \
-                        durable_object_deployment.working_directory, \
-                        durable_object_deployment.actor_entrypoint, \
-                        durable_object_deployment.secret_refs, durable_object_deployment.code_snapshot, durable_object_deployment.source_json) \
-                       IS DISTINCT FROM \
-                       (EXCLUDED.code_revision, EXCLUDED.image_ref, \
-                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json)",
-                &[
-                    &spec.code_revision,
-                    &spec.image_ref,
-                    &spec.working_directory,
-                    &spec.actor_entrypoint,
-                    &spec.secret_refs,
-                    &spec.code_snapshot,
-                    &spec.source.as_ref().map(serde_json::to_string).transpose()?,
-                    &spec.project_id,
-                ],
-            )
-            .await
-            .context("register PostgreSQL deployment")? == 1;
-        transaction
-            .execute(
-                "DELETE FROM durable_object_contracts WHERE code_revision <> $1 AND project_id = $2",
-                &[&spec.code_revision, &spec.project_id],
-            )
-            .await?;
-        let mut published = false;
-        if let Some(contract) = contract {
-            let existing = transaction
-                .query_opt(
-                    "SELECT contract_hash FROM durable_object_contracts WHERE code_revision = $1 AND project_id = $2",
-                    &[&spec.code_revision, &spec.project_id],
-                )
-                .await?;
-            check_contract_hash(existing.as_ref().map(|row| row.get::<_, &str>(0)), contract)?;
-            if existing.is_none() {
-                transaction.execute(
-                    "INSERT INTO durable_object_contracts (project_id, code_revision, contract_hash, contract_json) VALUES ($4, $1, $2, $3)",
-                    &[&spec.code_revision, &contract.hash(), &serde_json::to_string(contract.document())?, &spec.project_id],
-                ).await?;
-                published = true;
-            }
-        }
+        let changed = transaction.execute(
+            "INSERT INTO durable_actors_deployment
+                (project_id, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (project_id) DO UPDATE SET
+                image_ref = EXCLUDED.image_ref, working_directory = EXCLUDED.working_directory,
+                actor_entrypoint = EXCLUDED.actor_entrypoint, secret_refs = EXCLUDED.secret_refs,
+                code_snapshot = EXCLUDED.code_snapshot, source_json = EXCLUDED.source_json,
+                updated_at = clock_timestamp()
+             WHERE (durable_actors_deployment.image_ref, durable_actors_deployment.working_directory,
+                    durable_actors_deployment.actor_entrypoint, durable_actors_deployment.secret_refs,
+                    durable_actors_deployment.code_snapshot, durable_actors_deployment.source_json)
+                IS DISTINCT FROM (EXCLUDED.image_ref, EXCLUDED.working_directory, EXCLUDED.actor_entrypoint,
+                                  EXCLUDED.secret_refs, EXCLUDED.code_snapshot, EXCLUDED.source_json)",
+            &[&spec.project_id, &spec.image_ref, &spec.working_directory, &spec.actor_entrypoint,
+              &spec.secret_refs, &spec.code_snapshot, &spec.source.as_ref().map(serde_json::to_string).transpose()?]
+        ).await.context("register PostgreSQL deployment")? > 0;
+        let published = publish_contract(&transaction, &spec.project_id, contract).await?;
         transaction.commit().await?;
         Ok(changed || published)
     }
 
-    async fn deployment_contract(
-        &self,
-        project_id: &str,
-        revision: Option<&str>,
-    ) -> Result<Option<PublishedContract>> {
-        let row = self
-            .database
-            .query_opt(
-                "SELECT code_revision, contract_hash, contract_json FROM durable_object_contracts \
-             WHERE project_id = $2 AND code_revision = COALESCE($1, \
-               (SELECT code_revision FROM durable_object_deployment WHERE project_id = $2))",
-                &[&revision, &project_id],
-            )
-            .await?;
+    async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>> {
+        let row = self.database.query_opt(
+            "SELECT contract_hash, contract_json FROM durable_actors_contracts WHERE project_id = $1",
+            &[&project_id]
+        ).await?;
         row.map(|row| {
             Ok(PublishedContract {
-                code_revision: row.get(0),
-                contract_hash: row.get(1),
-                contract: serde_json::from_str(row.get::<_, &str>(2))?,
+                contract_hash: row.get(0),
+                contract: serde_json::from_str(row.get::<_, &str>(1))?,
             })
         })
         .transpose()
@@ -461,7 +358,7 @@ impl AdminRegistry for PostgresAdminRegistry {
 
     async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
         self.database.connection().await?.query(
-            "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_object_deployment",
+            "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id FROM durable_actors_deployment",
             &[],
         ).await.context("load PostgreSQL host launch specs")?
             .iter().map(launch_spec_from_row).collect()
@@ -471,8 +368,8 @@ impl AdminRegistry for PostgresAdminRegistry {
         self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id \
-                 FROM durable_object_deployment WHERE project_id = $1",
+                "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id \
+                 FROM durable_actors_deployment WHERE project_id = $1",
                 &[&project_id],
             )
             .await
@@ -482,19 +379,35 @@ impl AdminRegistry for PostgresAdminRegistry {
     }
 }
 
+async fn publish_contract(
+    transaction: &tokio_postgres::Transaction<'_>,
+    project_id: &str,
+    contract: Option<&PublicActorContract>,
+) -> Result<bool> {
+    let updated = match contract {
+        Some(contract) => transaction.execute(
+            "INSERT INTO durable_actors_contracts (project_id, contract_hash, contract_json) VALUES ($1, $2, $3)
+             ON CONFLICT (project_id) DO UPDATE SET contract_hash = EXCLUDED.contract_hash, contract_json = EXCLUDED.contract_json
+             WHERE durable_actors_contracts.contract_hash IS DISTINCT FROM EXCLUDED.contract_hash",
+            &[&project_id, &contract.hash(), &serde_json::to_string(contract.document())?]
+        ).await?,
+        None => transaction.execute("DELETE FROM durable_actors_contracts WHERE project_id = $1", &[&project_id]).await?,
+    };
+    Ok(updated > 0)
+}
+
 fn launch_spec_from_row(row: &tokio_postgres::Row) -> Result<HostLaunchSpec> {
     Ok(HostLaunchSpec {
-        project_id: row.get(7),
+        project_id: row.get(6),
         source: row
-            .get::<_, Option<&str>>(6)
+            .get::<_, Option<&str>>(5)
             .map(serde_json::from_str)
             .transpose()?,
-        code_snapshot: row.get(5),
-        code_revision: row.get(0),
-        image_ref: row.get(1),
-        working_directory: row.get(2),
-        actor_entrypoint: row.get(3),
-        secret_refs: row.get(4),
+        code_snapshot: row.get(4),
+        image_ref: row.get(0),
+        working_directory: row.get(1),
+        actor_entrypoint: row.get(2),
+        secret_refs: row.get(3),
     })
 }
 

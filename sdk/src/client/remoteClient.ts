@@ -35,7 +35,7 @@ class RemoteActorClient {
     private readonly targets = new Map<string, Promise<ActorHostTarget>>()
     private readonly connectWebSocket: WebSocketConnector
 
-    constructor(options?: DurableObjectsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
+    constructor(options?: DurableActorsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
         this.environment = dependencies.environment ?? process.env
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
@@ -96,12 +96,11 @@ class RemoteActorClient {
         }
         const attachment = socketMetadata(metadata, schemas)
         const response = await this.fetchRequest(
-            `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/connect`,
+            `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, actor.actorName, actor.actorId)}/find-websocket`,
             {
                 method: "POST",
                 headers: { authorization: `Bearer ${this.settings.credential}`, "content-type": "application/json" },
                 body: JSON.stringify({
-                    transport: "websocket",
                     metadata: attachment,
                     homeRegion: this.settings.homeRegion
                 }),
@@ -241,7 +240,7 @@ class RemoteActorClient {
                     "x-request-id": invocation.requestId,
                     "content-type": "application/json"
                 },
-                body: JSON.stringify({ transport: "grpc", homeRegion: this.settings.homeRegion })
+                body: JSON.stringify({ homeRegion: this.settings.homeRegion })
             })
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -264,7 +263,7 @@ class RemoteActorClient {
             throw new ActorInvocationError(
                 "unauthenticated",
                 requestId,
-                "the durable-object application credential was rejected"
+                "the durable-actors application credential was rejected"
             )
         }
         const failure = errorDocumentSchema.safeParse(document)
@@ -317,7 +316,7 @@ class RemoteActorClient {
 function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: string): string {
     const actor = validateActorComponent("actor name", actorName)
     const id = validateActorComponent("actor ID", actorId)
-    return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/connect`
+    return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/find-actor`
 }
 
 function openWebSocket(url: string, schemas: ActorSchemas): Promise<ActorConnection> {
@@ -365,7 +364,7 @@ interface RemoteActorSettings {
     readonly controlPlaneUrl: string
 }
 
-interface DurableObjectsClientOptions {
+interface DurableActorsClientOptions {
     readonly projectId: string
     readonly apiKey: string
     readonly homeRegion?: string
@@ -402,4 +401,4 @@ const actorHostTargetSchema = z.object({
 })
 
 export { RemoteActorClient }
-export type { DurableObjectsClientOptions, RemoteActorClientDependencies }
+export type { DurableActorsClientOptions, RemoteActorClientDependencies }

@@ -15,14 +15,11 @@ async function buildTemplate(template) {
     await mkdir(destination, { recursive: true })
     const files = ["package.json", "tsconfig.json", "README.md", "src"]
     if (template !== "actor") files.push("index.html")
-    if (template === "ai-chat") files.push(".env.example")
+    if (template !== "actor") files.push(".env.example")
     for (const file of files)
         await cp(new URL(file, source), new URL(file, destination), {
             recursive: true,
-            filter: file =>
-                !["generated", "node_modules", ".durable-actors", ".little-actors", "dist"].includes(
-                    path.basename(file)
-                )
+            filter: file => !["generated", "node_modules", ".durable-actors", "dist"].includes(path.basename(file))
         })
     // npm excludes .gitignore; init restores its name after copying the template.
     await copyFile(new URL(".gitignore", source), new URL("gitignore", destination))

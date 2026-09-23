@@ -20,7 +20,9 @@ test("API-key clients invoke, connect, and broadcast", async () => {
         fetch: async (url, options) => {
             requests.push(String(url))
             assert.equal(new Headers(options?.headers).get("authorization"), "Bearer backend-key")
-            if (JSON.parse(String(options?.body)).transport === "websocket")
+            const socket = String(url).endsWith("/find-websocket")
+            assert.deepEqual(JSON.parse(String(options?.body)), socket ? { metadata: {} } : {})
+            if (socket)
                 return Response.json({
                     websocketUrl: "wss://host.example.com/v1/socket?key=socket-ticket",
                     key: "socket-ticket"
@@ -50,8 +52,8 @@ test("API-key clients invoke, connect, and broadcast", async () => {
     await client.connect("Counter", "one", {})
     await client.broadcast("Counter", "one", "updated")
     assert.deepEqual(requests, [
-        "https://control.example.com/v1/projects/default/actors/Counter/one/connect",
-        "https://control.example.com/v1/projects/default/actors/Counter/one/connect"
+        "https://control.example.com/v1/projects/default/actors/Counter/one/find-actor",
+        "https://control.example.com/v1/projects/default/actors/Counter/one/find-websocket"
     ])
 })
 
@@ -172,7 +174,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
     const server = createServer(async (request, response) => {
         resolutions += 1
         assert.equal(request.method, "POST")
-        assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/connect")
+        assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/find-actor")
         assert.equal(request.headers.authorization, "Bearer backend-key")
         assert.equal(request.headers["x-request-id"], "00000000-0000-4000-8000-000000000000")
         json(response, 200, {
@@ -276,7 +278,7 @@ test("resolves a fresh host socket grant before connecting", async () => {
             fetch: async (url, init) => {
                 assert.equal(
                     String(url),
-                    "https://control.example.com/v1/projects/default/actors/ChatRoom/room-1/connect"
+                    "https://control.example.com/v1/projects/default/actors/ChatRoom/room-1/find-websocket"
                 )
                 assert.equal(JSON.parse(init!.body as string).backend, undefined)
                 assert.deepEqual(JSON.parse(init!.body as string).metadata, { userId: "user-1" })
@@ -308,7 +310,7 @@ test("delivers returned effects to the same host and does not repeat a committed
         {
             telemetry: () => {},
             fetch: async url => {
-                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/one/connect")
+                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/one/find-actor")
                 return Response.json({
                     route: "https://host.example",
                     token: "ticket",
@@ -393,7 +395,7 @@ test("requires the direct actor target endpoint", async () => {
             client.invoke("Counter", "counter-1", "increment", [2]),
             error => error instanceof ActorInvocationError && error.code === "not_found"
         )
-        assert.deepEqual(calls, ["/v1/projects/default/actors/Counter/counter-1/connect"])
+        assert.deepEqual(calls, ["/v1/projects/default/actors/Counter/counter-1/find-actor"])
     } finally {
         await close(server)
     }
@@ -478,10 +480,9 @@ test("broadcasts use the owning host gRPC connection without HTTP delivery", asy
         {
             telemetry: () => {},
             fetch: async (url, options) => {
-                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/lobby/connect")
-                assert.equal(JSON.parse(String(options?.body)).transport, "grpc")
+                assert.equal(String(url), "https://control.example/v1/projects/default/actors/Room/lobby/find-actor")
+                assert.deepEqual(JSON.parse(String(options?.body)), {})
                 return Response.json({
-                    transport: "grpc",
                     homeRegion: "north-america-west",
                     route: "https://host.example",
                     token: "actor",
@@ -554,7 +555,7 @@ test("project clients retain project identity across resolution, RPC, and broadc
     assert.deepEqual(
         requests,
         ["team-a", "team-b"].map(
-            project => `https://control.example/v1/projects/${project}/actors/Counter/same/connect`
+            project => `https://control.example/v1/projects/${project}/actors/Counter/same/find-actor`
         )
     )
     assert.deepEqual(invoked, ["team-a", "team-b"])

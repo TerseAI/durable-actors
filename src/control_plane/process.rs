@@ -11,9 +11,9 @@ use crate::{
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
-const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
-const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
-const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
+const DEFAULT_JWT_ISSUER: &str = "durable-actors-control-plane";
+const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-actors-authority";
+const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 const DEFAULT_ACTOR_IDLE_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -67,10 +67,10 @@ pub async fn serve_control_plane(
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
     let routes = control_plane_routes(config, stop).await?;
-    info!(bind = %bind, "durable-object control plane is ready");
+    info!(bind = %bind, "durable-actors control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
-        .context("bind durable-object control plane")?;
+        .context("bind durable-actors control plane")?;
     serve_routes(listener, routes, shutdown).await
 }
 
@@ -82,7 +82,7 @@ async fn serve_routes(
     axum::serve(listener, routes.into_axum_router())
         .with_graceful_shutdown(shutdown)
         .await
-        .context("serve durable-object control plane")
+        .context("serve durable-actors control plane")
 }
 
 async fn control_plane_routes(
@@ -161,13 +161,9 @@ async fn control_plane_routes(
     .with_socket_event_sink(socket_events);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
-    let inspector = super::inspection::ActorInspector::new(
-        placements,
-        storage.clone(),
-        storage.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(service.traces.clone());
+    let inspector =
+        super::inspection::ActorInspector::new(storage.clone(), service.changes.clone())
+            .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.router());

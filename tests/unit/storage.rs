@@ -8,7 +8,7 @@ fn snapshot_paths_group_an_actor_and_validate_its_identity() -> Result<()> {
         actor_id: "account.42".into(),
     };
     let object = snapshot_object_name(&actor, 7, "0123456789abcdef0123456789abcdef")?;
-    assert!(object.starts_with("little-actors/v3/snapshots/"));
+    assert!(object.starts_with("durable-actors/v3/snapshots/"));
     assert!(object.ends_with("/Q291bnRlcg/YWNjb3VudC40Mg/0123456789abcdef0123456789abcdef/7.json"));
     validate_snapshot_object_name(&actor, 7, &object)?;
     assert!(validate_snapshot_object_name(&actor, 8, &object).is_err());

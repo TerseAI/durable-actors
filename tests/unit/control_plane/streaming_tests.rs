@@ -272,7 +272,7 @@ const {{ actors }} = await import(directory + '/backend.mjs');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
     {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
-assert.equal(grant.transport, 'websocket');
+assert.ok(grant.authorizedUntilMs >= grant.connectByMs);
 assert.equal(grant.key, undefined);
 await writeFile(directory + '/release', '');
 const socket = new WebSocket(grant.websocketUrl);
@@ -522,11 +522,11 @@ impl Stack {
     async fn grant(&self, metadata: serde_json::Value, lifetime: u64) -> Result<serde_json::Value> {
         reqwest::Client::new()
             .post(format!(
-                "{}/v1/projects/default/actors/Counter/counter-1/connect",
+                "{}/v1/projects/default/actors/Counter/counter-1/find-websocket",
                 self.gateway
             ))
             .bearer_auth("test-api-key")
-            .json(&serde_json::json!({"transport":"websocket", "metadata":metadata,"authorizationLifetimeMs":lifetime}))
+            .json(&serde_json::json!({"metadata":metadata,"authorizationLifetimeMs":lifetime}))
             .send()
             .await?
             .error_for_status()?
@@ -553,13 +553,13 @@ impl Stack {
             source: None,
             code_snapshot: None,
             project_id: "default".into(),
-            code_revision: "revision".into(),
+
             image_ref: "test-image".into(),
             working_directory: "/app".into(),
             actor_entrypoint: None,
             secret_refs: vec![],
         };
-        let revision = spec.host_revision();
+        let revision = spec.host_config_key();
         let host_id = HostId::new(format!("host.v3.{revision}.session"));
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_route = format!("http://{}", host_listener.local_addr()?);
@@ -832,7 +832,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     std::fs::write(
         &bootstrap,
         format!(
-            "import {{ runDurableObjectHost }} from {}; await runDurableObjectHost();",
+            "import {{ runActorHost }} from {}; await runActorHost();",
             serde_json::to_string(&format!("file://{}", sdk.join("host.js").display()))?
         ),
     )?;
@@ -927,11 +927,11 @@ async fn grpc_socket_delivery_is_actor_bound_and_the_http_relay_is_absent() -> R
     let http = reqwest::Client::new();
     let target: serde_json::Value = http
         .post(format!(
-            "{}/v1/projects/default/actors/Counter/counter-1/connect",
+            "{}/v1/projects/default/actors/Counter/counter-1/find-actor",
             stack.gateway
         ))
         .bearer_auth("test-api-key")
-        .json(&serde_json::json!({"transport":"grpc"}))
+        .json(&serde_json::json!({}))
         .send()
         .await?
         .error_for_status()?

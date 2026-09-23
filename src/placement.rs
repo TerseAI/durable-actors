@@ -27,9 +27,6 @@ pub trait ObjectPlacementStore: Send + Sync {
     }
 
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;
-
-    async fn list_committed(&self, after: Option<&str>, limit: u32)
-    -> Result<Vec<ObjectPlacement>>;
 }
 
 pub fn validate_region(region: &str) -> Result<()> {

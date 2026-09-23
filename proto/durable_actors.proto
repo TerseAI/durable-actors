@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package durable_object.v1;
+package durable_actors.v1;
 
 service ActorHostService {
   rpc Activate(ActivateActorRequest) returns (ActivateActorReply);

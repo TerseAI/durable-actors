@@ -13,6 +13,25 @@ use std::sync::{
 };
 
 #[tokio::test]
+async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let routes = super::super::public_api::router(service, admin);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/openapi.yaml", listener.local_addr()?);
+    let server = tokio::spawn(async { axum::serve(listener, routes).await });
+    let response = reqwest::get(url).await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/yaml");
+    let expected = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/reference/openapi.yaml"
+    ))?;
+    assert_eq!(response.text().await?, expected);
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_failures()
 -> Result<()> {
     let (service, admin, provider) = fixture()?;
@@ -24,8 +43,8 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let source = serde_json::json!({"codeRevision":"r1", "imageRef":"im-customer", "workingDirectory":"/project", "actorEntrypoint":"src/actors.ts", "secretRefs":[]});
-    for changed in [true, false] {
+    let source = serde_json::json!({"imageRef":"im-customer", "workingDirectory":"/project", "actorEntrypoint":"src/actors.ts", "secretRefs":[]});
+    for changed in [true, true] {
         let reply: serde_json::Value = client
             .put(&url)
             .bearer_auth("api-key")
@@ -64,10 +83,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     assert_eq!(provider.builds.lock().unwrap().len(), 1);
     let active = admin.current_deployment("default").await?.unwrap();
     assert_eq!(active.code_snapshot, compiled.code_snapshot);
-    assert_ne!(active.host_revision(), compiled.host_revision());
+    assert_ne!(active.host_config_key(), compiled.host_config_key());
     assert_eq!(
         admin
-            .deployment_contract("default", None)
+            .deployment_contract("default")
             .await?
             .unwrap()
             .contract,
@@ -75,12 +94,11 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
     assert_eq!(
         provider.retired.lock().unwrap().as_slice(),
-        &[compiled.host_revision()]
+        &[compiled.host_config_key(), compiled.host_config_key()]
     );
 
     provider.fail.store(true, Ordering::SeqCst);
     roundtrip["imageRef"] = "im-broken".into();
-    roundtrip["codeRevision"] = "r2".into();
     let failed = client
         .put(&url)
         .bearer_auth("api-key")
@@ -92,7 +110,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         admin.current_deployment("default").await?,
         Some(active.clone())
     );
-    assert_eq!(provider.retired.lock().unwrap().len(), 1);
+    assert_eq!(provider.retired.lock().unwrap().len(), 2);
 
     provider.fail.store(false, Ordering::SeqCst);
     roundtrip["imageRef"] = "im-updated".into();
@@ -108,7 +126,11 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     assert_eq!(provider.builds.lock().unwrap().len(), 3);
     assert_eq!(
         provider.retired.lock().unwrap().as_slice(),
-        &[compiled.host_revision(), active.host_revision()]
+        &[
+            compiled.host_config_key(),
+            compiled.host_config_key(),
+            active.host_config_key()
+        ]
     );
     server.abort();
     Ok(())
@@ -117,10 +139,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
 #[tokio::test]
 async fn cached_code_cannot_be_registered_with_an_unrelated_contract() -> Result<()> {
     let (service, admin, provider) = fixture()?;
-    let mut source = source();
+    let source = source();
     service.deploy_source(&admin, &source, None).await?;
     let active = admin.current_deployment("default").await?;
-    source.code_revision = "r2".into();
+
     let unrelated = super::super::contracts::PublicActorContract::new(serde_json::from_str(
         include_str!("../../../sdk/tests/fixtures/public-contract.json"),
     )?)?;
@@ -137,11 +159,11 @@ async fn cached_code_cannot_be_registered_with_an_unrelated_contract() -> Result
     service.deploy_source(&admin, &source, None).await?;
     assert_eq!(
         admin
-            .deployment_contract("default", None)
+            .deployment_contract("default")
             .await?
             .unwrap()
-            .code_revision,
-        "r2"
+            .contract,
+        contract()
     );
     assert_eq!(provider.builds.lock().unwrap().len(), 1);
     Ok(())
@@ -161,28 +183,20 @@ async fn compiled_deployments_and_cached_contracts_are_scoped_to_the_project() -
     assert_eq!(first_compiled.project_id, "team-a");
     assert_eq!(second_compiled.project_id, "team-b");
     assert_ne!(
-        first_compiled.host_revision(),
-        second_compiled.host_revision()
+        first_compiled.host_config_key(),
+        second_compiled.host_config_key()
     );
     assert_eq!(provider.builds.lock().unwrap().len(), 2);
-    first.code_revision = "r2".into();
+
     service.deploy_source(&admin, &first, None).await?;
     assert_eq!(provider.builds.lock().unwrap().len(), 2);
     assert_eq!(
-        admin
-            .deployment_contract("team-a", None)
-            .await?
-            .unwrap()
-            .code_revision,
-        "r2"
+        admin.deployment_contract("team-a").await?.unwrap().contract,
+        contract()
     );
     assert_eq!(
-        admin
-            .deployment_contract("team-b", None)
-            .await?
-            .unwrap()
-            .code_revision,
-        "r1"
+        admin.deployment_contract("team-b").await?.unwrap().contract,
+        contract()
     );
     service.delete_deployment(&admin, "team-a").await?;
     assert_eq!(
@@ -194,7 +208,7 @@ async fn compiled_deployments_and_cached_contracts_are_scoped_to_the_project() -
             .retired
             .lock()
             .unwrap()
-            .contains(&second_compiled.host_revision())
+            .contains(&second_compiled.host_config_key())
     );
     Ok(())
 }
@@ -237,7 +251,6 @@ fn source() -> HostLaunchSpec {
     HostLaunchSpec {
         project_id: "default".into(),
         source: None,
-        code_revision: "r1".into(),
         image_ref: "im-customer".into(),
         code_snapshot: None,
         working_directory: "/project".into(),
@@ -278,7 +291,7 @@ impl SandboxProvider for BuildProvider {
         self.retired
             .lock()
             .unwrap()
-            .push(request.code_revision.clone());
+            .push(request.host_config_key.clone());
         Ok(HostTermination {
             provider: "test".into(),
             resource_ids: vec![],

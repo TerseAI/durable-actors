@@ -9,8 +9,9 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+pub(crate) mod history;
+pub(crate) mod metrics;
 pub(crate) mod persistence;
-pub(crate) mod query;
 pub(crate) mod replay;
 use persistence::{SqliteTracePersistence, TracePersistence};
 use replay::ReplayQuery;
@@ -190,8 +191,33 @@ impl TraceStore {
         Ok(page)
     }
 
-    pub(crate) async fn query(&self, query: &query::SqlQuery) -> Result<query::SqlResult> {
-        self.persistence.query(query).await
+    pub(crate) async fn metrics(
+        &self,
+        query: &metrics::TimeRange,
+    ) -> Result<metrics::OverviewMetrics> {
+        self.persistence.metrics(query).await
+    }
+
+    pub(crate) async fn queue_waits(
+        &self,
+        query: &metrics::QueueWaitQuery,
+    ) -> Result<Vec<metrics::QueueWaitRow>> {
+        self.persistence.queue_waits(query).await
+    }
+
+    pub(crate) async fn websockets(
+        &self,
+        query: &metrics::TimeRange,
+    ) -> Result<Vec<metrics::SocketSession>> {
+        self.persistence.websockets(query).await
+    }
+
+    pub(crate) async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+        query.validate()?;
+        let mut page = self.persistence.history(query).await?;
+        page.dropped = self.dropped.load(Ordering::Relaxed);
+        page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
+        Ok(page)
     }
 
     fn new(persistence: Arc<dyn TracePersistence>) -> Self {

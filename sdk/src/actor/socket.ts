@@ -8,29 +8,55 @@ import { incomingMessage, outgoingMessage, socketMetadata, socketTags } from "./
 import type { ActorSchemas, ActorStateMessage, ActorStateUpdate } from "./socketValidation.js"
 
 type ActorSocketState = "connecting" | "open" | "closed"
+/** A JSON value, encoded automatically when sent. */
 type ActorSocketMessage = JsonValue
 
+/** Actor-side socket. Metadata and tags last only for this connection. */
 interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends string = string> {
     readonly id: string
+    /** Assign the whole value to update it. Maximum: 64 KiB of JSON. */
     metadata: Metadata
     readonly tags: readonly Tag[]
     readonly state: ActorSocketState
+    /** Sends JSON. Throws if closed. Delivery does not confirm saved state. */
     send(message: Outgoing): void
+    /**
+     * @param code - Defaults to 1000; accepts 1000 or application codes 3000–4999.
+     * @param reason - Defaults to an empty string; at most 123 UTF-8 bytes.
+     */
     close(code?: number, reason?: string): void
+    /**
+     * Rejects a connection during `onConnect`. Pass an explicit code, such as 4003.
+     * @param code - Use 3000–4999; the default 1008 is currently rejected.
+     * @param reason - Defaults to "connection rejected"; at most 123 UTF-8 bytes.
+     */
     reject(code?: number, reason?: string): void
+    /** Replaces tags. Maximum: 128 unique tags, 1–256 code units each, 8 KiB total UTF-8. */
     setTags(...tags: Tag[]): void
 }
 
+/** Filters connections for a broadcast. */
 interface ActorBroadcastOptions<Tag extends string = string> {
+    /** Excludes up to 128 connections. */
     readonly except?: Pick<ActorSocket, "id"> | readonly Pick<ActorSocket, "id">[]
+    /** Empty or omitted selects all connections. */
     readonly tags?: readonly Tag[]
+    /** Defaults to "all". */
     readonly tagMatch?: "all" | "any"
 }
 
+/**
+ * Backend socket with automatic JSON encoding. Attach listeners after `connect()`.
+ * Reconnect in your application; messages are not replayed.
+ */
 interface ActorConnection<Send = JsonValue, Receive = Send, State = JsonValue> {
+    /** WebSocket state: 0 connecting, 1 open, 2 closing, 3 closed. */
     readonly readyState: number
+    /** Sends JSON while open. Pass objects directly. */
     send(data: Send): void
+    /** Reasons are limited to 123 UTF-8 bytes. */
     close(code?: number, reason?: string): void
+    /** The `open` event normally fires before `connect()` resolves. */
     addEventListener<Type extends keyof ActorConnectionEventMap<Receive, State>>(
         type: Type,
         listener: (event: ActorConnectionEventMap<Receive, State>[Type]) => void

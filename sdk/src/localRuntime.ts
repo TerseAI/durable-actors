@@ -1,3 +1,4 @@
+/** @module durable-actors/dev */
 import { type ChildProcess, spawn } from "node:child_process"
 import path from "node:path"
 import type { Readable } from "node:stream"
@@ -10,11 +11,16 @@ import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 export interface LocalActorOptions {
     projectId: string
+    /** Generated if omitted; available in `runtime.connection`. */
     apiKey?: string
     entrypoint: string
+    /** Project directory; defaults to the current directory. */
     project?: string
+    /** State directory relative to the project; defaults to .durable-actors. */
     dataDir?: string
+    /** Loopback port; defaults to 0 to select a free port. */
     port?: number
+    /** Readiness timeout; defaults to 120000 ms. */
     startupTimeoutMs?: number
     quiet?: boolean
 }
@@ -27,13 +33,16 @@ const connectionSchema = z.object({
     pid: z.number().int().positive()
 })
 
+/** Local server. Call `stop()` when finished. */
 export interface LocalActorRuntime {
     connection: z.infer<typeof connectionSchema>
+    /** Rejects on unexpected process failure. */
     closed: Promise<void>
+    /** Stops the server and keeps saved state. */
     stop(): Promise<void>
 }
 
-/** Resolves when the local server is ready; stopping it preserves its data directory. */
+/** Starts a local server and waits until ready. */
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
     validateProjectId(options.projectId)
     const child = launch(await fetchRuntimeExecutablePath(), options)

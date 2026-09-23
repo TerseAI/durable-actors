@@ -1,5 +1,4 @@
-import type { ActorInventory, ObserverQuery, ObserverQueryResult, SqlValue } from "./client.js"
-import type { ResolvedRange } from "./time-range.js"
+import type { ActorInventory } from "./client.js"
 
 export type SocketSessionStatus = "open" | "closed" | "lost"
 
@@ -27,58 +26,9 @@ export interface SocketDuration {
 
 export const sessionLimit = 500
 
-export function sessionsQuery(range: ResolvedRange = {}): ObserverQuery {
-    const bounds: string[] = []
-    const params: SqlValue[] = []
-    if (range.fromMs !== undefined) {
-        bounds.push("MAX(started_at_ms) >= ?")
-        params.push(range.fromMs)
-    }
-    if (range.toMs !== undefined) {
-        bounds.push("MIN(started_at_ms) <= ?")
-        params.push(range.toMs)
-    }
-    return {
-        sql: `SELECT connection_id, actor_name, actor_id, MIN(host_id) AS host_id,
-    MIN(CASE WHEN operation = 'onConnect' THEN started_at_ms END) AS opened_at_ms,
-    MAX(CASE WHEN operation = 'onDisconnect' THEN started_at_ms END) AS closed_at_ms,
-    MAX(started_at_ms) AS last_seen_ms,
-    MAX(CASE WHEN operation = 'onConnect' THEN event END) AS connect_event,
-    SUM(operation = 'onMessage') AS messages,
-    SUM(outcome NOT IN ('completed', 'rerouted')) AS failures
-FROM request_events
-WHERE kind = 'websocket' AND connection_id IS NOT NULL
-GROUP BY connection_id, actor_name, actor_id
-${bounds.length ? `HAVING ${bounds.join(" AND ")}` : ""}
-ORDER BY COALESCE(opened_at_ms, last_seen_ms) DESC, connection_id
-LIMIT ${sessionLimit}`,
-        params
-    }
-}
-
-export function sessionRows(result: ObserverQueryResult): SocketSessionRow[] {
-    return result.rows.map(row => {
-        const session = {
-            connectionId: row.connection_id,
-            actorName: row.actor_name,
-            actorId: row.actor_id,
-            hostId: row.host_id ?? null,
-            openedAtMs: row.opened_at_ms ?? null,
-            closedAtMs: row.closed_at_ms ?? null,
-            lastSeenMs: row.last_seen_ms ?? null,
-            messages: row.messages ?? 0,
-            failures: row.failures ?? 0,
-            metadata: connectMetadata(row.connect_event)
-        }
-        if (!isSessionRow(session)) throw new Error("Invalid WebSocket session row")
-        return session
-    })
-}
-
-function connectMetadata(event: SqlValue | undefined): unknown {
-    if (typeof event !== "string") return undefined
-    const parsed: unknown = JSON.parse(event)
-    return parsed && typeof parsed === "object" && "metadata" in parsed ? parsed.metadata : undefined
+export function sessionRows(value: unknown): SocketSessionRow[] {
+    if (!Array.isArray(value) || !value.every(row => !!row && typeof row === "object" && isSessionRow(row))) throw new Error("Invalid WebSocket session response")
+    return value
 }
 
 export function connectionKey(actorName: string, actorId: string, connectionId: string): string {

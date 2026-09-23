@@ -1,0 +1,784 @@
+openapi: 3.1.0
+info:
+    title: durable-actors control plane API
+    version: "1"
+    description: |
+        Manage durable-actors deployments, find actor hosts, and inspect activity.
+        Authenticate backend requests with a bearer API key; never expose it to browsers.
+        Project-scoped actor routes work in development and production. Run `durable-actors dev`
+        and copy the printed connection settings into your backend's environment. The default
+        local project ID is `local`; use it as `project_id` in requests.
+servers:
+    - url: http://127.0.0.1:7100
+      description: Local server.
+security:
+    - ApiKey: []
+tags:
+    - name: Discovery
+    - name: Deployments
+    - name: Actors
+    - name: Observability
+    - name: WebSockets
+paths:
+    /openapi.yaml:
+        get:
+            operationId: getOpenApi
+            tags: [Discovery]
+            summary: Get the API specification
+            security: []
+            responses:
+                "200":
+                    description: OpenAPI 3.1 document.
+                    content:
+                        application/yaml:
+                            schema: { type: string }
+    /healthz:
+        get:
+            operationId: getHealth
+            tags: [Discovery]
+            summary: Check server health
+            security: []
+            responses:
+                "200":
+                    description: Server is running.
+                    content:
+                        text/plain:
+                            schema: { type: string, const: ok }
+    /v1/projects/{project_id}/deployment:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        put:
+            operationId: registerDeployment
+            tags: [Deployments]
+            summary: Deploy actors
+            description: Builds the supplied source image, replaces the current deployment, and restarts its actors while preserving saved state. Local development registers source from the filesystem with imageRef set to local.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/Deployment" }
+                        examples:
+                            chat:
+                                value:
+                                    imageRef: im-customer-build
+                                    workingDirectory: /customer
+                                    actorEntrypoint: src/actors.ts
+                                    secretRefs: []
+            responses:
+                "200": { $ref: "#/components/responses/Changed" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        get:
+            operationId: getDeployment
+            tags: [Deployments]
+            summary: Get current deployment
+            responses:
+                "200":
+                    description: Active deployment, without the contract.
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/CurrentDeployment" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "500": { $ref: "#/components/responses/Internal" }
+        delete:
+            operationId: deleteDeployment
+            tags: [Deployments]
+            summary: Delete deployment
+            description: Stops deployed actors and keeps their saved state.
+            responses:
+                "200": { $ref: "#/components/responses/Changed" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/deployment/contract:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        get:
+            operationId: getContract
+            tags: [Deployments]
+            summary: Get actor contracts
+            responses:
+                "200":
+                    description: Active actor contract.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [contractHash, contract]
+                                properties:
+                                    contractHash:
+                                        type: string
+                                        pattern: "^sha256:[a-f0-9]{64}$"
+                                        description: Contract fingerprint.
+                                    contract: { $ref: "#/components/schemas/PublicActorContract" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: findActor
+            tags: [Actors]
+            summary: Find an actor host
+            description: Resolves placement, starts a host if needed, and issues credentials for direct gRPC calls. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindActor" }
+            responses:
+                "200": { $ref: "#/components/responses/ActorTarget" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: findWebSocket
+            tags: [Actors]
+            summary: Find an authorized WebSocket URL
+            description: Issues a fresh connection URL. Authorize the application user before requesting it. Requires an active deployment.
+            requestBody: { $ref: "#/components/requestBodies/FindWebSocket" }
+            responses:
+                "200": { $ref: "#/components/responses/WebSocketGrant" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "409": { $ref: "#/components/responses/Conflict" }
+                "413": { $ref: "#/components/responses/PayloadTooLarge" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/observe/actors:
+        get:
+            operationId: getActorInventory
+            tags: [Observability]
+            summary: Get actor activity
+            responses:
+                "200":
+                    description: Actor counts and connections.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/Inventory" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/observe/events:
+        get:
+            operationId: streamActorInventory
+            tags: [Observability]
+            summary: Stream actor activity
+            description: "SSE: inventory events contain Inventory JSON; error events contain text and close the stream."
+            responses:
+                "200": { $ref: "#/components/responses/EventStream" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+    /v1/observe/requests:
+        get:
+            operationId: listRequestHistory
+            tags: [Observability]
+            summary: Get request history
+            description: Newest first. Use nextCursor with the same filters for older records; replace previous records when reset=true.
+            parameters:
+                - name: actorName
+                  in: query
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+                - name: actorId
+                  in: query
+                  schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                - name: outcome
+                  in: query
+                  schema: { type: string, enum: [completed, failed, rejected, rerouted, interrupted] }
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+                - name: limit
+                  in: query
+                  schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+                - name: cursor
+                  in: query
+                  description: nextCursor from the previous page.
+                  schema: { type: string, minLength: 1, maxLength: 4096 }
+            responses:
+                "200":
+                    description: Request records; nextCursor is null on the last page.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/TracePage" }
+                            examples:
+                                empty:
+                                    value:
+                                        {
+                                            epoch: "history-1",
+                                            cursor: 0,
+                                            capacity: 100,
+                                            evicted: 0,
+                                            dropped: 0,
+                                            persistenceFailed: false,
+                                            records: [],
+                                            nextCursor: null,
+                                            resumeCursor: "opaque-cursor",
+                                            reset: false
+                                        }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/metrics:
+        get:
+            operationId: getObserverMetrics
+            tags: [Observability]
+            summary: Get retained request metrics
+            description: Counts include reroutes; success and p95 use non-rerouted attempts. Returns deployment totals and up to 499 actor classes from retained history.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema: { $ref: "#/components/schemas/OverviewMetrics" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/queue-waits:
+        get:
+            operationId: listQueueWaits
+            tags: [Observability]
+            summary: Get queue wait statistics
+            description: Up to 500 actor instances ordered by admitted request count, then actor name and ID. Includes non-rerouted attempts with a queue wait.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+                - name: actorName
+                  in: query
+                  schema: { type: string, minLength: 1, maxLength: 48, pattern: "^[A-Za-z0-9._-]+$" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/QueueWaitRow" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/websockets:
+        get:
+            operationId: listWebSocketSessions
+            tags: [Observability]
+            summary: Get WebSocket session history
+            description: Up to 500 sessions ordered by latest start. Selects sessions whose retained activity span overlaps the inclusive range, keeping their full retained events and connect metadata.
+            parameters:
+                - { $ref: "#/components/parameters/FromMs" }
+                - { $ref: "#/components/parameters/ToMs" }
+            responses:
+                "200":
+                    description: Retained history for the selected range.
+                    headers:
+                        Cache-Control: { $ref: "#/components/headers/NoStore" }
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                maxItems: 500
+                                items: { $ref: "#/components/schemas/SocketSession" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/observe/requests/events:
+        get:
+            operationId: streamRequestHistory
+            tags: [Observability]
+            summary: Stream request history
+            description: |
+                SSE requests events contain TracePage JSON. Resume with resumeCursor;
+                when reset=true, replace previous records. Error events contain text and close the stream.
+            parameters:
+                - name: after
+                  in: query
+                  description: resumeCursor; overrides Last-Event-ID.
+                  schema: { type: string, maxLength: 4096 }
+                - name: Last-Event-ID
+                  in: header
+                  description: Previous SSE event ID.
+                  schema: { type: string, maxLength: 4096 }
+            responses:
+                "200": { $ref: "#/components/responses/EventStream" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/socket:
+        get:
+            operationId: openWebSocket
+            tags: [WebSockets]
+            summary: Open a WebSocket
+            description: Pass websocketUrl from the find-websocket response directly to new WebSocket().
+            servers:
+                - url: https://{actorHost}
+                  variables:
+                      actorHost: { default: actor-host.example.com }
+            security:
+                - SocketTicket: []
+            responses:
+                "101": { description: WebSocket upgrade accepted. }
+                "400": { $ref: "#/components/responses/UpgradeError" }
+                "401": { description: Socket authorization rejected. Request a fresh URL. No response body. }
+                "426":
+                    description: Connection cannot be upgraded to a WebSocket.
+                    content:
+                        text/plain:
+                            schema: { type: string }
+                "503": { description: Actor host is stopping. No response body. }
+webhooks:
+    socketMessage:
+        post:
+            operationId: receiveSocketMessageEvent
+            tags: [WebSockets]
+            summary: Receive handled socket messages
+            description: Set DURABLE_ACTORS_SOCKET_EVENT_URL to enable. Verify the bearer API key. Delivery is best effort, without retries.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/SocketMessageEvent" }
+                        examples:
+                            message:
+                                value:
+                                    eventId: 04c842c9-4532-467a-9831-f58f183b110e
+                                    actorName: ChatRoom
+                                    actorId: lobby
+                                    triggerId: null
+                                    connectionId: connection-1
+                                    message: { type: text, data: '{"type":"post","text":"Hello"}' }
+            responses:
+                "2XX": { description: Accepted; no response body required. }
+components:
+    securitySchemes:
+        ApiKey:
+            type: http
+            scheme: bearer
+            description: Backend API key; never send it to browsers.
+        SocketTicket:
+            type: apiKey
+            in: query
+            name: key
+            description: Included in websocketUrl. Keep the URL private.
+    headers:
+        NoStore:
+            schema: { type: string, const: no-store }
+    parameters:
+        FromMs:
+            name: fromMs
+            in: query
+            description: Inclusive lower bound in Unix milliseconds; must not exceed toMs.
+            schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        ToMs:
+            name: toMs
+            in: query
+            description: Inclusive upper bound in Unix milliseconds.
+            schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        ProjectId:
+            name: project_id
+            in: path
+            required: true
+            schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
+        ActorName:
+            name: actor_name
+            in: path
+            required: true
+            schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
+        ActorId:
+            name: actor_id
+            in: path
+            required: true
+            schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+    requestBodies:
+        FindActor:
+            required: true
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/FindActorRequest" }
+                    examples:
+                        default: { value: {} }
+                        regional: { value: { homeRegion: north-america-west } }
+        FindWebSocket:
+            required: true
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/FindWebSocketRequest" }
+                    examples:
+                        socket: { value: { metadata: { userId: alice }, authorizationLifetimeMs: 900000 } }
+    responses:
+        Changed:
+            description: Whether the deployment changed.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        required: [changed]
+                        properties:
+                            changed: { type: boolean }
+        ActorTarget:
+            description: Owning host and RPC credentials. Timestamps use Unix milliseconds.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/ActorTarget" }
+        WebSocketGrant:
+            description: Authorized WebSocket URL and deadlines. Timestamps use Unix milliseconds.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/WebSocketGrant" }
+        EventStream:
+            description: Server-sent events.
+            headers:
+                Cache-Control: { $ref: "#/components/headers/NoStore" }
+            content:
+                text/event-stream:
+                    schema: { type: string }
+        InvalidRequest:
+            description: Invalid request (invalid_request).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        Unauthenticated:
+            description: Invalid or missing API key (unauthenticated).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        NotFound:
+            description: Not found (not_found).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        Conflict:
+            description: Deployment or region conflict (conflict).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        PayloadTooLarge:
+            description: Request exceeds 16 MiB (payload_too_large).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        Internal:
+            description: Server failure (internal).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        Unavailable:
+            description: Temporarily unavailable (unavailable).
+            content:
+                application/json:
+                    schema: { $ref: "#/components/schemas/Error" }
+        UpgradeError:
+            description: Invalid WebSocket upgrade request.
+            content:
+                text/plain:
+                    schema: { type: string }
+    schemas:
+        OverviewMetrics:
+            type: object
+            required: [total, classes]
+            properties:
+                total: { $ref: "#/components/schemas/ClassMetrics" }
+                classes:
+                    type: array
+                    maxItems: 499
+                    items: { $ref: "#/components/schemas/ClassMetrics" }
+        ClassMetrics:
+            type: object
+            required: [actorName, count, success, p95, queueP95]
+            properties:
+                actorName: { type: string, description: Empty for the deployment total. }
+                count: { type: integer, minimum: 0 }
+                success: { type: [number, "null"], minimum: 0, maximum: 100, description: Completed attempts as a percentage of non-rerouted attempts. }
+                p95: { type: [number, "null"], minimum: 0, description: 95th percentile duration in milliseconds. }
+                queueP95: { type: [number, "null"], minimum: 0, description: 95th percentile queue wait in milliseconds. }
+        QueueWaitRow:
+            type: object
+            required: [actorName, actorId, admitted, averageMs, maxMs]
+            properties:
+                actorName: { type: string }
+                actorId: { type: string }
+                admitted: { type: integer, minimum: 1 }
+                averageMs: { type: number, minimum: 0 }
+                maxMs: { type: number, minimum: 0 }
+        SocketSession:
+            type: object
+            required: [connectionId, actorName, actorId, hostId, openedAtMs, closedAtMs, lastSeenMs, messages, failures]
+            properties:
+                connectionId: { type: string }
+                actorName: { type: string }
+                actorId: { type: string }
+                hostId: { type: [string, "null"] }
+                openedAtMs: { type: [integer, "null"], minimum: 0 }
+                closedAtMs: { type: [integer, "null"], minimum: 0 }
+                lastSeenMs: { type: [integer, "null"], minimum: 0 }
+                messages: { type: integer, minimum: 0 }
+                failures: { type: integer, minimum: 0 }
+                metadata: { description: Metadata saved with a retained onConnect event. }
+        Deployment:
+            type: object
+            additionalProperties: false
+            required: [imageRef, workingDirectory]
+            properties:
+                imageRef:
+                    type: string
+                    minLength: 1
+                    maxLength: 255
+                    description: Published Modal source image ID (im-...) for hosted deployments; local for development. Maximum 255 UTF-8 bytes.
+                workingDirectory:
+                    type: string
+                    pattern: "^/"
+                    description: Absolute project path inside the image. Maximum 1024 UTF-8 bytes.
+                actorEntrypoint:
+                    type: [string, "null"]
+                    minLength: 1
+                    default: null
+                    description: Source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
+                secretRefs:
+                    type: array
+                    maxItems: 16
+                    default: []
+                    items: { type: string, pattern: "^[A-Za-z0-9._-]{1,255}$" }
+                    description: Secret names for deployed actors.
+                contract:
+                    oneOf:
+                        - { $ref: "#/components/schemas/PublicActorContract" }
+                        - { type: "null" }
+                    default: null
+                    description: Optional; generated for hosted deployments. Maximum 4 MiB.
+        CurrentDeployment:
+            type: object
+            additionalProperties: false
+            required: [imageRef, workingDirectory, actorEntrypoint, secretRefs]
+            properties:
+                imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
+                workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
+                actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }
+                secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
+        PublicActorContract:
+            type: object
+            additionalProperties: false
+            required: [version, actors]
+            properties:
+                version: { type: integer, const: 1 }
+                actors:
+                    type: array
+                    items:
+                        type: object
+                        additionalProperties: false
+                        required: [actorName, socket, rpc]
+                        properties:
+                            actorName: { type: string }
+                            socket:
+                                type: object
+                                additionalProperties: false
+                                required: [version, actorName, schema, emittable]
+                                properties:
+                                    version: { type: integer, const: 1 }
+                                    actorName: { type: string }
+                                    schema: { type: object, description: JSON Schema for socket types. }
+                                    emittable: { type: array, uniqueItems: true, items: { type: string } }
+                            rpc:
+                                type: object
+                                additionalProperties: false
+                                required: [schema, methods]
+                                properties:
+                                    schema: { type: object, description: JSON Schema for RPC types. }
+                                    methods: { type: array, items: { $ref: "#/components/schemas/RpcMethod" } }
+        RpcMethod:
+            type: object
+            additionalProperties: false
+            required: [name, parameters, result]
+            properties:
+                name: { type: string }
+                parameters:
+                    type: array
+                    items:
+                        type: object
+                        additionalProperties: false
+                        required: [name, type, optional, rest]
+                        properties:
+                            name: { type: string }
+                            type: { $ref: "#/components/schemas/RpcType" }
+                            optional: { type: boolean }
+                            rest: { type: boolean }
+                result:
+                    oneOf:
+                        - type: object
+                          additionalProperties: false
+                          required: [kind]
+                          properties:
+                              kind: { type: string, const: void }
+                        - type: object
+                          additionalProperties: false
+                          required: [kind, type]
+                          properties:
+                              kind: { type: string, const: value }
+                              type: { $ref: "#/components/schemas/RpcType" }
+        RpcType:
+            type: object
+            additionalProperties: false
+            required: ["$ref"]
+            properties:
+                $ref: { type: string, description: Reference into rpc.schema. }
+        FindActorRequest:
+            type: object
+            additionalProperties: false
+            properties:
+                homeRegion: { $ref: "#/components/schemas/HomeRegion" }
+        FindWebSocketRequest:
+            type: object
+            additionalProperties: false
+            required: [metadata]
+            properties:
+                homeRegion: { $ref: "#/components/schemas/HomeRegion" }
+                metadata: { description: Required connection metadata; may be null. Maximum 64 KiB of JSON. }
+                authorizationLifetimeMs: { type: integer, minimum: 1000, maximum: 86400000, default: 900000 }
+        HomeRegion:
+            type: [string, "null"]
+            pattern: "^[a-z0-9._-]{1,64}$"
+            description: Region for new actors; cannot change an existing actor's region. Omit or use null for automatic placement.
+        ActorTarget:
+            type: object
+            required: [homeRegion, route, token, ownerEpoch, expiresAtMs]
+            properties:
+                homeRegion: { type: string }
+                route: { type: string, format: uri, description: HTTP(S) origin of the actor gRPC host. }
+                token: { type: string, description: Bearer token for actor RPCs. }
+                ownerEpoch: { type: integer, minimum: 0 }
+                expiresAtMs: { type: integer, format: int64 }
+        WebSocketGrant:
+            type: object
+            required: [homeRegion, websocketUrl, connectByMs, authorizedUntilMs]
+            properties:
+                homeRegion: { type: string }
+                websocketUrl: { type: string, format: uri }
+                connectByMs: { type: integer, format: int64, description: Connect before this time. }
+                authorizedUntilMs: { type: integer, format: int64, description: Connection expires at this time. }
+        Inventory:
+            type: object
+            required: [actors]
+            properties:
+                actors:
+                    type: array
+                    items:
+                        type: object
+                        required: [actorName, live, dormant, unknown, instances]
+                        properties:
+                            actorName: { type: string }
+                            live: { type: integer, minimum: 0 }
+                            dormant: { type: integer, minimum: 0 }
+                            unknown: { type: integer, minimum: 0 }
+                            instances:
+                                type: array
+                                items:
+                                    type: object
+                                    required: [actorId, status, connections, waiting]
+                                    properties:
+                                        actorId: { type: string }
+                                        status: { type: string, enum: [live, dormant, unknown] }
+                                        connections:
+                                            type: array
+                                            items:
+                                                type: object
+                                                required: [id, metadata]
+                                                properties:
+                                                    id: { type: string }
+                                                    metadata: {}
+                                        waiting:
+                                            type: [array, "null"]
+                                            items:
+                                                type: object
+                                                required: [id, operation]
+                                                properties:
+                                                    id: { type: string }
+                                                    operation: { type: string }
+        TracePage:
+            type: object
+            required: [epoch, cursor, capacity, evicted, dropped, persistenceFailed, records, nextCursor, resumeCursor, reset]
+            properties:
+                epoch: { type: string }
+                cursor: { type: integer, minimum: 0 }
+                capacity: { type: integer, minimum: 0 }
+                evicted: { type: integer, minimum: 0 }
+                dropped: { type: integer, minimum: 0 }
+                persistenceFailed: { type: boolean }
+                records: { type: array, items: { $ref: "#/components/schemas/TraceRecord" } }
+                nextCursor: { type: [string, "null"] }
+                resumeCursor: { type: string }
+                reset: { type: boolean }
+        TraceRecord:
+            type: object
+            required: [sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
+            properties:
+                metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
+                sequence: { type: integer, minimum: 0 }
+                eventId: { type: string, format: uuid }
+                hostId: { type: string }
+                sessionId: { type: string }
+                requestId: { type: string }
+                actorName: { type: string }
+                actorId: { type: string }
+                kind: { type: string, enum: [method, websocket] }
+                operation: { type: string }
+                connectionId: { type: [string, "null"] }
+                startedAtMs: { type: integer, minimum: 0 }
+                durationMs: { type: number, minimum: 0 }
+                queueWaitMs: { type: [number, "null"], minimum: 0 }
+                outcome: { type: string, enum: [completed, failed, rejected, rerouted, interrupted] }
+        SocketMessageEvent:
+            type: object
+            required: [eventId, actorName, actorId, triggerId, connectionId, message]
+            properties:
+                eventId: { type: string, format: uuid }
+                actorName: { type: string }
+                actorId: { type: string }
+                triggerId: { type: [string, "null"] }
+                connectionId: { type: string }
+                message:
+                    oneOf:
+                        - type: object
+                          required: [type, data]
+                          properties:
+                              type: { type: string, const: text }
+                              data: { type: string, description: JSON-encoded message. }
+                        - type: object
+                          required: [type, data]
+                          properties:
+                              type: { type: string, const: binary }
+                              data: { type: string, contentEncoding: base64 }
+                          description: Unsupported by TypeScript actors.
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error:
+                    type: object
+                    required: [code, message]
+                    properties:
+                        code: { type: string }
+                        message: { type: string }

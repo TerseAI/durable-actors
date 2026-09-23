@@ -28,11 +28,10 @@ pub(super) fn fleet(
     database: PostgresDatabase,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<(Arc<ActorReplicaFleet>, ReplicaAccess)> {
-    // Keep the signing domain stable for existing replica hosts.
     let secret = URL_SAFE_NO_PAD.encode(
         hmac::sign(
             &hmac::Key::new(hmac::HMAC_SHA256, signing_key.as_bytes()),
-            b"little-actors:replica:v1",
+            b"durable-actors:replica:v1",
         )
         .as_ref(),
     );

@@ -8,7 +8,7 @@ import { promisify } from "node:util"
 
 import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
-import type { DurableObjectsClientOptions } from "../../src/client/remoteClient.js"
+import type { DurableActorsClientOptions } from "../../src/client/remoteClient.js"
 
 const options = { projectId: "default", apiKey: " key ", controlPlaneUrl: "https://CONTROL.example.com:443/" }
 
@@ -19,7 +19,10 @@ test("environment and explicit client settings normalize routes and API keys equ
         const dependencies = {
             environment: environmentFor(settings),
             fetch: async (url: string | URL | Request, init?: RequestInit) => {
-                assert.equal(String(url), "https://control.example.com/v1/projects/default/actors/Counter/one/connect")
+                assert.equal(
+                    String(url),
+                    "https://control.example.com/v1/projects/default/actors/Counter/one/find-websocket"
+                )
                 assert.equal(new Headers(init?.headers).get("authorization"), "Bearer key")
                 return Response.json({ websocketUrl: "wss://host.example.com/v1/socket?key=ticket", key: "ticket" })
             },
@@ -74,7 +77,7 @@ test("environment and explicit client settings report the same validation errors
     }
 })
 
-function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEnv {
+function environmentFor(settings: DurableActorsClientOptions): NodeJS.ProcessEnv {
     return {
         DURABLE_ACTORS_PROJECT_ID: settings.projectId,
         DURABLE_ACTORS_SECRET: settings.apiKey,

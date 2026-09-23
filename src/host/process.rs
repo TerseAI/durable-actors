@@ -188,7 +188,7 @@ pub(super) async fn serve_assigned_host(
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
     tokio::pin!(shutdown);
 
-    info!(host_id = %config.host_id, route, "durable-object host is ready");
+    info!(host_id = %config.host_id, route, "durable-actors host is ready");
     let stop_result = wait_for_host_stop(
         server.as_mut(),
         executor_task.as_mut(),
@@ -204,7 +204,7 @@ pub(super) async fn serve_assigned_host(
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
-    info!(host_id = %config.host_id, "durable-object host stopped");
+    info!(host_id = %config.host_id, "durable-actors host stopped");
     stop_result?;
     renewal_result?;
     unregister_result
@@ -249,7 +249,7 @@ impl ActorHostConfig {
         uuid::Uuid::parse_str(&session_id).context("DURABLE_ACTORS_SESSION_ID must be a UUID")?;
         let executor_socket = get("DURABLE_ACTORS_EXECUTOR_SOCKET")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp/durable-object-executor.sock"));
+            .unwrap_or_else(|| PathBuf::from("/tmp/durable-actors-executor.sock"));
         let host_route = get("DURABLE_ACTORS_HOST_ROUTE");
         if let Some(route) = &host_route {
             tonic::transport::Endpoint::from_shared(route.clone())
@@ -268,9 +268,9 @@ impl ActorHostConfig {
             .parse()
             .context("DURABLE_ACTORS_HOST_BIND must be a socket address")?;
         let jwt_issuer = get("DURABLE_ACTORS_JWT_ISSUER")
-            .unwrap_or_else(|| "durable-object-control-plane".into());
+            .unwrap_or_else(|| "durable-actors-control-plane".into());
         let invocation_jwt_audience = get("DURABLE_ACTORS_INVOKE_JWT_AUDIENCE")
-            .unwrap_or_else(|| "durable-object-invoke".into());
+            .unwrap_or_else(|| "durable-actors-invoke".into());
         let jwt_max_lifetime =
             duration_seconds(&mut get, "DURABLE_ACTORS_JWT_MAX_TTL_SECONDS", 86_400)?;
         let lease_duration = duration_ms(&mut get, "DURABLE_ACTORS_LEASE_MS", 30_000)?;
@@ -321,7 +321,7 @@ impl ActorHostConfig {
             jwt_issuer,
             invocation_jwt_audience,
             socket_jwt_audience: get("DURABLE_ACTORS_SOCKET_JWT_AUDIENCE")
-                .unwrap_or_else(|| "durable-object-authority:websocket".into()),
+                .unwrap_or_else(|| "durable-actors-authority:websocket".into()),
             jwt_max_lifetime,
             lease_duration,
             renew_every,
@@ -689,7 +689,7 @@ pub(super) fn spawn_javascript_process(
     Command::new("bun")
         .args([
             "--eval",
-            "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runDurableObjectHost\"]())",
+            "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
         ])
         .env("DURABLE_ACTORS_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)

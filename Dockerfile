@@ -37,7 +37,7 @@ COPY proto ./proto
 RUN pnpm --dir packages/observer-ui build \
     && pnpm --dir sdk generate:proto \
     && pnpm --dir sdk exec tsc -p tsconfig.build.json \
-    && cp proto/durable_object.proto sdk/dist/generated/durable_object.proto
+    && cp proto/durable_actors.proto sdk/dist/generated/durable_actors.proto
 
 FROM oven/bun:1.4.2 AS bun
 

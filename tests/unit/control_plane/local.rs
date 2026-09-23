@@ -17,7 +17,6 @@ fn startup_message_has_clear_hierarchy_and_next_step() {
         message.find("1. Configure your client").unwrap()
             < message.find("2. Generate your client").unwrap()
     );
-    assert!(!message.contains("DURABLE_OBJECT_"));
     assert!(!message.contains("cat --"));
     assert!(!message.contains("API key"));
     assert!(!message.contains("export "));
@@ -32,7 +31,7 @@ fn startup_command_uses_the_configured_project_and_port() {
     );
     assert!(message.contains("DURABLE_ACTORS_PROJECT_ID=my-project"));
     assert!(message.contains("DURABLE_ACTORS_CONTROL_PLANE_URL=http://127.0.0.1:8123"));
-    assert!(message.contains("     durable-actors generate\n"));
+    assert!(message.contains("     durable-actors generate --remote\n"));
 }
 
 #[test]

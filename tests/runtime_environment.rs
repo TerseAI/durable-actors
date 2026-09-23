@@ -95,7 +95,7 @@ async fn local_runtime_uses_new_options_secret_and_parent_lifetime() -> Result<(
         ("old-key", false),
     ] {
         let response = client
-            .get(format!("{origin}/v1/actors"))
+            .get(format!("{origin}/v1/observe/actors"))
             .bearer_auth(key)
             .send()
             .await?;

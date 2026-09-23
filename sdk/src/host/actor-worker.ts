@@ -120,7 +120,7 @@ async function loadActorEntrypoint(moduleUrl: string, schemas: readonly ActorSch
     if (schemas !== undefined) return registerActors(await loadTypeScript(moduleUrl), schemas)
     const artifact = await import(moduleUrl)
     if (artifact.version !== ACTOR_ARTIFACT_VERSION || !Array.isArray(artifact.schemas) || !artifact.actors)
-        throw new ActorConfigurationError("invalid actor artifact; rebuild with durable-actors build")
+        throw new ActorConfigurationError("invalid actor artifact; redeploy using matching SDK and runtime versions")
     return registerActors(artifact.actors, artifact.schemas)
 }
 

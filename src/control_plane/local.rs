@@ -51,7 +51,7 @@ pub struct DevOptions {
     #[arg(
         long,
         env = "DURABLE_ACTORS_ENTRYPOINT",
-        default_value = "src/durable-objects.ts"
+        default_value = "src/actors.ts"
     )]
     pub entrypoint: String,
     #[arg(
@@ -241,7 +241,7 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         },
         DevStorage::Gcs => BucketLocation::Gcs {
             bucket: std::env::var("DURABLE_ACTORS_BUCKET")
-                .context("--storage gcs requires DURABLE_ACTORS_BUCKET")?,
+                .context("DURABLE_ACTORS_STORAGE=gcs requires DURABLE_ACTORS_BUCKET")?,
         },
     };
     let bucket: Arc<dyn Bucket> = match &location {
@@ -292,8 +292,8 @@ async fn local_routes(
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
-        "durable-object-control-plane",
-        "durable-object-authority",
+        "durable-actors-control-plane",
+        "durable-actors-authority",
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(86_400),
     )?;
@@ -301,7 +301,6 @@ async fn local_routes(
         project_id: options.project_id.clone(),
         source: None,
         code_snapshot: None,
-        code_revision: uuid::Uuid::new_v4().to_string(),
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
         actor_entrypoint: Some(options.entrypoint.clone()),
@@ -313,8 +312,8 @@ async fn local_routes(
         .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
-        jwt_issuer: "durable-object-control-plane".into(),
-        invocation_jwt_audience: "durable-object-invoke".into(),
+        jwt_issuer: "durable-actors-control-plane".into(),
+        invocation_jwt_audience: "durable-actors-invoke".into(),
         actor_idle_timeout_seconds: super::process::actor_idle_timeout_seconds(&mut |name| {
             std::env::var(name).ok()
         })?,
@@ -334,17 +333,12 @@ async fn local_routes(
     .with_runtime_access(storage.access.clone())
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(api_key.to_owned(), registry, issuer)?;
-    let inspector = super::inspection::ActorInspector::new(
-        storage.runtime.clone(),
-        storage.runtime.clone(),
-        storage.runtime.clone(),
-        service.changes.clone(),
-    )
-    .with_traces(service.traces.clone());
-    let public =
-        public_api::local_router(service.clone(), admin.clone(), options.project_id.clone())
-            .merge(super::inspection::router(inspector, admin))
-            .merge(storage.runtime.clone().router());
+    let inspector =
+        super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
+            .with_traces(service.traces.clone());
+    let public = public_api::router(service.clone(), admin.clone())
+        .merge(super::inspection::router(inspector, admin))
+        .merge(storage.runtime.clone().router());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 
@@ -359,9 +353,9 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     ActorJwtIssuer::from_base64_pkcs8(
         &STANDARD.encode(key.as_ref()),
         "local",
-        "durable-object-control-plane",
-        "durable-object-authority",
-        "durable-object-invoke",
+        "durable-actors-control-plane",
+        "durable-actors-authority",
+        "durable-actors-invoke",
         Duration::from_secs(86_400),
     )
 }
@@ -426,7 +420,7 @@ fn format_local_ready_message(
     } = styles;
     let credentials = local_credentials_instructions(secret, styles);
     format!(
-        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate{command:#}\n\n  Start your application backend with this .env loaded.\n",
+        "{title}durable actors{title:#} {context}/ local{context:#}\n\n  {ready}Ready{ready:#}    {origin}\n  {label}Project{label:#}  {project_id}\n  {label}State{label:#}    {}\n\n  {label}Connect your application{label:#}\n  Keep this server running. In your application project:\n\n  {label}1. Configure your client{label:#}\n     Paste the following into your client application's .env file.\n     This is the application that connects to this actor server.\n\n     {command}DURABLE_ACTORS_PROJECT_ID={project_id}{command:#}\n     {command}DURABLE_ACTORS_CONTROL_PLANE_URL={origin}{command:#}\n{credentials}\n\n  {label}2. Generate your client{label:#}\n     {command}durable-actors generate --remote{command:#}\n\n  Start your application backend with this .env loaded.\n",
         directory.display(),
     )
 }

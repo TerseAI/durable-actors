@@ -13,7 +13,7 @@ import { promisify } from "node:util"
 const run = promisify(execFile)
 const cli = fileURLToPath(new URL("../../../dist/cli.js", import.meta.url))
 
-test("observe serves a local UI using environment settings or flag overrides", { timeout: 10_000 }, async t => {
+test("observe serves a local UI using environment settings", { timeout: 10_000 }, async t => {
     const requests: string[] = []
     const server = createServer((request, response) => {
         requests.push(request.url!)
@@ -32,39 +32,31 @@ test("observe serves a local UI using environment settings or flag overrides", {
         DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
         DURABLE_ACTORS_SECRET: "observe-key"
     }
-    for (const args of [[], ["--url", origin, "--api-key", "observe-key"]]) {
-        const child = spawn(process.execPath, [cli, "observe", "--no-open", ...args], {
-            env: args.length
-                ? {
-                      ...env,
-                      DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid",
-                      DURABLE_ACTORS_SECRET: "wrong"
-                  }
-                : env,
-            stdio: ["ignore", "pipe", "pipe"]
-        })
-        t.after(() => child.kill())
-        const exited = once(child, "exit")
-        const lines = createInterface({ input: child.stdout })
-        let url: string | undefined
-        for await (const line of lines) {
-            if (line.startsWith("Observe: ")) {
-                url = line.slice("Observe: ".length)
-                break
-            }
+    const child = spawn(process.execPath, [cli, "observe", "--no-open"], {
+        env,
+        stdio: ["ignore", "pipe", "pipe"]
+    })
+    t.after(() => child.kill())
+    const exited = once(child, "exit")
+    const lines = createInterface({ input: child.stdout })
+    let url: string | undefined
+    for await (const line of lines) {
+        if (line.startsWith("Observe: ")) {
+            url = line.slice("Observe: ".length)
+            break
         }
-        assert.ok(url, "observer should print the local UI URL")
-        assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
-        const response = await fetch(url)
-        assert.equal(response.status, 200)
-        assert.match(await response.text(), /src="\.\/app.js"/u)
-        assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
-        assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
-        child.kill("SIGTERM")
-        assert.deepEqual(await exited, [0, null])
-        await assert.rejects(fetch(url))
     }
-    assert.deepEqual(requests, Array(4).fill("/v1/actors?limit=1"))
+    assert.ok(url, "observer should print the local UI URL")
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/u)
+    const response = await fetch(url)
+    assert.equal(response.status, 200)
+    assert.match(await response.text(), /src="\.\/app.js"/u)
+    assert.deepEqual(await (await fetch(`${url}/api/observe/connection`)).json(), { connected: true })
+    assert.doesNotMatch(await (await fetch(`${url}/app.js`)).text(), /observe-key/u)
+    child.kill("SIGTERM")
+    assert.deepEqual(await exited, [0, null])
+    await assert.rejects(fetch(url))
+    assert.deepEqual(requests, Array(2).fill("/v1/observe/actors"))
 })
 
 test("observe exits unsuccessfully without a greeting when authentication or transport fails", async t => {
@@ -76,7 +68,13 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const args = [cli, "observe", "--project-id", "default", "--url", origin, "--api-key", "wrong"]
+    const args = [cli, "observe"]
+    const env = {
+        ...process.env,
+        DURABLE_ACTORS_PROJECT_ID: "default",
+        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+        DURABLE_ACTORS_SECRET: "wrong"
+    }
     const failure = (message: RegExp) => (error: unknown) => {
         const result = error as Error & { code: number; stdout: string; stderr: string }
         assert.equal(result.code, 1)
@@ -84,25 +82,23 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
         assert.match(result.stderr, message)
         return true
     }
-    await assert.rejects(run(process.execPath, args), failure(/HTTP 401.*Unauthorized/u))
+    await assert.rejects(run(process.execPath, args, { env }), failure(/HTTP 401.*Unauthorized/u))
     await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
-    await assert.rejects(run(process.execPath, args), failure(/Cannot complete GET \/v1\/actors/u))
+    await assert.rejects(run(process.execPath, args, { env }), failure(/Cannot complete GET \/v1\/observe\/actors/u))
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    const { stdout } = await run(process.execPath, [cli, "init", "my chat", "--template", "chat"], { cwd: directory })
+    await run(process.execPath, [cli, "init", "my chat", "--template", "chat"], { cwd: directory })
     const project = path.join(directory, "my chat")
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const sdk = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"))
     assert.equal(metadata.dependencies["durable-actors"], sdk.version)
-    assert.match(await readFile(path.join(project, "src/durable-objects.ts"), "utf8"), /extends Actor/)
+    assert.match(await readFile(path.join(project, "src/actors.ts"), "utf8"), /extends Actor/)
     assert.match(await readFile(path.join(project, "src/backend.ts"), "utf8"), /actors\.ChatRoom\.prepareWebsocket/)
     assert.match(await readFile(path.join(project, "src/Chat.tsx"), "utf8"), /new WebSocket\(websocketUrl\)/)
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
-    assert.match(stdout, /npm install/)
-    assert.match(stdout, /durable-actors generate/)
 })
 
 test("init refuses an existing directory and preserves its contents", async t => {
@@ -114,162 +110,6 @@ test("init refuses an existing directory and preserves its contents", async t =>
     await writeFile(file, "existing app")
     await assert.rejects(run(process.execPath, [cli, "init", project]), /already exists/)
     assert.equal(await readFile(file, "utf8"), "existing app")
-})
-
-test("objects lists every page locally and inspects committed internal state", async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        assert.equal(request.headers.authorization, "Bearer local-key")
-        requests.push(request.url!)
-        response.setHeader("content-type", "application/json")
-        if (request.url!.includes("?include=state")) {
-            response.end(JSON.stringify({ stateVersion: 7, state: { secret: "saved" } }))
-        } else {
-            const secondPage = request.url!.includes("after=")
-            response.end(
-                JSON.stringify({
-                    actors: [
-                        {
-                            actorName: "Room",
-                            actorId: secondPage ? "two" : "one",
-                            stateVersion: 7
-                        }
-                    ],
-                    nextCursor: secondPage ? null : "object.v1.local.Room.one"
-                })
-            )
-        }
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        DURABLE_ACTORS_PROJECT_ID: "default",
-        DURABLE_ACTORS_CONTROL_PLANE_URL: "",
-        DURABLE_ACTORS_SECRET: ""
-    }
-    const flags = ["--url", origin, "--api-key", "local-key"]
-    const listed = await run(process.execPath, [cli, "objects", "list", ...flags, "--all", "--json"], { env })
-    assert.deepEqual(
-        JSON.parse(listed.stdout).map((object: { actorId: string }) => object.actorId),
-        ["one", "two"]
-    )
-    assert.equal(requests[0], "/v1/actors?limit=500")
-    assert.match(requests[1]!, /after=object.v1.local.Room.one/u)
-    const inspected = await run(process.execPath, [cli, "objects", "inspect", "Room", "one", ...flags], { env })
-    assert.deepEqual(JSON.parse(inspected.stdout).state, { secret: "saved" })
-    assert.equal(requests[2], "/v1/projects/default/actors/Room/one?include=state")
-})
-
-test("objects uses cloud credentials, and reports API errors", async t => {
-    const requests: string[] = []
-    const server = createServer((request, response) => {
-        assert.equal(request.headers.authorization, "Bearer cloud-key")
-        requests.push(request.url!)
-        response.setHeader("content-type", "application/json")
-        if (request.url!.includes("?include=state")) {
-            response.statusCode = 404
-            response.end(JSON.stringify({ error: { code: "not_found", message: "Object not found" } }))
-        } else response.end(JSON.stringify({ actors: [], nextCursor: null }))
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const env = {
-        ...process.env,
-        DURABLE_ACTORS_PROJECT_ID: "default",
-        DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-        DURABLE_ACTORS_SECRET: "cloud-key"
-    }
-    const result = await run(process.execPath, [cli, "objects", "list"], { env })
-    assert.match(result.stdout, /No saved objects/u)
-    assert.equal(requests[0], "/v1/actors?limit=50")
-    await assert.rejects(
-        run(process.execPath, [cli, "objects", "inspect", "Room", "missing"], { env }),
-        /Object not found/u
-    )
-    assert.equal(requests[1], "/v1/projects/default/actors/Room/missing?include=state")
-    await assert.rejects(
-        run(process.execPath, [cli, "objects", "list", "--url", origin], {
-            env: { ...env, DURABLE_ACTORS_SECRET: "" }
-        }),
-        /shared secret/u
-    )
-    assert.equal(requests.length, 2)
-})
-
-test("objects limits rows by default and resumes a filtered page without fetching ahead", async t => {
-    const requests: URL[] = []
-    const objects = Array.from({ length: 55 }, (_, index) => ({
-        actorName: "Room",
-        actorId: String(index),
-        homeRegion: "north-america-east",
-        stateVersion: 1
-    }))
-    const server = createServer((request, response) => {
-        const url = new URL(request.url!, "http://localhost")
-        requests.push(url)
-        const after = url.searchParams.get("after")
-        const start = after ? objects.findIndex(object => `object.v3.Room:${object.actorId}` === after) + 1 : 0
-        const end = Math.min(start + Number(url.searchParams.get("limit") ?? 100), objects.length)
-        response.setHeader("content-type", "application/json")
-        response.end(
-            JSON.stringify({
-                actors: objects.slice(start, end),
-                nextCursor: end < objects.length ? `object.v3.Room:${objects[end - 1]!.actorId}` : null
-            })
-        )
-    })
-    t.after(() => server.close())
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const env = {
-        ...process.env,
-        DURABLE_ACTORS_PROJECT_ID: "default",
-        DURABLE_ACTORS_CONTROL_PLANE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-        DURABLE_ACTORS_SECRET: "cloud-key"
-    }
-    const args = [cli, "objects", "list"]
-    const first = await run(process.execPath, args, { env })
-    assert.equal(first.stdout.trim().split("\n").length, 51)
-    assert.match(first.stderr, /--after 'object.v3.Room:49'/u)
-    assert.equal(requests.length, 1)
-    assert.equal(requests[0]!.searchParams.get("limit"), "50")
-
-    const limited = await run(process.execPath, [...args, "--limit", "2", "--json"], { env })
-    assert.deepEqual(JSON.parse(limited.stdout), objects.slice(0, 2))
-    assert.match(limited.stderr, /--after 'object.v3.Room:1'/u)
-    assert.equal(requests.length, 2)
-
-    const last = await run(process.execPath, [...args, "--limit", "5", "--after", "object.v3.Room:49", "--json"], {
-        env
-    })
-    assert.deepEqual(JSON.parse(last.stdout), objects.slice(50))
-    assert.equal(last.stderr, "")
-    assert.equal(requests.length, 3)
-    assert.equal(requests[2]!.searchParams.get("after"), "object.v3.Room:49")
-    assert.equal(requests[2]!.searchParams.get("limit"), "5")
-})
-
-test("objects rejects invalid limits and conflicting pagination flags before connecting", async () => {
-    for (const value of ["0", "-1", "1.5", "501", "1e2", "abc"]) {
-        await assert.rejects(
-            run(process.execPath, [cli, "objects", "list", "--limit", value]),
-            /Limit must be an integer from 1 to 500/u
-        )
-    }
-    for (const flags of [
-        ["--all", "--limit", "10"],
-        ["--all", "--after", "cursor"]
-    ]) {
-        await assert.rejects(
-            run(process.execPath, [cli, "objects", "list", "--project-id", "default", ...flags]),
-            /cannot be used with/u
-        )
-    }
 })
 
 test("dev accepts configured keys without logging the generated key from readiness", async t => {
@@ -326,27 +166,11 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "--data-dir",
         env.DURABLE_ACTORS_DATA_DIR
     ])
-    const overridden = await run(
-        process.execPath,
-        [cli, "dev", "--port", "7300", "--storage", "local", "--api-key", "flag-key"],
-        { env }
-    )
+    const overridden = await run(process.execPath, [cli, "dev", "--port", "7300"], { env })
     const args: string[] = JSON.parse(overridden.stdout)
     assert.equal(args[args.indexOf("--port") + 1], "7300")
-    assert.equal(args[args.indexOf("--storage") + 1], "local")
-    assert.equal(args[args.indexOf("--api-key") + 1], "flag-key")
-    const branded = await run(process.execPath, [cli, "dev"], {
-        env: {
-            ...env,
-            DURABLE_ACTORS_PROJECT_ID: "branded-project",
-            DURABLE_ACTORS_SECRET: "branded-key",
-            DURABLE_ACTORS_BINARY: binary,
-            DURABLE_OBJECT_BINARY: "/missing/legacy-runtime"
-        }
-    })
-    const brandedArgs: string[] = JSON.parse(branded.stdout)
-    assert.equal(brandedArgs[brandedArgs.indexOf("--project-id") + 1], "branded-project")
-    assert.equal(brandedArgs[brandedArgs.indexOf("--api-key") + 1], "branded-key")
+    assert.equal(args[args.indexOf("--storage") + 1], "gcs")
+    assert.equal(args[args.indexOf("--api-key") + 1], "dev-key")
     const { DURABLE_ACTORS_SECRET, ...withoutKey } = env
     const envFile = path.join(project, ".env")
     await writeFile(envFile, "DURABLE_ACTORS_SECRET=env-file-key\n")

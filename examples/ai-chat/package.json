@@ -7,6 +7,7 @@
     },
     "scripts": {
         "dev": "tsx --env-file=.env src/backend.ts",
+        "dev:actors": "durable-actors dev",
         "build": "tsc --noEmit && vite build"
     },
     "dependencies": {

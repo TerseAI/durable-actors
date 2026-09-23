@@ -8,12 +8,9 @@ use serde_json::{Value, json};
 
 use crate::{
     actor::ActorKey,
-    bucket::{Bucket, RuntimeStorage, testing::RuntimeFixture},
+    bucket::{RuntimeStorage, testing::RuntimeFixture},
     host::HostId,
     host_leases::HostLeaseRequest,
-    placement::ObjectPlacementStore,
-    state_log::StateSnapshot,
-    state_transport::SnapshotWriter,
 };
 
 use super::{ActorJwtIssuer, admin::AdminService, inspection::ActorInspector};
@@ -29,83 +26,7 @@ async fn durability_endpoint_is_not_exposed() -> Result<()> {
 }
 
 #[tokio::test]
-async fn actor_inspection_separates_metadata_from_optional_state() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let actor = fixture.actor("one");
-    fixture.save(&actor, 1, json!({"value": 7})).await?;
-    let response = fixture
-        .get("/v1/projects/default/actors/Room.with.dots/one")
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let metadata: Value = response.json().await?;
-    assert_eq!(metadata["homeRegion"], "north-america-east");
-    assert!(metadata.get("state").is_none());
-    let state: Value = fixture
-        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(state["state"]["value"], 7);
-    let page: Value = fixture
-        .get("/v1/actors")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(page["actors"][0]["actorId"], "one");
-    for path in [
-        "/v1/objects",
-        "/v1/projects/default/actors/Room.with.dots/one/state",
-        "/v1/projects/default/actors/Room.with.dots/one/placement",
-    ] {
-        assert_eq!(fixture.get(path).await?.status(), StatusCode::NOT_FOUND);
-    }
-    assert_eq!(
-        fixture
-            .get("/v1/projects/default/actors/Room.with.dots/one?include=unknown")
-            .await?
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn inspection_reads_persisted_state_without_a_deployment_or_live_host() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let actor = fixture.actor("one");
-    fixture
-        .save(&actor, 1, json!({"internal": {"password": "saved"}}))
-        .await?;
-    fixture
-        .store
-        .release_activation(&actor, &fixture.host, &actor.actor_id)
-        .await?;
-    let before = fixture.store.get(&actor.storage_key()).await?;
-
-    let response = fixture.get("/v1/actors?limit=1").await?;
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    let page: Value = response.error_for_status()?.json().await?;
-    assert_eq!(page["actors"][0]["actorName"], "Room.with.dots");
-    assert_eq!(page["actors"][0]["actorId"], "one");
-    assert_eq!(page["actors"][0]["stateVersion"], 1);
-    assert_eq!(page["nextCursor"], Value::Null);
-
-    let response = fixture
-        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
-        .await?;
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    let inspected: Value = response.error_for_status()?.json().await?;
-    assert_eq!(inspected["stateVersion"], 1);
-    assert_eq!(inspected["state"]["internal"]["password"], "saved");
-    assert_eq!(fixture.store.get(&actor.storage_key()).await?, before);
-    Ok(())
-}
-
-#[tokio::test]
-async fn inspection_requires_admin_credentials_and_validates_queries_and_missing_state()
--> Result<()> {
+async fn observability_requires_admin_credentials() -> Result<()> {
     let fixture = Fixture::start().await?;
     let token = fixture
         .issuer
@@ -117,25 +38,14 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             &fixture.actor("one"),
         )?
         .token;
-    for credential in ["", "wrong", &token] {
-        assert_eq!(
-            fixture
-                .client
-                .post(format!("{}/v1/observe/query", fixture.origin))
-                .bearer_auth(credential)
-                .json(&json!({"sql":"SELECT 1"}))
-                .send()
-                .await?
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-    }
     for path in [
         "/v1/observe/actors",
         "/v1/observe/events",
         "/v1/observe/requests/events",
-        "/v1/actors",
-        "/v1/projects/default/actors/Room.with.dots/one?include=state",
+        "/v1/observe/requests",
+        "/v1/observe/metrics",
+        "/v1/observe/queue-waits",
+        "/v1/observe/websockets",
     ] {
         for credential in ["", "wrong", &token] {
             assert_eq!(
@@ -150,97 +60,6 @@ async fn inspection_requires_admin_credentials_and_validates_queries_and_missing
             );
         }
     }
-    for query in [
-        "limit=0",
-        "limit=501",
-        "limit=-1",
-        "after=bad%2Fcursor",
-        "unknown=true",
-    ] {
-        assert_eq!(
-            fixture.get(&format!("/v1/actors?{query}")).await?.status(),
-            StatusCode::BAD_REQUEST
-        );
-    }
-    assert_eq!(
-        fixture
-            .get("/v1/projects/default/actors/Room.with.dots/missing?include=state")
-            .await?
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    let actor = fixture.actor("empty");
-    fixture.activate(&actor).await?;
-    let response: Value = fixture
-        .get("/v1/projects/default/actors/Room.with.dots/empty?include=state")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(response["stateVersion"], 0);
-    assert_eq!(response["state"], Value::Null);
-    Ok(())
-}
-
-#[tokio::test]
-async fn inspection_pages_all_actors_without_skipping_results() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    for id in ["a", "b", "c"] {
-        let actor = fixture.actor(id);
-        fixture.commit(&actor, json!({"value": id})).await?;
-    }
-    let first: Value = fixture
-        .get("/v1/actors?limit=1")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(first["actors"].as_array().unwrap().len(), 1);
-    assert_eq!(first["actors"][0]["actorId"], "a");
-    let cursor = first["nextCursor"].as_str().unwrap();
-    let second: Value = fixture
-        .get(&format!("/v1/actors?limit=1&after={cursor}"))
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(second["actors"][0]["actorId"], "b");
-    assert!(second["nextCursor"].is_string());
-    let global: Value = fixture
-        .get("/v1/actors")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(global["actors"].as_array().unwrap().len(), 3);
-    Ok(())
-}
-
-#[tokio::test]
-async fn inspection_reports_inconsistent_snapshots_instead_of_returning_state() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let actor = fixture.actor("one");
-    fixture.commit(&actor, json!({"internal": "saved"})).await?;
-    let placement = fixture.store.get(&actor.storage_key()).await?.unwrap();
-    let object = placement.state_object.unwrap();
-    let stored = fixture.runtime.bucket.get(&object).await?.unwrap();
-    let wrong = StateSnapshot::new(
-        2,
-        1,
-        "request-1".into(),
-        json!({"internal": "uncommitted"}),
-        Value::Null,
-    )?;
-    fixture
-        .runtime
-        .bucket
-        .compare_and_swap(&object, Some(stored.generation), wrong.encode()?)
-        .await?;
-    let response = fixture
-        .get("/v1/projects/default/actors/Room.with.dots/one?include=state")
-        .await?;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(!response.text().await?.contains("uncommitted"));
     Ok(())
 }
 
@@ -248,7 +67,7 @@ struct Fixture {
     traces: crate::request_traces::TraceStore,
     changes: tokio::sync::watch::Sender<()>,
     admin: AdminService,
-    runtime: RuntimeFixture,
+    _runtime: RuntimeFixture,
     store: Arc<RuntimeStorage>,
     host: HostId,
     issuer: ActorJwtIssuer,
@@ -283,8 +102,7 @@ impl Fixture {
         )?;
         let changes = tokio::sync::watch::channel(()).0;
         let inspector =
-            ActorInspector::new(store.clone(), store.clone(), store.clone(), changes.clone())
-                .with_traces(traces.clone());
+            ActorInspector::new(store.clone(), changes.clone()).with_traces(traces.clone());
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
@@ -292,7 +110,7 @@ impl Fixture {
             traces,
             changes,
             admin,
-            runtime,
+            _runtime: runtime,
             store,
             host,
             issuer,
@@ -310,34 +128,6 @@ impl Fixture {
         }
     }
 
-    async fn activate(&self, actor: &ActorKey) -> Result<crate::bucket::LoadedActor> {
-        self.store
-            .register_activation(
-                actor,
-                &HostLeaseRequest {
-                    id: self.host.clone(),
-                    session_id: actor.actor_id.clone(),
-                    route: "http://localhost:7101".into(),
-                    duration_ms: 60_000,
-                },
-                "north-america-east",
-                true,
-            )
-            .await
-    }
-
-    async fn save(&self, actor: &ActorKey, version: u64, state: Value) -> Result<String> {
-        let placement = self.activate(actor).await?.placement;
-        let ticket = self
-            .store
-            .prepare_actor_write(actor, &placement.lease, placement.owner_epoch, version)
-            .await?;
-        let snapshot =
-            StateSnapshot::new(version, 1, format!("request-{version}"), state, Value::Null)?;
-        SnapshotWriter::write_snapshot(self.store.as_ref(), &ticket, snapshot.encode()?).await?;
-        Ok(ticket.object_name)
-    }
-
     async fn get(&self, path: &str) -> Result<reqwest::Response> {
         Ok(self
             .client
@@ -345,11 +135,6 @@ impl Fixture {
             .bearer_auth("api-key")
             .send()
             .await?)
-    }
-
-    async fn commit(&self, actor: &ActorKey, state: Value) -> Result<()> {
-        self.save(actor, 1, state).await?;
-        Ok(())
     }
 }
 
@@ -508,7 +293,6 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
             &super::admin::HostLaunchSpec {
                 project_id: "default".into(),
                 source: None,
-                code_revision: "revision".into(),
                 code_snapshot: Some("im-code".into()),
                 image_ref: "test-image".into(),
                 working_directory: "/customer".into(),
@@ -596,50 +380,170 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
 }
 
 #[tokio::test]
-async fn request_history_executes_read_only_sql_and_resumes_saved_cursors() -> Result<()> {
+async fn request_history_validates_filters_and_returns_empty_pages() -> Result<()> {
     let fixture = Fixture::start().await?;
-    let url = format!("{}/v1/observe/query", fixture.origin);
-    let query = json!({"sql":"SELECT COUNT(*) AS total FROM request_events", "params":[]});
-    assert_eq!(
-        fixture
-            .client
-            .post(&url)
-            .json(&query)
-            .send()
-            .await?
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    let response = fixture
-        .client
-        .post(&url)
-        .bearer_auth("api-key")
-        .json(&query)
-        .send()
-        .await?;
+    let response = fixture.get("/v1/observe/requests").await?;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.json::<Value>().await?,
-        json!({"rows":[{"total":0}],"truncated":false})
-    );
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let page: Value = response.json().await?;
+    assert_eq!(page["records"], json!([]));
+    assert_eq!(page["nextCursor"], Value::Null);
+    assert_eq!(page["capacity"], 100);
     for query in [
-        json!({"sql":"DELETE FROM traces"}),
-        json!({"sql":"SELECT * FROM missing_table"}),
-        json!({"sql":"SELECT ?", "params":[{}]}),
-        json!({"sql":"SELECT 1; SELECT 2"}),
+        "limit=0",
+        "limit=501",
+        "limit=-1",
+        "limit=1.5",
+        "outcome=unknown",
+        "fromMs=-1",
+        "fromMs=9007199254740992",
+        "fromMs=2&toMs=1",
+        "actorName=",
+        "actorId=bad%2Fid",
+        "cursor=broken",
+        "unknown=true",
     ] {
         assert_eq!(
             fixture
-                .client
-                .post(&url)
-                .bearer_auth("api-key")
-                .json(&query)
-                .send()
+                .get(&format!("/v1/observe/requests?{query}"))
                 .await?
                 .status(),
-            StatusCode::BAD_REQUEST
+            StatusCode::BAD_REQUEST,
+            "{query}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_history_filters_and_pages_without_including_later_appends() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for (id, name, actor, time, outcome) in [
+        (
+            "old",
+            "Room",
+            "one",
+            999,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+        (
+            "first",
+            "Room",
+            "one",
+            1000,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+        (
+            "second",
+            "Room",
+            "one",
+            1000,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+        (
+            "other-class",
+            "Counter",
+            "one",
+            1000,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+        (
+            "other-actor",
+            "Room",
+            "two",
+            1000,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+        (
+            "completed",
+            "Room",
+            "one",
+            1000,
+            crate::request_traces::RequestOutcome::Completed,
+        ),
+        (
+            "future",
+            "Room",
+            "one",
+            1001,
+            crate::request_traces::RequestOutcome::Failed,
+        ),
+    ] {
+        record_request(&fixture, id, name, actor, time, outcome).await?;
+    }
+    let filters = "actorName=Room&actorId=one&outcome=failed&fromMs=1000&toMs=1000&limit=1";
+    let first: Value = fixture
+        .get(&format!("/v1/observe/requests?{filters}"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(first["records"].as_array().unwrap().len(), 1);
+    assert_eq!(first["records"][0]["requestId"], "second");
+    let cursor = first["nextCursor"].as_str().unwrap();
+    record_request(
+        &fixture,
+        "late",
+        "Room",
+        "one",
+        1000,
+        crate::request_traces::RequestOutcome::Failed,
+    )
+    .await?;
+    let next: Value = fixture
+        .get(&format!("/v1/observe/requests?{filters}&cursor={cursor}"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(next["records"].as_array().unwrap().len(), 1);
+    assert_eq!(next["records"][0]["requestId"], "first");
+    assert_eq!(next["nextCursor"], Value::Null);
+    assert_eq!(next["reset"], false);
+    assert_eq!(
+        fixture
+            .get(&format!("/v1/observe/requests?actorId=two&cursor={cursor}"))
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+async fn record_request(
+    fixture: &Fixture,
+    id: &str,
+    actor_name: &str,
+    actor_id: &str,
+    time: u64,
+    outcome: crate::request_traces::RequestOutcome,
+) -> Result<()> {
+    fixture
+        .traces
+        .record(
+            "host",
+            "session",
+            vec![crate::request_traces::RequestTrace {
+                request_id: id.into(),
+                actor_name: actor_name.into(),
+                actor_id: actor_id.into(),
+                kind: crate::request_traces::RequestKind::Method,
+                operation: "post".into(),
+                connection_id: None,
+                started_at_ms: time,
+                duration_ms: 25.0,
+                queue_wait_ms: Some(10.0),
+                outcome,
+                metadata: None,
+            }],
+            0,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn request_stream_resumes_saved_cursors() -> Result<()> {
+    let fixture = Fixture::start().await?;
     let snapshot = serde_json::to_value(fixture.traces.replay(&Default::default()).await?)?;
     let cursor = snapshot["resumeCursor"].as_str().unwrap();
     let mut replay = fixture
@@ -650,6 +554,47 @@ async fn request_history_executes_read_only_sql_and_resumes_saved_cursors() -> R
     assert_eq!(
         fixture
             .get("/v1/observe/requests/events?after=broken")
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_observer_metrics_validate_ranges_and_return_uncached_results() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    for path in ["metrics", "queue-waits", "websockets"] {
+        let response = fixture.get(&format!("/v1/observe/{path}")).await?;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body: Value = response.json().await?;
+        if path == "metrics" {
+            assert_eq!(body["total"]["count"], 0);
+            assert_eq!(body["total"]["p95"], Value::Null);
+            assert_eq!(body["classes"], json!([]));
+        } else {
+            assert_eq!(body, json!([]));
+        }
+        for query in [
+            "fromMs=-1",
+            "fromMs=9007199254740992",
+            "fromMs=2&toMs=1",
+            "unknown=true",
+        ] {
+            assert_eq!(
+                fixture
+                    .get(&format!("/v1/observe/{path}?{query}"))
+                    .await?
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "{path}?{query}"
+            );
+        }
+    }
+    assert_eq!(
+        fixture
+            .get("/v1/observe/queue-waits?actorName=")
             .await?
             .status(),
         StatusCode::BAD_REQUEST

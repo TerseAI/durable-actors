@@ -13,7 +13,7 @@ pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'sta
     let token = env::var("DURABLE_ACTORS_SPARE_TOKEN").context("replica spare token missing")?;
     ensure!(token.len() >= 32, "replica spare token is too short");
     let path = env::var("DURABLE_ACTORS_REPLICA_DATA")
-        .unwrap_or_else(|_| "/tmp/durable-object-replica".into());
+        .unwrap_or_else(|_| "/tmp/durable-actors-replica".into());
     let store = Arc::new(FileReplicaStore::open(PathBuf::from(path), DEFAULT_REPLICA_BYTES).await?);
     let listener = TcpListener::bind(
         env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:7101".into()),
@@ -33,7 +33,7 @@ pub async fn serve_replica_host(shutdown: impl Future<Output = ()> + Send + 'sta
         .with_graceful_shutdown(stop.cancelled_owned())
         .into_future();
     let ready = env::var("DURABLE_ACTORS_SPARE_READY_FILE")
-        .unwrap_or_else(|_| "/tmp/durable-object-spare-ready".into());
+        .unwrap_or_else(|_| "/tmp/durable-actors-spare-ready".into());
     tokio::fs::write(ready, b"ready\n").await?;
     tracing::info!(
         event = "replica_spare_ready",

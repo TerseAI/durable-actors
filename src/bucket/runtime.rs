@@ -166,41 +166,6 @@ impl ObjectPlacementStore for RuntimeStorage {
             None => Ok(None),
         }
     }
-
-    async fn list_committed(
-        &self,
-        after: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<ObjectPlacement>> {
-        let mut records = Vec::new();
-        for key in self
-            .authority
-            .list(&format!("{}owners/", crate::storage_paths::ROOT))
-            .await?
-        {
-            if !key.contains("/owners/") {
-                continue;
-            }
-            if let Some(object) = self.authority.get(&key).await? {
-                let record: Ownership = serde_json::from_slice(&object.bytes)?;
-                if after.is_none_or(|id| record.actor.storage_key().as_str() > id) {
-                    records.push(record);
-                }
-            }
-        }
-        records.sort_by_key(|record| record.actor.storage_key().as_str().to_owned());
-        let mut placements = Vec::new();
-        for record in records {
-            let placement = self.current_placement(&record).await?;
-            if placement.state_version > 0 {
-                placements.push(placement);
-            }
-            if placements.len() >= limit as usize {
-                break;
-            }
-        }
-        Ok(placements)
-    }
 }
 
 #[async_trait]

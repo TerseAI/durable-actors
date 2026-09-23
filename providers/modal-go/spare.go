@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const spareReadyFile = "/tmp/durable-object-spare-ready"
+const spareReadyFile = "/tmp/durable-actors-spare-ready"
 const compiledCodeDirectory = "/tmp/durable-actors-code"
 
 type resourceLimits struct {
@@ -200,7 +200,7 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
-		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-object-host.stderr"},
+		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
 		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
 		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,

@@ -6,7 +6,7 @@ import { ActorConfigurationError } from "../errors.js"
 function configuredSettings(options: unknown) {
     const result = clientOptionsSchema.safeParse(options)
     if (!result.success)
-        throw new ActorConfigurationError(`durable-object client settings are invalid: ${result.error.message}`)
+        throw new ActorConfigurationError(`durable-actors client settings are invalid: ${result.error.message}`)
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
     return {
         credential: result.data.apiKey,

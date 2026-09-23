@@ -1,29 +1,74 @@
-# Express + React chat
+# Chatroom
 
-Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+An Express + React chatroom backed by a durable actor. Messages appear in every connected tab, and history survives server restarts.
 
-Create this sample with `npx durable-actors init chat-example --template chat`.
+## Run locally
 
-## Run it
+Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
+npx durable-actors init chat-example --template chat
+cd chat-example
 npm install
-npx durable-actors generate
-npx durable-actors dev
+cp .env.example .env
+npm run dev:actors
 ```
 
-Wait for `Local actors ready`. In another terminal, run the printed export command, then:
+Already in the example directory? Start at `npm install`.
+
+Wait for `Ready`. In another terminal in the same directory:
 
 ```sh
 npm run dev
 ```
 
-Open [the chat](http://127.0.0.1:3000) in two tabs. Send a message, then reload to see the saved history.
+Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Send a message, then restart the actor server and reload to see the saved history.
 
-## How it works
+## Define the actor
 
-Everyone is a guest in this demo. In your app, authenticate the request before `actors.ChatRoom.prepareWebsocket` and derive metadata from the signed-in user.
+[ChatRoom](src/actors.ts) saves messages and sends the updated history to everyone in the room:
 
-The frontend fetches a signed URL from the backend and passes it to `new WebSocket()`. The actor sends history explicitly on connection and after each message. Reload to reconnect if the socket closes.
+```ts
+import { Actor, Persisted } from "durable-actors"
+import type { ActorSocket } from "durable-actors"
 
-After changing the actor's types, rerun `npx durable-actors generate` and restart the actor server.
+export class ChatRoom extends Actor<Member, string, ChatMessage[]> {
+    @Persisted history: ChatMessage[] = []
+
+    async onConnect(socket: ActorSocket<Member, ChatMessage[]>) {
+        socket.send(this.history)
+    }
+
+    async onMessage(socket: ActorSocket<Member, ChatMessage[]>, text: string) {
+        this.history.push({ name: socket.metadata.name, text })
+        this.broadcast(this.history)
+    }
+}
+
+type Member = { name: string }
+type ChatMessage = { name: string; text: string }
+```
+
+Each room ID has its own history.
+
+## Connect the app
+
+The [Express backend](src/backend.ts) issues a WebSocket URL with `actors.ChatRoom.prepareWebsocket`. The [React client](src/Chat.tsx) connects and sends JSON messages:
+
+```js
+const response = await fetch("/api/socket/ChatRoom/lobby", { method: "POST" })
+if (!response.ok) throw new Error("Connection denied")
+const { websocketUrl } = await response.json()
+const socket = new WebSocket(websocketUrl)
+
+socket.onopen = () => socket.send(JSON.stringify("Hello"))
+socket.onmessage = event => console.log(JSON.parse(event.data))
+```
+
+Everyone joins as a guest. Add authentication and room access checks before issuing URLs in your app. Reload to reconnect after a disconnect.
+
+## Development
+
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
+
+`npm run build` generates clients, checks TypeScript, and builds the frontend.

@@ -6,8 +6,9 @@
         "node": ">=22.19.0"
     },
     "scripts": {
-        "dev": "tsx src/backend.ts",
-        "build": "tsc --noEmit && vite build"
+        "dev": "durable-actors generate && tsx --env-file=.env src/backend.ts",
+        "dev:actors": "durable-actors dev",
+        "build": "durable-actors generate && tsc --noEmit && vite build"
     },
     "dependencies": {
         "express": "^5.2.1",

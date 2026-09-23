@@ -18,7 +18,7 @@ const actorIdentity = {
 
 test("correlates overlapping worker replies and socket lookups without idle eviction", { timeout: 10000 }, async () => {
     const root = await createTypeScriptConsumer("InterleavedWorker")
-    const file = path.join(root, "src/durable-objects.ts")
+    const file = path.join(root, "src/actors.ts")
     await writeFile(
         file,
         `import { Actor, Persisted, Reentrant } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
@@ -92,7 +92,7 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
         await worker.warm()
         const root = await createTypeScriptConsumer("WarmCounter")
         try {
-            const moduleUrl = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+            const moduleUrl = pathToFileURL(path.join(root, "src/actors.ts")).href
             worker.load({ moduleUrl, schemas: await prepareActorEntrypoint(moduleUrl) }, () => {})
             assert.deepEqual(await worker.ready(), ["WarmCounter"])
             assert.throws(() => worker.load({ moduleUrl, schemas: [] }, () => {}), /already assigned/)
@@ -118,7 +118,7 @@ test("a generic Bun worker is warm before customer code is assigned", async () =
 
 test("an executor never accepts a second actor identity, even after eviction", async () => {
     const root = await createTypeScriptConsumer("BoundCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
         actorSchemas: await prepareActorEntrypoint(entrypoint)
@@ -138,7 +138,7 @@ test("an executor never accepts a second actor identity, even after eviction", a
 
 test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const consumerRoot = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
     try {
         await exerciseActiveActors(entrypoint)
         await exerciseIdleRecycling(entrypoint)
@@ -150,7 +150,7 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
 
 test("reports a new actor only after its Worker is ready", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
         actorSchemas: await prepareActorEntrypoint(entrypoint)
@@ -179,7 +179,7 @@ watch(new URL(".", import.meta.url), (_, name) => {
     if (name === "stop") { ${action} }
 })`
         )
-        const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+        const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
         const supervisor = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
             actorSchemas: await prepareActorEntrypoint(entrypoint)
@@ -204,7 +204,7 @@ watch(new URL(".", import.meta.url), (_, name) => {
 
 test("starts one speculative Worker and gives it to the first actor", async () => {
     const consumerRoot = await createTypeScriptConsumer("PreloadedCounter")
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
     const created: number[] = []
     try {
         const runtime = new ActorWorkerSupervisor({
@@ -240,7 +240,7 @@ test("starts one speculative Worker and gives it to the first actor", async () =
 
 test("thrown methods and socket handlers roll back state without restarting the worker", async () => {
     const root = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: entrypoint,
         actorSchemas: await prepareActorEntrypoint(entrypoint)
@@ -328,7 +328,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
 
 test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer("CancelledCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     const command = invokeCommand("counter-1", "CancelledCounter")
     try {
         const runtime = new ActorWorkerSupervisor({
@@ -354,7 +354,7 @@ test("eviction during Worker startup settles the invocation and allows recovery"
 
 test("discards a failed preload before accepting the first actor", async () => {
     const root = await createTypeScriptConsumer("RetryPreloadCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     let created = 0
     let terminated = 0
     try {
@@ -424,7 +424,7 @@ test("an actor module that fails inside a Worker returns a failure without hangi
         "FailedImportCounter",
         'import { isMainThread } from "node:worker_threads"\nif (!isMainThread) throw new Error("worker import failed")'
     )
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     try {
         const runtime = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
@@ -596,13 +596,13 @@ async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
 }
 
 async function createTypeScriptConsumer(actorName = "SessionCounter", preamble = ""): Promise<string> {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-worker-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "durable-actors-worker-"))
     const source = path.join(root, "src")
     await mkdir(source)
     const compiledSdkRoot = fileURLToPath(new URL("../../src/", import.meta.url))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
-        path.join(source, "durable-objects.ts"),
+        path.join(source, "actors.ts"),
         `import { Actor, Persisted, Ephemeral } from ${JSON.stringify(path.join(compiledSdkRoot, "index.js"))}
 import { threadId } from "node:worker_threads"
 ${preamble}

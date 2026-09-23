@@ -4,6 +4,7 @@ import { Pause, Play, RefreshCw } from "lucide-react"
 
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ObserverClient, RequestTrace, RequestTracePage } from "./client.js"
+import type { RequestHistoryQuery as HistoryFilters } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
@@ -11,12 +12,11 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
 import { useRequestHistory } from "./request-history.js"
-import type { HistoryFilters } from "./request-sql.js"
 import { defaultTimeRange, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
 interface RequestObserverProps {
-    client: Pick<ObserverClient, "watchRequests" | "query">
+    client: Pick<ObserverClient, "watchRequests" | "listRequests">
     actor?: Pick<RequestTrace, "actorName" | "actorId">
     timeRange?: TimeRange
     onTimeRangeChange?: (range: TimeRange) => void
@@ -51,7 +51,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: Reques
                     <p>{actor ? "Method calls and WebSocket events for this instance." : "Method calls and WebSocket events, with time spent waiting and processing."}</p>
                 </div>
                 <div className="la-request-actions">
-                    {client.query && (
+                    {client.listRequests && (
                         <>
                             <Button
                                 variant={!query ? "secondary" : "outline"}

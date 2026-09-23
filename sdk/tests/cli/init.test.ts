@@ -25,7 +25,7 @@ test("init presents copyable next steps with optional terminal color", async t =
     assert.match(plain.stdout, /Start here/)
     assert.ok(plain.stdout.includes("cd -- 'Sam'\\''s actors'"))
     assert.match(plain.stdout, /pnpm install\n\n\s+Start the actor server\n\s+durable-actors dev/)
-    assert.match(plain.stdout, /src\/durable-objects\.ts/)
+    assert.match(plain.stdout, /src\/actors\.ts/)
     assert.match(plain.stdout, /Connect your app/)
     assert.equal(plain.stdout, stripVTControlCharacters(plain.stdout))
     await rm(project, { recursive: true })
@@ -37,7 +37,7 @@ test("init presents copyable next steps with optional terminal color", async t =
     assert.equal(stripVTControlCharacters(colored.stdout), plain.stdout)
 })
 
-test("init defaults to a standalone actor project that can generate and build", async t => {
+test("init defaults to a standalone actor project that can typecheck and generate", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-actor-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const project = path.join(directory, "my actors")
@@ -46,8 +46,8 @@ test("init defaults to a standalone actor project that can generate and build", 
     const installed = JSON.parse(await readFile(path.join(sdk, "package.json"), "utf8"))
     assert.deepEqual(metadata.dependencies, { "durable-actors": installed.version })
     assert.equal(metadata.scripts.dev, "durable-actors dev")
-    assert.equal(metadata.scripts.build, "durable-actors build")
-    assert.deepEqual(await readdir(path.join(project, "src")), ["durable-objects.ts"])
+    assert.equal(metadata.scripts.check, "tsc --noEmit")
+    assert.deepEqual(await readdir(path.join(project, "src")), ["actors.ts"])
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
     assert.match(stdout, /pnpm install/)
     assert.match(stdout, /\n\s+durable-actors dev\n/)
@@ -62,6 +62,4 @@ test("init defaults to a standalone actor project that can generate and build", 
     const generated = await readFile(path.join(project, "generated/index.ts"), "utf8")
     assert.match(generated, /Counter/)
     assert.match(generated, /increment/)
-    await run(process.execPath, [cli, "build"], { cwd: project })
-    assert.match(await readFile(path.join(project, "dist/actors.mjs"), "utf8"), /Counter/)
 })

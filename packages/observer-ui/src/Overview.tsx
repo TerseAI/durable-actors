@@ -8,8 +8,8 @@ import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
 import { useInventory, usePolledQuery, useRequests } from "./observer-hooks.js"
 import { inventorySummary, tracesInRange } from "./overview-data.js"
-import { liveOverviewMetrics, overviewQuery, overviewRows } from "./overview-sql.js"
-import type { ClassMetrics, OverviewMetrics } from "./overview-sql.js"
+import { liveOverviewMetrics } from "./overview-metrics.js"
+import type { ClassMetrics, OverviewMetrics } from "./overview-metrics.js"
 import { defaultTimeRange, rangePhrase, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
@@ -31,7 +31,7 @@ export function Overview({ client, onSelectActor, timeRange, onTimeRangeChange }
         return () => clearInterval(timer)
     }, [])
     const resolved = resolveRange(range, now)
-    const saved = usePolledQuery(client, overviewQuery(resolved), overviewRows)
+    const saved = usePolledQuery(client, resolved, client.getMetrics)
     const requests = useRequests(client, !saved.supported)
     const live = requests.page ? liveOverviewMetrics(tracesInRange(requests.page.records, resolved, Math.max(now, Date.now()))) : undefined
     const metrics: OverviewMetrics | undefined = saved.supported ? saved.value : live

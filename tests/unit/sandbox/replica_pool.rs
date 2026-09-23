@@ -14,7 +14,7 @@ async fn retrying_a_replica_claim_reuses_the_reservation_and_pool_cleanup_preser
         for claim in claims {
             assert!(matches!(claim, Reservation::Ready(spare) if spare == handle));
         }
-        database.execute("UPDATE durable_object_spares SET status = 'active', expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
+        database.execute("UPDATE durable_actors_spares SET status = 'active', expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
         PoolStore(database.clone(), SpareKind::Actor).retire_unwanted(&[], 0).await?;
         replicas.retire_unwanted(&[], 0).await?;
         assert!(replicas.retiring().await?.is_empty(), "only replica lifecycle recovery may retire an assigned witness");

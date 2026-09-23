@@ -1,6 +1,3 @@
-import type { ObserverQuery, ObserverQueryResult, SqlValue } from "./client.js"
-import type { ResolvedRange } from "./time-range.js"
-
 export interface QueueWaitRow {
     actorName: string
     actorId: string
@@ -15,46 +12,21 @@ export interface QueueWaitStats {
     maxMs: number
 }
 
-// Queue wait exists only for admitted attempts; reroutes never entered the actor.
-export function queueWaitQuery(range: ResolvedRange, actorName?: string): ObserverQuery {
-    const clauses = ["queue_wait_ms IS NOT NULL", "outcome <> 'rerouted'"]
-    const params: SqlValue[] = []
-    if (range.fromMs !== undefined) {
-        clauses.push("started_at_ms >= ?")
-        params.push(range.fromMs)
-    }
-    if (range.toMs !== undefined) {
-        clauses.push("started_at_ms <= ?")
-        params.push(range.toMs)
-    }
-    if (actorName !== undefined) {
-        clauses.push("actor_name = ?")
-        params.push(actorName)
-    }
-    return {
-        sql: `SELECT actor_name, actor_id, COUNT(*) AS admitted, AVG(queue_wait_ms) AS average_ms, MAX(queue_wait_ms) AS max_ms
-FROM request_events
-WHERE ${clauses.join(" AND ")}
-GROUP BY actor_name, actor_id
-ORDER BY admitted DESC, actor_name, actor_id
-LIMIT 500`,
-        params
-    }
+export function queueWaitRows(value: unknown): QueueWaitRow[] {
+    if (!Array.isArray(value) || !value.every(isQueueWait)) throw new Error("Invalid queue wait response")
+    return value
 }
 
-export function queueWaitRows(result: ObserverQueryResult): QueueWaitRow[] {
-    return result.rows.map(row => {
-        const stats = { actorName: row.actor_name, actorId: row.actor_id, admitted: row.admitted, averageMs: row.average_ms, maxMs: row.max_ms }
-        if (
-            typeof stats.actorName !== "string" ||
-            typeof stats.actorId !== "string" ||
-            !Number.isSafeInteger(stats.admitted) ||
-            Number(stats.admitted) <= 0 ||
-            ![stats.averageMs, stats.maxMs].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)
-        )
-            throw new Error("Invalid queue wait row")
-        return stats as QueueWaitRow
-    })
+function isQueueWait(row: QueueWaitRow): boolean {
+    return (
+        !!row &&
+        typeof row.actorName === "string" &&
+        typeof row.actorId === "string" &&
+        Number.isSafeInteger(row.admitted) &&
+        row.admitted > 0 &&
+        [row.averageMs, row.maxMs].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0) &&
+        row.averageMs <= row.maxMs
+    )
 }
 
 export function queueWaitTotal(rows: QueueWaitRow[]): QueueWaitStats | null {

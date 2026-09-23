@@ -46,22 +46,22 @@ fn invocation_credentials_are_distinct_from_control_plane_credentials() -> Resul
     let keys = public_key_set(&key_pair)?;
     let invocation = ActorJwtVerifier::for_scope(
         &keys,
-        "durable-object-control-plane",
-        "durable-object-invoke",
+        "durable-actors-control-plane",
+        "durable-actors-invoke",
         ActorTokenPurpose::Invocation,
         Duration::from_secs(60),
     )?;
     let control_plane = ActorJwtVerifier::for_scope(
         keys,
-        "durable-object-control-plane",
-        "durable-object-authority",
+        "durable-actors-control-plane",
+        "durable-actors-authority",
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(60),
     )?;
     let mut claims = valid_claims(unix_seconds()?);
-    claims["aud"] = json!("durable-object-invoke");
+    claims["aud"] = json!("durable-actors-invoke");
     claims["scope"] = json!("actor:invoke");
-    claims["codeRevision"] = json!("revision-1");
+    claims["hostConfigKey"] = json!("revision-1");
     let token = token(
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),
@@ -81,8 +81,8 @@ fn rejects_an_expired_token_during_clock_skew_leeway() -> Result<()> {
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),
         json!({
-            "iss": "durable-object-control-plane",
-            "aud": "durable-object-authority",
+            "iss": "durable-actors-control-plane",
+            "aud": "durable-actors-authority",
             "sub": "host.v3.00000000-0000-4000-8000-000000000001",
             "processId": "host.v3.00000000-0000-4000-8000-000000000001",
             "sessionId": "00000000-0000-4000-8000-000000000002",
@@ -116,7 +116,7 @@ fn rejects_tampering_and_invalid_constraints() -> Result<()> {
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key" }),
         json!({
-            "iss": "durable-object-control-plane",
+            "iss": "durable-actors-control-plane",
             "aud": "somewhere-else",
             "sub": "host.v3.00000000-0000-4000-8000-000000000001",
             "processId": "host.v3.00000000-0000-4000-8000-000000000001",
@@ -133,8 +133,8 @@ fn rejects_tampering_and_invalid_constraints() -> Result<()> {
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key" }),
         json!({
-            "iss": "durable-object-control-plane",
-            "aud": "durable-object-authority",
+            "iss": "durable-actors-control-plane",
+            "aud": "durable-actors-authority",
             "sub": "host.v3.00000000-0000-4000-8000-000000000001",
             "processId": "host.v3.00000000-0000-4000-8000-000000000001",
             "sessionId": "00000000-0000-4000-8000-000000000002",
@@ -157,8 +157,8 @@ fn rejects_tampering_and_invalid_constraints() -> Result<()> {
         &key_pair,
         json!({ "alg": "EdDSA", "kid": "test-key" }),
         json!({
-            "iss": "durable-object-control-plane",
-            "aud": "durable-object-authority",
+            "iss": "durable-actors-control-plane",
+            "aud": "durable-actors-authority",
             "sub": "host.v3.00000000-0000-4000-8000-000000000001",
             "processId": "host.v3.00000000-0000-4000-8000-000000000001",
             "sessionId": "00000000-0000-4000-8000-000000000002",
@@ -179,8 +179,8 @@ fn verifier_and_key_pair() -> Result<(ActorJwtVerifier, Ed25519KeyPair)> {
     Ok((
         ActorJwtVerifier::new(
             keys,
-            "durable-object-control-plane",
-            "durable-object-authority",
+            "durable-actors-control-plane",
+            "durable-actors-authority",
             Duration::from_secs(60),
         )?,
         key_pair,
@@ -215,8 +215,8 @@ fn public_key_set(key_pair: &Ed25519KeyPair) -> Result<String> {
 fn valid_claims(now: i64) -> serde_json::Value {
     json!({
         "actor": {"project_id":"default","actor_name": "Counter", "actor_id": "one"},
-        "iss": "durable-object-control-plane",
-        "aud": "durable-object-authority",
+        "iss": "durable-actors-control-plane",
+        "aud": "durable-actors-authority",
         "sub": "host.v3.00000000-0000-4000-8000-000000000001",
         "processId": "host.v3.00000000-0000-4000-8000-000000000001",
         "sessionId": "00000000-0000-4000-8000-000000000002",

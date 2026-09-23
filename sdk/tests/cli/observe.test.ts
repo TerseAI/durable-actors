@@ -8,11 +8,20 @@ import { pathToFileURL } from "node:url"
 
 import { Observer } from "../../src/cli/observe.js"
 
+const metricsClient = {
+    getMetrics: async () => ({
+        total: { actorName: "", count: 0, success: null, p95: null, queueP95: null },
+        classes: []
+    }),
+    listQueueWaits: async () => [],
+    listWebSockets: async () => []
+}
+
 const assets = new URL("./", import.meta.resolve("durable-actors-observer/standalone/index.html"))
 
 test("observer serves the installed UI package by default", async t => {
     const observer = new Observer(
-        { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
+        { ...metricsClient, checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
         async () => {}
     )
     t.after(() => observer.close())
@@ -30,7 +39,7 @@ test("observer serves generated assets without a hardcoded filename list", async
     await mkdir(join(directory, "assets"))
     await writeFile(join(directory, "assets", "details-abc123.js"), "export const details = true")
     const observer = new Observer(
-        { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
+        { ...metricsClient, checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
         async () => {},
         pathToFileURL(`${directory}/`)
     )
@@ -52,6 +61,7 @@ test("observer proxies connection checks and reports a later outage without expo
     let available = true
     const observer = new Observer(
         {
+            ...metricsClient,
             listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 if (!available) throw new Error("secret-admin-key")
@@ -88,6 +98,7 @@ test("observer opens the browser only after authentication and local serving suc
     let opened: string | undefined
     const observer = new Observer(
         {
+            ...metricsClient,
             listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 connected = true
@@ -116,6 +127,7 @@ test("observer does not open a browser when the control plane rejects the connec
     let opened = false
     const observer = new Observer(
         {
+            ...metricsClient,
             listActors: async () => ({ actors: [] }),
             checkConnection: async () => {
                 throw new Error("Unauthorized")
@@ -131,7 +143,7 @@ test("observer does not open a browser when the control plane rejects the connec
 
 test("observer keeps the local UI available if browser launching fails", async t => {
     const observer = new Observer(
-        { checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
+        { ...metricsClient, checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
         async () => {
             throw new Error("No browser")
         },
@@ -148,6 +160,7 @@ test("observer proxies actor inventory and hides upstream failures", async t => 
     const inventory = { actors: [{ actorName: "Room", live: 1, dormant: 2, unknown: 0 }] }
     const observer = new Observer(
         {
+            ...metricsClient,
             checkConnection: async () => {},
             listActors: async () => {
                 if (fail) throw new Error("private-admin-key")
@@ -174,6 +187,7 @@ for (const [method, path, event] of [
         let signal: AbortSignal | undefined
         const observer = new Observer(
             {
+                ...metricsClient,
                 checkConnection: async () => {},
                 listActors: async () => ({}),
                 [method]: async (incoming: AbortSignal) => {
@@ -206,14 +220,21 @@ for (const [method, path, event] of [
     })
 }
 
-test("observer forwards raw SQL and opaque live replay cursors", async t => {
+test("observer forwards history filters and opaque replay cursors", async t => {
     const observer = new Observer(
         {
+            ...metricsClient,
             checkConnection: async () => {},
             listActors: async () => ({}),
-            query: async query => {
-                assert.deepEqual(query, { sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
-                return { records: [] }
+            listRequests: async (query, signal) => {
+                assert.deepEqual(Object.fromEntries(query), {
+                    actorId: "one",
+                    outcome: "failed",
+                    limit: "100",
+                    cursor: "page+token"
+                })
+                assert.ok(signal)
+                return { records: [], nextCursor: null }
             },
             openRequestStream: async (_signal, after) => {
                 assert.equal(after, "resume+token")
@@ -229,15 +250,9 @@ test("observer forwards raw SQL and opaque live replay cursors", async t => {
     const { url } = await observer.start(false)
     assert.deepEqual(
         await (
-            await fetch(`${url}/api/observe/query`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ sql: "SELECT * FROM request_events WHERE actor_id = ?", params: ["one/two"] })
-            })
+            await fetch(`${url}/api/observe/requests?actorId=one&outcome=failed&limit=100&cursor=page%2Btoken`)
         ).json(),
-        {
-            records: []
-        }
+        { records: [], nextCursor: null }
     )
     assert.match(
         await (await fetch(`${url}/api/observe/requests/events?after=resume%2Btoken`)).text(),
@@ -245,13 +260,14 @@ test("observer forwards raw SQL and opaque live replay cursors", async t => {
     )
 })
 
-test("SQL proxy rejects cross-origin and malformed requests and hides upstream secrets", async t => {
+test("history proxy rejects writes and cross-origin requests and hides upstream errors", async t => {
     let calls = 0
     const observer = new Observer(
         {
+            ...metricsClient,
             checkConnection: async () => {},
             listActors: async () => ({}),
-            query: async () => {
+            listRequests: async () => {
                 calls++
                 throw new Error("private-admin-key")
             }
@@ -261,28 +277,91 @@ test("SQL proxy rejects cross-origin and malformed requests and hides upstream s
     )
     t.after(() => observer.close())
     const { url } = await observer.start(false)
-    const endpoint = `${url}/api/observe/query`
-    const body = JSON.stringify({ sql: "SELECT 1", params: [] })
-    assert.equal((await fetch(endpoint)).status, 405)
-    assert.equal(
-        (
-            await fetch(endpoint, {
-                method: "POST",
-                headers: { "content-type": "application/json", origin: "https://untrusted.example" },
-                body
-            })
-        ).status,
-        403
-    )
-    assert.equal((await fetch(endpoint, { method: "POST", body })).status, 400)
-    assert.equal(
-        (await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "broken" }))
-            .status,
-        400
-    )
+    const endpoint = `${url}/api/observe/requests`
+    assert.equal((await fetch(endpoint, { method: "POST" })).status, 405)
+    assert.equal((await fetch(endpoint, { headers: { origin: "https://untrusted.example" } })).status, 403)
     assert.equal(calls, 0)
-    const rejected = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body })
+    const rejected = await fetch(endpoint)
     assert.equal(rejected.status, 503)
-    assert.deepEqual(await rejected.json(), { error: "Observability query failed" })
+    assert.deepEqual(await rejected.json(), { error: "Request history unavailable" })
     assert.equal(calls, 1)
 })
+
+test("history proxy cancels the upstream request when the viewer disconnects", async t => {
+    let signal: AbortSignal | undefined
+    let started!: () => void
+    let cancelled!: () => void
+    const ready = new Promise<void>(resolve => {
+        started = resolve
+    })
+    const stopped = new Promise<void>(resolve => {
+        cancelled = resolve
+    })
+    const observer = new Observer(
+        {
+            ...metricsClient,
+            checkConnection: async () => {},
+            listActors: async () => ({}),
+            listRequests: async (_query, upstream) => {
+                signal = upstream
+                started()
+                await new Promise<void>(resolve =>
+                    upstream!.addEventListener(
+                        "abort",
+                        () => {
+                            cancelled()
+                            resolve()
+                        },
+                        { once: true }
+                    )
+                )
+                return { records: [] }
+            }
+        },
+        async () => {},
+        assets
+    )
+    t.after(() => observer.close())
+    const { url } = await observer.start(false)
+    const controller = new AbortController()
+    const response = fetch(`${url}/api/observe/requests`, { signal: controller.signal })
+    const rejected = assert.rejects(response, { name: "AbortError" })
+    await ready
+    controller.abort()
+    await rejected
+    await stopped
+    assert.equal(signal?.aborted, true)
+})
+
+for (const [method, path] of [
+    ["getMetrics", "metrics"],
+    ["listQueueWaits", "queue-waits"],
+    ["listWebSockets", "websockets"]
+] as const) {
+    test(`observer proxies ${path} filters with origin and method checks`, async t => {
+        let signal: AbortSignal | undefined
+        const observer = new Observer(
+            {
+                ...metricsClient,
+                checkConnection: async () => {},
+                listActors: async () => ({}),
+                [method]: async (query: URLSearchParams, incoming: AbortSignal) => {
+                    assert.deepEqual(Object.fromEntries(query), { fromMs: "10", toMs: "20" })
+                    signal = incoming
+                    return { saved: true }
+                }
+            },
+            async () => {},
+            assets
+        )
+        t.after(() => observer.close())
+        const { url } = await observer.start(false)
+        const endpoint = `${url}/api/observe/${path}?fromMs=10&toMs=20`
+        const response = await fetch(endpoint)
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { saved: true })
+        assert.ok(signal)
+        assert.equal((await fetch(endpoint, { method: "POST" })).status, 405)
+        assert.equal((await fetch(endpoint, { headers: { origin: "https://untrusted.example" } })).status, 403)
+    })
+}

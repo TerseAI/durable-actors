@@ -17,7 +17,7 @@ pub(super) struct WarmHost {
 
 pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     let socket = std::env::var("DURABLE_ACTORS_EXECUTOR_SOCKET")
-        .unwrap_or_else(|_| "/tmp/durable-object-executor.sock".into());
+        .unwrap_or_else(|_| "/tmp/durable-actors-executor.sock".into());
     let token = std::env::var("DURABLE_ACTORS_SPARE_TOKEN").context("spare token missing")?;
     ensure!(token.len() >= 32, "spare token is too short");
     let control_bind =
@@ -32,7 +32,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
             .await
     });
     let ready = std::env::var("DURABLE_ACTORS_SPARE_READY_FILE")
-        .unwrap_or_else(|_| "/tmp/durable-object-spare-ready".into());
+        .unwrap_or_else(|_| "/tmp/durable-actors-spare-ready".into());
     let bind = std::env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:7101".into());
     let listener = TcpListener::bind(bind).await?;
     let ipc = ActorExecutorListener::bind(&socket).await?;

@@ -100,7 +100,7 @@ async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn environment_configured_local_runtime_recovers_after_restart() -> Result<()> {
+async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> Result<()> {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
     let shell_directory = tempfile::tempdir()?;
@@ -113,6 +113,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             @Persisted value = 0;
             async read() {{ return this.value; }}
             async increment() {{ return ++this.value; }}
+            async label() {{ return "before"; }}
         }}
     "#,
             serde_json::to_string(&sdk.join("dist/index.js"))?
@@ -129,7 +130,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             r#"
         import assert from 'node:assert/strict';
         import {{ RemoteActorClient }} from {};
-        const client = new RemoteActorClient();
+        let client = new RemoteActorClient();
         const before = Number(process.argv[2]);
         const concurrent = await Promise.all(Array.from({{ length: 4 }}, () => new RemoteActorClient().invoke('Counter', 'one', 'read', [])));
         assert.deepEqual(concurrent, [before, before, before, before]);
@@ -138,11 +139,25 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
         const origin = process.env.DURABLE_ACTORS_CONTROL_PLANE_URL;
         const apiKey = process.env.DURABLE_ACTORS_SECRET;
-        const workingDirectory = (await import('node:url')).fileURLToPath(new URL('.', import.meta.url));
+        const workingDirectory = (await import('node:path')).dirname((await import('node:url')).fileURLToPath(import.meta.url));
+        assert.equal(await client.invoke('Counter', 'one', 'label', []), 'before');
+        const fs = await import('node:fs/promises');
+        const source = new URL('actors.ts', import.meta.url);
+        const original = await fs.readFile(source, 'utf8');
+        await fs.writeFile(source, original.replace('return "before"', 'return "after"'));
+        const deployed = await fetch(`${{origin}}/v1/projects/default/deployment`, {{
+            method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
+            body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+        }});
+        assert.equal(deployed.status, 200, await deployed.text());
+        client = new RemoteActorClient();
+        assert.equal(await client.invoke('Counter', 'one', 'label', []), 'after');
+        assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
+        await fs.writeFile(source, original);
         for (const [projectId, increment] of [['team-a', 1], ['team-b', 2]]) {{
             const response = await fetch(`${{origin}}/v1/projects/${{projectId}}/deployment`, {{
                 method: 'PUT', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
-                body: JSON.stringify({{ codeRevision: 'same-revision', imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
+                body: JSON.stringify({{ imageRef: 'local', workingDirectory, actorEntrypoint: 'actors.ts', secretRefs: [] }})
             }});
             assert.equal(response.status, 200, await response.text());
             const scoped = new RemoteActorClient({{ projectId, controlPlaneUrl: origin, apiKey }});
@@ -151,9 +166,9 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
             assert.equal(await scoped.invoke('Counter', 'one', 'read', []), (before + 1) * increment);
         }}
         assert.equal(await client.invoke('Counter', 'one', 'read', []), before + 1);
-        const response = await fetch(`${{origin}}/v1/actors/Counter/one/connect`, {{
+        const response = await fetch(`${{origin}}/v1/projects/default/actors/Counter/one/find-websocket`, {{
             method: 'POST', headers: {{ authorization: `Bearer ${{apiKey}}`, 'content-type': 'application/json' }},
-            body: JSON.stringify({{ transport: 'websocket', metadata: null }})
+            body: JSON.stringify({{ metadata: null }})
         }});
         const grant = await response.json();
         assert.equal(response.status, 200, JSON.stringify(grant));
@@ -213,7 +228,7 @@ async fn environment_configured_local_runtime_recovers_after_restart() -> Result
     assert!(
         shell_directory
             .path()
-            .join("state/objects/little-actors/v3")
+            .join("state/objects/durable-actors/v3")
             .is_dir()
     );
     Ok(())

@@ -7,7 +7,7 @@ fn host_needs_no_local_state_directory() -> Result<()> {
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
     assert_eq!(
         config.executor_socket,
-        PathBuf::from("/tmp/durable-object-executor.sock")
+        PathBuf::from("/tmp/durable-actors-executor.sock")
     );
     assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));

@@ -296,7 +296,7 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     let requests = 0
     const client = new HttpObserverClient("/api/observe", async url => {
         if (String(url).includes("/requests/")) return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } })
-        if (String(url).endsWith("/query")) return Response.json({ rows: [], truncated: false })
+        if (String(url).includes("/queue-waits")) return Response.json([])
         requests++
         return new Response(
             new ReadableStream<Uint8Array>({
@@ -394,18 +394,18 @@ test("instance queues show operation bubbles and update while inspecting an inst
 })
 
 test("actor pages show the average queue wait per class and instance from retained history", async () => {
-    const queries: { sql: string; params: unknown[] }[] = []
+    const queries: { fromMs?: number; toMs?: number; actorName?: string }[] = []
     const client = {
         checkConnection: async () => {},
         listActors: async () => inventory,
-        query: async (query: { sql: string; params: unknown[] }) => {
+        listQueueWaits: async (query: { fromMs?: number; toMs?: number; actorName?: string }) => {
             queries.push(query)
             const rows = [
-                { actor_name: "Room", actor_id: "general", admitted: 3, average_ms: 12.5, max_ms: 40 },
-                { actor_name: "Room", actor_id: "quiet", admitted: 1, average_ms: 1500, max_ms: 1500 },
-                { actor_name: "Counter", actor_id: "one", admitted: 2, average_ms: 2, max_ms: 3 }
+                { actorName: "Room", actorId: "general", admitted: 3, averageMs: 12.5, maxMs: 40 },
+                { actorName: "Room", actorId: "quiet", admitted: 1, averageMs: 1500, maxMs: 1500 },
+                { actorName: "Counter", actorId: "one", admitted: 2, averageMs: 2, maxMs: 3 }
             ]
-            return { rows: rows.filter(row => query.params.length < 2 || row.actor_name === query.params[1]), truncated: false }
+            return rows.filter(row => !query.actorName || row.actorName === query.actorName)
         }
     }
     const view = render(<ActorObserver client={client} />)
@@ -413,9 +413,9 @@ test("actor pages show the average queue wait per class and instance from retain
     assert.match(view.container.textContent!, /Max 1.5 s · 6 admitted in the last hour/u)
     assert.match(view.getByRole("cell", { name: "Room" }).closest("tr")!.textContent!, /384.4 msmax 1.5 s/u, "the class average weights instances by admitted requests")
     assert.match(view.getByRole("cell", { name: "Counter" }).closest("tr")!.textContent!, /2 msmax 3 ms/u)
-    assert.equal(queries[0]!.params.length, 1)
+    assert.equal(typeof queries[0]!.fromMs, "number")
     fireEvent.click(view.getByRole("button", { name: "Room" }))
-    await waitFor(() => assert.equal(queries.at(-1)!.params[1], "Room"))
+    await waitFor(() => assert.equal(queries.at(-1)!.actorName, "Room"))
     await waitFor(() => assert.match(view.container.textContent!, /Max 1.5 s · 4 admitted/u))
     assert.equal(view.getByLabelText("Average queue wait").textContent, "384.4 ms")
     const general = view.getByRole("button", { name: "general" }).closest("tr")!

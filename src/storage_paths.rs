@@ -2,8 +2,7 @@ use crate::{actor::ActorKey, actor_state::ActorStorageKey, host::HostId};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
-// Persisted bucket paths must survive project renames.
-pub const ROOT: &str = "little-actors/v3/";
+pub const ROOT: &str = "durable-actors/v3/";
 
 pub fn snapshots(actor: &ActorKey) -> Result<String> {
     actor.validate()?;

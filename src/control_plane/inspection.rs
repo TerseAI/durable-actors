@@ -1,43 +1,29 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, StatusCode, header},
+    extract::{Query, State, rejection::QueryRejection},
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::{
-    actor::ActorKey,
-    actor_state::ActorStorageKey,
-    placement::{ObjectPlacement, ObjectPlacementStore},
-    state_log::StateSnapshot,
-    storage::{SnapshotReader, validate_snapshot_object_name},
-};
+use serde::Deserialize;
 
 use super::{
     admin::AdminService,
-    public_api::{ActorPath, ApiError, authorized_admin},
+    public_api::{ApiError, authorized_admin},
 };
 
 pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
         .route("/v1/observe/actors", get(actor_inventory))
         .route("/v1/observe/events", get(actor_events))
-        .route(
-            "/v1/observe/query",
-            post(observe_query).layer(axum::extract::DefaultBodyLimit::max(65_536)),
-        )
+        .route("/v1/observe/requests", get(request_history))
+        .route("/v1/observe/metrics", get(overview_metrics))
+        .route("/v1/observe/queue-waits", get(queue_waits))
+        .route("/v1/observe/websockets", get(websocket_history))
         .route("/v1/observe/requests/events", get(request_events))
-        .route("/v1/actors", get(list_objects))
-        .route(
-            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}",
-            get(inspect_object),
-        )
         .with_state(InspectionApi { inspector, admin })
 }
 
@@ -47,57 +33,15 @@ struct InspectionApi {
     admin: AdminService,
 }
 
-async fn list_objects(
-    State(state): State<InspectionApi>,
-    headers: HeaderMap,
-    query: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
-    let page = state
-        .inspector
-        .list(&query)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
-}
-
-async fn inspect_object(
-    State(state): State<InspectionApi>,
-    Path(path): Path<ActorPath>,
-    query: Result<Query<InspectQuery>, QueryRejection>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
-    let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
-    let actor = path.into_actor();
-    actor.validate().map_err(ApiError::bad_request)?;
-    let object = tokio::time::timeout(
-        Duration::from_secs(25),
-        state.inspector.inspect(&actor, query.include.is_some()),
-    )
-    .await
-    .map_err(|_| ApiError::unavailable("Object inspection timed out"))?
-    .map_err(ApiError::internal)?
-    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "Object not found"))?;
-    Ok(([(header::CACHE_CONTROL, "no-store")], Json(object)).into_response())
-}
-
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: tokio::sync::watch::Sender<()>,
-    placements: Arc<dyn ObjectPlacementStore>,
-    storage: Arc<dyn SnapshotReader>,
 }
 
 impl ActorInspector {
     pub(super) fn new(
-        placements: Arc<dyn ObjectPlacementStore>,
-        storage: Arc<dyn SnapshotReader>,
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
         changes: tokio::sync::watch::Sender<()>,
     ) -> Self {
@@ -105,176 +49,12 @@ impl ActorInspector {
             traces: crate::request_traces::TraceStore::default(),
             inventory,
             changes,
-            placements,
-            storage,
         }
     }
 
     pub(super) fn with_traces(mut self, traces: crate::request_traces::TraceStore) -> Self {
         self.traces = traces;
         self
-    }
-
-    async fn list(&self, query: &ListQuery) -> Result<ObjectPage> {
-        let mut placements = self
-            .placements
-            .list_committed(query.after.as_deref(), query.limit + 1)
-            .await?;
-        let has_more = placements.len() > query.limit as usize;
-        placements.truncate(query.limit as usize);
-        let next_cursor = has_more.then(|| placements.last().unwrap().object.as_str().to_owned());
-        let objects = placements
-            .iter()
-            .map(|placement| {
-                Ok(SavedObject::new(
-                    actor_from_placement(placement)?,
-                    placement,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ObjectPage {
-            actors: objects,
-            next_cursor,
-        })
-    }
-
-    async fn inspect(
-        &self,
-        actor: &ActorKey,
-        include_state: bool,
-    ) -> Result<Option<ObjectInspection>> {
-        let Some(placement) = self.placements.get(&actor.storage_key()).await? else {
-            return Ok(None);
-        };
-        let state = if !include_state {
-            None
-        } else if placement.state_version == 0 {
-            Some(Value::Null)
-        } else {
-            let stored_actor = actor_from_placement(&placement)?;
-            ensure!(
-                stored_actor == *actor,
-                "committed actor identity does not match the requested object"
-            );
-            Some(self.read_state(&placement).await?)
-        };
-        Ok(Some(ObjectInspection {
-            object: SavedObject::new(actor.clone(), &placement),
-            state,
-        }))
-    }
-
-    async fn read_state(&self, placement: &ObjectPlacement) -> Result<Value> {
-        let object = placement
-            .state_object
-            .as_deref()
-            .context("committed state object is missing")?;
-        let snapshot = StateSnapshot::decode(
-            &self
-                .storage
-                .read_snapshot(&placement.home_region, object)
-                .await?,
-        )?;
-        ensure!(
-            snapshot.state_version == placement.state_version
-                && Some(snapshot.request_id.as_str()) == placement.last_request_id.as_deref()
-                && snapshot.owner_epoch <= placement.owner_epoch,
-            "snapshot does not match committed state"
-        );
-        Ok(snapshot.state)
-    }
-}
-
-fn actor_from_placement(placement: &ObjectPlacement) -> Result<ActorKey> {
-    let object = placement
-        .state_object
-        .as_deref()
-        .context("committed state object is missing")?;
-    let actor = crate::storage_paths::actor_from_snapshot(object)?;
-    actor.validate()?;
-    validate_snapshot_object_name(&actor, placement.state_version, object)?;
-    ensure!(
-        actor.storage_key() == placement.object,
-        "snapshot identity does not match the object"
-    );
-    Ok(actor)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListQuery {
-    after: Option<String>,
-    #[serde(default = "page_size")]
-    limit: u32,
-}
-
-impl ListQuery {
-    fn validate(&self) -> Result<()> {
-        ensure!(
-            (1..=500).contains(&self.limit),
-            "limit must be between 1 and 500"
-        );
-        if let Some(after) = &self.after {
-            ActorStorageKey::new(after).validate()?;
-        }
-        Ok(())
-    }
-}
-
-fn page_size() -> u32 {
-    100
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObjectPage {
-    actors: Vec<SavedObject>,
-    next_cursor: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedObject {
-    actor_name: String,
-    actor_id: String,
-    home_region: String,
-    state_version: u64,
-    last_request_id: Option<String>,
-}
-
-impl SavedObject {
-    fn new(actor: ActorKey, placement: &ObjectPlacement) -> Self {
-        Self {
-            actor_name: actor.actor_name,
-            actor_id: actor.actor_id,
-            home_region: placement.home_region.clone(),
-            state_version: placement.state_version,
-            last_request_id: placement.last_request_id.clone(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ObjectInspection {
-    #[serde(flatten)]
-    object: SavedObject,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InspectQuery {
-    include: Option<String>,
-}
-
-impl InspectQuery {
-    fn validate(&self) -> Result<()> {
-        ensure!(
-            self.include.as_deref().is_none_or(|value| value == "state"),
-            "include must be state"
-        );
-        Ok(())
     }
 }
 
@@ -303,7 +83,7 @@ async fn read_inventory(state: &InspectionApi) -> Result<Vec<crate::placement::A
         .into_iter()
         .map(|row| (row.actor_name.clone(), row))
         .collect();
-    if let Some(contract) = state.admin.deployment_contract("default", None).await? {
+    if let Some(contract) = state.admin.deployment_contract("default").await? {
         if let Some(actors) = contract.contract["actors"].as_array() {
             for actor in actors {
                 if let Some(name) = actor["actorName"].as_str() {
@@ -377,30 +157,76 @@ async fn actor_events(
         .into_response())
 }
 
-async fn observe_query(
+async fn overview_metrics(
     State(state): State<InspectionApi>,
     headers: HeaderMap,
-    body: Result<
-        Json<crate::request_traces::query::SqlQuery>,
-        axum::extract::rejection::JsonRejection,
-    >,
+    query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
-    let Json(query) = body.map_err(ApiError::bad_request)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
     query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
         .traces
-        .query(&query)
+        .metrics(&query)
         .await
-        .map_err(trace_query_error)?;
+        .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
 }
 
+async fn queue_waits(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::metrics::QueueWaitQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .queue_waits(&query)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
+}
+
+async fn websocket_history(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let result = state
+        .inspector
+        .traces
+        .websockets(&query)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
+}
+
+async fn request_history(
+    State(state): State<InspectionApi>,
+    headers: HeaderMap,
+    query: Result<Query<crate::request_traces::history::HistoryQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    query.validate().map_err(ApiError::bad_request)?;
+    let page = state
+        .inspector
+        .traces
+        .history(&query)
+        .await
+        .map_err(trace_query_error)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
+}
+
 fn trace_query_error(error: anyhow::Error) -> ApiError {
-    if error.is::<crate::request_traces::replay::InvalidTraceCursor>()
-        || error.is::<crate::request_traces::query::SqlQueryError>()
-    {
+    if error.is::<crate::request_traces::replay::InvalidTraceCursor>() {
         ApiError::bad_request(error)
     } else {
         ApiError::internal(error)

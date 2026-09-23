@@ -20,7 +20,7 @@ async fn main() {
         if development_logs {
             error!(error = %format!("{error:#}"), "local actor runtime failed");
         } else {
-            error!(error = %format!("{error:#}"), "durable-object process failed");
+            error!(error = %format!("{error:#}"), "durable-actors process failed");
         }
         std::process::exit(1);
     }

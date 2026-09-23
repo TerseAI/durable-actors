@@ -14,7 +14,7 @@ type ensureRequest struct {
 	Resources               resourceLimits  `json:"resources"`
 	SocketJWTAudience       string          `json:"socketJwtAudience"`
 	RuntimeConfig           string          `json:"runtimeConfig"`
-	CodeRevision            string          `json:"codeRevision"`
+	HostConfigKey           string          `json:"hostConfigKey"`
 	CanonicalRegion         string          `json:"canonicalRegion"`
 	HostID                  string          `json:"hostId"`
 	SessionID               string          `json:"sessionId"`
@@ -61,7 +61,7 @@ type provisioning struct {
 }
 
 func validateEnsure(request ensureRequest) error {
-	if request.SessionID == "" || request.CodeRevision == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v3."+request.CodeRevision+".") {
+	if request.SessionID == "" || request.HostConfigKey == "" || request.ImageRef == "" || !strings.HasPrefix(request.HostID, "host.v3."+request.HostConfigKey+".") {
 		return fmt.Errorf("invalid host identity or image")
 	}
 	if request.ActorIdleTimeoutSeconds <= 0 || request.ActorIdleTimeoutSeconds > 86400 {
@@ -95,7 +95,7 @@ func hostEnvironment(r ensureRequest) map[string]string {
 		"DURABLE_ACTORS_CONTROL_PLANE_URL": r.ControlPlaneURL, "DURABLE_ACTORS_JWT_ISSUER": r.JWTIssuer,
 		"DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE": r.SocketJWTAudience, "DURABLE_ACTORS_HOST_ID": r.HostID,
 		"DURABLE_ACTORS_SESSION_ID": r.SessionID, "DURABLE_ACTORS_REGION": r.CanonicalRegion,
-		"DURABLE_ACTORS_CODE_REVISION": r.CodeRevision, "DURABLE_ACTORS_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
+		"DURABLE_ACTORS_EXECUTOR_SOCKET": "/tmp/durable-actors-executor.sock",
 		"DURABLE_ACTORS_HOST_READY_FILE": readyFile, "DURABLE_ACTORS_HOST_METADATA_FILE": metadataFile,
 		"DURABLE_ACTORS_HOST_BIND":                  "0.0.0.0:7101",
 		"DURABLE_ACTORS_ACTOR_IDLE_TIMEOUT_SECONDS": fmt.Sprint(r.ActorIdleTimeoutSeconds), "DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),

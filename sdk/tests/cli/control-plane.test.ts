@@ -7,14 +7,13 @@ const connection = { projectId: "default", controlPlaneUrl: "https://control.exa
 
 test("connection checks work before any deployment exists", async () => {
     const client = new ControlPlaneClient(connection, async input => {
-        if (String(input) === "https://control.example/v1/actors?limit=1")
-            return Response.json({ actors: [], nextCursor: null })
+        if (String(input) === "https://control.example/v1/observe/actors") return Response.json({ actors: [] })
         return Response.json({ error: { message: "deployment not found" } }, { status: 404 })
     })
     await client.checkConnection()
 })
 
-test("contract and object reads use the active deployment", async () => {
+test("contract reads use the active deployment", async () => {
     const requests: string[] = []
     const client = new ControlPlaneClient(connection, async (input, init) => {
         requests.push(String(input))
@@ -26,14 +25,8 @@ test("contract and object reads use the active deployment", async () => {
         assert.ok(init?.signal instanceof AbortSignal)
         return Response.json({ received: true })
     })
-    assert.deepEqual(await client.getContract("r1"), { received: true })
-    await client.listObjects(new URLSearchParams({ limit: "50" }))
-    await client.inspectObject("Room", "one")
-    assert.deepEqual(requests, [
-        "https://control.example/v1/projects/default/deployment/contract?revision=r1",
-        "https://control.example/v1/actors?limit=50",
-        "https://control.example/v1/projects/default/actors/Room/one?include=state"
-    ])
+    assert.deepEqual(await client.getContract(), { received: true })
+    assert.deepEqual(requests, ["https://control.example/v1/projects/default/deployment/contract"])
 })
 
 test("HTTP failures retain their status with JSON, non-JSON, or malformed error documents", async () => {
@@ -63,7 +56,7 @@ test("transport failures do not retry writes and warn that their outcome is unkn
         throw new TypeError("fetch failed")
     })
     await assert.rejects(
-        client.registerDeployment({ codeRevision: "r1" }),
+        client.registerDeployment({ imageRef: "im-code", workingDirectory: "/app" }),
         /Cannot complete PUT.*may have reached the server/u
     )
     assert.equal(requests, 1)
@@ -108,14 +101,35 @@ test("request traces stream through the authenticated control-plane client", asy
     assert.match(await (await client.openRequestStream(controller.signal)).text(), /event: requests/u)
 })
 
-test("SQL queries are posted as JSON with server-side credentials", async () => {
-    const query = { sql: "SELECT COUNT(*) AS total FROM request_events WHERE actor_id = ?", params: ["one"] }
+test("request history uses bounded filters with server-side credentials", async () => {
+    const query = new URLSearchParams({ actorId: "one", outcome: "failed", limit: "100", cursor: "opaque+cursor" })
+    const controller = new AbortController()
     const client = new ControlPlaneClient(connection, async (url, options) => {
-        assert.equal(url, "https://control.example/v1/observe/query")
-        assert.equal(options?.method, "POST")
+        assert.equal(
+            url,
+            "https://control.example/v1/observe/requests?actorId=one&outcome=failed&limit=100&cursor=opaque%2Bcursor"
+        )
+        assert.equal(options?.method, "GET")
         assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
-        assert.deepEqual(JSON.parse(String(options?.body)), query)
-        return Response.json({ rows: [{ total: 2 }], truncated: false })
+        assert.equal(options?.body, undefined)
+        assert.ok(options?.signal)
+        return Response.json({ records: [], nextCursor: null })
     })
-    assert.deepEqual(await client.query(query), { rows: [{ total: 2 }], truncated: false })
+    assert.deepEqual(await client.listRequests(query, controller.signal), { records: [], nextCursor: null })
 })
+
+for (const [method, path] of [
+    ["getMetrics", "metrics"],
+    ["listQueueWaits", "queue-waits"],
+    ["listWebSockets", "websockets"]
+] as const) {
+    test(`${path} reads use typed routes and server-side credentials`, async () => {
+        const client = new ControlPlaneClient(connection, async (url, options) => {
+            assert.equal(url, `https://control.example/v1/observe/${path}?fromMs=10&toMs=20`)
+            assert.equal(options?.method, "GET")
+            assert.equal(new Headers(options?.headers).get("authorization"), "Bearer admin-key")
+            return Response.json({ saved: true })
+        })
+        assert.deepEqual(await client[method](new URLSearchParams({ fromMs: "10", toMs: "20" })), { saved: true })
+    })
+}

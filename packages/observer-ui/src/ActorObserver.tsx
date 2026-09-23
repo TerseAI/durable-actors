@@ -311,7 +311,7 @@ function ActorInstances({
                 {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
                 {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} range={range} />}
                 {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
-                {client.watchRequests || client.query ? (
+                {client.watchRequests || client.listRequests ? (
                     <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} />
                 ) : (
                     <section>

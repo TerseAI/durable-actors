@@ -12,8 +12,11 @@ class ActorDefinitionError extends Error {
     }
 }
 
+/** Remote failure. Retrying an `outcome_unknown` operation may run it twice. */
 class ActorInvocationError extends Error {
+    /** Error category, such as `actor_error` or `outcome_unknown`. New codes may be added. */
     readonly code: string
+    /** Identifies this caller attempt; it is not an application idempotency key. */
     readonly requestId: string
 
     constructor(code: string, requestId: string, message: string) {

@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 pub(crate) struct RuntimeFixture {
     pub directory: tempfile::TempDir,
-    pub bucket: Arc<FileBucket>,
     pub runtime: Arc<RuntimeStorage>,
     pub access: ReplicaAccess,
 }
@@ -19,7 +18,7 @@ impl RuntimeFixture {
         let bucket = Arc::new(FileBucket::new(directory.path().into())?);
         let access = ReplicaAccess::new("test-secret", Arc::new(SystemClock));
         let runtime = Arc::new(RuntimeStorage::new(
-            bucket.clone(),
+            bucket,
             Arc::new(ReplicaSet::default()),
             Arc::new(GrpcReplicaPeers::new(access.clone())?),
             access.clone(),
@@ -28,7 +27,6 @@ impl RuntimeFixture {
         )?);
         Ok(Self {
             directory,
-            bucket,
             runtime,
             access,
         })

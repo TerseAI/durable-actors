@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 
-import type { ActorInventory, ObserverClient, ObserverQuery, ObserverQueryResult, RequestTracePage } from "./client.js"
+import type { ActorInventory, ObserverClient, RequestTracePage } from "./client.js"
 
 export function useInventory(client: ObserverClient) {
     const [attempt, setAttempt] = useState(0)
@@ -109,12 +109,10 @@ function mergePages(current: RequestTracePage | undefined, incoming: RequestTrac
     }
 }
 
-export function usePolledQuery<T>(client: Pick<ObserverClient, "query">, query: ObserverQuery | undefined, parse: (result: ObserverQueryResult) => T, interval = 10_000) {
-    const key = query && client.query ? JSON.stringify(query) : undefined
-    const parser = useRef(parse)
-    parser.current = parse
+export function usePolledQuery<Q extends object, T>(client: object, query: Q, request: ((query: Q, signal?: AbortSignal) => Promise<T>) | undefined, interval = 10_000) {
+    const key = request ? JSON.stringify(query) : undefined
     const [attempt, setAttempt] = useState(0)
-    const [result, setResult] = useState<{ client: ObserverClient["query"]; key: string; value: T; updatedAt: number }>()
+    const [result, setResult] = useState<{ client: object; key: string; value: T; updatedAt: number }>()
     const [failed, setFailed] = useState(false)
     const [loading, setLoading] = useState(false)
     useEffect(() => {
@@ -130,9 +128,9 @@ export function usePolledQuery<T>(client: Pick<ObserverClient, "query">, query: 
         }
         async function load() {
             try {
-                const value = parser.current(await client.query!(JSON.parse(key!) as ObserverQuery, controller.signal))
+                const value = await request!.call(client, JSON.parse(key!) as Q, controller.signal)
                 if (controller.signal.aborted) return
-                setResult({ client: client.query, key: key!, value, updatedAt: Date.now() })
+                setResult({ client, key: key!, value, updatedAt: Date.now() })
                 setFailed(false)
             } catch {
                 if (!controller.signal.aborted) setFailed(true)
@@ -143,7 +141,7 @@ export function usePolledQuery<T>(client: Pick<ObserverClient, "query">, query: 
                 }
             }
         }
-    }, [client, key, attempt, interval])
-    const current = result && result.client === client.query && result.key === key ? result : undefined
-    return { supported: !!client.query, value: current?.value, updatedAt: current?.updatedAt, loading, failed, retry: () => setAttempt(value => value + 1) }
+    }, [client, request, key, attempt, interval])
+    const current = result && result.client === client && result.key === key ? result : undefined
+    return { supported: !!request, value: current?.value, updatedAt: current?.updatedAt, loading, failed, retry: () => setAttempt(value => value + 1) }
 }

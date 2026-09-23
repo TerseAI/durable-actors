@@ -6,15 +6,17 @@ import { fileURLToPath } from "node:url"
 import open from "open"
 import type { Connect, PreviewServer } from "vite"
 
-import { connection, connectionOptions } from "./connection.js"
-import type { ConnectionOptions } from "./connection.js"
-import { ControlPlaneClient } from "./control-plane.js"
+import { connectionHelp } from "./connection.js"
+import { ControlPlaneClient, createControlPlaneClient } from "./control-plane.js"
 
 function registerObserveCommand(program: Command): void {
-    connectionOptions(program.command("observe").description("Open the local observability UI"))
+    program
+        .command("observe")
+        .description("Open the local observability UI")
         .option("--no-open", "print the UI URL without opening a browser")
-        .action(async (options: ConnectionOptions & { open: boolean }) => {
-            const observer = new Observer(new ControlPlaneClient(connection(options), fetch), open)
+        .addHelpText("after", connectionHelp)
+        .action(async (options: { open: boolean }) => {
+            const observer = new Observer(createControlPlaneClient(process.env, fetch), open)
             const result = await observer.start(options.open)
             const stop = () => {
                 process.exitCode ??= 0
@@ -36,8 +38,11 @@ class Observer {
     private server: PreviewServer | undefined
 
     constructor(
-        private readonly client: Pick<ControlPlaneClient, "checkConnection" | "listActors"> &
-            Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "query">>,
+        private readonly client: Pick<
+            ControlPlaneClient,
+            "checkConnection" | "listActors" | "getMetrics" | "listQueueWaits" | "listWebSockets"
+        > &
+            Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "listRequests">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
         private readonly assetDirectory = new URL(
             "./",
@@ -113,14 +118,6 @@ class Observer {
         }
         const url = new URL(request.url!, `http://${host}`)
         const pathname = url.pathname
-        if (pathname === "/api/observe/query") {
-            if (request.method !== "POST") {
-                response.writeHead(405, { allow: "POST" }).end()
-                return
-            }
-            await this.query(request, response)
-            return
-        }
         if (request.method !== "GET" && request.method !== "HEAD") {
             response.writeHead(405, { allow: "GET, HEAD" }).end()
             return
@@ -137,6 +134,16 @@ class Observer {
                     ? signal => this.client.openRequestStream!(signal, url.searchParams.get("after") ?? undefined)
                     : undefined
             )
+            return
+        }
+        const history = {
+            "/api/observe/requests": this.client.listRequests,
+            "/api/observe/metrics": this.client.getMetrics,
+            "/api/observe/queue-waits": this.client.listQueueWaits,
+            "/api/observe/websockets": this.client.listWebSockets
+        }[pathname]
+        if (history) {
+            await this.requestHistory(request, response, signal => history.call(this.client, url.searchParams, signal))
             return
         }
         if (pathname === "/api/observe/actors") {
@@ -198,41 +205,24 @@ class Observer {
         }
     }
 
-    private async query(request: IncomingMessage, response: ServerResponse): Promise<void> {
-        let query: { sql: string; params?: unknown[] }
-        try {
-            if (!request.headers["content-type"]?.startsWith("application/json")) throw new Error("JSON required")
-            const chunks: Buffer[] = []
-            let size = 0
-            for await (const chunk of request) {
-                size += chunk.length
-                if (size > 65_536) {
-                    response.writeHead(413).end()
-                    return
-                }
-                chunks.push(chunk)
-            }
-            query = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-            if (!query || typeof query.sql !== "string" || (query.params !== undefined && !Array.isArray(query.params)))
-                throw new Error("Invalid query")
-        } catch {
-            response
-                .writeHead(400, { "content-type": "application/json" })
-                .end(JSON.stringify({ error: "Expected a SQL query and parameters" }))
-            return
-        }
+    private async requestHistory(
+        request: IncomingMessage,
+        response: ServerResponse,
+        read: (signal: AbortSignal) => Promise<unknown>
+    ): Promise<void> {
         const controller = new AbortController()
         const disconnect = () => controller.abort()
         response.once("close", disconnect)
         try {
-            if (!this.client.query) throw new Error("Queries are not supported")
-            const result = await this.client.query(query, controller.signal)
-            response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result))
+            const result = await read(controller.signal)
+            response
+                .writeHead(200, { "content-type": "application/json" })
+                .end(request.method === "HEAD" ? undefined : JSON.stringify(result))
         } catch {
             if (!response.destroyed)
                 response
                     .writeHead(503, { "content-type": "application/json" })
-                    .end(JSON.stringify({ error: "Observability query failed" }))
+                    .end(JSON.stringify({ error: "Request history unavailable" }))
         } finally {
             response.off("close", disconnect)
         }

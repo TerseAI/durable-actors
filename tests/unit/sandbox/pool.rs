@@ -58,7 +58,7 @@ async fn expired_claims_and_outdated_runtime_spares_cannot_be_reused() -> Result
     with_postgres(async |fixture| {
            let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
            pool.reserve_host("expired", "host", "revision").await?;
-           pool.store.0.execute("UPDATE durable_object_spares SET expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
+           pool.store.0.execute("UPDATE durable_actors_spares SET expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
            let spare = SpareHandle {
 control_route: String::new(),
 control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-expired".into(), route: "https://spare.test".into(), canonical_region: "region".into() };
@@ -166,7 +166,6 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 .register_test_deployment(&HostLaunchSpec {
                     project_id: project.into(),
                     source: None,
-                    code_revision: "same".into(),
                     image_ref: image.into(),
                     code_snapshot: Some("im-code".into()),
                     working_directory: "/customer".into(),
@@ -198,7 +197,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 .store
                 .0
                 .query_opt(
-                    "SELECT status FROM durable_object_spares WHERE name = $1",
+                    "SELECT status FROM durable_actors_spares WHERE name = $1",
                     &[&name],
                 )
                 .await?

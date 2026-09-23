@@ -100,7 +100,7 @@ func (s *sdkSandbox) route(ctx context.Context, port int) (string, error) {
 	if tunnel := tunnels[port]; tunnel != nil {
 		return tunnel.URL(), nil
 	}
-	return "", fmt.Errorf("Modal did not create the durable-object HTTP/2 tunnel")
+	return "", fmt.Errorf("Modal did not create the durable-actors HTTP/2 tunnel")
 }
 
 func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {

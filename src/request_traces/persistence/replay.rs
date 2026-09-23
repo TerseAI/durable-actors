@@ -13,11 +13,11 @@ struct Cursor {
     position: u64,
 }
 
-struct Metadata {
-    generation: String,
-    head: u64,
-    pruned: u64,
-    total: u64,
+pub(super) struct Metadata {
+    pub(super) generation: String,
+    pub(super) head: u64,
+    pub(super) pruned: u64,
+    pub(super) total: u64,
 }
 
 pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<TracePage> {
@@ -60,7 +60,7 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
     })
 }
 
-fn metadata(transaction: &Transaction<'_>) -> Result<Metadata> {
+pub(super) fn metadata(transaction: &Transaction<'_>) -> Result<Metadata> {
     Ok(transaction.query_row("SELECT generation, pruned, total, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'traces'), 0) FROM trace_meta", [], |row| {
         Ok(Metadata { generation: row.get(0)?, pruned: row.get::<_, i64>(1)? as u64, total: row.get::<_, i64>(2)? as u64, head: row.get::<_, i64>(3)? as u64 })
     })?)
@@ -106,4 +106,11 @@ fn decode(value: &str) -> Result<Cursor> {
         return Err(InvalidTraceCursor.into());
     }
     Ok(cursor)
+}
+
+pub(super) fn resume_cursor(generation: &str, position: u64) -> Result<String> {
+    encode(&Cursor {
+        generation: generation.into(),
+        position,
+    })
 }

@@ -11,13 +11,17 @@ import { ActorProtocolError } from "../../src/errors.js"
 test("direct transport speaks the actor host protobuf contract", async () => {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_object.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true
         })
     ) as unknown as GrpcPackages
-    server.addService(definition.durable_object.v1.ActorHostService.service, {
+    assert.equal(
+        definition.durable_actors.v1.ActorHostService.service.Invoke.path,
+        "/durable_actors.v1.ActorHostService/Invoke"
+    )
+    server.addService(definition.durable_actors.v1.ActorHostService.service, {
         invoke(call: ServerUnaryCall<HostRequest, HostReply>, callback: sendUnaryData<HostReply>) {
             assert.equal(call.metadata.get("authorization")[0], "Bearer direct-token")
             assert.deepEqual(call.request, {
@@ -139,13 +143,13 @@ test("only transport authentication rejections are safe to retry", async () => {
 function actorHostServer(reply: HostReply, errorCode?: number): Server {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_object.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true
         })
     ) as unknown as GrpcPackages
-    server.addService(definition.durable_object.v1.ActorHostService.service, {
+    server.addService(definition.durable_actors.v1.ActorHostService.service, {
         invoke(_call: ServerUnaryCall<HostRequest, HostReply>, callback: sendUnaryData<HostReply>) {
             if (errorCode !== undefined) return callback({ code: errorCode, message: "rejected" })
             callback(null, reply)
@@ -164,7 +168,7 @@ function listen(server: Server): Promise<number> {
 }
 
 interface GrpcPackages {
-    readonly durable_object: {
+    readonly durable_actors: {
         readonly v1: {
             readonly ActorHostService: ServiceClientConstructor
         }
@@ -189,14 +193,14 @@ type HostReply = {
 test("socket effects use authenticated host gRPC with actor ownership binding", async () => {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(fileURLToPath(new URL("../../src/generated/durable_object.proto", import.meta.url)), {
+        loadSync(fileURLToPath(new URL("../../src/generated/durable_actors.proto", import.meta.url)), {
             defaults: true,
             longs: Number,
             oneofs: true
         })
     ) as unknown as GrpcPackages
     let delivered = false
-    server.addService(definition.durable_object.v1.ActorHostService.service, {
+    server.addService(definition.durable_actors.v1.ActorHostService.service, {
         publishSocketEffects(
             call: ServerUnaryCall<
                 { actor: { actorName: string; actorId: string }; ownerEpoch: number; effectsJson: Buffer },

@@ -5,14 +5,11 @@ import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import { styleText } from "node:util"
 
-import { registerDeployCommand } from "./cli/deploy.js"
 import { registerDevCommand } from "./cli/dev.js"
 import { registerGenerateCommand } from "./cli/generate.js"
-import { registerObjectCommands } from "./cli/objects.js"
 import { registerObserveCommand } from "./cli/observe.js"
-import { runtimeEnvironment, startRustRuntime } from "./cli/rust-runtime.js"
+import { registerStartCommand } from "./cli/start.js"
 import { actorEnvironment } from "./environment.js"
-import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
 try {
     config({ quiet: true })
@@ -26,35 +23,17 @@ try {
         .showHelpAfterError()
     program
         .command("init <directory>")
-        .description("Create a standalone actor project")
+        .description("Create a sample actor project")
         .addOption(
             new Option("--template <name>", "project template")
                 .choices(["actor", "chat", "ai-chat", "documents"])
                 .default("actor")
         )
         .action(initializeProject)
-    program
-        .command("build [entrypoint]")
-        .description("Build an actor runtime artifact with embedded persistence and socket schemas")
-        .option("--out-file <file>", "actor runtime artifact", "dist/actors.mjs")
-        .option("--config <file>", "TypeScript configuration file")
-        .action(async (entrypoint: string | undefined, options: { outFile: string; config?: string }) => {
-            const { buildActor } = await import("./compiler/actor-build.js")
-            await buildActor(entrypoint ?? "src/durable-objects.ts", path.resolve(options.outFile), {
-                configFile: options.config
-            })
-        })
-    registerGenerateCommand(program)
-    registerDeployCommand(program)
     registerDevCommand(program)
+    registerGenerateCommand(program)
     registerObserveCommand(program)
-    program
-        .command("start")
-        .description("Start the packaged runtime using your self-hosting environment settings")
-        .action(async () => {
-            process.exitCode = await runRuntime([])
-        })
-    registerObjectCommands(program)
+    registerStartCommand(program)
     if (process.argv.length === 2) program.help()
     await program.parseAsync(process.argv)
 } catch (error) {
@@ -87,8 +66,9 @@ function projectInstructions(destination: string, template: string): string {
     return `Created ${template} app in ${destination}.
 
 From that directory, run:
-  npm install${template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx durable-actors generate"}
-  npx durable-actors dev
+  npm install
+  cp .env.example .env${template === "ai-chat" ? "\n  # Add your OpenAI API key to .env" : ""}
+  npm run dev:actors
 
 Add the connection settings printed by durable-actors dev to .env, then in another terminal:
   npm run dev
@@ -114,7 +94,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.
-    Edit ${styleText("cyan", "src/durable-objects.ts")} to make it your own.
+    Edit ${styleText("cyan", "src/actors.ts")} to make it your own.
 
   ${styleText("bold", "Connect your app")}
     Follow dev's .env and generate instructions
@@ -122,15 +102,6 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
 `
 }
 
-async function runRuntime(args: string[]): Promise<number> {
-    const executable = await fetchRuntimeExecutablePath()
-    return runProcess(executable, args, runtimeEnvironment(executable), true)
-}
-
 async function version(): Promise<string> {
     return JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version
-}
-
-function runProcess(command: string, args: string[], env: NodeJS.ProcessEnv, parentLifetime = false): Promise<number> {
-    return startRustRuntime(command, args, env, parentLifetime).exited
 }

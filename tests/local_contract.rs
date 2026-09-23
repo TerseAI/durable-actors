@@ -20,21 +20,8 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
     std::fs::write(&file, serde_json::to_vec(&contract)?)?;
     let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
     let first_api_key = runtime.api_key.clone();
-    let first: Value = runtime
-        .contract("")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let first: Value = runtime.contract().await?.error_for_status()?.json().await?;
     assert_eq!(first["contract"], contract);
-    let revision = first["codeRevision"].as_str().context("missing revision")?;
-    let pinned: Value = runtime
-        .contract(&format!("?revision={revision}"))
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(pinned, first);
     runtime.stop().await?;
 
     let mut changed = contract.clone();
@@ -42,26 +29,13 @@ async fn dev_publishes_the_contract_before_readiness_and_refreshes_it_on_restart
     std::fs::write(&file, serde_json::to_vec(&changed)?)?;
     let runtime = LocalRuntime::start(project.path(), Some(&file)).await?;
     assert_ne!(runtime.api_key, first_api_key);
-    let second: Value = runtime
-        .contract("")
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let second: Value = runtime.contract().await?.error_for_status()?.json().await?;
     assert_eq!(second["contract"], changed);
-    assert_ne!(second["codeRevision"], first["codeRevision"]);
     assert_ne!(second["contractHash"], first["contractHash"]);
-    assert_eq!(
-        runtime
-            .contract(&format!("?revision={revision}"))
-            .await?
-            .status(),
-        404
-    );
     runtime.stop().await?;
 
     let runtime = LocalRuntime::start(project.path(), None).await?;
-    assert_eq!(runtime.contract("").await?.status(), 404);
+    assert_eq!(runtime.contract().await?.status(), 404);
     runtime.stop().await
 }
 
@@ -167,10 +141,10 @@ impl LocalRuntime {
         })
     }
 
-    async fn contract(&self, query: &str) -> Result<reqwest::Response> {
+    async fn contract(&self) -> Result<reqwest::Response> {
         Ok(reqwest::Client::new()
             .get(format!(
-                "{}/v1/projects/default/deployment/contract{query}",
+                "{}/v1/projects/default/deployment/contract",
                 self.origin
             ))
             .bearer_auth(&self.api_key)

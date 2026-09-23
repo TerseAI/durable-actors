@@ -1,11 +1,11 @@
 import { Command, InvalidArgumentError, Option } from "commander"
-import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
+import { projectIdSchema } from "../actor/identity.js"
 import { configuredSettings } from "../client/clientSettings.js"
 import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
 
@@ -24,47 +24,34 @@ interface DevOptions {
     watch: boolean
 }
 
-function registerDevCommand(program: Command): void {
+export function registerDevCommand(program: Command): void {
     program
         .command("dev")
-        .description("Start local actors with persistent file storage")
-        .addOption(
-            new Option("--project-id <id>", "actor project ID").env("DURABLE_ACTORS_PROJECT_ID").default("local")
-        )
-        .option("--no-watch", "Disable automatic actor reload when source files change")
-        .addOption(
-            new Option("--api-key <key>", "Shared secret for local clients (generated when omitted)").env(
-                "DURABLE_ACTORS_SECRET"
-            )
-        )
-        .addOption(
-            new Option("--project <directory>", "actor project directory").env("DURABLE_ACTORS_PROJECT").default(".")
-        )
+        .description("Run local actors and reload code changes")
+        .option("--no-watch", "disable automatic code reload")
         .addOption(
             new Option("--port <number>", "loopback port (0 selects a free port)")
                 .env("DURABLE_ACTORS_PORT")
                 .argParser(portNumber)
                 .default(7100)
         )
-        .addOption(
-            new Option("--entrypoint <file>", "actor source file, relative to the project")
-                .env("DURABLE_ACTORS_ENTRYPOINT")
-                .default("src/durable-objects.ts")
-        )
-        .addOption(
-            new Option("--data-dir <directory>", "state directory (default: <project>/.durable-actors)").env(
-                "DURABLE_ACTORS_DATA_DIR"
-            )
-        )
-        .addOption(
-            new Option("--storage <backend>", "where to save actor state and ownership")
-                .env("DURABLE_ACTORS_STORAGE")
-                .choices(["local", "gcs"])
-                .default("local")
-        )
-        .action(async options => {
-            process.exitCode = await runDev(options)
+        .addHelpText("after", "\nConfigure development in .env; DURABLE_ACTORS_PROJECT_ID defaults to local.")
+        .action(async (options: { watch: boolean; port: number }) => {
+            process.exitCode = await runDev(developmentOptions(options, process.env))
         })
+}
+
+function developmentOptions(options: { watch: boolean; port: number }, environment: NodeJS.ProcessEnv): DevOptions {
+    const env = developmentEnvironment.parse(environment)
+    return {
+        ...options,
+        projectId: env.DURABLE_ACTORS_PROJECT_ID,
+        apiKey: env.DURABLE_ACTORS_SECRET,
+        project: env.DURABLE_ACTORS_PROJECT,
+        entrypoint: env.DURABLE_ACTORS_ENTRYPOINT,
+        dataDir: env.DURABLE_ACTORS_DATA_DIR,
+        storage: env.DURABLE_ACTORS_STORAGE
+    }
 }
 
 function portNumber(value: string): number {
@@ -73,6 +60,15 @@ function portNumber(value: string): number {
         throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
     return port
 }
+
+const developmentEnvironment = z.object({
+    DURABLE_ACTORS_PROJECT_ID: projectIdSchema.default("local"),
+    DURABLE_ACTORS_SECRET: z.string().optional(),
+    DURABLE_ACTORS_PROJECT: z.string().min(1).default("."),
+    DURABLE_ACTORS_ENTRYPOINT: z.string().min(1).default("src/actors.ts"),
+    DURABLE_ACTORS_DATA_DIR: z.string().min(1).optional(),
+    DURABLE_ACTORS_STORAGE: z.enum(["local", "gcs"]).default("local")
+})
 
 async function runDev(options: DevOptions): Promise<number> {
     const project = await realpath(options.project)
@@ -128,16 +124,14 @@ async function publishLocalContract(
     client: Pick<ControlPlaneClient, "registerDeployment">
 ): Promise<void> {
     const contract = await compileContract(project, options.entrypoint)
-    const codeRevision = randomUUID()
     await client.registerDeployment({
-        codeRevision,
         imageRef: "local",
         workingDirectory: project,
         actorEntrypoint: options.entrypoint,
         secretRefs: [],
         contract
     })
-    console.log(`Updated local actor revision ${codeRevision}.`)
+    console.log("Updated local actors.")
 }
 
 async function compileContract(project: string, entrypoint: string) {
@@ -167,4 +161,4 @@ function devArguments(options: DevOptions): string[] {
     return args
 }
 
-export { registerDevCommand }
+export { type DevOptions, runDev }

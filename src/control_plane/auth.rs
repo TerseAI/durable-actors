@@ -34,7 +34,7 @@ pub(crate) struct ActorPrincipal {
     pub host_id: HostId,
     pub session_id: String,
     pub region: String,
-    pub code_revision: Option<String>,
+    pub host_config_key: Option<String>,
     pub invocation: Option<ActorInvocationCapability>,
 }
 
@@ -64,7 +64,7 @@ struct ActorJwtClaims {
     session_id: String,
     #[serde(rename = "storageRegion")]
     region: String,
-    code_revision: Option<String>,
+    host_config_key: Option<String>,
     scope: String,
     iat: i64,
     #[serde(rename = "nbf")]
@@ -223,7 +223,7 @@ impl ActorJwtVerifier {
             host_id: HostId::new(claims.host_id),
             session_id: claims.session_id,
             region: claims.region,
-            code_revision: claims.code_revision,
+            host_config_key: claims.host_config_key,
             invocation: claims.invocation,
         };
         ensure!(
@@ -258,10 +258,10 @@ impl ActorJwtVerifier {
 
 fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, DecodingKey>> {
     let keys: JwkSet = serde_json::from_str(public_keys_json)
-        .context("parse durable-object JWT public keys as a JWK set")?;
+        .context("parse durable-actors JWT public keys as a JWK set")?;
     ensure!(
         !keys.keys.is_empty(),
-        "durable-object JWT public keys must contain at least one key"
+        "durable-actors JWT public keys must contain at least one key"
     );
     keys.keys
         .into_iter()

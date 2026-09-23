@@ -14,7 +14,7 @@ use crate::actor::ActorKey;
 use super::{
     MAX_CONTROL_PLANE_MESSAGE_BYTES,
     admin::{AdminService, HostLaunchSpec},
-    contracts::{ContractRevisionConflict, PublicActorContract},
+    contracts::PublicActorContract,
     service::{ControlPlaneService, TargetResolutionTimings},
 };
 
@@ -27,7 +27,7 @@ struct PublicApiState {
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
     let contracts = super::contract_api::router(admin.clone());
     Router::new()
-        .route("/.well-known/jwks.json", get(jwks))
+        .route("/openapi.yaml", get(openapi))
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/v1/projects/{project_id}/deployment",
@@ -36,95 +36,33 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
                 .delete(delete_deployment),
         )
         .route(
-            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/connect",
-            post(connect_actor),
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor",
+            post(find_actor),
+        )
+        .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
+            post(find_websocket),
         )
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(contracts)
 }
 
-pub(super) fn local_router(
-    invocations: ControlPlaneService,
-    admin: AdminService,
-    project_id: String,
-) -> Router {
-    let state = PublicApiState {
-        invocations: invocations.clone(),
-        admin: admin.clone(),
-    };
-    router(invocations, admin).merge(Router::new().route(
-        "/v1/actors/{actor_name}/{actor_id}/connect",
-        post(move |Path((actor_name, actor_id)): Path<(String, String)>, headers: HeaderMap, request: Result<Json<ConnectRequest>, JsonRejection>| {
-            connect_actor(State(state.clone()), Path(ActorPath { project_id: project_id.clone(), actor_name, actor_id }), headers, request)
-        }),
-    ).layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES)))
+async fn openapi() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/yaml")],
+        include_str!("../../docs/reference/openapi.yaml"),
+    )
 }
 
-async fn connect_actor(
+async fn find_websocket(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,
     headers: HeaderMap,
-    request: Result<Json<ConnectRequest>, JsonRejection>,
+    request: Result<Json<FindWebSocketRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
-    match request {
-        ConnectRequest::Grpc { home_region } => {
-            resolve_actor_target(
-                State(state),
-                Path(path),
-                headers,
-                TargetRequest { home_region },
-            )
-            .await
-        }
-        ConnectRequest::Websocket {
-            home_region,
-            metadata,
-            authorization_lifetime_ms,
-        } => {
-            issue_socket_ticket(
-                State(state),
-                Path(path),
-                headers,
-                Json(IssueSocketTicketRequest {
-                    home_region,
-                    metadata,
-                    authorization_lifetime_ms,
-                }),
-            )
-            .await
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "transport", rename_all = "lowercase", deny_unknown_fields)]
-enum ConnectRequest {
-    Grpc {
-        #[serde(default, rename = "homeRegion")]
-        home_region: Option<String>,
-    },
-    Websocket {
-        #[serde(default, rename = "homeRegion")]
-        home_region: Option<String>,
-        metadata: Value,
-        #[serde(
-            default = "socket_authorization_lifetime",
-            rename = "authorizationLifetimeMs"
-        )]
-        authorization_lifetime_ms: i64,
-    },
-}
-
-async fn issue_socket_ticket(
-    State(state): State<PublicApiState>,
-    Path(path): Path<ActorPath>,
-    headers: HeaderMap,
-    Json(request): Json<IssueSocketTicketRequest>,
-) -> Result<Response, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
     state
         .invocations
         .validate_home_region(request.home_region.as_deref())
@@ -156,7 +94,7 @@ async fn issue_socket_ticket(
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct IssueSocketTicketRequest {
+struct FindWebSocketRequest {
     #[serde(default)]
     home_region: Option<String>,
     metadata: Value,
@@ -189,7 +127,6 @@ async fn get_deployment(
             actor_entrypoint: spec.actor_entrypoint,
         });
     Ok(Json(RegisterDeploymentRequest {
-        code_revision: spec.code_revision,
         contract: None,
         image_ref: source.image_ref,
         working_directory: source.working_directory,
@@ -230,7 +167,6 @@ async fn register_deployment(
         project_id: project_id(path)?,
         source: None,
         code_snapshot: None,
-        code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
         actor_entrypoint: request.actor_entrypoint,
@@ -240,27 +176,15 @@ async fn register_deployment(
         .invocations
         .deploy_source(&state.admin, &spec, contract.as_ref())
         .await
-        .map_err(|error| {
-            if error.is::<ContractRevisionConflict>() {
-                ApiError::conflict(error.to_string())
-            } else {
-                ApiError::bad_request(error)
-            }
-        })?;
+        .map_err(ApiError::bad_request)?;
     Ok(Json(DeploymentReply { changed }))
 }
 
-async fn jwks(State(state): State<PublicApiState>) -> Result<Json<Value>, ApiError> {
-    let document = serde_json::from_slice(&state.admin.jwks_json().map_err(ApiError::internal)?)
-        .map_err(ApiError::internal)?;
-    Ok(Json(document))
-}
-
-async fn resolve_actor_target(
+async fn find_actor(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,
     headers: HeaderMap,
-    request: TargetRequest,
+    request: Result<Json<FindActorRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let mut timings = TargetResolutionTimings::new();
     let request_id = headers
@@ -269,6 +193,7 @@ async fn resolve_actor_target(
         .unwrap_or("")
         .to_owned();
     authorized_admin(&state.admin, &headers)?;
+    let Json(request) = request.map_err(ApiError::json)?;
     let actor = path.into_actor();
     actor.validate().map_err(ApiError::bad_request)?;
     state
@@ -285,7 +210,6 @@ async fn resolve_actor_target(
             .await
             .map_err(ApiError::routing)?;
         Ok(Json(ActorTargetReply {
-            transport: "grpc",
             home_region: target.home_region,
             route: target.route,
             token: target.token,
@@ -340,12 +264,12 @@ async fn resolve_actor_target(
             "actor target resolution failed"
         ),
     }
-    result.map(IntoResponse::into_response)
+    result.map(|target| ([(header::CACHE_CONTROL, "no-store")], target).into_response())
 }
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TargetRequest {
+struct FindActorRequest {
     home_region: Option<String>,
 }
 
@@ -398,7 +322,6 @@ fn authorization(headers: &HeaderMap) -> Result<&str, ApiError> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
-    code_revision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     image_ref: String,
@@ -418,7 +341,6 @@ struct DeploymentReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorTargetReply {
-    transport: &'static str,
     home_region: String,
     route: String,
     token: String,

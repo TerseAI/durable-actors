@@ -334,7 +334,7 @@ test("generates callable typed backend stubs in a consumer without actor source 
         `
         import { actors } from "./index.js"
         const room = actors.ChatRoom.get("room-123")
-        const grant: Promise<{ websocketUrl: string; transport: "websocket"; homeRegion: string; connectByMs: number; authorizedUntilMs: number }> = actors.ChatRoom.prepareWebsocket({ actorId: "room-123", metadata: {} })
+        const grant: Promise<{ websocketUrl: string; homeRegion: string; connectByMs: number; authorizedUntilMs: number }> = actors.ChatRoom.prepareWebsocket({ actorId: "room-123", metadata: {} })
         const message: Promise<{ text: string; reply?: { text: string } }> = room.sendMessage({ text: "hi" })
         const cleared: Promise<void> = room.clear()
         const count: Promise<number> = room.count()

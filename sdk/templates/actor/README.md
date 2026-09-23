@@ -7,9 +7,9 @@ pnpm install
 pnpm exec durable-actors dev
 ```
 
-Define your actors in `src/durable-objects.ts`. The starter contains a counter with persisted state and `read()` and `increment()` methods. Each counter ID has its own saved value.
+Define your actors in `src/actors.ts`. The starter contains a counter with persisted state and `read()` and `increment()` methods. Each counter ID has its own saved value.
 
-`durable-actors dev` watches your actor source and stores local state in `.durable-actors/`. It defaults to project ID `local`; choose another with `pnpm exec durable-actors dev --project-id my-project`. If the CLI is installed globally, you can run `durable-actors dev` directly.
+`durable-actors dev` watches your actor source and stores local state in `.durable-actors/`. It defaults to project ID `local`; choose another with `DURABLE_ACTORS_PROJECT_ID=my-project pnpm exec durable-actors dev`. If the CLI is installed globally, you can run `durable-actors dev` directly.
 
 ## Connect your application
 
@@ -17,7 +17,7 @@ In your separate application project's directory:
 
 1. Run `pnpm add durable-actors`.
 2. Copy the project ID, URL, and shared secret printed by the actor server into your application’s `.env` file.
-3. Run `durable-actors generate`; the CLI loads `.env` automatically.
+3. Run `pnpm exec durable-actors generate --remote`; the CLI loads `.env` automatically.
 
 Your application backend can then use the generated client:
 
@@ -30,4 +30,4 @@ console.log(await counter.increment())
 
 Start your backend with that `.env` file loaded. Update its secret after restarting the actor server. If you change the actor server's URL or port, also set `DURABLE_ACTORS_CONTROL_PLANE_URL` in the backend environment. After changing actor method signatures, rerun the printed generate command in your application.
 
-Use `pnpm check` to check types and `pnpm build` to create `dist/actors.mjs` for deployment.
+Use `pnpm check` to check types. Production deployment integrations register actor images through `PUT /v1/projects/{project_id}/deployment`; see the [HTTP API](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/openapi.yaml).

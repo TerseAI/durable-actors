@@ -1,38 +1,53 @@
-# Shared documents
+# Collaborative documents
 
-Requires Node.js 20+ and Bun 1.4.2+ on your PATH; Bun executes the actors.
+A Tiptap editor with Yjs for concurrent edits and durable actors for saved documents. Edit together in multiple tabs, then reload to pick up where you left off.
 
-A small Tiptap editor with Yjs for concurrent edits and durable actors for saved documents.
+## Run locally
 
-## Run it
+Requires Node.js 22.19+ and Bun 1.4.2+.
 
 ```sh
 npx durable-actors init documents-example --template documents
 cd documents-example
 npm install
-npx durable-actors generate
-npx durable-actors dev
+cp .env.example .env
+npm run dev:actors
 ```
 
-Wait for `Local actors ready`. In another terminal, run the printed export command, then:
+Already in the example directory? Start at `npm install`.
+
+Wait for `Ready`. In another terminal in the same directory:
 
 ```sh
 npm run dev
 ```
 
-Open [the editor](http://127.0.0.1:3000) in two tabs. Type in Welcome, format some text, and edit from both tabs. Add another document and switch between them. Reload after changes arrive in the other tab to see the saved content.
+Open [localhost:3000](http://127.0.0.1:3000) in two tabs. Edit **Welcome** from both, add another document, and switch between them. Restart the servers and reload to restore saved documents.
 
-If you already have this directory, start at `npm install`. No external service is needed.
+## Save and share documents
 
-## The code
+[src/actors.ts](src/actors.ts) defines two actors:
 
-- [src/durable-objects.ts](src/durable-objects.ts): a workspace actor stores the document list; one document actor per ID merges and saves Yjs state. The actors send initial data in `onConnect` and broadcast updates explicitly.
-- [src/backend.ts](src/backend.ts): issues WebSocket credentials using the generated `prepareWebsocket` helpers and local defaults.
-- [src/collaboration.ts](src/collaboration.ts): connects Yjs to a native WebSocket. It sends local updates and applies remote state without echoing it.
-- [src/App.tsx](src/App.tsx) and [src/Editor.tsx](src/Editor.tsx): document navigation and Tiptap’s editor, formatting controls, and collaborative undo/redo.
+- `Workspace` saves the document list.
+- `Document` merges Yjs updates, saves the merged content, and broadcasts it to connected editors. Each document ID has its own actor.
 
-Yjs updates are encoded as base64 strings to fit the SDK’s JSON protocol. The actor saves the Yjs state, preserving the information needed to merge concurrent edits. Clients receive the complete merged document after each edit; this keeps the sample small rather than optimizing for large documents.
+A document joins through the [Express backend](src/backend.ts):
 
-Editing pauses while disconnected. Reload to request a fresh connection. There is no automatic reconnect or browser storage for unsaved edits. Keep `.durable-actors/` and restart both servers to restore saved documents.
+```ts
+import { actors } from "../generated/index.js"
 
-This demo has one shared workspace and no authentication. In an application, authenticate the proxy route and authorize access to the requested workspace or document. Presence cursors, document deletion, and permissions UI are left out.
+const grant = await actors.Document.prepareWebsocket({
+    actorId: "welcome",
+    metadata: null
+})
+```
+
+The [collaboration client](src/collaboration.ts) opens the returned `websocketUrl` and exchanges Yjs updates. [App.tsx](src/App.tsx) handles document navigation; [Editor.tsx](src/Editor.tsx) connects Tiptap to the shared document.
+
+Editing pauses while disconnected. Reload to reconnect; unsaved edits are not stored in the browser. This demo shares one workspace without authentication. Add user authentication and document access checks before issuing WebSocket URLs in your app.
+
+## Development
+
+Both processes read `.env`; saved state lives in `.durable-actors/`. Actor code reloads automatically. After changing public actor types, restart `npm run dev` to regenerate the client. For multiple examples, set distinct `PORT`, `DURABLE_ACTORS_PORT`, and matching control-plane URLs; see [Run the examples together](../README.md).
+
+`npm run build` generates clients, checks TypeScript, and builds the frontend.

@@ -7,8 +7,6 @@ sdk/src/generated/
 target/
 dist-runtime/
 .durable-actors/
-.little-actors/
-.little-durable-objects/
 .artifacts/
 .env
 .env.*

@@ -52,7 +52,7 @@ function ignoredActorPath(candidate: string, options: ActorSourceWatcherOptions)
     if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
     const components = relative.split(path.sep)
     if (components.includes(".git") || components.includes("node_modules")) return true
-    if ([".durable-actors", ".little-actors", "generated"].includes(components[0])) return true
+    if ([".durable-actors", "generated"].includes(components[0])) return true
     if (!options.dataDirectory) return false
     const state = path.resolve(options.dataDirectory)
     return candidate === state || candidate.startsWith(`${state}${path.sep}`)

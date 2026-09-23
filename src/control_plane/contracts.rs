@@ -46,40 +46,17 @@ impl PublicActorContract {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishedContract {
-    pub code_revision: String,
     pub contract_hash: String,
     pub contract: Value,
 }
 
 impl PublishedContract {
-    pub(crate) fn new(revision: &str, contract: &PublicActorContract) -> Self {
+    pub(crate) fn new(contract: &PublicActorContract) -> Self {
         Self {
-            code_revision: revision.into(),
             contract_hash: contract.hash().into(),
             contract: contract.document().clone(),
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct ContractRevisionConflict;
-
-impl std::fmt::Display for ContractRevisionConflict {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a different public actor contract is already published for this code revision; use a new revision")
-    }
-}
-
-impl std::error::Error for ContractRevisionConflict {}
-
-pub(crate) fn check_contract_hash(
-    existing: Option<&str>,
-    contract: &PublicActorContract,
-) -> Result<()> {
-    if existing.is_some_and(|hash| hash != contract.hash()) {
-        return Err(ContractRevisionConflict.into());
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]

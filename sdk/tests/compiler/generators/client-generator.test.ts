@@ -38,7 +38,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         `import { ActorProxy } from "./index.js"
         import type { ActorAuthorization } from "./index.js"
         import { actors } from "./index.js"
-        const grant: Promise<{ websocketUrl: string; transport: "websocket"; homeRegion: string; connectByMs: number; authorizedUntilMs: number }> = actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
+        const grant: Promise<{ websocketUrl: string; homeRegion: string; connectByMs: number; authorizedUntilMs: number }> = actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
         actors.Counter.prepareWebsocket({ actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 })
         // @ts-expect-error unknown actor
         actors.Missing.prepareWebsocket({ actorId: "one", metadata: {} })
@@ -89,7 +89,6 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         requests.push({ url: String(url), metadata: JSON.parse(init!.body as string).metadata })
         return Response.json({
             websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
-            transport: "websocket",
             homeRegion: "north-america-east",
             connectByMs: 1000,
             authorizedUntilMs: 900000
@@ -101,19 +100,19 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         { actorName: "Room", actorId: "one", metadata: { userId: "alice" } },
         { actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "editor" } }
     ])
-        assert.equal((await proxy.handle(authorization)).transport, "websocket")
+        assert.equal((await proxy.handle(authorization)).websocketUrl, "wss://actors.example.com/v1/socket?key=ticket")
     assert.deepEqual(
         requests.map(request => request.metadata),
         [{ userId: "alice" }, { tenantId: 1, role: "editor" }]
     )
-    assert.match(requests[1]!.url, /actors\/Counter\/one\/connect$/)
+    assert.match(requests[1]!.url, /actors\/Counter\/one\/find-websocket$/)
     for (const authorization of [
         { actorName: "Room", actorId: "one", metadata: {} },
         { actorName: "Room", actorId: "one", metadata: { userId: 1 } },
         { actorName: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } },
         { actorName: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } }
     ])
-        assert.equal((await proxy.handle(authorization)).transport, "websocket")
+        assert.equal((await proxy.handle(authorization)).websocketUrl, "wss://actors.example.com/v1/socket?key=ticket")
     for (const authorization of [
         { actorName: "Missing", actorId: "one", metadata: {} },
         { actorName: "toString", actorId: "one", metadata: {} }
@@ -145,12 +144,14 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     process.env.DURABLE_ACTORS_SECRET = options.apiKey
     assert.deepEqual(await actors.Room.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } }), {
         websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
-        transport: "websocket",
         homeRegion: "north-america-east",
         connectByMs: 1000,
         authorizedUntilMs: 900000
     })
-    assert.equal(requests.at(-1)!.url, "https://actors.example.com/v1/projects/default/actors/Room/lobby/connect")
+    assert.equal(
+        requests.at(-1)!.url,
+        "https://actors.example.com/v1/projects/default/actors/Room/lobby/find-websocket"
+    )
     const issued: { url: string; headers: Headers; body: unknown }[] = []
     await actors.Counter.prepareWebsocket(
         { actorId: "one", metadata: { tenantId: 1, role: "viewer" }, authorizationLifetimeMs: 60000 },
@@ -164,7 +165,6 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
                 })
                 return Response.json({
                     websocketUrl: "wss://actors.example.com/v1/socket?key=ticket",
-                    transport: "websocket",
                     homeRegion: "north-america-east",
                     connectByMs: 1000,
                     authorizedUntilMs: 900000
@@ -172,10 +172,9 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
             }
         }
     )
-    assert.equal(issued[0]!.url, "https://actors.example.com/v1/projects/default/actors/Counter/one/connect")
+    assert.equal(issued[0]!.url, "https://actors.example.com/v1/projects/default/actors/Counter/one/find-websocket")
     assert.equal(issued[0]!.headers.get("authorization"), "Bearer secret")
     assert.deepEqual(issued[0]!.body, {
-        transport: "websocket",
         metadata: { tenantId: 1, role: "viewer" },
         authorizationLifetimeMs: 60000
     })
@@ -186,8 +185,8 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         /HTTP 403/
     )
     assert.equal(
-        (await ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: { userId: "alice" } })).transport,
-        "websocket"
+        (await ActorProxy.handle({ actorName: "Room", actorId: "one", metadata: { userId: "alice" } })).websocketUrl,
+        "wss://actors.example.com/v1/socket?key=ticket"
     )
 })
 
@@ -319,7 +318,7 @@ test("regenerates typed descriptors without stale validators or server imports",
         const source = await readFile(path.join(directory, "index.ts"), "utf8")
         assert.doesNotMatch(source, /durable-actors\/browser|createClient|export const clients/)
         assert.match(source, /amount: number/)
-        assert.doesNotMatch(source, /node:|\/host|actor-compiler|durable-objects/)
+        assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
         assert.deepEqual((await readdir(directory)).sort(), ["index.ts"])
         assert.doesNotMatch(source, /validators/)
         assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export const actors/)
