@@ -33,7 +33,6 @@ In your separate application project's directory (ex: node server), install the 
 
 ```sh
 pnpm add -D durable-actors
-pnpm add zod@4
 ```
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.

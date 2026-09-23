@@ -35,7 +35,6 @@ async function generate(entrypoint: string | undefined, options: GenerateOptions
     for (const obsolete of ["contract.json", "contract-source.json"])
         await rm(path.join(directory, obsolete), { force: true })
     console.log(`Generated ${contract.actors.length} actor contract(s) in ${directory}.`)
-    console.log("Install the generated client's runtime dependency in your application: npm install zod@4")
 }
 
 function validateOptions(entrypoint: string | undefined, options: GenerateOptions): void {

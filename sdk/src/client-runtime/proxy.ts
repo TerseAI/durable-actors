@@ -1,6 +1,5 @@
-import { z } from "zod"
-
 import { ActorProtocolError, ActorSerializationError, ActorValidationError } from "./errors.js"
+import { isRecord } from "./http.js"
 import {
     authorizationHeaders,
     configuredSettings,
@@ -38,7 +37,12 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
 }[keyof Actors & string]
 
 /** Browser connection URL and deadlines in Unix milliseconds. Treat the URL as a credential. */
-type SocketGrant = z.infer<typeof socketGrantSchema>
+interface SocketGrant {
+    websocketUrl: string
+    homeRegion: string
+    connectByMs: number
+    authorizedUntilMs: number
+}
 
 /** Issues browser connection URLs from your backend. */
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
@@ -54,7 +58,7 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         dependencies: SocketProxyDependencies = {}
     ) {
         this.setupTimeoutMs = options.setupTimeoutMs ?? 180000
-        if (!setupTimeoutSchema.safeParse(this.setupTimeoutMs).success)
+        if (!Number.isSafeInteger(this.setupTimeoutMs) || this.setupTimeoutMs < 1000 || this.setupTimeoutMs > 600000)
             throw new Error("Socket setup timeout must be between one second and ten minutes")
         const settings = configuredSettings(proxySettings(options))
         this.origin = settings.controlPlaneUrl
@@ -73,7 +77,11 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         if (!Object.hasOwn(this.actors, actorName)) throw new Error(`Unknown actor name: ${actorName}`)
         const metadata = socketMetadata(authorization.metadata)
         const authorizationLifetimeMs = authorization.authorizationLifetimeMs ?? 900000
-        if (!authorizationLifetimeSchema.safeParse(authorizationLifetimeMs).success)
+        if (
+            !Number.isSafeInteger(authorizationLifetimeMs) ||
+            authorizationLifetimeMs < 1000 ||
+            authorizationLifetimeMs > 86400000
+        )
             throw new Error("Socket authorization lifetime must be between one second and one day")
         const homeRegion =
             authorization.homeRegion === undefined
@@ -109,16 +117,30 @@ export { SocketProxy }
 export type { ProxyActor, SocketAuthorization, SocketGrant, SocketProxyDependencies, SocketProxyOptions }
 
 function socketGrant(value: unknown): SocketGrant {
-    const grant = socketGrantSchema.safeParse(value)
-    if (!grant.success) throw new ActorProtocolError("invalid WebSocket authorization response")
-    return grant.data
+    if (
+        !isRecord(value) ||
+        typeof value.websocketUrl !== "string" ||
+        !URL.canParse(value.websocketUrl) ||
+        !/^wss?:$/u.test(new URL(value.websocketUrl).protocol) ||
+        typeof value.homeRegion !== "string" ||
+        !value.homeRegion ||
+        !Number.isSafeInteger(value.connectByMs) ||
+        !Number.isSafeInteger(value.authorizedUntilMs)
+    )
+        throw new ActorProtocolError("invalid WebSocket authorization response")
+    return {
+        websocketUrl: value.websocketUrl,
+        homeRegion: value.homeRegion,
+        connectByMs: value.connectByMs as number,
+        authorizedUntilMs: value.authorizedUntilMs as number
+    }
 }
 
 function socketMetadata(value: unknown): unknown {
     let encoded: string
     try {
         encoded = JSON.stringify(value)
-        jsonMetadataSchema.parse(value)
+        if (!isJsonValue(value)) throw new Error("invalid JSON value")
     } catch (error) {
         throw new ActorSerializationError("socket metadata must be a JSON value", { cause: error })
     }
@@ -127,12 +149,13 @@ function socketMetadata(value: unknown): unknown {
     return value
 }
 
-const setupTimeoutSchema = z.int().min(1000).max(600000)
-const authorizationLifetimeSchema = z.int().min(1000).max(86400000)
-const socketGrantSchema = z.object({
-    websocketUrl: z.url({ protocol: /^wss?$/u }),
-    homeRegion: z.string().min(1),
-    connectByMs: z.int(),
-    authorizedUntilMs: z.int()
-})
-const jsonMetadataSchema = z.json()
+function isJsonValue(value: unknown): boolean {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return true
+    if (typeof value === "number") return Number.isFinite(value)
+    if (Array.isArray(value)) return Array.from(value).every(isJsonValue)
+    return (
+        isRecord(value) &&
+        [Object.prototype, null].includes(Object.getPrototypeOf(value)) &&
+        Object.values(value).every(isJsonValue)
+    )
+}

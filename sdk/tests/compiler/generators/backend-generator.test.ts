@@ -450,7 +450,6 @@ async function project(t: { after(fn: () => Promise<void>): void }) {
     const location = fileURLToPath(new URL("../../../", import.meta.url))
     const sdk = location.endsWith(`${path.sep}.test-dist${path.sep}`) ? path.dirname(location.slice(0, -1)) : location
     await symlink(sdk, path.join(root, "node_modules/durable-actors"))
-    await symlink(path.join(sdk, "node_modules/zod"), path.join(root, "node_modules/zod"))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     return root
 }

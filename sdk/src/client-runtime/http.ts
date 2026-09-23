@@ -1,5 +1,3 @@
-import { z } from "zod"
-
 import { ActorProtocolError } from "./errors.js"
 import type { JsonValue } from "./json.js"
 import { projectActorPath, validateOrigin } from "./settings.js"
@@ -17,9 +15,20 @@ export class HttpActorHostTransport implements ActorHostTransport {
         // A 401 is issued before dispatch, so refreshing this ticket cannot repeat actor code.
         if (response.status === 401) return { type: "unauthenticated" }
         if (!response.ok) throw new Error(`actor host returned HTTP ${response.status}`)
-        const reply = actorHostReplySchema.safeParse(await responseDocument(response))
-        if (!reply.success) throw new ActorProtocolError("actor host response did not contain a valid outcome")
-        return reply.data
+        const reply = await responseDocument(response)
+        if (isRecord(reply)) {
+            if (reply.type === "completed" && Object.hasOwn(reply, "result"))
+                return { type: "completed", result: reply.result }
+            if (
+                reply.type === "failed" &&
+                typeof reply.code === "string" &&
+                reply.code.length > 0 &&
+                typeof reply.message === "string"
+            )
+                return { type: "failed", code: reply.code, message: reply.message }
+            if (reply.type === "reroute") return { type: "reroute" }
+        }
+        throw new ActorProtocolError("actor host response did not contain a valid outcome")
     }
 
     async publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void> {
@@ -52,11 +61,9 @@ export async function responseDocument(response: Response): Promise<unknown> {
     }
 }
 
-const actorHostReplySchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("completed"), result: z.unknown() }),
-    z.object({ type: z.literal("failed"), code: z.string().min(1), message: z.string() }),
-    z.object({ type: z.literal("reroute") })
-])
+export function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+}
 
 export interface ActorAddress {
     readonly projectId: string
@@ -74,7 +81,11 @@ export interface DirectActorInvocation extends ActorAddress {
     readonly method: string
     readonly args: readonly JsonValue[]
 }
-export type ActorHostReply = z.infer<typeof actorHostReplySchema> | { readonly type: "unauthenticated" }
+export type ActorHostReply =
+    | { readonly type: "completed"; readonly result: unknown }
+    | { readonly type: "failed"; readonly code: string; readonly message: string }
+    | { readonly type: "reroute" }
+    | { readonly type: "unauthenticated" }
 export interface ActorHostTransport {
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
     publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>

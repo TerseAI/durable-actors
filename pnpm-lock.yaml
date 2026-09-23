@@ -84,9 +84,6 @@ importers:
       react-dom:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
-      zod:
-        specifier: ^4.3.6
-        version: 4.5.4
     devDependencies:
       '@types/express':
         specifier: ^5.0.0
@@ -148,9 +145,6 @@ importers:
       yjs:
         specifier: ^13.6.32
         version: 13.6.32
-      zod:
-        specifier: ^4.3.6
-        version: 4.5.4
     devDependencies:
       '@types/express':
         specifier: ^5.0.0

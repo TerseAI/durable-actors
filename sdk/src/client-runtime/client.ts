@@ -1,7 +1,5 @@
-import { z } from "zod"
-
 import { ActorInvocationError, ActorProtocolError } from "./errors.js"
-import { HttpActorHostTransport, responseDocument } from "./http.js"
+import { HttpActorHostTransport, isRecord, responseDocument } from "./http.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./http.js"
 import { cloneJson } from "./json.js"
 import type { JsonValue } from "./json.js"
@@ -155,11 +153,22 @@ export class HttpActorClient {
         }
         const document = await responseDocument(response)
         if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
-        const target = actorHostTargetSchema.safeParse(document)
-        if (!target.success)
+        if (
+            !isRecord(document) ||
+            typeof document.route !== "string" ||
+            typeof document.token !== "string" ||
+            !document.token.trim() ||
+            !positiveInteger(document.ownerEpoch) ||
+            !positiveInteger(document.expiresAtMs)
+        )
             throw new ActorProtocolError("control-plane response did not contain a valid actor host target")
-        validateOrigin(target.data.route)
-        return target.data
+        validateOrigin(document.route)
+        return {
+            route: document.route,
+            token: document.token,
+            ownerEpoch: document.ownerEpoch,
+            expiresAtMs: document.expiresAtMs
+        }
     }
 
     private throwResponseFailure(response: Response, document: unknown, requestId: string): never {
@@ -169,11 +178,19 @@ export class HttpActorClient {
                 requestId,
                 "the durable-actors application credential was rejected"
             )
-        const failure = controlPlaneErrorSchema.safeParse(document)
-        if (!failure.success)
+        const failure = isRecord(document) ? document.error : undefined
+        if (
+            !isRecord(failure) ||
+            typeof failure.code !== "string" ||
+            !failure.code ||
+            typeof failure.message !== "string"
+        )
             throw new ActorProtocolError(`control-plane HTTP ${response.status} response did not contain a valid error`)
-        const error = failure.data.error
-        throw new ActorInvocationError(error.code, error.requestId ?? requestId, error.message)
+        throw new ActorInvocationError(
+            failure.code,
+            typeof failure.requestId === "string" ? failure.requestId : requestId,
+            failure.message
+        )
     }
 
     private invocation(
@@ -215,19 +232,9 @@ function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: st
 function actorKey(actorName: string, actorId: string): string {
     return `${actorName}\u001f${actorId}`
 }
-const actorHostTargetSchema = z.object({
-    route: z.string(),
-    token: z.string().trim().min(1),
-    ownerEpoch: z.int().positive(),
-    expiresAtMs: z.int().positive()
-})
-const controlPlaneErrorSchema = z.object({
-    error: z.object({
-        code: z.string().min(1),
-        message: z.string(),
-        requestId: z.string().optional()
-    })
-})
+function positiveInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+}
 type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 type RemoteActorSettings = ReturnType<typeof configuredSettings>
 export interface HttpActorClientDependencies {
