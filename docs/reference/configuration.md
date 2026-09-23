@@ -66,8 +66,6 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
 
-Each host serves one actor identity and keeps its JavaScript instance loaded until the host shuts down or the Worker fails or is explicitly evicted. The host idle timeout starts when requests finish and after the last WebSocket closes. Persisted state survives host shutdown and is restored on the next request.
-
 ### Authentication and callbacks
 
 | Variable                                | Default                              | Meaning                                                                                |
