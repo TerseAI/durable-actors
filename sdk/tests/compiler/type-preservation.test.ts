@@ -80,6 +80,75 @@ test("intersections preserve dictionary values and required properties", async t
     `)
 })
 
+test("unknown stays unconstrained in methods, properties, dictionaries, sockets and public state", async t => {
+    const project = await createProject(t)
+    await project.generate(`
+        type Message = { metadata?: unknown; values: Record<string, unknown> }
+        export class Room extends Actor<unknown, Message, unknown> {
+            @Persisted messages: Message[] = []
+            @Persisted value: unknown = null
+            async echo(value: unknown): Promise<unknown> { return value }
+            async optional(value?: unknown): Promise<unknown> { return value ?? null }
+            async message(value: Message): Promise<Message> { return value }
+        }
+    `)
+    await project.check(`
+        declare const value: unknown
+        await room.echo(value)
+        await room.optional()
+        await room.optional(value)
+        await room.message({ metadata: value, values: { anything: value } })
+        const metadata: actors.Room.Metadata = value
+        const outgoing: actors.Room.Outgoing = value
+        const incoming: actors.Room.Incoming = { metadata: value, values: { anything: value } }
+        const state: actors.Room.State = { messages: [incoming], value }
+        // @ts-expect-error unknown results require narrowing
+        const object: Record<string, unknown> = await room.echo(value)
+        // @ts-expect-error unknown properties require narrowing
+        const text: string = (await room.message(incoming)).metadata
+        // @ts-expect-error unknown dictionary values require narrowing
+        const entry: string = (await room.message(incoming)).values.anything
+        // @ts-expect-error unknown public state requires narrowing
+        const stored: string = state.value
+    `)
+})
+
+test("unknown survives nested containers, unions, intersections and recursion", async t => {
+    const project = await createProject(t)
+    const types = `
+        type Tree = { payload: unknown; children: Record<string, Tree> }
+        type Message = { id: string } & (
+            | { kind: "tree"; root: Tree }
+            | { kind: "raw"; values: unknown[]; pair: [string, unknown] }
+        )
+    `
+    await project.generate(`
+        ${types}
+        export class Room extends Actor<{}, Message, Message> {
+            async echo(value: Message): Promise<Message> { return value }
+        }
+    `)
+    await project.check(`
+        ${types}
+        declare const value: unknown
+        declare const message: Message
+        const result: Message = await room.echo(message)
+        await room.echo({ id: "one", kind: "raw", values: [value], pair: ["label", value] })
+        await room.echo({ id: "two", kind: "tree", root: { payload: value, children: {} } })
+        const incoming: actors.Room.Incoming = message
+        declare const outgoing: actors.Room.Outgoing
+        const sent: Message = outgoing
+        if (result.kind === "raw") {
+            // @ts-expect-error array elements require narrowing
+            const item: string = result.values[0]
+            // @ts-expect-error tuple elements require narrowing
+            const item2: string = result.pair[1]
+        }
+        // @ts-expect-error the intersection still requires an id
+        await room.echo({ kind: "raw", values: [], pair: ["label", value] })
+    `)
+})
+
 async function createProject(t: { after(fn: () => Promise<void>): void }) {
     const root = await mkdtemp(path.join(os.tmpdir(), "type-preservation-"))
     t.after(() => rm(root, { recursive: true, force: true }))

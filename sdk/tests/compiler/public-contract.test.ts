@@ -158,57 +158,35 @@ test("explicit recursive JSON types support varied payloads in contracts", async
     }
 })
 
-test("rejects unknown throughout public actor types", async t => {
+test("unknown accepts varied JSON values throughout public contracts", async t => {
     const project = await createProject(t)
-    for (const type of [
-        "unknown",
-        "{ metadata?: unknown }",
-        "Record<string, unknown>",
-        "readonly unknown[]",
-        "[string, unknown]",
-        '{ kind: "text"; value: string } | { kind: "raw"; value: unknown }',
-        "{ id: string } & Record<string, unknown>"
-    ]) {
-        await t.test(`parameter ${type}`, async () => {
-            await project.write(`export class Room extends Actor<{}, never, never> {
-                async send(value: ${type}): Promise<void> {}
-            }`)
-            assert.throws(
-                () => new ActorCompiler().compileContract(project.entrypoint),
-                /Room\.send parameter value.*unsupported type unknown/
-            )
-        })
-    }
-    const cases = [
-        ["result", "<{}, never, never>", "async send(): Promise<unknown> { return null }", "send result"],
+    const cases: [string, unknown[]][] = [
+        ["unknown", [null, true, 42, "hello", [1, null], { nested: false }]],
+        ["{ metadata?: unknown }", [{}, { metadata: null }, { metadata: 42 }]],
+        ["Record<string, unknown>", [{ text: "hello", number: 42, array: [null] }]],
+        ["readonly unknown[]", [[null, 42, "hello", { nested: false }]]],
         [
-            "nested result",
-            "<{}, never, never>",
-            "async send(): Promise<{ data: unknown }> { return { data: null } }",
-            "send result.data"
+            "[string, unknown]",
+            [
+                ["label", null],
+                ["label", 42]
+            ]
         ],
-        ["optional parameter", "<{}, never, never>", "async send(value?: unknown) {}", "send parameter value"],
-        ["recursive parameter", "<{}, never, never>", "async send(value: Tree) {}", "send parameter value.payload"],
-        ["socket metadata", "<unknown, never, never>", "", "Metadata"],
-        ["socket incoming", "<{}, { payload: unknown }, never>", "", "Incoming.payload"],
-        ["socket outgoing", "<{}, never, unknown[]>", "", "Outgoing"],
-        ["public state", "<{}, never, never>", "@Persisted value: unknown = null", "Field_value"],
-        [
-            "nested public state",
-            "<{}, never, never>",
-            "@Persisted messages: { parts: unknown[] }[] = []",
-            "Field_messages.parts"
-        ]
+        ['{ kind: "text"; value: string } | { kind: "raw"; value: unknown }', [{ kind: "raw", value: 42 }]],
+        ["{ id: string } & Record<string, unknown>", [{ id: "one", payload: null }]]
     ]
-    for (const [name, arguments_, body, location] of cases) {
-        await t.test(name, async () => {
-            await project.write(`
-                type Tree = { children: Tree[]; payload: unknown }
-                export class Room extends Actor${arguments_} { ${body} }
-            `)
-            assert.throws(() => new ActorCompiler().compileContract(project.entrypoint), {
-                message: `Room.${location} must be JSON-compatible; unsupported type unknown`
-            })
+    for (const [type, values] of cases) {
+        await t.test(type, async () => {
+            await project.write(`export class Room extends Actor<{}, never, never> {
+                async send(value: ${type}): Promise<${type}> { return value }
+            }`)
+            const { rpc } = new ActorCompiler().compileContract(project.entrypoint).actors[0]
+            const [send] = rpc.methods
+            if (send.result.kind !== "value") assert.fail("expected result schema")
+            for (const reference of [send.parameters[0].type, send.result.type]) {
+                const validate = new Ajv().compile({ ...rpc.schema, ...reference })
+                for (const value of values) assert.equal(validate(value), true)
+            }
         })
     }
 })

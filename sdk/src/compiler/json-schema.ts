@@ -170,7 +170,8 @@ function assertJsonType(
             ts.TypeFlags.NumberLike |
             ts.TypeFlags.BooleanLike |
             ts.TypeFlags.Null |
-            ts.TypeFlags.Never)
+            ts.TypeFlags.Never |
+            ts.TypeFlags.Unknown)
     )
         return
     if (checker.isArrayType(type) || checker.isTupleType(type) || type.getSymbol()?.name === "ReadonlyArray") {
