@@ -370,9 +370,10 @@ impl PoolStore {
     }
 
     async fn retire_unwanted(&self, keys: &[String], enabled: bool) -> Result<()> {
+        // Keep unfinished builds counted and out of cleanup until they publish or their lease expires.
         self.0.execute(
             "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND (kind = 'actor' OR status != 'active')) \
-             OR (status IN ('ready', 'starting') AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
+             OR (status = 'ready' AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
             &[&keys, &enabled, &self.1.as_str()],
         ).await?;
         self.0.execute("DELETE FROM durable_actors_pool_events WHERE created_at < clock_timestamp() - interval '10 minutes'", &[]).await?;

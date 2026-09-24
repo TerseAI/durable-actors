@@ -55,16 +55,19 @@ async fn expired_claims_and_outdated_runtime_spares_cannot_be_reused() -> Result
     with_postgres(async |fixture| {
            let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
            pool.reserve_host("expired", "host", "revision").await?;
+           let abandoned = reserve(&pool.store, "abandoned-runtime", 1).await?.unwrap();
            pool.store.0.execute("UPDATE durable_actors_spares SET expires_at = clock_timestamp() - interval '1 second'", &[]).await?;
            let spare = SpareHandle {
 control_route: String::new(),
 control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-expired".into(), route: "https://spare.test".into(), canonical_region: "region".into() };
            assert!(pool.remember("host", "revision", &spare).await.is_err());
            let old = reserve(&pool.store, "old-runtime", 1).await?.unwrap();
+           pool.store.publish("old-runtime", &SpareHandle { name: old.clone(), ..spare.clone() }, 600).await?;
            let current = reserve(&pool.store, "current-runtime", 1).await?.unwrap();
            pool.store.retire_unwanted(&["current-runtime".into()], true).await?;
            let retiring = pool.store.retiring().await?;
            assert!(retiring.iter().any(|s| s.name == old));
+           assert!(retiring.iter().any(|s| s.name == abandoned));
            assert!(retiring.iter().any(|s| s.name == spare.name));
            assert!(!retiring.iter().any(|s| s.name == current));
            Ok(())

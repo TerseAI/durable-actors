@@ -125,15 +125,23 @@ async fn failed_builds_back_off_without_blocking_other_pools() -> Result<()> {
 }
 
 #[tokio::test]
-async fn retiring_spares_hold_their_budget_until_termination() -> Result<()> {
+async fn retiring_spares_hold_build_slots_until_ready_and_budget_until_termination() -> Result<()> {
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let store = PoolStore(database.clone(), SpareKind::Actor);
         let mut config = config(1);
-        config.fleet_maximum = 1;
         let name = store.replenish("old", &config, 8).await?.remove(0);
-        store.publish("old", &handle(name), 600).await?;
         store.retire_unwanted(&["new".into()], true).await?;
+        for (fleet, starting) in [(1, 8), (64, 1)] {
+            config.fleet_maximum = fleet;
+            config.max_starting = starting;
+            assert!(store.replenish("new", &config, 8).await?.is_empty());
+        }
+        assert!(store.retiring().await?.is_empty());
+        assert!(store.publish("old", &handle(name), 600).await?);
+        store.retire_unwanted(&["new".into()], true).await?;
+        assert_eq!(store.retiring().await?.len(), 1);
+        config.fleet_maximum = 1;
         assert!(store.replenish("new", &config, 8).await?.is_empty());
         database
             .execute(
