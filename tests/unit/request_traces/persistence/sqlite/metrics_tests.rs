@@ -1,4 +1,4 @@
-use super::tests::event;
+use super::super::contract_tests::event;
 use super::*;
 use crate::request_traces::{
     RequestKind, RequestOutcome,

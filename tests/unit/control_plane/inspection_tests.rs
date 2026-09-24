@@ -131,6 +131,16 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         );
         assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
     }
+    for route in [
+        "requests",
+        "requests/events",
+        "metrics",
+        "queue-waits",
+        "websockets",
+    ] {
+        let url = format!("/v1/projects/bad!/observe/{route}");
+        assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
+    }
     Ok(())
 }
 
@@ -439,7 +449,8 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
 #[tokio::test]
 async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> Result<()> {
     use crate::request_traces::{
-        RequestKind, RequestOutcome, RequestTrace, TraceStore, persistence::SqliteTracePersistence,
+        RequestKind, RequestOutcome, RequestTrace, TraceStore,
+        persistence::sqlite::SqliteTracePersistence,
     };
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("request-traces.sqlite3");
@@ -744,6 +755,38 @@ async fn typed_observer_metrics_validate_ranges_and_return_uncached_results() ->
         StatusCode::BAD_REQUEST
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn postgres_request_stream_observes_writes_from_another_control_plane() -> Result<()> {
+    use crate::{
+        postgres::{PostgresDatabase, testing::with_postgres},
+        request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
+    };
+    with_postgres(async |database| {
+        let open = async || TraceStore::open(Arc::new(PostgresTracePersistence::new(
+            PostgresDatabase::lazy(&database.url)?, Duration::from_secs(86400),
+        ))).await;
+        let reader = Fixture::start_with_traces(open().await?).await?;
+        let writer = open().await?;
+        let mut stream = reader.get("/v1/projects/alpha/observe/requests/events").await?.error_for_status()?;
+        let initial = tokio::time::timeout(Duration::from_secs(2), stream.chunk()).await??.unwrap();
+        assert!(String::from_utf8(initial.to_vec())?.contains("\"records\":[]"));
+        writer.record("alpha", "host", "session", vec![serde_json::from_value(json!({
+            "projectId": "alpha", "requestId": "remote-instance-request", "actorName": "Room", "actorId": "one",
+            "kind": "method", "operation": "increment", "startedAtMs": 1000, "durationMs": 10.0,
+            "queueWaitMs": 1.0, "outcome": "completed"
+        }))?], 0).await?;
+        tokio::time::timeout(Duration::from_secs(7), async {
+            while let Some(chunk) = stream.chunk().await? {
+                if String::from_utf8_lossy(&chunk).contains("remote-instance-request") { return anyhow::Ok(()); }
+            }
+            anyhow::bail!("request stream closed before the shared event arrived")
+        }).await??;
+        let history: Value = reader.get("/v1/projects/alpha/observe/requests").await?.error_for_status()?.json().await?;
+        assert_eq!(history["records"][0]["requestId"], "remote-instance-request");
+        Ok(())
+    }).await
 }
 
 #[tokio::test]

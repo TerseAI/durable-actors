@@ -1,4 +1,5 @@
-use anyhow::{Result, ensure};
+use crate::control_plane::admin::validate_component;
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
@@ -13,7 +14,7 @@ pub(crate) mod history;
 pub(crate) mod metrics;
 pub(crate) mod persistence;
 pub(crate) mod replay;
-use persistence::{SqliteTracePersistence, TracePersistence};
+use persistence::{TracePersistence, sqlite::SqliteTracePersistence};
 use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;
@@ -91,6 +92,15 @@ pub(crate) enum RequestKind {
     Websocket,
 }
 
+impl RequestKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Method => "method",
+            Self::Websocket => "websocket",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RequestOutcome {
@@ -99,6 +109,18 @@ pub(crate) enum RequestOutcome {
     Rejected,
     Rerouted,
     Interrupted,
+}
+
+impl RequestOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Rejected => "rejected",
+            Self::Rerouted => "rerouted",
+            Self::Interrupted => "interrupted",
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -139,6 +161,16 @@ pub(crate) struct TracePage {
     pub reset: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct InvalidTraceQuery;
+
+impl std::fmt::Display for InvalidTraceQuery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Invalid or incompatible request trace query")
+    }
+}
+impl std::error::Error for InvalidTraceQuery {}
+
 #[derive(Clone)]
 pub(crate) struct TraceStore {
     writer: Arc<tokio::sync::Mutex<()>>,
@@ -169,7 +201,7 @@ impl TraceStore {
         traces: Vec<RequestTrace>,
         dropped: u64,
     ) -> Result<()> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        validate_component("project ID", project_id, 64)?;
         ensure!(
             traces.iter().all(|trace| trace.project_id == project_id),
             "trace project does not match host"
@@ -192,7 +224,8 @@ impl TraceStore {
     }
 
     pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
-        query.validate()?;
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
         let mut page = self.persistence.replay(project_id, query).await?;
         page.dropped = self
             .dropped
@@ -210,6 +243,8 @@ impl TraceStore {
         project_id: &str,
         query: &metrics::TimeRange,
     ) -> Result<metrics::OverviewMetrics> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
         self.persistence.metrics(project_id, query).await
     }
 
@@ -218,6 +253,8 @@ impl TraceStore {
         project_id: &str,
         query: &metrics::QueueWaitQuery,
     ) -> Result<Vec<metrics::QueueWaitRow>> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
         self.persistence.queue_waits(project_id, query).await
     }
 
@@ -226,6 +263,8 @@ impl TraceStore {
         project_id: &str,
         query: &metrics::TimeRange,
     ) -> Result<Vec<metrics::SocketSession>> {
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
         self.persistence.websockets(project_id, query).await
     }
 
@@ -234,7 +273,8 @@ impl TraceStore {
         project_id: &str,
         query: &history::HistoryQuery,
     ) -> Result<TracePage> {
-        query.validate()?;
+        validate_component("project ID", project_id, 64).context(InvalidTraceQuery)?;
+        query.validate().context(InvalidTraceQuery)?;
         let mut page = self.persistence.history(project_id, query).await?;
         page.dropped = self
             .dropped
