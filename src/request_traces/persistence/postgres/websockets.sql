@@ -1,8 +1,9 @@
-SELECT connection_id, actor_name, actor_id, MIN(host_id) AS host_id,
+SELECT connection_id, actor_name, actor_id,
+    (array_agg(host_id ORDER BY (operation = 'onConnect') DESC, started_at_ms, position))[1] AS host_id,
     MIN(started_at_ms) FILTER (WHERE operation = 'onConnect') AS opened_at_ms,
     MAX(started_at_ms) FILTER (WHERE operation = 'onDisconnect') AS closed_at_ms,
     MAX(started_at_ms) AS last_seen_ms,
-    MAX(event COLLATE "C") FILTER (WHERE operation = 'onConnect') AS connect_event,
+    (array_agg(event ORDER BY started_at_ms, position) FILTER (WHERE operation = 'onConnect'))[1] AS connect_event,
     COUNT(*) FILTER (WHERE operation = 'onMessage') AS messages,
     COUNT(*) FILTER (WHERE outcome NOT IN ('completed', 'rerouted')) AS failures
 FROM durable_actors_traces

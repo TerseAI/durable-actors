@@ -47,13 +47,11 @@ The server requires a `DURABLE_ACTORS_CONTROL_PLANE_URL` reachable by its actor 
 | `MODAL_TOKEN_SECRET`                | Required                                                | Modal token secret.                                                                |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY`    | Required; generated for local development               | Base64-encoded Ed25519 PKCS#8 signing key. Reuse across restarts.                  |
 
-Hosted actor analytics use PostgreSQL through `DURABLE_ACTORS_POSTGRES_URL`, including on Cloud SQL. Startup applies the analytics schema migrations before accepting traffic. All control-plane instances sharing this database see the same request history, metrics, queue waits, and WebSocket history. Local `dev` continues to use `request-traces.sqlite3` in its data directory.
+Hosted actor analytics use the database configured by `DURABLE_ACTORS_POSTGRES_URL`. Local `dev` uses `request-traces.sqlite3` in its data directory, retaining up to 10,000 events.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS` | `30` | Hosted trace retention in days since receipt; integer from 1 to 3650. All instances sharing the database must use the same value. |
-
-Retention cleanup runs once per minute in bounded batches. Analytics queries use project-scoped indexes and a ten-second statement timeout. Request streams also poll the shared database every five seconds to discover events written by other instances. Trace collection remains best effort before the database commit; host queues and report failures can still lose events. Existing in-memory production history cannot be recovered by this migration. PostgreSQL's retention is independent of the local SQLite limit of 10,000 events.
 
 When importing the runtime image into Modal, clear its Docker entrypoint with `modal.Image.from_registry(..., add_python="3.12").entrypoint([])` so the provider can run its build, actor, and replica commands.
 

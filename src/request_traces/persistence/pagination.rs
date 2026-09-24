@@ -12,7 +12,7 @@ pub(super) struct Metadata {
     pub generation: String,
     pub head: u64,
     pub pruned: u64,
-    pub total: u64,
+    pub evicted: u64,
 }
 
 pub(super) struct History {
@@ -47,12 +47,7 @@ impl History {
         })
     }
 
-    pub fn finish(
-        self,
-        limit: usize,
-        retained: u64,
-        mut records: Vec<TraceRecord>,
-    ) -> Result<TracePage> {
+    pub fn finish(self, limit: usize, mut records: Vec<TraceRecord>) -> Result<TracePage> {
         let more = records.len() > limit;
         records.truncate(limit);
         let next_cursor = if more {
@@ -78,7 +73,7 @@ impl History {
             epoch: self.metadata.generation,
             cursor: self.watermark,
             capacity: limit,
-            evicted: self.metadata.total.saturating_sub(retained),
+            evicted: self.metadata.evicted,
             dropped: 0,
             persistence_failed: false,
             records,
@@ -144,9 +139,10 @@ impl Replay {
                 Ok(cursor)
             })
             .transpose()?;
-        let reset = cursor
-            .as_ref()
-            .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
+        // A cursor at zero can follow the first write that creates a project's generation.
+        let reset = cursor.as_ref().is_some_and(|c| {
+            (c.position > 0 && c.generation != metadata.generation) || c.position < metadata.pruned
+        });
         let after = cursor.filter(|_| !reset).map(|c| c.position);
         Ok(Self {
             project_id: project_id.into(),
@@ -173,7 +169,7 @@ impl Replay {
             epoch: self.metadata.generation,
             cursor: position,
             capacity: limit,
-            evicted: self.metadata.total.saturating_sub(500),
+            evicted: self.metadata.evicted,
             dropped: 0,
             persistence_failed: false,
             records,

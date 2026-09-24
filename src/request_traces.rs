@@ -89,6 +89,15 @@ pub(crate) enum RequestKind {
     Websocket,
 }
 
+impl RequestKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Method => "method",
+            Self::Websocket => "websocket",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RequestOutcome {
@@ -97,6 +106,18 @@ pub(crate) enum RequestOutcome {
     Rejected,
     Rerouted,
     Interrupted,
+}
+
+impl RequestOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Rejected => "rejected",
+            Self::Rerouted => "rerouted",
+            Self::Interrupted => "interrupted",
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

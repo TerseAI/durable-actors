@@ -16,4 +16,6 @@ WITH inserted AS (
     ON CONFLICT (event_id) DO NOTHING
     RETURNING position
 )
-SELECT COUNT(*), MAX(position) FROM inserted
+UPDATE durable_actors_trace_projects
+SET head = COALESCE((SELECT MAX(position) FROM inserted), head)
+WHERE project_id = $1

@@ -8,13 +8,9 @@ pub(super) async fn query(
 ) -> Result<TracePage> {
     let mut client = database.connection().await?;
     let transaction = transaction(&mut client, true).await?;
-    let (metadata, retained) = metadata(&transaction, project).await?;
+    let metadata = metadata(&transaction, project).await?;
     let page = History::new(project, query, metadata)?;
-    let outcome = query
-        .outcome
-        .map(serde_json::to_value)
-        .transpose()?
-        .and_then(|value| value.as_str().map(str::to_owned));
+    let outcome = query.outcome.map(|outcome| outcome.as_str());
     let rows = transaction
         .query(
             include_str!("history.sql"),
@@ -32,5 +28,5 @@ pub(super) async fn query(
             ],
         )
         .await?;
-    page.finish(query.limit, retained, records(rows)?)
+    page.finish(query.limit, records(rows)?)
 }

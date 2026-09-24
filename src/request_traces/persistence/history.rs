@@ -14,11 +14,6 @@ pub(super) fn query(
 ) -> Result<TracePage> {
     let transaction = connection.transaction()?;
     let metadata = replay::metadata(&transaction, project_id)?;
-    let retained: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM traces WHERE project_id = ?1",
-        [project_id],
-        |row| row.get(0),
-    )?;
     let page = History::new(project_id, query, metadata)?;
     let records = select(
         &transaction,
@@ -27,7 +22,7 @@ pub(super) fn query(
         page.watermark,
         page.after.as_ref(),
     )?;
-    page.finish(query.limit, retained as u64, records)
+    page.finish(query.limit, records)
 }
 
 fn select(
@@ -49,9 +44,7 @@ fn select(
             "outcome = ?",
             query
                 .outcome
-                .map(serde_json::to_value)
-                .transpose()?
-                .and_then(|v| v.as_str().map(|s| Value::Text(s.into()))),
+                .map(|outcome| Value::Text(outcome.as_str().into())),
         ),
         (
             "started_at_ms >= ?",

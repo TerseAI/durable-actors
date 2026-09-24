@@ -209,14 +209,13 @@ fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result
     let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (event_id) DO NOTHING")?;
     let mut inserted = 0;
     for event in events {
-        let outcome = serde_json::to_value(event.trace.outcome)?;
         inserted += statement.execute(params![
             event.event_id,
             serde_json::to_string(event)?,
             i64::try_from(event.trace.started_at_ms)?,
             event.trace.actor_name,
             event.trace.actor_id,
-            outcome.as_str(),
+            event.trace.outcome.as_str(),
             event.trace.project_id
         ])?;
     }

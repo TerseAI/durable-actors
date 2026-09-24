@@ -1,14 +1,8 @@
-CREATE TABLE durable_actors_trace_meta (
-    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
-    generation TEXT NOT NULL DEFAULT gen_random_uuid()::text
-);
-INSERT INTO durable_actors_trace_meta DEFAULT VALUES;
-
 CREATE TABLE durable_actors_trace_projects (
     project_id TEXT COLLATE "C" PRIMARY KEY,
+    generation TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     head BIGINT NOT NULL DEFAULT 0,
-    total BIGINT NOT NULL DEFAULT 0,
-    retained BIGINT NOT NULL DEFAULT 0,
+    evicted BIGINT NOT NULL DEFAULT 0,
     pruned BIGINT NOT NULL DEFAULT 0
 );
 

@@ -83,6 +83,13 @@ async fn history_counts_pruned_events_without_counting_duplicate_appends() -> Re
     let page = store.history("default", &HistoryQuery::default()).await?;
     assert_eq!(ids(&page), ["c"]);
     assert_eq!(page.evicted, 2);
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .evicted,
+        2
+    );
     Ok(())
 }
 

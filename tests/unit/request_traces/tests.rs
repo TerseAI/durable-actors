@@ -246,7 +246,7 @@ async fn persisted_events_replay_after_restart_with_a_durable_cursor() -> Result
             .replay("default", &ReplayQuery::default())
             .await?
             .evicted,
-        2
+        0
     );
     assert_eq!(
         restored
@@ -561,7 +561,7 @@ fn trace(id: usize) -> RequestTrace {
 }
 
 #[tokio::test]
-async fn history_keeps_distinct_requests_and_reports_expired_records() -> Result<()> {
+async fn replay_limits_do_not_count_retained_requests_as_evicted() -> Result<()> {
     let store = TraceStore::default();
     for id in 0..TRACE_CAPACITY + 2 {
         store
@@ -570,7 +570,7 @@ async fn history_keeps_distinct_requests_and_reports_expired_records() -> Result
     }
     let page = store.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), TRACE_CAPACITY);
-    assert_eq!(page.evicted, 2);
+    assert_eq!(page.evicted, 0);
     assert_eq!(page.records[0].event.trace.request_id, "501");
     assert_eq!(page.cursor, (TRACE_CAPACITY + 2) as u64);
     assert!(

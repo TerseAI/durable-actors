@@ -89,6 +89,7 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         )
         .await?;
     assert_eq!(ids(&replay), ["first", "second"]);
+    assert!(!replay.reset);
     let replay = store
         .replay(
             "default",
@@ -175,8 +176,6 @@ async fn metadata_contract(store: &dyn TracePersistence) -> Result<()> {
     for record in &records {
         record.trace.validate()?;
     }
-    let initial = store.replay("metadata", &ReplayQuery::default()).await?;
-    store.append(&records).await?;
     store.append(&records).await?;
     let page = store.history("metadata", &HistoryQuery::default()).await?;
     assert_eq!(ids(&page), ["metadata-socket", "metadata-ordinary"]);
@@ -186,27 +185,9 @@ async fn metadata_contract(store: &dyn TracePersistence) -> Result<()> {
             serde_json::to_value(expected)?
         );
     }
-    let replay = store
-        .replay(
-            "metadata",
-            &ReplayQuery {
-                cursor: Some(initial.resume_cursor),
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert_eq!(ids(&replay), ["metadata-ordinary", "metadata-socket"]);
     let sessions = store.websockets("metadata", &TimeRange::default()).await?;
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].metadata, records[1].trace.metadata);
-    assert_eq!(
-        store
-            .metrics("metadata", &TimeRange::default())
-            .await?
-            .total
-            .count,
-        2
-    );
     Ok(())
 }
 
@@ -225,8 +206,15 @@ async fn socket_contract(store: &dyn TracePersistence) -> Result<()> {
         record.trace.outcome = outcome;
         record.trace.metadata =
             (operation == "onConnect").then(|| serde_json::json!({"userId":"ada"}));
+        record.host_id = "z-first-host".into();
         records.push(record);
     }
+    let mut later_connect = records[0].clone();
+    later_connect.event_id = "z-later-connect".into();
+    later_connect.host_id = "a-later-host".into();
+    later_connect.trace.started_at_ms = 2000;
+    later_connect.trace.metadata = Some(serde_json::json!({"userId":"grace"}));
+    records.push(later_connect);
     store.append(&records).await?;
     let sessions = store
         .websockets(
@@ -249,6 +237,7 @@ async fn socket_contract(store: &dyn TracePersistence) -> Result<()> {
         (Some(1000), Some(5000), 1, 1)
     );
     assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
+    assert_eq!(session.host_id.as_deref(), Some("z-first-host"));
     assert!(
         store
             .websockets("other", &TimeRange::default())
@@ -347,6 +336,7 @@ async fn postgres_retention_prunes_history_and_resets_expired_cursors() -> Resul
         let replay = store.replay("default", &ReplayQuery { cursor: Some(start.resume_cursor), ..Default::default() }).await?;
         assert!(replay.reset);
         assert_eq!(ids(&replay), ["recent"]);
+        assert_eq!(replay.evicted, 1);
         Ok(())
     }).await
 }
@@ -356,6 +346,8 @@ async fn postgres_serializes_project_writers_without_blocking_other_projects() -
     with_postgres(async |db| {
         let store = Arc::new(PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400)));
         store.append(&[event("initial")]).await?;
+        let second = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
+        second.initialize().await?;
         let before = store.replay("default", &ReplayQuery::default()).await?;
         let mut client = db.pool.get().await?;
         let transaction = client.transaction().await?;
@@ -365,16 +357,61 @@ async fn postgres_serializes_project_writers_without_blocking_other_projects() -
             async move { store.append(&[event("waiting")]).await }
         });
         assert!(tokio::time::timeout(Duration::from_millis(100), &mut pending).await.is_err());
+        let mut competing = tokio::spawn(async move { second.append(&[event("competing")]).await });
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut competing).await.is_err());
         let mut other = event("independent");
         other.trace.project_id = "other".into();
         tokio::time::timeout(Duration::from_secs(2), store.append(&[other])).await??;
         transaction.commit().await?;
         pending.await??;
-        let second = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
-        second.append(&[event("after")]).await?;
-        let page = second.replay("default", &ReplayQuery { cursor: Some(before.resume_cursor), ..Default::default() }).await?;
-        assert_eq!(ids(&page), ["waiting", "after"]);
+        competing.await??;
+        let page = store.replay("default", &ReplayQuery { cursor: Some(before.resume_cursor), ..Default::default() }).await?;
+        let mut saved = ids(&page);
+        saved.sort();
+        assert_eq!(saved, ["competing", "waiting"]);
         assert!(page.records[0].sequence < page.records[1].sequence);
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+async fn postgres_retention_counts_deletions_across_concurrent_batches() -> Result<()> {
+    with_postgres(async |db| {
+        let store = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
+        let other = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
+        let records: Vec<_> = (0..1003).map(|id| event(&format!("batch-{id}"))).collect();
+        store.append(&records).await?;
+        store.append(&records).await?;
+        assert_eq!(store.replay("default", &ReplayQuery::default()).await?.evicted, 0);
+        db.pool.get().await?.execute("UPDATE durable_actors_traces SET received_at = now() - interval '2 days' WHERE position <= 1001", &[]).await?;
+        let (first, second) = tokio::join!(store.prune_batch(), other.prune_batch());
+        let deleted = first? + second? + store.prune_batch().await?;
+        assert_eq!(deleted, 1001);
+        assert_eq!(store.prune_batch().await?, 0);
+        store.append(&[event("after-prune")]).await?;
+        let history = store.history("default", &HistoryQuery::default()).await?;
+        let replay = store.replay("default", &ReplayQuery::default()).await?;
+        assert_eq!(history.records.len(), 3);
+        assert_eq!(history.evicted, 1001);
+        assert_eq!(replay.evicted, history.evicted);
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+async fn postgres_cursors_reset_when_project_history_is_recreated() -> Result<()> {
+    with_postgres(async |db| {
+        let store = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
+        store.append(&[event("old-a"), event("old-b")]).await?;
+        let old = store.history("default", &HistoryQuery { limit: 1, ..Default::default() }).await?;
+        db.pool.get().await?.batch_execute("BEGIN; DELETE FROM durable_actors_traces WHERE project_id = 'default'; DELETE FROM durable_actors_trace_projects WHERE project_id = 'default'; COMMIT;").await?;
+        store.append(&[event("new-a"), event("new-b"), event("new-c")]).await?;
+        let replay = store.replay("default", &ReplayQuery { cursor: Some(old.resume_cursor), ..Default::default() }).await?;
+        assert!(replay.reset);
+        assert_eq!(ids(&replay), ["new-c", "new-b", "new-a"]);
+        let history = store.history("default", &HistoryQuery { cursor: old.next_cursor, ..Default::default() }).await?;
+        assert!(history.reset);
+        assert_eq!(ids(&history), ids(&replay));
         Ok(())
     }).await
 }

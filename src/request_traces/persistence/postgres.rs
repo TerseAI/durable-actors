@@ -57,11 +57,7 @@ impl TracePersistence for PostgresTracePersistence {
         // Lock projects in one order; positions become visible in commit order.
         for (project, events) in projects {
             let head = lock_project(&transaction, project).await?;
-            let (inserted, last) = append::insert(&transaction, project, head, &events).await?;
-            transaction.execute(
-                "UPDATE durable_actors_trace_projects SET head = COALESCE($2, head), total = total + $3, retained = retained + $3 WHERE project_id = $1",
-                &[&project, &last, &inserted],
-            ).await?;
+            append::insert(&transaction, project, head, &events).await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -127,10 +123,9 @@ async fn transaction(
 }
 
 async fn lock_project(transaction: &tokio_postgres::Transaction<'_>, project: &str) -> Result<i64> {
-    transaction.execute("INSERT INTO durable_actors_trace_projects (project_id) VALUES ($1) ON CONFLICT DO NOTHING", &[&project]).await?;
     Ok(transaction
         .query_one(
-            "SELECT head FROM durable_actors_trace_projects WHERE project_id = $1 FOR UPDATE",
+            "INSERT INTO durable_actors_trace_projects (project_id) VALUES ($1) ON CONFLICT (project_id) DO UPDATE SET head = durable_actors_trace_projects.head RETURNING head",
             &[&project],
         )
         .await?
@@ -140,20 +135,25 @@ async fn lock_project(transaction: &tokio_postgres::Transaction<'_>, project: &s
 async fn metadata(
     transaction: &tokio_postgres::Transaction<'_>,
     project: &str,
-) -> Result<(Metadata, u64)> {
-    let row = transaction.query_one(
-        "SELECT generation, COALESCE(head, 0), COALESCE(pruned, 0), COALESCE(total, 0), COALESCE(retained, 0) FROM durable_actors_trace_meta LEFT JOIN durable_actors_trace_projects ON project_id = $1",
+) -> Result<Metadata> {
+    let row = transaction.query_opt(
+        "SELECT generation, head, pruned, evicted FROM durable_actors_trace_projects WHERE project_id = $1",
         &[&project],
     ).await?;
-    Ok((
-        Metadata {
+    Ok(match row {
+        Some(row) => Metadata {
             generation: row.get(0),
             head: row.get::<_, i64>(1) as u64,
             pruned: row.get::<_, i64>(2) as u64,
-            total: row.get::<_, i64>(3) as u64,
+            evicted: row.get::<_, i64>(3) as u64,
         },
-        row.get::<_, i64>(4) as u64,
-    ))
+        None => Metadata {
+            generation: "empty".into(),
+            head: 0,
+            pruned: 0,
+            evicted: 0,
+        },
+    })
 }
 
 fn records(rows: Vec<tokio_postgres::Row>) -> Result<Vec<TraceRecord>> {

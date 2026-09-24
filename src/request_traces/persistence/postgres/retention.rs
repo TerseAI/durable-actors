@@ -9,36 +9,26 @@ impl PostgresTracePersistence {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! { _ = stop.cancelled() => return, _ = interval.tick() => {} }
+            let cleanup = async {
                 loop {
-                    let result = tokio::select! {
-                        _ = stop.cancelled() => return,
-                        result = store.prune_batch() => result,
-                    };
-                    match result {
-                        Ok(count) if count == PRUNE_BATCH_SIZE as u64 => {}
-                        Ok(_) => break,
-                        Err(error) => {
-                            tracing::warn!(%error, "actor analytics retention failed");
-                            break;
-                        }
+                    interval.tick().await;
+                    if let Err(error) = store.prune_expired().await {
+                        tracing::warn!(%error, "actor analytics retention failed");
                     }
-                    tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
                 }
-            }
+            };
+            tokio::select! { _ = stop.cancelled() => {}, _ = cleanup => {} }
         });
+    }
+
+    async fn prune_expired(&self) -> Result<()> {
+        while self.prune_batch().await? == PRUNE_BATCH_SIZE as u64 {}
+        Ok(())
     }
 
     pub(crate) async fn prune_batch(&self) -> Result<u64> {
         let mut client = self.database.connection().await?;
         let transaction = transaction(&mut client, false).await?;
-        let locked: bool = transaction.query_one(
-            "SELECT pg_try_advisory_xact_lock(hashtext(current_schema()), hashtext('actor-analytics-retention'))", &[],
-        ).await?.get(0);
-        if !locked {
-            return Ok(0);
-        }
         let rows = transaction.query(
             "SELECT project_id, position FROM durable_actors_traces WHERE received_at < now() - $1::double precision * interval '1 second' ORDER BY received_at LIMIT $2",
             &[&self.retention.as_secs_f64(), &PRUNE_BATCH_SIZE],
@@ -49,7 +39,7 @@ impl PostgresTracePersistence {
         }
         let mut deleted = 0;
         for (project, positions) in projects {
-            lock_project(&transaction, &project).await?;
+            transaction.query_one("SELECT project_id FROM durable_actors_trace_projects WHERE project_id = $1 FOR UPDATE", &[&project]).await?;
             let row = transaction.query_one(
                 "WITH deleted AS (DELETE FROM durable_actors_traces WHERE project_id = $1 AND position = ANY($2) RETURNING position) SELECT COUNT(*), MAX(position) FROM deleted",
                 &[&project, &positions],
@@ -57,7 +47,7 @@ impl PostgresTracePersistence {
             let count: i64 = row.get(0);
             let pruned: Option<i64> = row.get(1);
             transaction.execute(
-                "UPDATE durable_actors_trace_projects SET pruned = GREATEST(pruned, $2), retained = retained - $3 WHERE project_id = $1",
+                "UPDATE durable_actors_trace_projects SET pruned = GREATEST(pruned, $2), evicted = evicted + $3 WHERE project_id = $1",
                 &[&project, &pruned, &count],
             ).await?;
             deleted += count as u64;

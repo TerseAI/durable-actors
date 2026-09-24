@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use crate::{
     bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
     postgres::PostgresDatabase,
+    request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
 };
 
@@ -113,13 +114,11 @@ async fn control_plane_routes(
         config.jwt_max_lifetime,
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
-    let trace_persistence = Arc::new(
-        crate::request_traces::persistence::postgres::PostgresTracePersistence::new(
-            database.clone(),
-            config.storage.trace_retention,
-        ),
-    );
-    let traces = crate::request_traces::TraceStore::open(trace_persistence.clone()).await?;
+    let trace_persistence = Arc::new(PostgresTracePersistence::new(
+        database.clone(),
+        config.storage.trace_retention,
+    ));
+    let traces = TraceStore::open(trace_persistence.clone()).await?;
     trace_persistence.start_retention(stop.clone());
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(

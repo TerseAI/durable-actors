@@ -23,13 +23,13 @@ pub(super) async fn overview(
         let attempts: i64 = row.get(2);
         let completed: i64 = row.get(3);
         let metric = ClassMetrics {
-            actor_name: row.get(0),
+            actor_name: row.get::<_, Option<String>>(0).unwrap_or_default(),
             count: row.get::<_, i64>(1) as u64,
             success: (attempts > 0).then(|| 100.0 * completed as f64 / attempts as f64),
             p95: row.get(4),
             queue_p95: row.get(5),
         };
-        if metric.actor_name.is_empty() {
+        if row.get::<_, bool>(6) {
             metrics.total = metric;
         } else {
             metrics.classes.push(metric);
