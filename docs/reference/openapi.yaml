@@ -157,12 +157,13 @@ paths:
             tags: [Actors]
             summary: Check the host before sending an invocation
             security: [{ ActorTicket: [] }]
-            description: Authenticates the actor ticket without invoking actor code. The SDK pings before each invocation and refreshes discovery once if the ping fails. A successful ping does not guarantee that a subsequent invocation will complete.
+            description: Authenticates the actor ticket and resets the host idle timer without invoking actor code. A host already shutting down rejects the ping. The SDK pings before each invocation and refreshes discovery once if the ping fails. A successful ping does not guarantee that a subsequent invocation will complete.
             responses:
-                "204": { description: Host is reachable and accepts the actor ticket. No response body. }
+                "204": { description: Host is accepting requests and its idle timer has been reset. No response body. }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { description: Ticket rejected. Refresh discovery once. }
                 "403": { description: Ticket belongs to another actor or host session. }
+                "503": { description: Host is shutting down or unavailable. Refresh discovery once. }
         post:
             operationId: invokeActor
             tags: [Actors]

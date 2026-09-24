@@ -104,15 +104,32 @@ impl ActorHost {
         self.stopped.clone()
     }
 
-    pub(super) async fn evict_idle(&self, last_active: tokio::time::Instant) -> Result<()> {
+    pub(super) async fn ping(&self) -> Result<bool> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(HostCommand::EvictIdle { last_active, reply })
+            .send(HostCommand::Ping(reply))
+            .await
+            .context("actor dispatcher stopped")?;
+        result.await.context("actor ping was not completed")
+    }
+
+    pub(super) async fn expire_idle(
+        &self,
+        last_active: tokio::time::Instant,
+        stop_host: bool,
+    ) -> Result<bool> {
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(HostCommand::ExpireIdle {
+                last_active,
+                stop_host,
+                reply,
+            })
             .await
             .context("actor dispatcher stopped")?;
         result
             .await
-            .context("idle actor eviction was not completed")?
+            .context("idle actor expiration was not completed")?
     }
 
     pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
@@ -300,8 +317,16 @@ impl HostDispatcher {
                 Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
                 command = commands.recv() => match command {
                     Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
-                    Some(HostCommand::EvictIdle { last_active, reply }) => {
-                        let result = self.evict_idle(last_active).await;
+                    Some(HostCommand::Ping(reply)) => {
+                        let ready = *self.accepting.borrow() && !*self.stopped.borrow();
+                        if ready {
+                            self.last_active = tokio::time::Instant::now();
+                            self.publish_activity();
+                        }
+                        let _ = reply.send(ready);
+                    }
+                    Some(HostCommand::ExpireIdle { last_active, stop_host, reply }) => {
+                        let result = self.expire_idle(last_active, stop_host).await;
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
@@ -426,12 +451,21 @@ impl HostDispatcher {
         let _ = completion.reply.send(completion.result);
     }
 
-    async fn evict_idle(&mut self, last_active: tokio::time::Instant) -> Result<()> {
+    async fn expire_idle(
+        &mut self,
+        last_active: tokio::time::Instant,
+        stop_host: bool,
+    ) -> Result<bool> {
         if self.active != 0 || self.last_active != last_active {
-            return Ok(());
+            return Ok(false);
+        }
+        // Serialize idle shutdown with pings so a successful ping cancels a stale deadline.
+        if stop_host {
+            self.accepting.send_replace(false);
+            return Ok(true);
         }
         let Some(mailbox) = self.mailbox.as_mut().filter(|mailbox| mailbox.resident) else {
-            return Ok(());
+            return Ok(false);
         };
         self.executor
             .evict(crate::actor::ActorMethodEviction {
@@ -440,7 +474,7 @@ impl HostDispatcher {
             .await?;
         mailbox.resident = false;
         self.publish_activity();
-        Ok(())
+        Ok(false)
     }
 
     fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
@@ -548,9 +582,11 @@ async fn run_actor(
 
 enum HostCommand {
     Invoke(Box<ActorRequest>),
-    EvictIdle {
+    Ping(oneshot::Sender<bool>),
+    ExpireIdle {
         last_active: tokio::time::Instant,
-        reply: oneshot::Sender<Result<()>>,
+        stop_host: bool,
+        reply: oneshot::Sender<Result<bool>>,
     },
     Drain(oneshot::Sender<()>),
 }
