@@ -154,6 +154,59 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         1
     );
     socket_contract(store).await?;
+    metadata_contract(store).await?;
+    Ok(())
+}
+
+async fn metadata_contract(store: &dyn TracePersistence) -> Result<()> {
+    let mut ordinary = event("metadata-ordinary");
+    ordinary.trace.project_id = "metadata".into();
+    ordinary.trace.request_id = "request\0id".into();
+    let mut socket = event("metadata-socket");
+    socket.trace.project_id = "metadata".into();
+    socket.trace.kind = RequestKind::Websocket;
+    socket.trace.operation = "onConnect".into();
+    socket.trace.connection_id = Some("metadata-connection".into());
+    socket.trace.metadata = Some(serde_json::json!({
+        "value": "a\0b",
+        "key\0": ["nested\0value", "é"]
+    }));
+    let records = [ordinary, socket];
+    for record in &records {
+        record.trace.validate()?;
+    }
+    let initial = store.replay("metadata", &ReplayQuery::default()).await?;
+    store.append(&records).await?;
+    store.append(&records).await?;
+    let page = store.history("metadata", &HistoryQuery::default()).await?;
+    assert_eq!(ids(&page), ["metadata-socket", "metadata-ordinary"]);
+    for (actual, expected) in page.records.iter().zip(records.iter().rev()) {
+        assert_eq!(
+            serde_json::to_value(&actual.event)?,
+            serde_json::to_value(expected)?
+        );
+    }
+    let replay = store
+        .replay(
+            "metadata",
+            &ReplayQuery {
+                cursor: Some(initial.resume_cursor),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(ids(&replay), ["metadata-ordinary", "metadata-socket"]);
+    let sessions = store.websockets("metadata", &TimeRange::default()).await?;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].metadata, records[1].trace.metadata);
+    assert_eq!(
+        store
+            .metrics("metadata", &TimeRange::default())
+            .await?
+            .total
+            .count,
+        2
+    );
     Ok(())
 }
 

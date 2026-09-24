@@ -13,6 +13,7 @@ use crate::{
     request_traces::{TraceEvent, TracePage, TraceRecord},
 };
 
+mod append;
 mod history;
 mod metrics;
 mod replay;
@@ -44,26 +45,19 @@ impl TracePersistence for PostgresTracePersistence {
         if events.is_empty() {
             return Ok(());
         }
-        let mut projects: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut projects: BTreeMap<&str, Vec<&TraceEvent>> = BTreeMap::new();
         for event in events {
             projects
                 .entry(&event.trace.project_id)
                 .or_default()
-                .push(serde_json::to_string(event)?);
+                .push(event);
         }
         let mut client = self.database.connection().await?;
         let transaction = transaction(&mut client, false).await?;
         // Lock projects in one order; positions become visible in commit order.
         for (project, events) in projects {
             let head = lock_project(&transaction, project).await?;
-            let row = transaction
-                .query_one(
-                    include_str!("postgres/append.sql"),
-                    &[&project, &head, &events],
-                )
-                .await?;
-            let inserted: i64 = row.get(0);
-            let last: Option<i64> = row.get(1);
+            let (inserted, last) = append::insert(&transaction, project, head, &events).await?;
             transaction.execute(
                 "UPDATE durable_actors_trace_projects SET head = COALESCE($2, head), total = total + $3, retained = retained + $3 WHERE project_id = $1",
                 &[&project, &last, &inserted],
