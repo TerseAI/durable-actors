@@ -14,6 +14,8 @@ import { ControlPlaneClient } from "./control-plane.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
+    /** Module URL from which to resolve the SDK dependency when embedded in a wrapper. */
+    sdkResolveFrom?: string
     projectId: string
     apiKey?: string
     port: number
@@ -81,7 +83,7 @@ const developmentEnvironment = z.object({
 
 async function runDev(options: DevOptions): Promise<number> {
     const project = await developmentProject(options)
-    const local = await projectSdkModule(project, "./cli/dev.js", import.meta.url)
+    const local = await projectSdkModule(project, "./cli/dev.js", import.meta.url, options.sdkResolveFrom)
     if (local !== undefined) return (await import(local)).runDev({ ...options, project })
     return runDevRuntime(options, project)
 }
