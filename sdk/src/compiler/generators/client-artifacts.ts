@@ -1,12 +1,9 @@
-import { compile } from "json-schema-to-typescript"
-import type { JSONSchema } from "json-schema-to-typescript"
 import { format } from "prettier"
 import ts from "typescript"
 
 import { runtimeFiles } from "../../generated/client-runtime.js"
 import type { SocketContract } from "../../wire/contract.js"
 import type { PublicActorContract } from "../../wire/public-contract.js"
-import { schemaForTypeScript } from "../type-annotations.js"
 import { parsePublicContract } from "../validate-public-contract.js"
 
 import { backendSource } from "./backend-generator.js"
@@ -16,16 +13,11 @@ import { usageComment } from "./usage-comment.js"
 async function generateClientArtifacts(input: PublicActorContract): Promise<ReadonlyMap<string, string>> {
     const document = parsePublicContract(input)
     const contracts = document.actors.map(actor => actor.socket)
-    const declarations: string[] = []
-    const wireNames = new Map<string, readonly string[]>()
-    for (const contract of contracts) {
-        const wire = await wireDeclarations(contract)
-        wireNames.set(contract.actorName, [...wire.names, "Authorization"])
-        declarations.push(actorDeclarations(contract, wire.code))
-    }
+    const declarations = contracts.map(contract => actorDeclarations(contract))
     const exampleActor = contracts[0]?.actorName
     const source = `${usageComment("Use this file to call actors and prepare WebSocket access from your backend.", 'import { actors, ActorProxy, type ActorAuthorization } from "./generated/index.js"')}
 import { createActorStub as $createActorStub, SocketProxy as $SocketProxy } from "./runtime/index.js"
+import type { ActorTypes as $ActorTypes } from "./types.js"
 export { createActorTransport, ActorInvocationError } from "./runtime/index.js"
 export type { ActorRpcTransport, DurableActorsClientOptions, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "./runtime/index.js"
 
@@ -34,12 +26,15 @@ export declare namespace actors {
 ${declarations.join("\n")}
 }
 
-${await backendSource(document.actors, wireNames)}
+${backendSource(document.actors)}
 ${proxySource(contracts)}`
-    return clientArtifacts(source)
+    return clientArtifacts(source, document.typescript)
 }
 
-async function clientArtifacts(source: string): Promise<ReadonlyMap<string, string>> {
+async function clientArtifacts(
+    source: string,
+    typescript: PublicActorContract["typescript"]
+): Promise<ReadonlyMap<string, string>> {
     const options = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
     const javascript = ts.transpileModule(source, { compilerOptions: options, fileName: "index.ts" })
     const declaration = ts.transpileDeclaration(source, { compilerOptions: options, fileName: "index.ts" })
@@ -50,7 +45,11 @@ async function clientArtifacts(source: string): Promise<ReadonlyMap<string, stri
     return new Map([
         ["index.js", await formatSource(javascript.outputText)],
         ["index.d.ts", await formatSource(declaration.outputText)],
-        ["package.json", JSON.stringify({ private: true, type: "module" }, null, 2) + "\n"],
+        ["types.d.ts", await formatSource(typescript.declarations)],
+        [
+            "package.json",
+            JSON.stringify({ private: true, type: "module", peerDependencies: typescript.dependencies }, null, 2) + "\n"
+        ],
         ...Object.entries(runtimeFiles)
     ])
 }
@@ -65,9 +64,9 @@ function formatSource(source: string): Promise<string> {
     })
 }
 
-function actorDeclarations(contract: SocketContract, declarations: string): string {
+function actorDeclarations(contract: SocketContract): string {
     return `export namespace ${contract.actorName} {
-${declarations}
+${["Metadata", "Incoming", "Outgoing", "State"].map(kind => `export type ${kind} = $ActorTypes[${JSON.stringify(contract.actorName)}][${JSON.stringify(kind)}]`).join("\n")}
 export interface Authorization {
     actorName: ${JSON.stringify(contract.actorName)}
     actorId: string
@@ -76,103 +75,6 @@ export interface Authorization {
     authorizationLifetimeMs?: number
 }
 }`
-}
-
-async function wireDeclarations(contract: SocketContract) {
-    const kinds = ["Metadata", "Incoming", "Outgoing", "State"]
-    const properties = Object.fromEntries(
-        kinds.map(kind => [
-            kind.toLowerCase(),
-            typeof contract.schema.definitions?.[kind] === "boolean"
-                ? contract.schema.definitions[kind]
-                : { $ref: `#/definitions/${kind}` }
-        ])
-    )
-    const code = await compile(
-        schemaForTypeScript(
-            inlineAnonymousReferences(
-                {
-                    ...contract.schema,
-                    type: "object",
-                    additionalProperties: false,
-                    properties,
-                    required: Object.keys(properties)
-                },
-                contract.schema.definitions ?? {}
-            ) as SocketContract["schema"]
-        ) as JSONSchema,
-        "ActorTypes",
-        {
-            $refOptions: { resolve: { file: false, http: false } },
-            bannerComment: "",
-            unknownAny: true,
-            additionalProperties: false,
-            customName: (schema, key) => {
-                const name = schema.title || schema.$id || key
-                return (schema.title && kinds.includes(name)) ||
-                    ["Connection", "Authorization", "Methods", "Parameters", "ReturnType", "Awaited"].includes(name)
-                    ? `${name}Data`
-                    : undefined
-            }
-        }
-    )
-    const source = ts.createSourceFile("types.ts", code, ts.ScriptTarget.Latest, true)
-    const root = source.statements.find(
-        statement => ts.isInterfaceDeclaration(statement) && statement.name.text === "ActorTypes"
-    ) as ts.InterfaceDeclaration
-    const declarations = source.statements.filter(statement => statement !== root)
-    const named = new Map(
-        declarations
-            .filter(
-                (statement): statement is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
-                    ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
-            )
-            .map(statement => [statement.name.text, statement])
-    )
-    const main = kinds.map(kind => {
-        const declaration = named.get(kind)
-        if (declaration) return declaration.getText(source)
-        const property = root.members.find(
-            member => ts.isPropertySignature(member) && member.name.getText(source) === kind.toLowerCase()
-        ) as ts.PropertySignature
-        return `export type ${kind} = ${property.type!.getText(source)}`
-    })
-    const helpers = declarations.filter(statement => !kinds.some(kind => named.get(kind) === statement))
-    return {
-        code: [...main, ...helpers.map(statement => statement.getText(source))].join("\n\n") + "\n",
-        names: [...new Set([...kinds, ...named.keys()])]
-    }
-}
-
-function inlineAnonymousReferences(
-    value: unknown,
-    definitions: NonNullable<SocketContract["schema"]["definitions"]>,
-    visiting = new Set<string>()
-): unknown {
-    if (Array.isArray(value)) return value.map(item => inlineAnonymousReferences(item, definitions, visiting))
-    if (!value || typeof value !== "object") return value
-    const node = value as Record<string, unknown>
-    const key =
-        typeof node.$ref === "string" && node.$ref.startsWith("#/definitions/")
-            ? decodeURIComponent(node.$ref.slice("#/definitions/".length)).replaceAll("~1", "/").replaceAll("~0", "~")
-            : undefined
-    const definition = key === undefined ? undefined : definitions[key]
-    if (
-        key !== undefined &&
-        definition &&
-        typeof definition === "object" &&
-        !definition.title &&
-        !visiting.has(key) &&
-        (/^(Type\d+|Field_.*)$/.test(key) ||
-            (typeof definition.type === "string" &&
-                ["string", "number", "integer", "boolean", "null"].includes(definition.type)))
-    ) {
-        const { $ref, ...rest } = node
-        return inlineAnonymousReferences({ ...definition, ...rest }, definitions, new Set([...visiting, key]))
-    }
-    return Object.fromEntries(
-        Object.entries(node).map(([key, child]) => [key, inlineAnonymousReferences(child, definitions, visiting)])
-    )
 }
 
 function proxySource(contracts: readonly SocketContract[]): string {

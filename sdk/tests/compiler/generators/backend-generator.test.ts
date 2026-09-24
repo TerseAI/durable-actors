@@ -9,6 +9,7 @@ import ts from "typescript"
 
 import { ActorCompiler } from "../../../src/compiler/actor-compiler.js"
 import { generateClientArtifacts } from "../../../src/compiler/generators/client-artifacts.js"
+import { declarations } from "../../fixtures/declarations.js"
 
 test("formats generated sections and provides concise usage examples", async t => {
     const root = await project(t)
@@ -31,7 +32,7 @@ test("formats generated sections and provides concise usage examples", async t =
         /Use this file to call actors and prepare WebSocket access from your backend\.\n \* @example\n \* import \{ actors, ActorProxy, type ActorAuthorization \} from "\.\/generated\/index\.js"/
     )
     assert.match(code, /namespace actors \{\n    namespace Room \{/)
-    assert.match(code, /        history: string\[\]/)
+    assert.match(files.get("types.d.ts")!, /history: string\[\]/)
     assert.match(
         code,
         /Types for actor state and methods[\s\S]*?type State = actors.Room.State[\s\S]*?\*\/\nexport declare namespace actors/
@@ -75,22 +76,22 @@ test("preserves authored state types and inlines anonymous shapes from stored co
     const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
     const files = await generateClientArtifacts(contract)
     const code = files.get("index.d.ts")!
-    assert.match(code, /history: ChatMessage\[\]/)
+    assert.match(files.get("types.d.ts")!, /history: ChatMessage\[\]/)
     assert.doesNotMatch(code, /\b(?:type|interface) Type\d+\b/)
     await writeArtifacts(root, files)
     await writeFile(
         path.join(root, "consumer.ts"),
         `
         import { actors } from "./index.js"
-        const message: actors.ChatRoom.ChatMessage = { name: "Ada", text: "hi" }
+        const message: actors.ChatRoom.State["history"][number] = { name: "Ada", text: "hi" }
         const history: actors.ChatRoom.State["history"] = [message]
         const drafts: actors.ChatRoom.State["drafts"] = [{ text: "draft" }]
-        const stub: actors.ChatRoom.Stub = { id: "one" }
-        const thread: actors.ChatRoom.Thread = { message, reply: { message } }
-        const author: actors.ChatRoom.Author = { name: "Ada" }
-        const latest: Promise<actors.ChatRoom.ChatMessage> = actors.ChatRoom.get("lobby").latest()
+        const stub: actors.ChatRoom.State["stub"] = { id: "one" }
+        const thread: actors.ChatRoom.State["threads"][number] = { message, reply: { message } }
+        const author: NonNullable<actors.ChatRoom.State["threads"][number]["author"]> = { name: "Ada" }
+        const latest: Promise<actors.ChatRoom.State["history"][number]> = actors.ChatRoom.get("lobby").latest()
         // @ts-expect-error authored property types are preserved
-        const wrong: actors.ChatRoom.ChatMessage = { name: 1, text: "hi" }
+        const wrong: actors.ChatRoom.State["history"][number] = { name: 1, text: "hi" }
     `
     )
     checkTypes(path.join(root, "consumer.ts"))
@@ -123,7 +124,7 @@ test("keeps state type names distinct from contract roots and RPC types", async 
         `
         import { actors } from "./index.js"
         const metadata: actors.Room.Metadata = { id: "one" }
-        const item: actors.Room.Item = { value: "one" }
+        const item: actors.Room.State["items"][number] = { value: "one" }
         const state: actors.Room.State = { items: [item], data: [{ other: true }] }
         const input: actors.Room.Methods.echo.Args = [{ value: 1 }]
         // @ts-expect-error same source names must not merge different types
@@ -224,8 +225,8 @@ test("preserves named RPC types and their dependencies in clients generated from
     const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
     await rm(author, { recursive: true, force: true })
     const files = await generateClientArtifacts(contract)
-    const code = files.get("index.d.ts")!
-    assert.match(code, /interface SendMessageInput\b/)
+    const code = files.get("types.d.ts")!
+    assert.match(code, /(?:type|interface) SendMessageInput\b/)
     assert.match(code, /interface Message\b/)
     assert.match(code, /interface Author\b/)
     assert.match(code, /sendMessage\(input: SendMessageInput\): Promise<Message>/)
@@ -236,13 +237,13 @@ test("preserves named RPC types and their dependencies in clients generated from
     checkTypes(path.join(consumer, "index.d.ts"))
 })
 
-test("names anonymous RPC types from methods and parameters in existing published contracts", async t => {
+test("uses declarations shipped in published contracts", async t => {
     const contract = JSON.parse(
         await readFile(new URL("../../../../tests/fixtures/public-contract.json", import.meta.url), "utf8")
     )
     const files = await generateClientArtifacts(contract)
-    const code = files.get("index.d.ts")!
-    assert.match(code, /interface SendMessageInput\b/)
+    const code = files.get("types.d.ts")!
+    assert.match(code, /(?:type|interface) SendMessageInput\b/)
     assert.match(code, /interface SendMessageResult\b/)
     assert.match(code, /sendMessage\(input: SendMessageInput\): Promise<SendMessageResult>/)
     const consumer = await project(t)
@@ -273,7 +274,7 @@ test("disambiguates source type names without merging distinct RPC types or gene
     const files = await generateClientArtifacts(
         JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
     )
-    const code = files.get("index.d.ts")!
+    const code = files.get("types.d.ts")!
     assert.match(code, /interface Item\b/)
     assert.match(code, /first\(input: Item\): Promise<Item>/)
     await writeArtifacts(root, files)
@@ -294,12 +295,12 @@ test("disambiguates source type names without merging distinct RPC types or gene
     checkTypes(path.join(root, "consumer.ts"))
 })
 
-test("generates callable typed backend stubs in a consumer without actor source or private dependencies", async t => {
+test("generates callable typed backend stubs in a consumer without actor source and with declared type dependencies", async t => {
     const author = await project(t)
     await mkdir(path.join(author, "node_modules/private-data"))
     await writeFile(
         path.join(author, "node_modules/private-data/package.json"),
-        JSON.stringify({ types: "index.d.ts" })
+        JSON.stringify({ name: "private-data", version: "1.0.0", types: "index.d.ts" })
     )
     await writeFile(
         path.join(author, "node_modules/private-data/index.d.ts"),
@@ -323,10 +324,17 @@ test("generates callable typed backend stubs in a consumer without actor source 
     `
     )
     const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
+    const dependency = await readFile(path.join(author, "node_modules/private-data/index.d.ts"), "utf8")
     await rm(author, { recursive: true, force: true })
     const files = await generateClientArtifacts(contract)
     assert.ok(files.has("index.d.ts"))
     const consumer = await project(t)
+    await mkdir(path.join(consumer, "node_modules/private-data"))
+    await writeFile(
+        path.join(consumer, "node_modules/private-data/package.json"),
+        JSON.stringify({ name: "private-data", version: "1.0.0", types: "index.d.ts" })
+    )
+    await writeFile(path.join(consumer, "node_modules/private-data/index.d.ts"), dependency)
     await writeArtifacts(consumer, files)
     await writeFile(
         path.join(consumer, "consumer.ts"),
@@ -434,7 +442,7 @@ test("generated modules handle actor/helper collisions, duplicate argument label
 })
 
 test("public contracts reject unsupported versions and generate an empty backend module", async () => {
-    const files = await generateClientArtifacts({ version: 1, actors: [] })
+    const files = await generateClientArtifacts({ version: 1, actors: [], typescript: declarations({}) })
     assert.match(files.get("index.js")!, /export const actors = \{\s*\}/)
     await assert.rejects(generateClientArtifacts({ version: 2, actors: [] } as never), /version/)
 })

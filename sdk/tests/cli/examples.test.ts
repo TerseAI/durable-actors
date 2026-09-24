@@ -68,6 +68,9 @@ test("UIMessage round-trips through the public contract and generated client wit
     `
     )
     const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
+    const ai = JSON.parse(await readFile(path.join(project, "node_modules/ai/package.json"), "utf8"))
+    assert.deepEqual(contract.typescript.dependencies, { ai: ai.version })
+    assert.match(contract.typescript.declarations, /import.*UIMessage.*from ['"]ai['"]/)
     await rm(entrypoint)
     await generateClient(contract, path.join(project, "generated"))
     const consumer = path.join(project, "consumer.ts")

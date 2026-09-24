@@ -20,9 +20,7 @@ test("mapped dictionaries preserve their value schemas and generated index signa
         }
     `)
     const { rpc } = project.contract().actors[0]
-    const validate = new Ajv()
-        .addKeyword("x-typescript")
-        .compile({ ...rpc.schema, ...rpc.methods[0].parameters[0].type })
+    const validate = new Ajv().compile({ ...rpc.schema, ...rpc.methods[0].parameters[0].type })
     assert.equal(validate({ provider: { value: "ok" } }), true)
     assert.equal(validate({ provider: 1 }), false)
     assert.equal(validate({ provider: { value: 1 } }), false)
@@ -225,6 +223,30 @@ test("recursive JSON dictionaries retain undefined without widening other uses",
         await room.json([undefined])
         // @ts-expect-error dictionary lookups can be undefined
         const present: Json = (await room.echo(value)).missing
+    `)
+})
+
+test("declarations preserve readonly types across RPC, sockets and public state", async t => {
+    const project = await createProject(t)
+    await project.generate(`
+        type Values = readonly string[]
+        export class Room extends Actor<Values, Values, Values> {
+            @Persisted values: Values = []
+            async echo(value: Values): Promise<Values> { return value }
+        }
+    `)
+    assert.ok("typescript" in project.contract())
+    await project.check(`
+        declare const value: readonly string[]
+        const result = await room.echo(value)
+        const metadata: actors.Room.Metadata = value
+        const incoming: actors.Room.Incoming = value
+        const outgoing: actors.Room.Outgoing = value
+        const state: actors.Room.State = { values: value }
+        // @ts-expect-error readonly results cannot be mutated
+        result.push("invalid")
+        // @ts-expect-error readonly state remains readonly
+        state.values.push("invalid")
     `)
 })
 

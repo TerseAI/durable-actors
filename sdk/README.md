@@ -43,7 +43,7 @@ Then generate your client from the same application directory:
 pnpm exec durable-actors generate
 ```
 
-`generate` writes executable JavaScript and TypeScript declarations to `generated/`, including its standalone runtime. Import `./generated/index.js` directly; no extra compilation step or production SDK dependency is needed. TypeScript applications retain typed methods, arguments, results, and autocomplete.
+`generate` writes executable JavaScript and TypeScript declarations to `generated/`, including its standalone runtime. Import `./generated/index.js` directly; no extra compilation step or production SDK dependency is needed. TypeScript applications retain typed methods, arguments, results, and autocomplete. Types are emitted directly from the actor TypeScript and published with the server contract. External type imports, such as `UIMessage` from `ai`, remain imports; `generate` reports the packages and versions used, and the calling project supplies compatible dependencies.
 
 Now you may call your actor and access the state.
 

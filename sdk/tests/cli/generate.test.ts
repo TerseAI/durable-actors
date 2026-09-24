@@ -159,7 +159,10 @@ test("a separate consumer generates identical clients from the deployed contract
     await mkdir(path.join(author, "node_modules"))
     await symlink(sdk, path.join(author, "node_modules/durable-actors"), "dir")
     await mkdir(path.join(author, "node_modules/private-data"))
-    await writeFile(path.join(author, "node_modules/private-data/package.json"), '{"types":"index.d.ts"}')
+    await writeFile(
+        path.join(author, "node_modules/private-data/package.json"),
+        '{"name":"private-data","version":"1.0.0","types":"index.d.ts"}'
+    )
     await writeFile(
         path.join(author, "node_modules/private-data/index.d.ts"),
         "export interface Message { text: string }"
@@ -233,6 +236,7 @@ test("a separate consumer generates identical clients from the deployed contract
     assert.equal(contract.version, 1)
     assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
+    assert.deepEqual(contract.typescript.dependencies, { "private-data": "1.0.0" })
     await rm(author, { recursive: true })
     const result = await run(process.execPath, [cli, "generate"], {
         cwd: directory,
@@ -243,6 +247,7 @@ test("a separate consumer generates identical clients from the deployed contract
         assert.equal(await readFile(path.join(directory, "generated", file), "utf8"), content)
     assert.deepEqual(await readdir(path.join(directory, "generated"), { recursive: true }), entries)
     assert.match(result.stdout, /Generated 1 actor contract/)
+    assert.match(result.stdout, /Type dependencies: private-data@1.0.0/)
 
     await run(process.execPath, [cli, "generate", "--out-dir", "active"], {
         cwd: directory,

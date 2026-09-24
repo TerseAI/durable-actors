@@ -32,6 +32,11 @@ async function generate(entrypoint: string | undefined, options: GenerateOptions
     const directory = path.resolve(options.outDir)
     await generateClient(contract, directory)
     console.log(`Generated ${contract.actors.length} actor contract(s) in ${directory}.`)
+    const dependencies = Object.entries(contract.typescript.dependencies)
+    if (dependencies.length)
+        console.log(
+            `Type dependencies: ${dependencies.map(([name, version]) => `${name}@${version}`).join(", ")}. Install compatible versions in the calling project.`
+        )
 }
 
 function validateOptions(entrypoint: string | undefined, options: GenerateOptions): void {

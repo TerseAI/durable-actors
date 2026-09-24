@@ -4,9 +4,7 @@ import ts from "typescript"
 import { z } from "zod"
 
 import type { SocketContract } from "../wire/contract.js"
-import type { ActorApi, PublicActorContract, RpcContract } from "../wire/public-contract.js"
-
-import { readTypeAnnotation } from "./type-annotations.js"
+import type { ActorApi, PublicActorContract, RpcContract, TypeScriptContract } from "../wire/public-contract.js"
 
 function parsePublicContract(input: unknown): PublicActorContract {
     const document = documentSchema.parse(input)
@@ -15,7 +13,61 @@ function parsePublicContract(input: unknown): PublicActorContract {
         unique(names, actor.actorName, "actor")
         validateActor(actor)
     }
+    validateDeclarations(document.typescript)
     return document
+}
+
+function validateDeclarations(contract: TypeScriptContract): void {
+    const source = ts.createSourceFile("types.d.ts", contract.declarations, ts.ScriptTarget.Latest, true)
+    const diagnostics = (source as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics
+    if (diagnostics.length) throw new Error("invalid TypeScript declarations")
+    const dependency = (specifier: string) => {
+        const name = specifier
+            .split("/")
+            .slice(0, specifier.startsWith("@") ? 2 : 1)
+            .join("/")
+        if (specifier.startsWith(".") || specifier.startsWith("/") || !Object.hasOwn(contract.dependencies, name))
+            throw new Error(`undeclared public type dependency ${specifier}`)
+    }
+    const visit = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+            if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) dependency(node.moduleSpecifier.text)
+        }
+        if (
+            ts.isImportTypeNode(node) &&
+            ts.isLiteralTypeNode(node.argument) &&
+            ts.isStringLiteral(node.argument.literal)
+        )
+            dependency(node.argument.literal.text)
+        if (ts.isSourceFile(node) || ts.isModuleBlock(node)) {
+            for (const statement of node.statements) {
+                if (!(
+                    ts.isImportDeclaration(statement) ||
+                    ts.isExportDeclaration(statement) ||
+                    ts.isInterfaceDeclaration(statement) ||
+                    ts.isTypeAliasDeclaration(statement) ||
+                    ts.isModuleDeclaration(statement) ||
+                    ts.isEnumDeclaration(statement) ||
+                    ts.isClassDeclaration(statement) ||
+                    ts.isVariableStatement(statement) ||
+                    ts.isFunctionDeclaration(statement)
+                ))
+                    throw new Error("public types must contain declarations only")
+            }
+        }
+        if (
+            (ts.isPropertyDeclaration(node) && node.initializer) ||
+            (ts.isVariableDeclaration(node) && node.initializer) ||
+            (ts.isMethodDeclaration(node) && node.body) ||
+            (ts.isConstructorDeclaration(node) && node.body) ||
+            (ts.isFunctionDeclaration(node) && node.body)
+        )
+            throw new Error("public types must contain declarations only")
+        ts.forEachChild(node, visit)
+    }
+    if (source.referencedFiles.length) throw new Error("public type declarations cannot reference local files")
+    for (const reference of source.typeReferenceDirectives) dependency(`@types/${reference.fileName}`)
+    visit(source)
 }
 
 function validateActor(actor: ActorApi): void {
@@ -84,7 +136,6 @@ function parseSchema(input: unknown, context: z.RefinementCtx): JSONSchema7 | ty
 
 function visit(node: JSONSchema7Definition, root: JSONSchema7): void {
     if (typeof node === "boolean") return
-    readTypeAnnotation(node)
     if (["$id", "id", "tsType"].some(key => Object.hasOwn(node, key)))
         throw new Error("contract schemas cannot override type resolution")
     if (node.$ref) reference(root, node.$ref)
@@ -135,6 +186,10 @@ const component = z
     .regex(/^[A-Za-z0-9._-]+$/u)
 const documentSchema = z.strictObject({
     version: z.literal(1),
+    typescript: z.strictObject({
+        declarations: z.string().min(1),
+        dependencies: z.record(z.string().regex(/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/u), z.string().min(1))
+    }),
     actors: z.array(
         z.strictObject({
             actorName: component,

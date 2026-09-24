@@ -683,8 +683,17 @@ components:
         PublicActorContract:
             type: object
             additionalProperties: false
-            required: [version, actors]
+            required: [version, actors, typescript]
             properties:
+                typescript:
+                    type: object
+                    additionalProperties: false
+                    required: [declarations, dependencies]
+                    properties:
+                        declarations: { type: string, minLength: 1 }
+                        dependencies:
+                            type: object
+                            additionalProperties: { type: string, minLength: 1 }
                 version: { type: integer, const: 1 }
                 actors:
                     type: array

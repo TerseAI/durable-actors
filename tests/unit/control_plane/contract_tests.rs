@@ -12,14 +12,33 @@ use crate::{
 };
 
 #[test]
+fn published_declarations_and_dependencies_are_preserved_and_hashed() -> Result<()> {
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    let original = PublicActorContract::new(document.clone())?;
+    document["typescript"]["dependencies"] = json!({"ai": "7.0.97"});
+    let changed = PublicActorContract::new(document.clone())?;
+    assert_ne!(original.hash(), changed.hash());
+    assert_eq!(changed.document()["typescript"], document["typescript"]);
+    document["typescript"]["declarations"] = json!("");
+    assert!(PublicActorContract::new(document).is_err());
+    Ok(())
+}
+
+#[test]
 fn compiler_contract_is_preserved_and_hashes_ignore_json_object_key_order() -> Result<()> {
     let value: Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
     let contract = PublicActorContract::new(value.clone())?;
     assert_eq!(contract.document(), &value);
-    let first = PublicActorContract::new(serde_json::from_str(r#"{"version":1,"actors":[]}"#)?)?;
-    let second = PublicActorContract::new(serde_json::from_str(r#"{"actors":[],"version":1}"#)?)?;
+    let first = PublicActorContract::new(serde_json::from_str(
+        r#"{"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}}"#,
+    )?)?;
+    let second = PublicActorContract::new(serde_json::from_str(
+        r#"{"typescript":{"dependencies":{},"declarations":"export interface ActorTypes {}"},"actors":[],"version":1}"#,
+    )?)?;
     assert_eq!(first.hash(), second.hash());
     assert_ne!(contract.hash(), first.hash());
     Ok(())
@@ -163,7 +182,7 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
         registry_behavior(Arc::new(PostgresAdminRegistry::from_database(database))).await?;
         let registry =
             PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
-        let contract = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
+        let contract = PublicActorContract::new(json!({"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}}))?;
         let deployment = spec();
         registry
             .register_deployment(&deployment, Some(&contract))
@@ -186,7 +205,9 @@ async fn postgres_latest_contract_is_atomic_and_survives_reconnection() -> Resul
 
 async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
     let mut deployment = spec();
-    let empty = PublicActorContract::new(json!({"version":1,"actors":[]}))?;
+    let empty = PublicActorContract::new(
+        json!({"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}}),
+    )?;
     let full = PublicActorContract::new(serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?)?;

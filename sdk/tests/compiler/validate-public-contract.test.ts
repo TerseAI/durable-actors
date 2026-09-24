@@ -105,7 +105,6 @@ test("contract validation permits schema-like property names and recursive local
     assert.deepEqual(parsePublicContract(document), document)
     const files = await generateClientArtifacts(document)
     const code = files.get("index.d.ts")!
-    assert.match(code, /next\?: SendMessageResult/)
     const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
     const variables = source.statements
         .filter(ts.isVariableStatement)
@@ -115,43 +114,24 @@ test("contract validation permits schema-like property names and recursive local
     assert.deepEqual(variables, ["actors"])
 })
 
-test("contract annotations accept only structured template spans and undefined markers", async () => {
-    for (const annotation of [
-        { undefined: "true" },
-        { tsType: "any" },
-        { templateLiteral: { texts: ["", ".", ""], types: ["string"] } },
-        { templateLiteral: { texts: ["", ""], types: ["string}; export const injected = 1"] } },
-        { templateLiteral: { texts: ["", 1], types: ["string"] } }
+test("published declarations require type-only syntax and declared package dependencies", async () => {
+    for (const code of [
+        "globalThis.injected = true; export interface ActorTypes {}",
+        'import type { Missing } from "undeclared"; export interface ActorTypes { value: Missing }',
+        'import type { Secret } from "../private.js"; export interface ActorTypes { value: Secret }'
     ]) {
         const document = structuredClone(fixture)
-        document.actors[0].rpc.schema.definitions.Method_sendMessage_Result["x-typescript"] = annotation
-        await assert.rejects(generateClientArtifacts(document), z.ZodError)
+        document.typescript.declarations = code
+        await assert.rejects(generateClientArtifacts(document), /declaration|dependency/)
     }
 })
 
-test("template annotation text is escaped as literal data in generated types", async () => {
+test("published declarations and type dependency requirements survive remote code generation", async () => {
     const document = structuredClone(fixture)
-    const text = "`; export const injected = 1; ${dangerous} \\ \n"
-    document.actors[0].rpc.schema.definitions.Method_sendMessage_Result = {
-        type: "string",
-        "x-typescript": { templateLiteral: { texts: [text, ""], types: ["string"] } }
-    }
-    const files = await generateClientArtifacts(document)
-    const code = files.get("index.d.ts")!
-    const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
-    const literals: ts.TemplateLiteralTypeNode[] = []
-    const visit = (node: ts.Node) => {
-        if (ts.isTemplateLiteralTypeNode(node)) literals.push(node)
-        ts.forEachChild(node, visit)
-    }
-    visit(source)
-    assert.ok(literals.some(literal => literal.head.text === text))
-    assert.deepEqual(
-        source.statements
-            .filter(ts.isVariableStatement)
-            .flatMap(statement =>
-                statement.declarationList.declarations.map(declaration => declaration.name.getText(source))
-            ),
-        ["actors"]
-    )
+    document.typescript.declarations = 'import type { UIMessage } from "ai"; ' + document.typescript.declarations
+    document.typescript.dependencies = { ai: "7.0.97" }
+    const files = await generateClientArtifacts(JSON.parse(JSON.stringify(document)))
+    assert.match(files.get("types.d.ts")!, /import type \{ UIMessage \} from "ai"/)
+    assert.deepEqual(JSON.parse(files.get("package.json")!).peerDependencies, { ai: "7.0.97" })
+    assert.doesNotMatch(files.get("index.js")!, /from "ai"/)
 })

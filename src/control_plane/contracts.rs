@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -64,10 +64,35 @@ impl PublishedContract {
 struct ContractDocument {
     version: u32,
     actors: Vec<ActorApi>,
+    typescript: TypeScriptContract,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeScriptContract {
+    declarations: String,
+    dependencies: BTreeMap<String, String>,
 }
 
 impl ContractDocument {
     fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.typescript.declarations.trim().is_empty(),
+            "public TypeScript declarations are required"
+        );
+        for (name, version) in &self.typescript.dependencies {
+            let segments: Vec<_> = name.strip_prefix('@').unwrap_or(name).split('/').collect();
+            ensure!(
+                ((segments.len() == 1 && !name.starts_with('@'))
+                    || (segments.len() == 2 && name.starts_with('@')))
+                    && segments.iter().all(|part| !part.is_empty()
+                        && part.bytes().all(|b| b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || b"._-".contains(&b)))
+                    && !version.is_empty(),
+                "invalid public type dependency"
+            );
+        }
         ensure!(
             self.version == 1,
             "unsupported public actor contract version {}",

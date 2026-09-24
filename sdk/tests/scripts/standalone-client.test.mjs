@@ -60,7 +60,7 @@ async function standaloneProject(t) {
 
 async function checkArtifacts(directory) {
     const generated = path.join(directory, "generated")
-    assert.deepEqual((await readdir(generated)).sort(), ["index.d.ts", "index.js", "package.json", "runtime"])
+    assert.deepEqual((await readdir(generated)).sort(), ["index.d.ts", "index.js", "package.json", "runtime", "types.d.ts"])
     const files = await readdir(path.join(generated, "runtime"))
     for (const file of files) {
         if (file.endsWith(".js")) assert.ok(files.includes(file.replace(/\.js$/, ".d.ts")), file)

@@ -11,6 +11,10 @@ test("public codegen returns the same typed artifacts as file generation", async
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contract = {
         version: 1,
+        typescript: {
+            declarations: "export interface ActorTypes { Room: { Metadata: { userId: string }; Incoming: string; Outgoing: never; State: {}; Methods: {} } }",
+            dependencies: {}
+        },
         actors: [
             {
                 actorName: "Room",
@@ -36,7 +40,7 @@ test("public codegen returns the same typed artifacts as file generation", async
     assert.deepEqual(await readdir(directory), [])
     assert.ok(files.has("runtime/client.js"))
     assert.ok(files.has("runtime/index.js"))
-    assert.match(files.get("index.d.ts"), /userId: string/)
+    assert.match(files.get("types.d.ts"), /userId: string/)
     await generateClient(contract, directory)
     for (const [name, contents] of files) {
         assert.equal(await readFile(path.join(directory, name), "utf8"), contents)
@@ -45,7 +49,7 @@ test("public codegen returns the same typed artifacts as file generation", async
 
 test("public codegen supports projects without actors", async () => {
     const { generateClientArtifacts } = await import("durable-actors/codegen")
-    const files = await generateClientArtifacts({ version: 1, actors: [] })
+    const files = await generateClientArtifacts({ version: 1, actors: [], typescript: { declarations: "export interface ActorTypes {}", dependencies: {} } })
     assert.ok(files.has("runtime/client.js"))
     assert.ok(files.has("runtime/index.js"))
 })
@@ -59,6 +63,10 @@ test("public contract generation writes a backend module and a self-contained ru
     t.after(() => rm(directory, { recursive: true, force: true }))
     const contract = {
         version: 1,
+        typescript: {
+            declarations: "export interface ActorTypes { Room: { Metadata: {}; Incoming: never; Outgoing: never; State: {}; Methods: { clear(): Promise<void> } } }",
+            dependencies: {}
+        },
         actors: [
             {
                 actorName: "Room",

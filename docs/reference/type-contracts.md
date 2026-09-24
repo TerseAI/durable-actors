@@ -1,34 +1,27 @@
-# Type preservation in generated clients
+# Types in generated clients
 
-The compiler publishes actor types as JSON Schema in the public contract. Client generation reads that contract without importing or executing the actor or its dependencies.
+Each deployment publishes JSON Schemas for runtime validation and standard TypeScript declarations for the public actor API. The declarations are emitted from the actor's TypeScript by the TypeScript compiler. `dts-bundle-generator` bundles local supporting types and preserves imports of third-party types.
 
-String dictionaries, including mapped types such as `Record<string, JSONObject>`, use `additionalProperties` with a value schema. Dictionaries retain their value types inside unions, intersections, arrays and recursive structures.
-
-`unknown` is supported in RPC parameters and results, socket metadata and messages, and public persisted state, including nested properties and container values. It becomes an unconstrained JSON Schema and stays `unknown` in generated declarations. Application code must narrow returned values before using them, and runtime values still need to be JSON-compatible.
-
-Template-literal types with `string`, `number`, and `bigint` substitutions retain their patterns in generated declarations. Literal unions expanded by TypeScript remain unions. Unsupported template substitutions produce a compiler error instead of silently becoming `string`.
-
-Optional properties and dictionary values retain `undefined` in their TypeScript declarations. JSON serialization still omits object entries whose value is `undefined`; the annotation does not change runtime serialization. Standalone `undefined` RPC values and `undefined` array elements remain unsupported because JSON cannot represent them without changing their meaning.
-
-## Additional TypeScript information
-
-Two validated fields under `x-typescript` carry distinctions that ordinary JSON Schema does not preserve for TypeScript generation:
+The published contract includes:
 
 ```json
 {
-  "type": "string",
-  "x-typescript": {
-    "templateLiteral": {
-      "texts": ["", ".", ""],
-      "types": ["string", "string"]
-    }
+  "version": 1,
+  "actors": [],
+  "typescript": {
+    "declarations": "export interface ActorTypes {}",
+    "dependencies": {}
   }
 }
 ```
 
-This emits the TypeScript type `` `${string}.${string}` ``. An `undefined: true` marker adds `undefined` to the generated value type. These fields contain structured data rather than arbitrary TypeScript source. The generator validates them and uses the TypeScript AST printer to escape literal text. JSON Schema validators can ignore the annotations; strict Ajv configurations should register `x-typescript` as an annotation keyword.
+The contract hash covers the schemas, declarations, and dependency versions together. The control plane stores and serves them as one deployment artifact. Server-based `generate` downloads this contract and writes `index.js`, `index.d.ts`, `types.d.ts`, `package.json`, and the standalone runtime. The calling project does not need the actor source or the durable-actors SDK at runtime.
 
-The AI SDK `UIMessage` regression compiles actor source, serializes its public contract, deletes the actor source, generates the client, and then compiles this application code with `strict: true` and `skipLibCheck: false`:
+## External type dependencies
+
+When an actor uses `UIMessage` from `ai`, the declarations retain an import from `ai`. Its build version is recorded in `typescript.dependencies` and in the generated package's `peerDependencies`. The CLI reports the required type packages; install compatible versions in the calling project. Generation itself does not need to install or load these packages. JavaScript consumers do not load type-only dependencies at runtime.
+
+The AI SDK regression compiles the actor, serializes its public contract, removes the actor source, generates the client, and checks the following application code with `strict: true` and `skipLibCheck: false`:
 
 ```ts
 await chat.append(message) // message: UIMessage
@@ -36,4 +29,14 @@ const messages: UIMessage[] = await chat.load()
 await convertToModelMessages(messages)
 ```
 
-To repair a client generated from a contract that lost type information, rebuild and publish the actor contract with the updated compiler, then regenerate the application client. Regenerating from an old contract cannot recover information absent from that contract.
+Local dictionaries, readonly arrays, recursive types, unions, intersections, unknown values, template literals, and optional undefined values retain their TypeScript declarations. Client types are no longer reconstructed from JSON Schema, and no custom TypeScript annotations are needed inside schemas.
+
+Public types are available through `actors.Room.Metadata`, `Incoming`, `Outgoing`, `State`, and `Methods`. Access method argument and result types through `actors.Room.Methods["send"]["Args"]` and `actors.Room.Methods["send"]["Result"]`; supporting declaration names are implementation details.
+
+## Runtime limits
+
+The JSON Schema compiler and JSON transport still determine which actor values are supported. Standard declarations do not make functions, classes, symbols, or arbitrary non-JSON values serializable. Optional tuple elements and some constrained dictionary keys remain outside the current schema compiler's supported subset even though TypeScript can represent them.
+
+JSON serialization omits object entries whose value is `undefined`. Standalone undefined RPC values and undefined array elements remain unsupported. An `unknown` declaration requires narrowing in application code, and values sent at runtime must still be JSON-compatible.
+
+Rebuild the actor deployment and regenerate its clients to use the declaration-based contract format. Existing contracts without declarations must be rebuilt.

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import ts from "typescript"
 
 import { ActorCompiler } from "../../../src/compiler/actor-compiler.js"
+import { declarations } from "../../fixtures/declarations.js"
 
 test("generates an actor-specific proxy from backend metadata types", async t => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-proxy-"))
@@ -193,6 +194,9 @@ test("generates backend contracts for actors without outgoing application messag
         await generateClient(
             {
                 version: 1,
+                typescript: declarations({
+                    Counter: "Metadata: {}; Incoming: string; Outgoing: never; State: {}; Methods: {}"
+                }),
                 actors: [
                     {
                         actorName: "Counter",
@@ -215,7 +219,7 @@ test("generates backend contracts for actors without outgoing application messag
             },
             directory
         )
-        assert.match(await readFile(path.join(directory, "index.d.ts"), "utf8"), /type Outgoing = never/)
+        assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /Outgoing: never/)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -249,6 +253,14 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
         await generateClient(
             {
                 version: 1,
+                typescript: declarations(
+                    Object.fromEntries(
+                        names.map(name => [
+                            name,
+                            "Metadata: {}; Incoming: string; Outgoing: string; State: {}; Methods: {}"
+                        ])
+                    )
+                ),
                 actors: names.map(actorName => ({
                     actorName,
                     socket: {
@@ -298,6 +310,9 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
         await generateClient(
             {
                 version: 1,
+                typescript: declarations({
+                    Room: "Metadata: {}; Incoming: { amount: number }; Outgoing: string; State: { count: number }; Methods: {}"
+                }),
                 actors: [
                     {
                         actorName: "Room",
@@ -329,9 +344,15 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             directory
         )
         const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
-        assert.match(source, /amount: number/)
+        assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
-        assert.deepEqual((await readdir(directory)).sort(), ["index.d.ts", "index.js", "package.json", "runtime"])
+        assert.deepEqual((await readdir(directory)).sort(), [
+            "index.d.ts",
+            "index.js",
+            "package.json",
+            "runtime",
+            "types.d.ts"
+        ])
         assert.match(await readFile(path.join(directory, "index.d.ts"), "utf8"), /export declare const actors/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(
@@ -375,6 +396,14 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     await generateClient(
         {
             version: 1,
+            typescript: declarations(
+                Object.fromEntries(
+                    ["Counter", "Room"].map(name => [
+                        name,
+                        "Metadata: { userId: string }; Incoming: { by: number }; Outgoing: { count: number }; State: { count: number }; Methods: {}"
+                    ])
+                )
+            ),
             actors: ["Counter", "Room"].map(actorName => ({
                 actorName,
                 socket: {
@@ -410,8 +439,8 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     )
     const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
     for (const name of ["Counter", "Room"]) assert.ok(source.includes(`namespace ${name} {`))
-    for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) assert.ok(source.includes(`interface ${type} {`))
-    assert.match(source, /count: number/)
+    for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) assert.ok(source.includes(`type ${type} =`))
+    assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /count: number/)
     assert.doesNotMatch(source, /ActorNames|FieldCount/)
     assert.match(source, /metadata: Metadata/)
     const consumer = path.join(directory, "consumer.ts")
@@ -447,6 +476,13 @@ test("readable contract types preserve recursive metadata and helper-name collis
     await generateClient(
         {
             version: 1,
+            typescript: {
+                declarations: `interface Connection { id: string; parent?: Connection }
+                export interface ActorTypes {
+                    Room: { Metadata: { connection: Connection }; Incoming: null; Outgoing: unknown; State: {}; Methods: {} }
+                }`,
+                dependencies: {}
+            },
             actors: [
                 {
                     actorName: "Room",
@@ -490,7 +526,7 @@ test("readable contract types preserve recursive metadata and helper-name collis
         type Incoming = actors.Room.Incoming
         type Outgoing = actors.Room.Outgoing
         type Authorization = actors.Room.Authorization
-        const metadata: Metadata = { connection: { id: "a", parent: { id: "b" } } }
+        const metadata: Metadata = { connection: { id: "a", parent: { id: "b", parent: { id: "c" } } } }
         const authorization: Authorization = { actorName: "Room", actorId: "one", metadata }
         const incoming: Incoming = null
         const outgoing: Outgoing = { anything: true }
@@ -526,13 +562,13 @@ test("regeneration replaces managed runtime files and preserves application file
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-regenerate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
-    await generateClient({ version: 1, actors: [] }, directory)
+    await generateClient({ version: 1, actors: [], typescript: declarations({}) }, directory)
     const runtime = path.join(directory, "runtime")
     const files = await readdir(runtime)
     await writeFile(path.join(runtime, "stale.js"), "throw new Error('stale runtime')")
     await writeFile(path.join(runtime, "client.js"), "throw new Error('edited runtime')")
     await writeFile(path.join(directory, "backend.ts"), "export const application = true")
-    await generateClient({ version: 1, actors: [] }, directory)
+    await generateClient({ version: 1, actors: [], typescript: declarations({}) }, directory)
     assert.deepEqual(await readdir(runtime), files)
     const consumer = path.join(directory, "consumer.ts")
     await writeFile(
