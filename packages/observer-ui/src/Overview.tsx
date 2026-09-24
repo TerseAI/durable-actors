@@ -6,6 +6,8 @@ import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInventory, ObserverClient, RequestTracePage } from "./client.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useInventory, usePolledQuery, useRequests } from "./observer-hooks.js"
 import { inventorySummary, tracesInRange } from "./overview-data.js"
 import { liveOverviewMetrics } from "./overview-metrics.js"
@@ -171,51 +173,53 @@ function ClassTable({ inventory, metrics, failed, onSelectActor }: { inventory?:
                         <Search aria-hidden="true" />
                         <Input aria-label="Filter actor classes" placeholder="Filter actor classes…" value={query} onInput={event => setQuery(event.currentTarget.value)} />
                     </div>
-                    <select aria-label="Filter by residency" value={residency} onChange={event => setResidency(event.target.value)}>
-                        <option value="all">All states</option>
-                        <option value="live">Live instances</option>
-                        <option value="dormant">Dormant instances</option>
-                        <option value="unknown">Unknown residency</option>
-                    </select>
+                    <NativeSelect aria-label="Filter by residency" size="sm" value={residency} onChange={event => setResidency(event.target.value)}>
+                        <NativeSelectOption value="all">All states</NativeSelectOption>
+                        <NativeSelectOption value="live">Live instances</NativeSelectOption>
+                        <NativeSelectOption value="dormant">Dormant instances</NativeSelectOption>
+                        <NativeSelectOption value="unknown">Unknown residency</NativeSelectOption>
+                    </NativeSelect>
                 </div>
-                <div className="overview-table-scroll" role="region" aria-label="Actor class metrics" tabIndex={0}>
-                    <table className="overview-table">
-                        <colgroup>
-                            <col className="overview-class-column" />
-                            <col span={6} />
-                        </colgroup>
-                        <thead>
-                            <tr className="overview-groups">
-                                <th scope="colgroup" colSpan={2}>
-                                    Actors
-                                </th>
-                                <th scope="colgroup" colSpan={4}>
-                                    Requests
-                                </th>
-                                <th scope="colgroup">WebSockets</th>
-                            </tr>
-                            <tr>
-                                <th scope="col">Class</th>
-                                <th scope="col">Instances</th>
-                                <th scope="col">Total</th>
-                                <th scope="col">Success</th>
-                                <th scope="col">p95 latency</th>
-                                <th scope="col">p95 queue wait</th>
-                                <th scope="col">Connected</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {actors.map(actor => (
-                                <ClassRow
-                                    key={actor.actorName}
-                                    actor={actor}
-                                    metrics={metrics && (metrics.classes.find(row => row.actorName === actor.actorName) ?? empty(actor.actorName))}
-                                    onSelectActor={onSelectActor}
-                                />
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                <Table
+                    className="overview-table"
+                    aria-label="Actor class metrics"
+                    containerProps={{ className: "overview-table-scroll", role: "region", "aria-label": "Actor class metrics", tabIndex: 0 }}
+                >
+                    <colgroup>
+                        <col className="overview-class-column" />
+                        <col span={6} />
+                    </colgroup>
+                    <TableHeader>
+                        <TableRow className="overview-groups">
+                            <TableHead scope="colgroup" colSpan={2}>
+                                Actors
+                            </TableHead>
+                            <TableHead scope="colgroup" colSpan={4}>
+                                Requests
+                            </TableHead>
+                            <TableHead scope="colgroup">WebSockets</TableHead>
+                        </TableRow>
+                        <TableRow>
+                            <TableHead scope="col">Class</TableHead>
+                            <TableHead scope="col">Instances</TableHead>
+                            <TableHead scope="col">Total</TableHead>
+                            <TableHead scope="col">Success</TableHead>
+                            <TableHead scope="col">p95 latency</TableHead>
+                            <TableHead scope="col">p95 queue wait</TableHead>
+                            <TableHead scope="col">Connected</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {actors.map(actor => (
+                            <ClassRow
+                                key={actor.actorName}
+                                actor={actor}
+                                metrics={metrics && (metrics.classes.find(row => row.actorName === actor.actorName) ?? empty(actor.actorName))}
+                                onSelectActor={onSelectActor}
+                            />
+                        ))}
+                    </TableBody>
+                </Table>
                 {!actors.length && (
                     <div className="overview-empty" role="status">
                         <strong>{!inventory ? (failed ? "Inventory unavailable" : "Loading actor classes…") : inventory.actors.length ? "No matching actor classes" : "No actors yet"}</strong>
@@ -240,23 +244,23 @@ function ClassTable({ inventory, metrics, failed, onSelectActor }: { inventory?:
 
 function ClassRow({ actor, metrics, onSelectActor }: { actor: ActorInventory["actors"][number]; metrics?: ClassMetrics; onSelectActor: OverviewProps["onSelectActor"] }) {
     return (
-        <tr className="la-clickable-row" onClick={() => onSelectActor(actor.actorName)}>
-            <td>
+        <TableRow className="la-clickable-row" onClick={() => onSelectActor(actor.actorName)}>
+            <TableCell>
                 <Button variant="ghost" type="button" className="overview-class-link" aria-label={`Inspect ${actor.actorName}`}>
                     <span title={actor.actorName}>{actor.actorName}</span>
                 </Button>
-            </td>
-            <td>{number(actor.live + actor.dormant + actor.unknown)}</td>
-            <td>{number(metrics?.count)}</td>
-            <td>
+            </TableCell>
+            <TableCell>{number(actor.live + actor.dormant + actor.unknown)}</TableCell>
+            <TableCell>{number(metrics?.count)}</TableCell>
+            <TableCell>
                 <Health value={metrics?.success} kind="success" />
-            </td>
-            <td>
+            </TableCell>
+            <TableCell>
                 <Health value={metrics?.p95} kind="latency" />
-            </td>
-            <td>{milliseconds(metrics?.queueP95)}</td>
-            <td>{number(actor.instances.reduce((sum, instance) => sum + instance.connections.length, 0))}</td>
-        </tr>
+            </TableCell>
+            <TableCell>{milliseconds(metrics?.queueP95)}</TableCell>
+            <TableCell>{number(actor.instances.reduce((sum, instance) => sum + instance.connections.length, 0))}</TableCell>
+        </TableRow>
     )
 }
 
