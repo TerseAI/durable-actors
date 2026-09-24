@@ -83,6 +83,13 @@ test("release publishes the observer dependency before the SDK", () => {
     assert.doesNotMatch(npmJob, /pnpm .* pack/)
     assert.match(npmJob, /npm publish \.\/dist-tarballs\/durable-actors-observer-.*\.tgz --access public[\s\S]*npm publish \.\/dist-tarballs\/durable-actors-.*\.tgz --access public/)
 })
+
+test("native package validation resolves the observer from the tested tarball", () => {
+    const job = releaseJob("native-publish")
+    assert.match(job, /DURABLE_ACTORS_TEST_OBSERVER_PACKAGE:.*\/\.artifacts\/durable-actors-observer-\$\{\{ needs\.preflight\.outputs\.version \}\}\.tgz/)
+    assert.match(job, /npm pkg set "pnpm\.overrides\.durable-actors-observer=file:\$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"[\s\S]*pnpm --dir examples\/chat add --ignore-scripts/)
+})
+
 test("native and image builds start independently of validation and stage artifacts", () => {
     for (const job of ["native", "image-build"]) {
         assert.deepEqual(dependencies(job), ["preflight"])

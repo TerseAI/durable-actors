@@ -44,7 +44,7 @@ async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_o
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build and Bun"]
-async fn dev_enforces_a_secret_set_in_the_environment() -> Result<()> {
+async fn dev_observability_is_open_while_application_routes_enforce_the_secret() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
     let runtime = LocalRuntime::start(project.path(), Some("optional-secret")).await?;
@@ -64,6 +64,24 @@ async fn dev_enforces_a_secret_set_in_the_environment() -> Result<()> {
             .status(),
         200
     );
+    for endpoint in [
+        "actors",
+        "events",
+        "requests",
+        "requests/events",
+        "metrics",
+        "queue-waits",
+        "websockets",
+    ] {
+        let url = format!("{}/v1/projects/local/observe/{endpoint}", runtime.origin);
+        for credential in [None, Some("stale-secret")] {
+            let mut request = client.get(&url).timeout(Duration::from_secs(5));
+            if let Some(credential) = credential {
+                request = request.bearer_auth(credential);
+            }
+            assert_eq!(request.send().await?.status(), 200, "{endpoint}");
+        }
+    }
     runtime.stop().await
 }
 

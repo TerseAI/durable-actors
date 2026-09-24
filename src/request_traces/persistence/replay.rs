@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 struct Cursor {
+    project_id: String,
     generation: String,
     position: u64,
 }
@@ -20,10 +21,18 @@ pub(super) struct Metadata {
     pub(super) total: u64,
 }
 
-pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<TracePage> {
+pub(super) fn query(
+    connection: &mut Connection,
+    project_id: &str,
+    query: &ReplayQuery,
+) -> Result<TracePage> {
     let transaction = connection.transaction()?;
-    let metadata = metadata(&transaction)?;
-    let cursor = query.cursor.as_deref().map(decode).transpose()?;
+    let metadata = metadata(&transaction, project_id)?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(|value| decode(value, project_id))
+        .transpose()?;
     if cursor
         .as_ref()
         .is_some_and(|c| c.generation == metadata.generation && c.position > metadata.head)
@@ -34,7 +43,7 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
         .as_ref()
         .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
     let after = cursor.filter(|_| !reset).map(|c| c.position);
-    let mut records = select(&transaction, query.limit, after, metadata.head)?;
+    let mut records = select(&transaction, project_id, query.limit, after, metadata.head)?;
     let more = after.is_some() && records.len() > query.limit;
     records.truncate(query.limit);
     let position = if more {
@@ -43,6 +52,7 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
         metadata.head
     };
     let resume_cursor = encode(&Cursor {
+        project_id: project_id.into(),
         generation: metadata.generation.clone(),
         position,
     })?;
@@ -60,14 +70,17 @@ pub(super) fn query(connection: &mut Connection, query: &ReplayQuery) -> Result<
     })
 }
 
-pub(super) fn metadata(transaction: &Transaction<'_>) -> Result<Metadata> {
-    Ok(transaction.query_row("SELECT generation, pruned, total, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'traces'), 0) FROM trace_meta", [], |row| {
-        Ok(Metadata { generation: row.get(0)?, pruned: row.get::<_, i64>(1)? as u64, total: row.get::<_, i64>(2)? as u64, head: row.get::<_, i64>(3)? as u64 })
-    })?)
+pub(super) fn metadata(transaction: &Transaction<'_>, project_id: &str) -> Result<Metadata> {
+    Ok(transaction.query_row(
+        "SELECT generation, COALESCE(p.pruned, 0), COALESCE(p.total, 0), COALESCE(p.head, 0) FROM trace_meta LEFT JOIN trace_projects p ON p.project_id = ?1",
+        [project_id],
+        |row| Ok(Metadata { generation: row.get(0)?, pruned: row.get::<_, i64>(1)? as u64, total: row.get::<_, i64>(2)? as u64, head: row.get::<_, i64>(3)? as u64 }),
+    )?)
 }
 
 fn select(
     transaction: &Transaction<'_>,
+    project_id: &str,
     limit: usize,
     after: Option<u64>,
     head: u64,
@@ -78,10 +91,15 @@ fn select(
         "started_at_ms DESC, position DESC"
     };
     let mut statement = transaction.prepare(&format!(
-        "SELECT position, event FROM traces WHERE position > ?1 AND position <= ?2 ORDER BY {order} LIMIT ?3"
+        "SELECT position, event FROM traces WHERE project_id = ?4 AND position > ?1 AND position <= ?2 ORDER BY {order} LIMIT ?3"
     ))?;
     let rows = statement.query_map(
-        params![after.unwrap_or(0) as i64, head as i64, (limit + 1) as i64],
+        params![
+            after.unwrap_or(0) as i64,
+            head as i64,
+            (limit + 1) as i64,
+            project_id
+        ],
         |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
     )?;
     rows.map(|row| {
@@ -97,19 +115,20 @@ fn select(
 fn encode(cursor: &Cursor) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?))
 }
-fn decode(value: &str) -> Result<Cursor> {
+fn decode(value: &str, project_id: &str) -> Result<Cursor> {
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| InvalidTraceCursor)?;
     let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| InvalidTraceCursor)?;
-    if cursor.position > i64::MAX as u64 {
+    if cursor.project_id != project_id || cursor.position > i64::MAX as u64 {
         return Err(InvalidTraceCursor.into());
     }
     Ok(cursor)
 }
 
-pub(super) fn resume_cursor(generation: &str, position: u64) -> Result<String> {
+pub(super) fn resume_cursor(project_id: &str, generation: &str, position: u64) -> Result<String> {
     encode(&Cursor {
+        project_id: project_id.into(),
         generation: generation.into(),
         position,
     })

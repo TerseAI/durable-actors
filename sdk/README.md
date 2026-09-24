@@ -22,7 +22,9 @@ Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
 npx durable-actors init my-actors
 cd my-actors
 pnpm install
-pnpm exec durable-actors dev # Run the server locally on your machine
+# Or with npm:
+npm install
+npx durable-actors dev # Run the server locally on your machine
 ```
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
@@ -32,15 +34,19 @@ Running dev will also start a watch, every-time you make a change to an actor an
 In your separate application project's directory (ex: node server), install the generator as a development dependency:
 
 ```sh
-pnpm add -D durable-actors
+pnpm install --save-dev durable-actors
+# Or with npm:
+npm install --save-dev durable-actors
 ```
 
 Local CLI commands and backend clients default to project `local` at `http://127.0.0.1:7100`. No project ID or secret is required, and local authentication is disabled unless you set `DURABLE_ACTORS_SECRET` on the actor server and backend.
 
+`durable-actors observe` never requires a secret when connecting to `durable-actors dev`, even when application routes use one. The dev runtime binds only to localhost; hosted observability still uses the server's configured authentication.
+
 Then generate your client from the same application directory:
 
 ```sh
-pnpm exec durable-actors generate
+npx durable-actors generate
 ```
 
 `generate` writes executable JavaScript and TypeScript declarations to `generated/`, including its standalone runtime. Import `./generated/index.js` directly; no extra compilation step or production SDK dependency is needed. TypeScript applications retain typed methods, arguments, results, and autocomplete. Types are emitted directly from the actor TypeScript and published with the server contract. External type imports, such as `UIMessage` from `ai`, remain imports; `generate` reports the packages and versions used, and the calling project supplies compatible dependencies.
@@ -58,7 +64,15 @@ For complete sample applications, see [AI Chat](https://github.com/TerseAI/durab
 
 ## Define an Actor
 
-Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
+Install `ai` in your actor project:
+
+```sh
+pnpm install ai
+# Or with npm:
+npm install ai
+```
+
+Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
 ```ts
 import type { UIMessage } from "ai"
@@ -80,7 +94,7 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` in your application and use its generated client:
+After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"

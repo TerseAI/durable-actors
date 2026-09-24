@@ -8,7 +8,7 @@ export interface FilterSuggestion {
     hint?: string
 }
 
-interface FilterComboboxProps {
+export interface FilterComboboxProps {
     label: string
     placeholder: string
     value: string

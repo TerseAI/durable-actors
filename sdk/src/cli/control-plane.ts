@@ -16,7 +16,7 @@ class ControlPlaneClient {
     ) {}
 
     async checkConnection(): Promise<void> {
-        await this.requestJson("GET", "/v1/observe/actors", undefined, 10_000)
+        await this.requestJson("GET", `${this.projectPath()}/observe/actors`, undefined, 10_000)
     }
 
     registerDeployment(deployment: unknown): Promise<unknown> {
@@ -28,22 +28,22 @@ class ControlPlaneClient {
     }
 
     listActors(): Promise<unknown> {
-        return this.requestJson("GET", "/v1/observe/actors")
+        return this.requestJson("GET", `${this.projectPath()}/observe/actors`)
     }
 
     async openActorStream(signal: AbortSignal): Promise<Response> {
-        return this.openStream("/v1/observe/events", signal)
+        return this.openStream(`${this.projectPath()}/observe/events`, signal)
     }
 
     async openRequestStream(signal: AbortSignal, after?: string): Promise<Response> {
         const query = after ? `?${new URLSearchParams({ after })}` : ""
-        return this.openStream(`/v1/observe/requests/events${query}`, signal)
+        return this.openStream(`${this.projectPath()}/observe/requests/events${query}`, signal)
     }
 
     listRequests(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/requests${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/requests${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal
@@ -51,13 +51,19 @@ class ControlPlaneClient {
     }
 
     getMetrics(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
-        return this.requestJson("GET", `/v1/observe/metrics${query.size ? `?${query}` : ""}`, undefined, 30_000, signal)
+        return this.requestJson(
+            "GET",
+            `${this.projectPath()}/observe/metrics${query.size ? `?${query}` : ""}`,
+            undefined,
+            30_000,
+            signal
+        )
     }
 
     listQueueWaits(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/queue-waits${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/queue-waits${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal
@@ -67,7 +73,7 @@ class ControlPlaneClient {
     listWebSockets(query: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
         return this.requestJson(
             "GET",
-            `/v1/observe/websockets${query.size ? `?${query}` : ""}`,
+            `${this.projectPath()}/observe/websockets${query.size ? `?${query}` : ""}`,
             undefined,
             30_000,
             signal

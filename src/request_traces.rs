@@ -23,6 +23,7 @@ pub(crate) const TRACE_METADATA_LIMIT: usize = 4096;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RequestTrace {
+    pub project_id: String,
     pub request_id: String,
     pub actor_name: String,
     pub actor_id: String,
@@ -40,7 +41,7 @@ pub(crate) struct RequestTrace {
 impl RequestTrace {
     pub(crate) fn validate(&self) -> Result<()> {
         crate::actor::ActorKey {
-            project_id: "trace-validation".into(),
+            project_id: self.project_id.clone(),
             actor_name: self.actor_name.clone(),
             actor_id: self.actor_id.clone(),
         }
@@ -141,7 +142,7 @@ pub(crate) struct TraceStore {
     writer: Arc<tokio::sync::Mutex<()>>,
     pending: Arc<tokio::sync::Semaphore>,
     persistence: Arc<dyn TracePersistence>,
-    dropped: Arc<AtomicU64>,
+    dropped: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
     persistence_failed: Arc<AtomicBool>,
     pub changes: watch::Sender<()>,
 }
@@ -154,23 +155,28 @@ impl Default for TraceStore {
 
 impl TraceStore {
     pub(crate) async fn open(persistence: Arc<dyn TracePersistence>) -> Result<Self> {
-        persistence
-            .replay(&ReplayQuery {
-                limit: 1,
-                ..Default::default()
-            })
-            .await?;
+        persistence.initialize().await?;
         Ok(Self::new(persistence))
     }
 
     pub(crate) async fn record(
         &self,
+        project_id: &str,
         host: &str,
         session: &str,
         traces: Vec<RequestTrace>,
         dropped: u64,
     ) -> Result<()> {
-        self.dropped.fetch_add(dropped, Ordering::Relaxed);
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        ensure!(
+            traces.iter().all(|trace| trace.project_id == project_id),
+            "trace project does not match host"
+        );
+        if dropped > 0 {
+            let mut counts = self.dropped.lock().unwrap();
+            let count = counts.entry(project_id.to_owned()).or_default();
+            *count = count.saturating_add(dropped);
+        }
         let events = traces
             .into_iter()
             .map(|trace| TraceEvent {
@@ -183,39 +189,58 @@ impl TraceStore {
         self.persist_detached(events).await
     }
 
-    pub(crate) async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
+    pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
         query.validate()?;
-        let mut page = self.persistence.replay(query).await?;
-        page.dropped = self.dropped.load(Ordering::Relaxed);
+        let mut page = self.persistence.replay(project_id, query).await?;
+        page.dropped = self
+            .dropped
+            .lock()
+            .unwrap()
+            .get(project_id)
+            .copied()
+            .unwrap_or(0);
         page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
         Ok(page)
     }
 
     pub(crate) async fn metrics(
         &self,
+        project_id: &str,
         query: &metrics::TimeRange,
     ) -> Result<metrics::OverviewMetrics> {
-        self.persistence.metrics(query).await
+        self.persistence.metrics(project_id, query).await
     }
 
     pub(crate) async fn queue_waits(
         &self,
+        project_id: &str,
         query: &metrics::QueueWaitQuery,
     ) -> Result<Vec<metrics::QueueWaitRow>> {
-        self.persistence.queue_waits(query).await
+        self.persistence.queue_waits(project_id, query).await
     }
 
     pub(crate) async fn websockets(
         &self,
+        project_id: &str,
         query: &metrics::TimeRange,
     ) -> Result<Vec<metrics::SocketSession>> {
-        self.persistence.websockets(query).await
+        self.persistence.websockets(project_id, query).await
     }
 
-    pub(crate) async fn history(&self, query: &history::HistoryQuery) -> Result<TracePage> {
+    pub(crate) async fn history(
+        &self,
+        project_id: &str,
+        query: &history::HistoryQuery,
+    ) -> Result<TracePage> {
         query.validate()?;
-        let mut page = self.persistence.history(query).await?;
-        page.dropped = self.dropped.load(Ordering::Relaxed);
+        let mut page = self.persistence.history(project_id, query).await?;
+        page.dropped = self
+            .dropped
+            .lock()
+            .unwrap()
+            .get(project_id)
+            .copied()
+            .unwrap_or(0);
         page.persistence_failed = self.persistence_failed.load(Ordering::Relaxed);
         Ok(page)
     }
@@ -225,7 +250,7 @@ impl TraceStore {
             writer: Arc::new(tokio::sync::Mutex::new(())),
             pending: Arc::new(tokio::sync::Semaphore::new(64)),
             persistence,
-            dropped: Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             persistence_failed: Arc::new(AtomicBool::new(false)),
             changes: watch::channel(()).0,
         }
@@ -352,6 +377,7 @@ impl RequestSpan {
             sender,
             started,
             trace: Some(RequestTrace {
+                project_id: invocation.actor.project_id.clone(),
                 request_id: invocation.request_id.clone(),
                 actor_name: invocation.actor.actor_name.clone(),
                 actor_id: invocation.actor.actor_id.clone(),

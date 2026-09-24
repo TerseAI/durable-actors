@@ -4,7 +4,7 @@ import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } fro
 import { formatDuration, metadataSummary, sessionDuration } from "./socket-sessions.js"
 import type { SocketSession } from "./socket-sessions.js"
 
-interface SocketTimelineProps {
+export interface SocketTimelineProps {
     sessions: SocketSession[]
     start: number
     end: number

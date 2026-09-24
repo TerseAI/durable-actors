@@ -56,7 +56,7 @@ for (const secret of [undefined, "observe-key"]) {
         child.kill("SIGTERM")
         assert.deepEqual(await exited, [0, null])
         await assert.rejects(fetch(url))
-        assert.deepEqual(requests, Array(2).fill("/v1/observe/actors"))
+        assert.deepEqual(requests, Array(2).fill("/v1/projects/local/observe/actors"))
     })
 }
 
@@ -85,7 +85,10 @@ test("observe exits unsuccessfully without a greeting when authentication or tra
     }
     await assert.rejects(run(process.execPath, args, { env }), failure(/HTTP 401.*Unauthorized/u))
     await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
-    await assert.rejects(run(process.execPath, args, { env }), failure(/Cannot complete GET \/v1\/observe\/actors/u))
+    await assert.rejects(
+        run(process.execPath, args, { env }),
+        failure(/Cannot complete GET \/v1\/projects\/default\/observe\/actors/u)
+    )
 })
 
 test("init creates a complete chat app using the installed SDK version", async t => {
