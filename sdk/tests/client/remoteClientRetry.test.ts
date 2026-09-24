@@ -69,7 +69,8 @@ test("failed rediscovery remains unavailable when the host never received the in
     const client = new RemoteActorClient(undefined, {
         environment: {},
         telemetry: () => {},
-        fetch: async url => {
+        fetch: async (url, init) => {
+            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 if (++discoveries === 2) throw new Error("discovery disconnected")
                 return target(1)
@@ -128,7 +129,8 @@ test("an ambiguous stale failure does not wait for another caller's rediscovery"
         environment: {},
         telemetry: () => {},
         now: () => 0,
-        fetch: async url => {
+        fetch: async (url, init) => {
+            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 if (++discoveries === 1) return target(1)
                 resolving.resolve()
@@ -170,7 +172,11 @@ test("an ambiguous stale failure does not wait for another caller's rediscovery"
 
 test("a mutation with a lost HTTP response is executed once and reports outcome_unknown", async t => {
     let executions = 0
-    const host = createServer(async (request, _response) => {
+    const host = createServer(async (request, response) => {
+        if (request.method === "HEAD") {
+            response.writeHead(204).end()
+            return
+        }
         request.resume()
         await once(request, "end")
         executions++
@@ -208,6 +214,7 @@ function retryClient(invoke: (request: HostRequest) => Promise<Response>, now = 
         now,
         requestId: () => `request-${++requestId}`,
         fetch: async (url, init) => {
+            if (init?.method === "HEAD") return new Response(null, { status: 204 })
             if (String(url).endsWith("/find-actor")) {
                 discoveries.push(String(url))
                 return target(discoveries.length, now())

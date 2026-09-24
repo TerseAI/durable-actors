@@ -445,6 +445,23 @@ fn controlled_host() -> (
 }
 
 #[tokio::test]
+async fn ping_refreshes_idle_deadline_without_invoking_the_actor() -> Result<()> {
+    let (host, mut started, _) = controlled_host();
+    let activity = host.activity();
+    assert_eq!(invoke(&host, "warm").await?, completed(1));
+    assert_eq!(started.recv().await.as_deref(), Some("warm"));
+    let old_deadline = activity.borrow().last_active;
+
+    host.ping().await?;
+    assert!(activity.borrow().last_active > old_deadline);
+    host.evict_idle(old_deadline).await?;
+    assert!(activity.borrow().resident);
+    assert!(started.try_recv().is_err());
+    assert_eq!(invoke(&host, "after-ping").await?, completed(2));
+    Ok(())
+}
+
+#[tokio::test]
 async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<()> {
     let (host, mut started, release) = controlled_host();
     let activity = host.activity();

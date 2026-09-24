@@ -967,6 +967,21 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
             .status(),
         reqwest::StatusCode::UNAUTHORIZED
     );
+    for (actor_id, ticket, expected) in [
+        ("counter-1", token, reqwest::StatusCode::NO_CONTENT),
+        ("counter-1", "invalid", reqwest::StatusCode::UNAUTHORIZED),
+        ("another", token, reqwest::StatusCode::FORBIDDEN),
+    ] {
+        let ping = http
+            .head(format!(
+                "{route}/v1/projects/default/actors/Counter/{actor_id}/invoke"
+            ))
+            .bearer_auth(ticket)
+            .send()
+            .await?;
+        assert_eq!(ping.status(), expected);
+        assert!(ping.bytes().await?.is_empty());
+    }
     let reply: serde_json::Value = http
         .post(format!("{url}/invoke"))
         .bearer_auth(token)
