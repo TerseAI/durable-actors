@@ -14,6 +14,8 @@ use serde::Deserialize;
 use super::{TraceEvent, TracePage, replay::ReplayQuery};
 mod history;
 mod metrics;
+mod pagination;
+pub(crate) mod postgres;
 use super::metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange};
 mod replay;
 use super::history::HistoryQuery;
@@ -273,3 +275,7 @@ mod history_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/request_traces/persistence/metrics_tests.rs"]
 mod metrics_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/request_traces/persistence/contract_tests.rs"]
+mod contract_tests;

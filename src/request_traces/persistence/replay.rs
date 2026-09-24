@@ -1,25 +1,7 @@
-use crate::request_traces::{
-    TracePage, TraceRecord,
-    replay::{InvalidTraceCursor, ReplayQuery},
-};
+use super::pagination::{Metadata, Replay};
+use crate::request_traces::{TracePage, TraceRecord, replay::ReplayQuery};
 use anyhow::Result;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, Transaction, params};
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize)]
-struct Cursor {
-    project_id: String,
-    generation: String,
-    position: u64,
-}
-
-pub(super) struct Metadata {
-    pub(super) generation: String,
-    pub(super) head: u64,
-    pub(super) pruned: u64,
-    pub(super) total: u64,
-}
 
 pub(super) fn query(
     connection: &mut Connection,
@@ -27,47 +9,15 @@ pub(super) fn query(
     query: &ReplayQuery,
 ) -> Result<TracePage> {
     let transaction = connection.transaction()?;
-    let metadata = metadata(&transaction, project_id)?;
-    let cursor = query
-        .cursor
-        .as_deref()
-        .map(|value| decode(value, project_id))
-        .transpose()?;
-    if cursor
-        .as_ref()
-        .is_some_and(|c| c.generation == metadata.generation && c.position > metadata.head)
-    {
-        return Err(InvalidTraceCursor.into());
-    }
-    let reset = cursor
-        .as_ref()
-        .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
-    let after = cursor.filter(|_| !reset).map(|c| c.position);
-    let mut records = select(&transaction, project_id, query.limit, after, metadata.head)?;
-    let more = after.is_some() && records.len() > query.limit;
-    records.truncate(query.limit);
-    let position = if more {
-        records.last().unwrap().sequence
-    } else {
-        metadata.head
-    };
-    let resume_cursor = encode(&Cursor {
-        project_id: project_id.into(),
-        generation: metadata.generation.clone(),
-        position,
-    })?;
-    Ok(TracePage {
-        epoch: metadata.generation,
-        cursor: position,
-        capacity: query.limit,
-        evicted: metadata.total.saturating_sub(500),
-        dropped: 0,
-        persistence_failed: false,
-        records,
-        next_cursor: more.then(|| resume_cursor.clone()),
-        resume_cursor,
-        reset,
-    })
+    let page = Replay::new(project_id, query, metadata(&transaction, project_id)?)?;
+    let records = select(
+        &transaction,
+        project_id,
+        query.limit,
+        page.after,
+        page.head(),
+    )?;
+    page.finish(query.limit, records)
 }
 
 pub(super) fn metadata(transaction: &Transaction<'_>, project_id: &str) -> Result<Metadata> {
@@ -110,26 +60,4 @@ fn select(
         })
     })
     .collect()
-}
-
-fn encode(cursor: &Cursor) -> Result<String> {
-    Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?))
-}
-fn decode(value: &str, project_id: &str) -> Result<Cursor> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| InvalidTraceCursor)?;
-    let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| InvalidTraceCursor)?;
-    if cursor.project_id != project_id || cursor.position > i64::MAX as u64 {
-        return Err(InvalidTraceCursor.into());
-    }
-    Ok(cursor)
-}
-
-pub(super) fn resume_cursor(project_id: &str, generation: &str, position: u64) -> Result<String> {
-    encode(&Cursor {
-        project_id: project_id.into(),
-        generation: generation.into(),
-        position,
-    })
 }
