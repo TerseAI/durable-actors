@@ -72,6 +72,7 @@ async fn assigned_host_registers_ownership_through_its_warmed_client() -> Result
         Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "host-token").await?),
         stop,
         Some(warm),
+        Default::default(),
     )
     .await?
     .with_actor(

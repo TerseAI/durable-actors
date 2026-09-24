@@ -386,14 +386,22 @@ async fn prepare_actor_host(
     };
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
+    let transport = crate::state_transport::GrpcStateTransport::new();
     let initial = super::replication::InitialReplication::start(
         control_plane.clone(),
         scope.clone(),
         !config.runtime_config.replica_regions.is_empty(),
         stop.clone(),
+        transport.clone(),
     );
-    let storage_ready =
-        prepare_storage(config, &endpoint, control_plane.clone(), stop, warm_storage);
+    let storage_ready = prepare_storage(
+        config,
+        &endpoint,
+        control_plane.clone(),
+        stop,
+        warm_storage,
+        transport,
+    );
     let executor_ready = async {
         if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection =
@@ -460,6 +468,7 @@ async fn prepare_storage(
     control_plane: Arc<ControlPlaneClient>,
     stop: CancellationToken,
     warm: Option<crate::bucket::WarmGcs>,
+    transport: crate::state_transport::GrpcStateTransport,
 ) -> Result<(
     Arc<super::storage::HostStorage>,
     Arc<HostLeaseMaintainer>,
@@ -474,6 +483,7 @@ async fn prepare_storage(
             control_plane,
             stop,
             warm,
+            transport,
         )
         .await?
         .with_actor(config.actor.clone(), config.new_actor),

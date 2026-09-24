@@ -53,6 +53,7 @@ impl HostStorage {
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
         warm: Option<WarmGcs>,
+        transport: crate::state_transport::GrpcStateTransport,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let authority: Arc<dyn Bucket> = match config.bucket {
@@ -65,7 +66,6 @@ impl HostStorage {
             }
         };
         let access = ReplicaAccess::new(&config.replica_secret, Arc::new(SystemClock));
-        let transport = crate::state_transport::GrpcStateTransport::new();
         let runtime = Arc::new(RuntimeStorage::new(
             authority,
             Arc::new(super::replica_provisioner::HostReplicaProvisioner {

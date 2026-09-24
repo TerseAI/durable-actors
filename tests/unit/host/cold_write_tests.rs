@@ -56,6 +56,7 @@ struct AssignedFleet {
     store: Arc<FileReplicaStore>,
     delay: Duration,
     assigned: OnceCell<()>,
+    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -64,6 +65,7 @@ impl ReplicaProvisioner for AssignedFleet {
         vec!["us-east".into()]
     }
     async fn ensure(&self, scope: &ReplicaScope) -> Result<Vec<ReplicaTarget>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.assigned
             .get_or_try_init(|| async {
                 tokio::time::sleep(self.delay).await;
@@ -84,6 +86,7 @@ struct Fixture {
     connections: Arc<AtomicUsize>,
     connected: Arc<Semaphore>,
     pause_connections: Arc<AtomicBool>,
+    assignments: Arc<AtomicUsize>,
 }
 
 struct CountedListener {
@@ -164,11 +167,13 @@ impl Fixture {
                 .with_graceful_shutdown(shutdown.cancelled_owned())
                 .await
         });
+        let assignments = Arc::new(AtomicUsize::new(0));
         let fleet = Arc::new(AssignedFleet {
             target,
             store,
             delay: Duration::from_millis(assignment_ms),
             assigned: OnceCell::new(),
+            calls: assignments.clone(),
         });
         let bucket = Arc::new(DelayedBucket {
             inner: FileBucket::new(directory.path().join("bucket"))?,
@@ -223,6 +228,7 @@ impl Fixture {
             scope.clone(),
             true,
             stop.clone(),
+            storage.transport.clone(),
         );
         let writer = ActorReplication::start(storage.clone(), scope.clone(), stop.clone(), initial);
         Ok(Self {
@@ -235,6 +241,7 @@ impl Fixture {
             connections,
             connected,
             pause_connections,
+            assignments,
         })
     }
 
@@ -280,7 +287,12 @@ async fn stalled_replica_preconnection_does_not_delay_membership_or_gcs() -> Res
     tokio::time::timeout(Duration::from_secs(1), f.connected.acquire())
         .await??
         .forget();
-    assert_eq!(f.storage.runtime.local_replica_members(&f.scope).len(), 1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.storage.runtime.local_replica_members(&f.scope).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), f.write()).await??,
         StateWrite::Written
@@ -303,6 +315,10 @@ async fn unpublished_replicas_cannot_acknowledge_a_write() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(1), f.bucket.registering.acquire())
         .await??
         .forget();
+    tokio::time::timeout(Duration::from_secs(1), f.connected.acquire())
+        .await
+        .context("replica connection waited for membership publication")??
+        .forget();
     let write = f.write();
     tokio::pin!(write);
     assert!(
@@ -315,6 +331,8 @@ async fn unpublished_replicas_cannot_acknowledge_a_write() -> Result<()> {
     let proof = tokio::time::timeout(Duration::from_secs(1), &mut write).await??;
     f.bucket.snapshots.add_permits(1);
     assert_eq!(proof, StateWrite::Replicated);
+    assert_eq!(f.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(f.assignments.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

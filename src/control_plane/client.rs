@@ -29,6 +29,18 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn prepare_replica_connections(
+        &self,
+    ) -> Result<Vec<crate::replication::ReplicaTarget>> {
+        match self
+            .execute(ControlPlaneCommand::PrepareReplicaConnections)
+            .await?
+        {
+            ControlPlaneCommandReply::Replicas { targets } => Ok(targets),
+            _ => anyhow::bail!("unexpected replica connection response"),
+        }
+    }
+
     pub(crate) async fn prepare_initial_replicas(
         &self,
     ) -> Result<crate::bucket::ReplicaMembership> {
