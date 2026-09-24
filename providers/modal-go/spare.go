@@ -50,7 +50,7 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		if len(request.SecretRefs) != 0 || request.Spare.CanonicalRegion != request.CanonicalRegion {
 			return hostHandle{}, fmt.Errorf("spare scope mismatch")
 		}
-		sb, err = p.api.ByID(ctx, request.Spare.ResourceID)
+		sb, err = p.sandboxByID(ctx, request.Spare.ResourceID)
 		spare = *request.Spare
 		phases.Reused = true
 	} else {
@@ -101,7 +101,11 @@ func (p *provider) createSpare(ctx context.Context, request spareRequest) (spare
 	if err != nil {
 		return spareHandle{}, err
 	}
-	defer sb.Detach()
+	if request.Kind == "actor" {
+		p.handles.keep(sb)
+	} else {
+		sb.Detach()
+	}
 	return handle, nil
 }
 
@@ -151,7 +155,7 @@ func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {
 	var sb sandbox
 	var err error
 	if request.ResourceID != "" {
-		sb, err = p.api.ByID(ctx, request.ResourceID)
+		sb, err = p.sandboxByID(ctx, request.ResourceID)
 	} else {
 		sb, err = p.api.Find(ctx, request.Name)
 	}
@@ -161,6 +165,9 @@ func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {
 	}
 	if err != nil {
 		return err
+	}
+	if cached := p.handles.take(sb.ID()); cached != nil {
+		cached.Detach()
 	}
 	defer sb.Detach()
 	return sb.Terminate(ctx)

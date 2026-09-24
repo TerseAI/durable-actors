@@ -67,7 +67,7 @@ func TestMountAndAssignmentOverlapAndFailureTerminatesTheClaimedSpare(t *testing
 }
 
 func newTestProvider(api modalAPI) *provider {
-	return &provider{api: api, assigner: fakeAssigner{api}, now: time.Now, started: time.Now()}
+	return &provider{api: api, handles: newSpareHandles(128, time.Hour, time.Now), assigner: fakeAssigner{api}, now: time.Now, started: time.Now()}
 }
 func testRequest() ensureRequest {
 	return ensureRequest{SessionID: "00000000-0000-4000-8000-000000000001", Actor: json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`), CodeSnapshot: "im-code", WorkingDirectory: "/customer", ActorEntrypoint: "actors.mjs", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}, HostConfigKey: "r1", CanonicalRegion: "north-america-east", HostID: "host.v3.r1.new", HostToken: "test-token", ImageRef: "im-test", HostIdleTimeoutMS: 300000}

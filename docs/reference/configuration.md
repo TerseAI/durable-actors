@@ -95,3 +95,7 @@ Replacements start in the background across pools, including before ready spares
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 | `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |
+
+The control plane starts the provider with `--socket <private-unix-socket>` and expects a `{"protocol":1}` readiness line on stdout. Provider commands use concurrent HTTP POST requests to `/` with the existing `{operation, request}` body and `{status, result, error}` reply. Custom provider executables must support this protocol. Requests have a 120-second deadline; a failed worker is replaced for subsequent commands without replaying a command whose outcome is unknown.
+
+The Modal provider retains up to 128 idle primary-spare handles for at most one hour. Claiming, retiring, expiry, eviction, and shutdown release these connections; cache misses use the normal Modal lookup. This cache does not change sandbox capacity or prepare customer code before assignment.
