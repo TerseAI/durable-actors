@@ -1,19 +1,14 @@
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
-export interface StoredMessage {
-    id: string
-    role: "system" | "user" | "assistant"
-    parts: { type: "text"; text: string }[]
-}
-
 export class ChatHistory extends Actor {
-    @Persisted private messages: StoredMessage[] = []
+    @Persisted private messages: UIMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: StoredMessage) {
+    async append(message: UIMessage) {
         this.messages.push(message)
         return this.messages
     }

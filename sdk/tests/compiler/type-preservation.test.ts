@@ -20,7 +20,9 @@ test("mapped dictionaries preserve their value schemas and generated index signa
         }
     `)
     const { rpc } = project.contract().actors[0]
-    const validate = new Ajv().compile({ ...rpc.schema, ...rpc.methods[0].parameters[0].type })
+    const validate = new Ajv()
+        .addKeyword("x-typescript")
+        .compile({ ...rpc.schema, ...rpc.methods[0].parameters[0].type })
     assert.equal(validate({ provider: { value: "ok" } }), true)
     assert.equal(validate({ provider: 1 }), false)
     assert.equal(validate({ provider: { value: 1 } }), false)
@@ -146,6 +148,83 @@ test("unknown survives nested containers, unions, intersections and recursion", 
         }
         // @ts-expect-error the intersection still requires an id
         await room.echo({ kind: "raw", values: [], pair: ["label", value] })
+    `)
+})
+
+test("template literal types survive unions, tuples, dictionaries and JSON transport", async t => {
+    const project = await createProject(t)
+    await project.generate(`
+        type Kind = \`\${string}.\${string}\`
+        type Part = { kind: "text"; text: string } | { kind: Kind; data: unknown }
+        type Combined = ({ kind: Kind } & { metadata: unknown }) | ({ kind: "text" } & { text: string })
+        export class Room extends Actor<{}, Part, Part> {
+            @Persisted parts: Part[] = []
+            async echo(value: Kind): Promise<Kind> { return value }
+            async part(value: Part): Promise<Part> { return value }
+            async tuple(value: [Kind, \`item-\${number}\`]) { return value }
+            async dictionary(value: Record<string, Kind>) { return value }
+            async mixed(value: Kind | "system") { return value }
+            async integer(value: \`id-\${bigint}\`) { return value }
+            async intersect(value: { kind: Kind } & { metadata: Record<string, unknown> }) { return value }
+            async combined(value: Combined): Promise<Combined> { return value }
+        }
+    `)
+    await project.check(`
+        type Kind = \`\${string}.\${string}\`
+        type Part = { kind: "text"; text: string } | { kind: Kind; data: unknown }
+        type Combined = ({ kind: Kind } & { metadata: unknown }) | ({ kind: "text" } & { text: string })
+        declare const part: Part
+        const result: Kind = await room.echo("custom.part")
+        const returned: Part = await room.part(part)
+        const tuple: [Kind, \`item-\${number}\`] = await room.tuple(["custom.part", "item-2"])
+        const dictionary: Record<string, Kind> = await room.dictionary({ kind: "custom.part" })
+        const mixed: Kind | "system" = await room.mixed("system")
+        const integer: \`id-\${bigint}\` = await room.integer("id-42")
+        const intersection: { kind: Kind; metadata: Record<string, unknown> } = await room.intersect({ kind: "custom.part", metadata: {} })
+        const combined: Combined = await room.combined({ kind: "custom.part", metadata: null })
+        const incoming: actors.Room.Incoming = part
+        declare const outgoing: actors.Room.Outgoing
+        const sent: Part = outgoing
+        const state: actors.Room.State = { parts: [part] }
+        const stored: Part[] = state.parts
+        // @ts-expect-error arbitrary strings do not satisfy the template
+        await room.echo("invalid")
+        // @ts-expect-error union branches retain template constraints
+        await room.part({ kind: "invalid", data: null })
+    `)
+})
+
+test("recursive JSON dictionaries retain undefined without widening other uses", async t => {
+    const project = await createProject(t)
+    await project.generate(`
+        type Json = null | boolean | number | string | Json[] | JsonObject
+        interface JsonObject { [key: string]: Json | undefined }
+        type Payload = { kind: "json"; value: JsonObject } | { kind: "text"; value: string }
+        export class Room extends Actor<{}, Payload, Payload> {
+            async echo(value: JsonObject): Promise<JsonObject> { return value }
+            async json(value: Json): Promise<Json> { return value }
+            async payload(value: Payload): Promise<Payload> { return value }
+            async omitted(value: Record<string, undefined>) { return value }
+        }
+    `)
+    await project.check(`
+        type Json = null | boolean | number | string | Json[] | JsonObject
+        interface JsonObject { [key: string]: Json | undefined }
+        declare const value: JsonObject
+        const result: JsonObject = await room.echo(value)
+        const omitted: Record<string, undefined> = await room.omitted({ absent: undefined })
+        // @ts-expect-error only undefined values are allowed
+        await room.omitted({ present: 42 })
+        await room.echo({ missing: undefined, nested: { missing: undefined }, items: [{ missing: undefined }] })
+        const json: Json = await room.json(value)
+        await room.payload({ kind: "json", value })
+        const incoming: actors.Room.Incoming = { kind: "json", value }
+        // @ts-expect-error undefined is not a top-level JSON value
+        await room.json(undefined)
+        // @ts-expect-error undefined is not an array element
+        await room.json([undefined])
+        // @ts-expect-error dictionary lookups can be undefined
+        const present: Json = (await room.echo(value)).missing
     `)
 })
 

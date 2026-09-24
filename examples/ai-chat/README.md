@@ -29,25 +29,20 @@ Open [localhost:3000](http://127.0.0.1:3000), send a message, and reload after t
 
 ## Save the conversation
 
-[ChatHistory](src/actors.ts) keeps one conversation per actor ID, storing the ID, role and text parts of each message:
+[ChatHistory](src/actors.ts) keeps one conversation per actor ID:
 
 ```ts
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
-export interface StoredMessage {
-    id: string
-    role: "system" | "user" | "assistant"
-    parts: { type: "text"; text: string }[]
-}
-
 export class ChatHistory extends Actor {
-    @Persisted private messages: StoredMessage[] = []
+    @Persisted private messages: UIMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: StoredMessage) {
+    async append(message: UIMessage) {
         this.messages.push(message)
         return this.messages
     }
@@ -56,7 +51,7 @@ export class ChatHistory extends Actor {
 
 ## Stream the reply
 
-The [Express backend](src/backend.ts) appends the user message, sends the saved conversation to the model, and streams the reply. It saves the assistant message when the reply completes. This text-only example stores text parts; tool calls, reasoning parts and provider metadata are not persisted.
+The [Express backend](src/backend.ts) appends the user message, sends the saved conversation to the model, and streams the reply. It saves the assistant message when the reply completes.
 
 The [React client](src/Chat.tsx) loads saved messages and uses `useChat` to display the stream. In-progress streams are not resumed after a reload.
 

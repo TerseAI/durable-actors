@@ -36,6 +36,60 @@ test("the README ChatHistory contract compiles with the AI SDK", async t => {
         strict: true,
         noEmit: true,
         skipLibCheck: false,
+        types: ["node"],
+        typeRoots: [path.join(project, "node_modules/@types")],
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.NodeNext
+    })
+    assert.deepEqual(
+        ts
+            .getPreEmitDiagnostics(program)
+            .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        []
+    )
+})
+
+test("UIMessage round-trips through the public contract and generated client without casts", async t => {
+    const project = await mkdtemp(path.resolve(sdk, "../.durable-actors-uimessage-"))
+    t.after(() => rm(project, { recursive: true, force: true }))
+    await symlink(path.resolve(sdk, "../examples/ai-chat/node_modules"), path.join(project, "node_modules"))
+    await writeFile(path.join(project, "package.json"), '{"type":"module"}')
+    const entrypoint = path.join(project, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `
+        import { Actor, Persisted } from "durable-actors"
+        import type { UIMessage } from "ai"
+        export class ChatHistory extends Actor<{}, never, never> {
+            @Persisted private messages: UIMessage[] = []
+            async append(message: UIMessage): Promise<void> { this.messages.push(message) }
+            async load(): Promise<UIMessage[]> { return this.messages }
+        }
+    `
+    )
+    const contract = JSON.parse(JSON.stringify(new ActorCompiler().compileContract(entrypoint)))
+    await rm(entrypoint)
+    await generateClient(contract, path.join(project, "generated"))
+    const consumer = path.join(project, "consumer.ts")
+    await writeFile(
+        consumer,
+        `
+        import { convertToModelMessages, type UIMessage } from "ai"
+        import { actors } from "./generated/index.js"
+        declare const message: UIMessage
+        const chat = actors.ChatHistory.get("lobby")
+        await chat.append(message)
+        const messages: UIMessage[] = await chat.load()
+        await convertToModelMessages(messages)
+        await convertToModelMessages(await chat.load())
+    `
+    )
+    const program = ts.createProgram([consumer], {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: false,
+        types: ["node"],
+        typeRoots: [path.join(project, "node_modules/@types")],
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.NodeNext
     })

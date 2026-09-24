@@ -56,25 +56,20 @@ For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborativ
 
 ## Define an Actor
 
-Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor that stores text messages:
+Define and export actors in your actor project’s `src/durable-objects.ts`. For example, a chat history actor:
 
 ```ts
+import type { UIMessage } from "ai"
 import { Actor, Persisted } from "durable-actors"
 
-export interface StoredMessage {
-    id: string
-    role: "system" | "user" | "assistant"
-    parts: { type: "text"; text: string }[]
-}
-
 export class ChatHistory extends Actor {
-    @Persisted private messages: StoredMessage[] = []
+    @Persisted private messages: UIMessage[] = []
 
     async load() {
         return this.messages
     }
 
-    async append(message: StoredMessage) {
+    async append(message: UIMessage) {
         this.messages.push(message)
         return this.messages
     }
@@ -83,11 +78,11 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` in your application and use its generated client. This text-only example stores the ID, role and text parts of each AI SDK message:
+After adding `ChatHistory`, rerun `pnpm exec durable-actors generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
-import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages, type UIMessage } from "ai"
+import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
 import express from "express"
 
 import { actors } from "./generated/index.js"
@@ -103,7 +98,7 @@ app.post("/api/chat", async (request, response) => {
     const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
     if (message.role !== "user") return response.sendStatus(400)
     const chat = actors.ChatHistory.get(request.body.id)
-    const messages = await chat.append(toStoredMessage(message))
+    const messages = await chat.append(message)
     const result = streamText({
         model: openai("gpt-5-mini"),
         messages: await convertToModelMessages(messages)
@@ -115,19 +110,11 @@ app.post("/api/chat", async (request, response) => {
             originalMessages: messages,
             generateMessageId: generateId,
             onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(toStoredMessage(responseMessage))
+                if (outcome.status === "completed") await chat.append(responseMessage)
             }
         })
     })
 })
-
-function toStoredMessage(message: UIMessage): actors.ChatHistory.Methods.append.Args[0] {
-    return {
-        id: message.id,
-        role: message.role,
-        parts: message.parts.flatMap(part => part.type === "text" ? [{ type: "text", text: part.text }] : [])
-    }
-}
 ```
 
 ## Connect the frontend (React)
