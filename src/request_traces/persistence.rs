@@ -12,9 +12,9 @@ use rusqlite::{Connection, Transaction, params};
 use serde::Deserialize;
 
 use super::{TraceEvent, TracePage, replay::ReplayQuery};
+mod cursor;
 mod history;
 mod metrics;
-mod pagination;
 pub(crate) mod postgres;
 use super::metrics::{OverviewMetrics, QueueWaitQuery, QueueWaitRow, SocketSession, TimeRange};
 mod replay;
@@ -22,6 +22,7 @@ use super::history::HistoryQuery;
 
 const LOCAL_RETENTION: usize = 10_000;
 
+// TraceStore validates project IDs and query bounds before calling the backends.
 #[async_trait]
 pub(crate) trait TracePersistence: Send + Sync {
     async fn initialize(&self) -> Result<()>;
@@ -103,9 +104,7 @@ impl TracePersistence for SqliteTracePersistence {
     }
 
     async fn metrics(&self, project_id: &str, query: &TimeRange) -> Result<OverviewMetrics> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
         let project_id = project_id.to_owned();
-        query.validate()?;
         let query = query.clone();
         self.run(move |connection| metrics::overview(connection, &project_id, &query))
             .await
@@ -116,36 +115,28 @@ impl TracePersistence for SqliteTracePersistence {
         project_id: &str,
         query: &QueueWaitQuery,
     ) -> Result<Vec<QueueWaitRow>> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
         let project_id = project_id.to_owned();
-        query.validate()?;
         let query = query.clone();
         self.run(move |connection| metrics::queue_waits(connection, &project_id, &query))
             .await
     }
 
     async fn websockets(&self, project_id: &str, query: &TimeRange) -> Result<Vec<SocketSession>> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
         let project_id = project_id.to_owned();
-        query.validate()?;
         let query = query.clone();
         self.run(move |connection| metrics::websockets(connection, &project_id, &query))
             .await
     }
 
     async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
         let project_id = project_id.to_owned();
-        query.validate()?;
         let query = query.clone();
         self.run(move |connection| history::query(connection, &project_id, &query))
             .await
     }
 
     async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
-        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
         let project_id = project_id.to_owned();
-        query.validate()?;
         let query = query.clone();
         self.run(move |connection| replay::query(connection, &project_id, &query))
             .await

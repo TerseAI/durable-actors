@@ -201,15 +201,14 @@ async fn overview_metrics(
     path: Path<ProjectPath>,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let project = project_id(path)?;
+    let project = path.0.project_id;
     let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
         .traces
         .metrics(&project, &query)
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
 }
 
@@ -218,15 +217,14 @@ async fn queue_waits(
     path: Path<ProjectPath>,
     query: Result<Query<crate::request_traces::metrics::QueueWaitQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let project = project_id(path)?;
+    let project = path.0.project_id;
     let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
         .traces
         .queue_waits(&project, &query)
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
 }
 
@@ -235,15 +233,14 @@ async fn websocket_history(
     path: Path<ProjectPath>,
     query: Result<Query<crate::request_traces::metrics::TimeRange>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let project = project_id(path)?;
+    let project = path.0.project_id;
     let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
     let result = state
         .inspector
         .traces
         .websockets(&project, &query)
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(trace_query_error)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)).into_response())
 }
 
@@ -252,9 +249,8 @@ async fn request_history(
     path: Path<ProjectPath>,
     query: Result<Query<crate::request_traces::history::HistoryQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let project = project_id(path)?;
+    let project = path.0.project_id;
     let Query(query) = query.map_err(ApiError::bad_request)?;
-    query.validate().map_err(ApiError::bad_request)?;
     let page = state
         .inspector
         .traces
@@ -265,8 +261,8 @@ async fn request_history(
 }
 
 fn trace_query_error(error: anyhow::Error) -> ApiError {
-    if error.is::<crate::request_traces::replay::InvalidTraceCursor>() {
-        ApiError::bad_request(error)
+    if error.is::<crate::request_traces::InvalidTraceQuery>() {
+        ApiError::bad_request(error.root_cause())
     } else {
         ApiError::internal(error)
     }
@@ -286,7 +282,7 @@ async fn request_events(
     use crate::request_traces::replay::ReplayQuery;
     use axum::response::sse::{KeepAlive, Sse};
     use tokio_stream::wrappers::ReceiverStream;
-    let project = project_id(path)?;
+    let project = path.0.project_id;
     let Query(replay) = query.map_err(ApiError::bad_request)?;
     let cursor = replay.after.or_else(|| {
         headers
@@ -298,7 +294,6 @@ async fn request_events(
         cursor,
         ..Default::default()
     };
-    query.validate().map_err(ApiError::bad_request)?;
     let store = state.inspector.traces;
     // Subscribe before reading so a commit between the read and wait is not missed.
     let changes = store.changes.subscribe();

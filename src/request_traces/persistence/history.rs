@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
 
 use super::{
-    pagination::{History, HistoryCursor},
+    cursor::{HistoryCursor, HistoryPage},
     replay,
 };
 use crate::request_traces::{TracePage, TraceRecord, history::HistoryQuery};
@@ -14,7 +14,7 @@ pub(super) fn query(
 ) -> Result<TracePage> {
     let transaction = connection.transaction()?;
     let metadata = replay::metadata(&transaction, project_id)?;
-    let page = History::new(project_id, query, metadata)?;
+    let page = HistoryPage::new(project_id, query, metadata)?;
     let records = select(
         &transaction,
         project_id,

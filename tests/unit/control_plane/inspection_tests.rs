@@ -131,6 +131,16 @@ async fn project_observability_isolates_history_metrics_and_streams() -> Result<
         );
         assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
     }
+    for route in [
+        "requests",
+        "requests/events",
+        "metrics",
+        "queue-waits",
+        "websockets",
+    ] {
+        let url = format!("/v1/projects/bad!/observe/{route}");
+        assert_eq!(fixture.get(&url).await?.status(), StatusCode::BAD_REQUEST);
+    }
     Ok(())
 }
 

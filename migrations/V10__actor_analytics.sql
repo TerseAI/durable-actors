@@ -1,6 +1,5 @@
 CREATE TABLE durable_actors_trace_projects (
     project_id TEXT COLLATE "C" PRIMARY KEY,
-    generation TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     head BIGINT NOT NULL DEFAULT 0,
     evicted BIGINT NOT NULL DEFAULT 0,
     pruned BIGINT NOT NULL DEFAULT 0

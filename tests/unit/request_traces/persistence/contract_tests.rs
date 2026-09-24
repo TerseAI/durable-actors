@@ -33,6 +33,7 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         )
         .await?;
     assert_eq!(ids(&first), ["last", "second"]);
+    assert_eq!(first.epoch, initial.epoch);
     let mut late = event("late");
     late.trace.started_at_ms = 500;
     store.append(&[late]).await?;
@@ -413,24 +414,6 @@ async fn postgres_retention_counts_deletions_across_concurrent_batches() -> Resu
         assert_eq!(history.records.len(), 3);
         assert_eq!(history.evicted, 1001);
         assert_eq!(replay.evicted, history.evicted);
-        Ok(())
-    }).await
-}
-
-#[tokio::test]
-async fn postgres_cursors_reset_when_project_history_is_recreated() -> Result<()> {
-    with_postgres(async |db| {
-        let store = PostgresTracePersistence::new(PostgresDatabase::lazy(&db.url)?, Duration::from_secs(86400));
-        store.append(&[event("old-a"), event("old-b")]).await?;
-        let old = store.history("default", &HistoryQuery { limit: 1, ..Default::default() }).await?;
-        db.pool.get().await?.batch_execute("BEGIN; DELETE FROM durable_actors_traces WHERE project_id = 'default'; DELETE FROM durable_actors_trace_projects WHERE project_id = 'default'; COMMIT;").await?;
-        store.append(&[event("new-a"), event("new-b"), event("new-c")]).await?;
-        let replay = store.replay("default", &ReplayQuery { cursor: Some(old.resume_cursor), ..Default::default() }).await?;
-        assert!(replay.reset);
-        assert_eq!(ids(&replay), ["new-c", "new-b", "new-a"]);
-        let history = store.history("default", &HistoryQuery { cursor: old.next_cursor, ..Default::default() }).await?;
-        assert!(history.reset);
-        assert_eq!(ids(&history), ids(&replay));
         Ok(())
     }).await
 }

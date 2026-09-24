@@ -3,12 +3,8 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use crate::request_traces::{
-    TracePage, TraceRecord,
-    history::HistoryQuery,
-    replay::{InvalidTraceCursor, ReplayQuery},
+    InvalidTraceQuery, TracePage, TraceRecord, history::HistoryQuery, replay::ReplayQuery,
 };
-
-pub(super) const EMPTY_GENERATION: &str = "empty";
 
 pub(super) struct Metadata {
     pub generation: String,
@@ -17,7 +13,7 @@ pub(super) struct Metadata {
     pub evicted: u64,
 }
 
-pub(super) struct History {
+pub(super) struct HistoryPage {
     project_id: String,
     metadata: Metadata,
     filters: String,
@@ -26,7 +22,7 @@ pub(super) struct History {
     reset: bool,
 }
 
-impl History {
+impl HistoryPage {
     pub fn new(project_id: &str, query: &HistoryQuery, metadata: Metadata) -> Result<Self> {
         let filters = query.filter_key()?;
         let cursor = query
@@ -112,20 +108,20 @@ impl HistoryCursor {
             || (cursor.generation == metadata.generation
                 && (cursor.watermark > metadata.head || cursor.pruned > metadata.pruned))
         {
-            return Err(InvalidTraceCursor.into());
+            return Err(InvalidTraceQuery.into());
         }
         Ok(cursor)
     }
 }
 
-pub(super) struct Replay {
+pub(super) struct ReplayPage {
     project_id: String,
     metadata: Metadata,
-    pub after: Option<u64>,
+    after: Option<u64>,
     reset: bool,
 }
 
-impl Replay {
+impl ReplayPage {
     pub fn new(project_id: &str, query: &ReplayQuery, metadata: Metadata) -> Result<Self> {
         let cursor = query
             .cursor
@@ -136,16 +132,14 @@ impl Replay {
                     || cursor.position > i64::MAX as u64
                     || (cursor.generation == metadata.generation && cursor.position > metadata.head)
                 {
-                    return Err(InvalidTraceCursor.into());
+                    return Err(InvalidTraceQuery.into());
                 }
                 Ok(cursor)
             })
             .transpose()?;
-        let reset = cursor.as_ref().is_some_and(|c| {
-            // PostgreSQL creates the generation on first append; SQLite always has one.
-            let empty_project = c.position == 0 && c.generation == EMPTY_GENERATION;
-            (!empty_project && c.generation != metadata.generation) || c.position < metadata.pruned
-        });
+        let reset = cursor
+            .as_ref()
+            .is_some_and(|c| c.generation != metadata.generation || c.position < metadata.pruned);
         let after = cursor.filter(|_| !reset).map(|c| c.position);
         Ok(Self {
             project_id: project_id.into(),
@@ -153,6 +147,10 @@ impl Replay {
             after,
             reset,
         })
+    }
+
+    pub fn after(&self) -> Option<u64> {
+        self.after
     }
 
     pub fn head(&self) -> u64 {
@@ -205,6 +203,6 @@ fn encode(value: &impl Serialize) -> Result<String> {
 fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
-        .map_err(|_| InvalidTraceCursor)?;
-    serde_json::from_slice(&bytes).map_err(|_| InvalidTraceCursor.into())
+        .map_err(|_| InvalidTraceQuery)?;
+    serde_json::from_slice(&bytes).map_err(|_| InvalidTraceQuery.into())
 }

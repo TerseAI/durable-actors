@@ -292,7 +292,7 @@ impl ActorPath {
 
 #[derive(Deserialize)]
 pub(super) struct ProjectPath {
-    project_id: String,
+    pub(super) project_id: String,
 }
 
 pub(super) fn project_id(path: Path<ProjectPath>) -> Result<String, ApiError> {

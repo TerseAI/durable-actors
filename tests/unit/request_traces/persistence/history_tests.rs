@@ -99,6 +99,7 @@ async fn history_is_bounded_and_rejects_live_or_incompatible_cursors() -> Result
     store
         .append(&(0..502).map(|i| event(&i.to_string())).collect::<Vec<_>>())
         .await?;
+    let store = crate::request_traces::TraceStore::open(Arc::new(store)).await?;
     let first = store.history("default", &HistoryQuery::default()).await?;
     assert_eq!(first.records.len(), 100);
     let largest = store
