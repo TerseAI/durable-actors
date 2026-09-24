@@ -6,6 +6,7 @@ import { validateActorComponent } from "../actor/identity.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
+import { DeclarationCompiler } from "./declarations.js"
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
 import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
 import { extractPublicSchema } from "./public-schema.js"
@@ -24,7 +25,10 @@ import type {
 } from "./types.js"
 
 class ActorCompiler {
-    constructor(private readonly system: ts.System = ts.sys) {}
+    constructor(
+        private readonly system: ts.System = ts.sys,
+        private readonly declarations: Pick<DeclarationCompiler, "compile"> = new DeclarationCompiler(system)
+    ) {}
 
     check(entrypoint: string, options: CompilerOptions = {}) {
         return this.analyze(entrypoint, options).schemas
@@ -40,8 +44,7 @@ class ActorCompiler {
 
     compileDeployment(entrypoint: string, options: CompilerOptions = {}) {
         const { checker, actors, schemas, program } = this.describe(entrypoint, options)
-        const contract: PublicActorContract = {
-            version: 1,
+        const api = {
             actors: [...schemas]
                 .sort((left, right) =>
                     left.actorName < right.actorName ? -1 : left.actorName > right.actorName ? 1 : 0
@@ -62,6 +65,11 @@ class ActorCompiler {
                         actors.find(actor => actor.name!.text === schema.actorName)!
                     )
                 }))
+        }
+        const contract: PublicActorContract = {
+            ...api,
+            version: 1,
+            typescript: this.declarations.compile(program, actors, api.actors)
         }
         const sources = new Map(program.getSourceFiles().map(file => [file.fileName, file.text]))
         return { schemas, contract, sources }

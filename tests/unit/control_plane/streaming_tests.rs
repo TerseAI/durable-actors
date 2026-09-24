@@ -261,13 +261,10 @@ import assert from 'node:assert/strict';
 import {{ writeFile }} from 'node:fs/promises';
 import {{ ActorCompiler }} from {compiler};
 import {{ generateClient }} from {generator};
-import {{ build }} from 'esbuild';
 
 const directory = {directory};
 await generateClient(new ActorCompiler().compileContract(directory + '/actors.ts'), directory + '/generated');
-await build({{entryPoints:[directory + '/generated/index.ts'],outfile:directory + '/backend.mjs',
-    bundle:true,platform:'node',format:'esm'}});
-const {{ actors, createActorTransport, ActorInvocationError }} = await import(directory + '/backend.mjs');
+const {{ actors, createActorTransport, ActorInvocationError }} = await import(directory + '/generated/index.js');
 const transport = createActorTransport({{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 const counter = actors.Counter.get('counter-1', transport);
 assert.equal(await counter.readHistory(), '');

@@ -38,8 +38,25 @@ pub(crate) struct ActorHost {
     queues: ActorQueues,
     endpoint: HostEndpoint,
     commands: mpsc::Sender<HostCommand>,
-    activity: watch::Receiver<usize>,
+    activity: watch::Receiver<ActorActivity>,
     stopped: watch::Receiver<bool>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ActorActivity {
+    pub active: usize,
+    pub resident: bool,
+    pub last_active: tokio::time::Instant,
+}
+
+impl Default for ActorActivity {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            resident: false,
+            last_active: tokio::time::Instant::now(),
+        }
+    }
 }
 
 impl ActorHost {
@@ -52,7 +69,7 @@ impl ActorHost {
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
-        let (activity_tx, activity) = watch::channel(0);
+        let (activity_tx, activity) = watch::channel(ActorActivity::default());
         let (stopped_tx, stopped) = watch::channel(false);
         let queues = ActorQueues::new();
         let dispatcher = HostDispatcher::new(
@@ -79,12 +96,23 @@ impl ActorHost {
         self.queues.clone()
     }
 
-    pub(crate) fn activity(&self) -> watch::Receiver<usize> {
+    pub(super) fn activity(&self) -> watch::Receiver<ActorActivity> {
         self.activity.clone()
     }
 
     pub(crate) fn stopped(&self) -> watch::Receiver<bool> {
         self.stopped.clone()
+    }
+
+    pub(super) async fn evict_idle(&self, last_active: tokio::time::Instant) -> Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(HostCommand::EvictIdle { last_active, reply })
+            .await
+            .context("actor dispatcher stopped")?;
+        result
+            .await
+            .context("idle actor eviction was not completed")?
     }
 
     pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
@@ -214,6 +242,7 @@ impl ActorHost {
 }
 
 struct HostDispatcher {
+    last_active: tokio::time::Instant,
     endpoint: HostEndpoint,
 
     executor: Arc<dyn ActorExecutor>,
@@ -224,7 +253,7 @@ struct HostDispatcher {
     identity: Option<ActorStorageKey>,
     tasks: JoinSet<()>,
     accepting: watch::Sender<bool>,
-    activity: watch::Sender<usize>,
+    activity: watch::Sender<ActorActivity>,
     stopped: watch::Sender<bool>,
     active: usize,
     queues: ActorQueues,
@@ -239,10 +268,12 @@ impl HostDispatcher {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
-        status: (watch::Sender<usize>, watch::Sender<bool>),
+        status: (watch::Sender<ActorActivity>, watch::Sender<bool>),
         queues: ActorQueues,
     ) -> Self {
+        let last_active = status.0.borrow().last_active;
         Self {
+            last_active,
             endpoint,
             executor,
             storage,
@@ -269,6 +300,15 @@ impl HostDispatcher {
                 Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
                 command = commands.recv() => match command {
                     Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
+                    Some(HostCommand::EvictIdle { last_active, reply }) => {
+                        let result = self.evict_idle(last_active).await;
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            self.stopped.send_replace(true);
+                            return;
+                        }
+                    }
                     Some(HostCommand::Drain(reply)) => {
                         self.accepting.send_replace(false);
                         self.drained.retain(|waiter| !waiter.is_closed());
@@ -276,7 +316,7 @@ impl HostDispatcher {
                         self.publish_activity();
                     }
                     None => return,
-                }
+                },
             }
         }
     }
@@ -297,7 +337,7 @@ impl HostDispatcher {
         }
         self.identity.get_or_insert_with(|| object.clone());
         if self.mailbox.is_none() {
-            self.start_actor(object.clone(), completed.clone());
+            self.start_actor(request.operation.actor().clone(), completed.clone());
         }
         let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
         if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
@@ -312,6 +352,7 @@ impl HostDispatcher {
         }
         match mailbox.sender.try_send(request) {
             Ok(()) => {
+                mailbox.resident = true;
                 mailbox.admitted += 1;
                 self.active += 1;
                 self.publish_activity();
@@ -345,7 +386,7 @@ impl HostDispatcher {
         None
     }
 
-    fn start_actor(&mut self, object: ActorStorageKey, completed: mpsc::Sender<ActorCompletion>) {
+    fn start_actor(&mut self, actor: ActorKey, completed: mpsc::Sender<ActorCompletion>) {
         let runtime = ActorRuntime::new(
             self.endpoint.clone(),
             self.executor.clone(),
@@ -355,13 +396,15 @@ impl HostDispatcher {
         );
         let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
         let task = self.tasks.spawn(run_actor(
-            object.clone(),
+            actor.storage_key(),
             runtime,
             requests,
             completed,
             self.accepting.subscribe(),
         ));
         self.mailbox = Some(ActorMailbox {
+            actor,
+            resident: false,
             sender,
             admitted: 0,
             task_id: task.id(),
@@ -376,8 +419,28 @@ impl HostDispatcher {
             mailbox.admitted -= 1;
             self.active -= 1;
         }
+        if completion.resets_idle_timer {
+            self.last_active = tokio::time::Instant::now();
+        }
         self.publish_activity();
         let _ = completion.reply.send(completion.result);
+    }
+
+    async fn evict_idle(&mut self, last_active: tokio::time::Instant) -> Result<()> {
+        if self.active != 0 || self.last_active != last_active {
+            return Ok(());
+        }
+        let Some(mailbox) = self.mailbox.as_mut().filter(|mailbox| mailbox.resident) else {
+            return Ok(());
+        };
+        self.executor
+            .evict(crate::actor::ActorMethodEviction {
+                actor: mailbox.actor.clone(),
+            })
+            .await?;
+        mailbox.resident = false;
+        self.publish_activity();
+        Ok(())
     }
 
     fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
@@ -401,7 +464,14 @@ impl HostDispatcher {
     }
 
     fn publish_activity(&mut self) {
-        self.activity.send_replace(self.active);
+        self.activity.send_replace(ActorActivity {
+            active: self.active,
+            resident: self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.resident),
+            last_active: self.last_active,
+        });
         if self.active == 0 {
             for waiter in self.drained.drain(..) {
                 let _ = waiter.send(());
@@ -422,6 +492,7 @@ async fn run_actor(
         return;
     }
     while let Some(mut request) = requests.recv().await {
+        let resets_idle_timer = request.operation.resets_idle_timer();
         drop(request.waiting.take());
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
             let result = Ok(ActorExecutionResult::HostUnavailable);
@@ -462,6 +533,7 @@ async fn run_actor(
         }
         if completed
             .send(ActorCompletion {
+                resets_idle_timer,
                 object: object.clone(),
                 reply: request.reply,
                 result,
@@ -476,10 +548,16 @@ async fn run_actor(
 
 enum HostCommand {
     Invoke(Box<ActorRequest>),
+    EvictIdle {
+        last_active: tokio::time::Instant,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Drain(oneshot::Sender<()>),
 }
 
 struct ActorMailbox {
+    actor: ActorKey,
+    resident: bool,
     sender: mpsc::Sender<ActorRequest>,
     admitted: usize,
     task_id: Id,
@@ -496,6 +574,7 @@ struct ActorRequest {
 }
 
 struct ActorCompletion {
+    resets_idle_timer: bool,
     object: ActorStorageKey,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
     result: Result<ActorExecutionResult>,
@@ -526,6 +605,18 @@ enum ActorOperation {
 }
 
 impl ActorOperation {
+    fn resets_idle_timer(&self) -> bool {
+        matches!(
+            self,
+            Self::Activate { .. }
+                | Self::Method(_)
+                | Self::Socket(ActorSocketInvocation {
+                    event: ActorSocketEvent::Message { .. },
+                    ..
+                })
+        )
+    }
+
     fn actor(&self) -> &ActorKey {
         match self {
             Self::Activate { actor, .. } => actor,

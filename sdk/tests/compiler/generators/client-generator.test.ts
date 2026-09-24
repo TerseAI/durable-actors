@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import ts from "typescript"
 
 import { ActorCompiler } from "../../../src/compiler/actor-compiler.js"
+import { declarations } from "../../fixtures/declarations.js"
 
 test("generates an actor-specific proxy from backend metadata types", async t => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-proxy-"))
@@ -28,10 +29,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         throw new Error("generation must not execute backend code")`
     )
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
-    await generateClient(
-        new ActorCompiler().compile(entrypoint).map(actor => actor.contract),
-        directory
-    )
+    await generateClient(new ActorCompiler().compileContract(entrypoint), directory)
     const consumer = path.join(directory, "consumer.ts")
     await writeFile(
         consumer,
@@ -75,7 +73,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     checkTypes(consumer)
     const proxyFile = path.join(directory, "proxy.mjs")
     await build({
-        entryPoints: [path.join(directory, "index.ts")],
+        entryPoints: [path.join(directory, "index.js")],
         bundle: true,
         platform: "node",
         format: "esm",
@@ -194,24 +192,34 @@ test("generates backend contracts for actors without outgoing application messag
     try {
         const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
         await generateClient(
-            [
-                {
-                    version: 1,
-                    actorName: "Counter",
-                    emittable: [],
-                    schema: {
-                        definitions: {
-                            Metadata: { type: "object" },
-                            Incoming: { type: "string" },
-                            Outgoing: false,
-                            State: { type: "object" }
-                        }
+            {
+                version: 1,
+                typescript: declarations({
+                    Counter: "Metadata: {}; Incoming: string; Outgoing: never; State: {}; Methods: {}"
+                }),
+                actors: [
+                    {
+                        actorName: "Counter",
+                        socket: {
+                            version: 1,
+                            actorName: "Counter",
+                            emittable: [],
+                            schema: {
+                                definitions: {
+                                    Metadata: { type: "object" },
+                                    Incoming: { type: "string" },
+                                    Outgoing: false,
+                                    State: { type: "object" }
+                                }
+                            }
+                        },
+                        rpc: { schema: { definitions: {} }, methods: [] }
                     }
-                }
-            ],
+                ]
+            },
             directory
         )
-        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export type Outgoing = never/)
+        assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /Outgoing: never/)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -223,44 +231,59 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
         const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
         const names = [
             "actors",
-            "clients",
-            "$createClient",
-            "frontend",
-            "proxy",
-            "ActorClient",
             "ActorProxy",
-            "SocketProxy",
             "ActorAuthorization",
-            "createClient",
-            "createBrowserClient",
-            "validators",
-            "ActorDescriptor",
+            "createActorTransport",
+            "ActorInvocationError",
+            "ActorRpcTransport",
+            "DurableActorsClientOptions",
+            "SocketGrant",
+            "SocketProxyDependencies",
+            "SocketProxyOptions",
+            "ProxyActor",
             "Connection",
             "Authorization",
             "Metadata",
             "Incoming",
             "Outgoing",
-            "State"
+            "State",
+            "Methods",
+            "Stub"
         ]
         await generateClient(
-            names.map(actorName => ({
+            {
                 version: 1,
-                actorName,
-                emittable: [],
-                schema: {
-                    definitions: {
-                        Metadata: { type: "object" },
-                        Incoming: { type: "string" },
-                        Outgoing: { type: "string" },
-                        State: { type: "object" }
-                    }
-                }
-            })),
+                typescript: declarations(
+                    Object.fromEntries(
+                        names.map(name => [
+                            name,
+                            "Metadata: {}; Incoming: string; Outgoing: string; State: {}; Methods: {}"
+                        ])
+                    )
+                ),
+                actors: names.map(actorName => ({
+                    actorName,
+                    socket: {
+                        version: 1,
+                        actorName,
+                        emittable: [],
+                        schema: {
+                            definitions: {
+                                Metadata: { type: "object" },
+                                Incoming: { type: "string" },
+                                Outgoing: { type: "string" },
+                                State: { type: "object" }
+                            }
+                        }
+                    },
+                    rpc: { schema: { definitions: {} }, methods: [] }
+                }))
+            },
             directory
         )
-        checkTypes(path.join(directory, "index.ts"))
+        checkTypes(path.join(directory, "index.d.ts"))
         await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -268,7 +291,7 @@ test("actor names cannot collide with generated entrypoint or helper bindings", 
             logLevel: "silent"
         })
         await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "node",
             format: "esm",
@@ -285,34 +308,52 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
     try {
         const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
         await generateClient(
-            [
-                {
-                    version: 1,
-                    actorName: "Room",
-                    emittable: ["count"],
-                    schema: {
-                        definitions: {
-                            Metadata: { type: "object" },
-                            Incoming: {
-                                type: "object",
-                                properties: { amount: { type: "number" } },
-                                required: ["amount"]
-                            },
-                            Outgoing: { type: "string" },
-                            State: { type: "object", properties: { count: { type: "number" } }, required: ["count"] }
-                        }
+            {
+                version: 1,
+                typescript: declarations({
+                    Room: "Metadata: {}; Incoming: { amount: number }; Outgoing: string; State: { count: number }; Methods: {}"
+                }),
+                actors: [
+                    {
+                        actorName: "Room",
+                        socket: {
+                            version: 1,
+                            actorName: "Room",
+                            emittable: ["count"],
+                            schema: {
+                                definitions: {
+                                    Metadata: { type: "object" },
+                                    Incoming: {
+                                        type: "object",
+                                        properties: { amount: { type: "number" } },
+                                        required: ["amount"]
+                                    },
+                                    Outgoing: { type: "string" },
+                                    State: {
+                                        type: "object",
+                                        properties: { count: { type: "number" } },
+                                        required: ["count"]
+                                    }
+                                }
+                            }
+                        },
+                        rpc: { schema: { definitions: {} }, methods: [] }
                     }
-                }
-            ],
+                ]
+            },
             directory
         )
-        const source = await readFile(path.join(directory, "index.ts"), "utf8")
-        assert.doesNotMatch(source, /durable-actors\/browser|createClient|export const clients/)
-        assert.match(source, /amount: number/)
+        const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
+        assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /amount: number/)
         assert.doesNotMatch(source, /node:|\/host|actor-compiler/)
-        assert.deepEqual((await readdir(directory)).sort(), ["index.ts", "runtime"])
-        assert.doesNotMatch(source, /validators/)
-        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /export const actors/)
+        assert.deepEqual((await readdir(directory)).sort(), [
+            "index.d.ts",
+            "index.js",
+            "package.json",
+            "runtime",
+            "types.d.ts"
+        ])
+        assert.match(await readFile(path.join(directory, "index.d.ts"), "utf8"), /export declare const actors/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(
             consumer,
@@ -325,12 +366,12 @@ test("generates typed descriptors that can be bundled for browsers", async () =>
             const invalid: actors.Room.Incoming = { amount: "invalid" }
             // @ts-expect-error private field is absent
             state.secret
-            // @ts-expect-error socket-only contracts have no RPC stub
-            actors.Room.get("lobby")`
+            // @ts-expect-error the contract declares no RPC methods
+            actors.Room.get("lobby").missingMethod()`
         )
         checkTypes(consumer)
         const bundle = await build({
-            entryPoints: [path.join(directory, "index.ts")],
+            entryPoints: [path.join(directory, "index.js")],
             bundle: true,
             platform: "browser",
             format: "esm",
@@ -353,33 +394,54 @@ test("each actor module exposes complete unprefixed contract types", async t => 
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
     await generateClient(
-        ["Counter", "Room"].map(actorName => ({
-            version: 1 as const,
-            actorName,
-            emittable: ["count"],
-            schema: {
-                definitions: {
-                    Metadata: { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },
-                    Incoming: { type: "object", properties: { by: { type: "number" } }, required: ["by"] },
-                    Outgoing: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
-                    Field_count: { type: "number" },
-                    State: {
-                        type: "object",
-                        properties: { count: { $ref: "#/definitions/Field_count" } },
-                        required: ["count"]
+        {
+            version: 1,
+            typescript: declarations(
+                Object.fromEntries(
+                    ["Counter", "Room"].map(name => [
+                        name,
+                        "Metadata: { userId: string }; Incoming: { by: number }; Outgoing: { count: number }; State: { count: number }; Methods: {}"
+                    ])
+                )
+            ),
+            actors: ["Counter", "Room"].map(actorName => ({
+                actorName,
+                socket: {
+                    version: 1 as const,
+                    actorName,
+                    emittable: ["count"],
+                    schema: {
+                        definitions: {
+                            Metadata: {
+                                type: "object",
+                                properties: { userId: { type: "string" } },
+                                required: ["userId"]
+                            },
+                            Incoming: { type: "object", properties: { by: { type: "number" } }, required: ["by"] },
+                            Outgoing: {
+                                type: "object",
+                                properties: { count: { type: "number" } },
+                                required: ["count"]
+                            },
+                            Field_count: { type: "number" },
+                            State: {
+                                type: "object",
+                                properties: { count: { $ref: "#/definitions/Field_count" } },
+                                required: ["count"]
+                            }
+                        }
                     }
-                }
-            }
-        })),
+                },
+                rpc: { schema: { definitions: {} }, methods: [] }
+            }))
+        },
         directory
     )
-    const source = await readFile(path.join(directory, "index.ts"), "utf8")
-    for (const name of ["Counter", "Room"]) assert.ok(source.includes(`export namespace ${name} {`))
-    for (const type of ["Metadata", "Incoming", "Outgoing", "State"])
-        assert.ok(source.includes(`export interface ${type} {`))
-    assert.match(source, /count: number/)
+    const source = await readFile(path.join(directory, "index.d.ts"), "utf8")
+    for (const name of ["Counter", "Room"]) assert.ok(source.includes(`namespace ${name} {`))
+    for (const type of ["Metadata", "Incoming", "Outgoing", "State"]) assert.ok(source.includes(`type ${type} =`))
+    assert.match(await readFile(path.join(directory, "types.d.ts"), "utf8"), /count: number/)
     assert.doesNotMatch(source, /ActorNames|FieldCount/)
-    assert.doesNotMatch(source, /ActorConnection|createClient|export const clients/)
     assert.match(source, /metadata: Metadata/)
     const consumer = path.join(directory, "consumer.ts")
     await writeFile(
@@ -412,30 +474,47 @@ test("readable contract types preserve recursive metadata and helper-name collis
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
     await generateClient(
-        [
-            {
-                version: 1,
-                actorName: "Room",
-                emittable: [],
-                schema: {
-                    definitions: {
-                        Metadata: {
-                            type: "object",
-                            properties: { connection: { $ref: "#/definitions/Connection" } },
-                            required: ["connection"]
-                        },
-                        Connection: {
-                            type: "object",
-                            properties: { parent: { $ref: "#/definitions/Connection" }, id: { type: "string" } },
-                            required: ["id"]
-                        },
-                        Incoming: { type: "null" },
-                        Outgoing: true,
-                        State: { type: "object" }
-                    }
+        {
+            version: 1,
+            typescript: {
+                declarations: `interface Connection { id: string; parent?: Connection }
+                export interface ActorTypes {
+                    Room: { Metadata: { connection: Connection }; Incoming: null; Outgoing: unknown; State: {}; Methods: {} }
+                }`,
+                dependencies: {}
+            },
+            actors: [
+                {
+                    actorName: "Room",
+                    socket: {
+                        version: 1,
+                        actorName: "Room",
+                        emittable: [],
+                        schema: {
+                            definitions: {
+                                Metadata: {
+                                    type: "object",
+                                    properties: { connection: { $ref: "#/definitions/Connection" } },
+                                    required: ["connection"]
+                                },
+                                Connection: {
+                                    type: "object",
+                                    properties: {
+                                        parent: { $ref: "#/definitions/Connection" },
+                                        id: { type: "string" }
+                                    },
+                                    required: ["id"]
+                                },
+                                Incoming: { type: "null" },
+                                Outgoing: true,
+                                State: { type: "object" }
+                            }
+                        }
+                    },
+                    rpc: { schema: { definitions: {} }, methods: [] }
                 }
-            }
-        ],
+            ]
+        },
         directory
     )
     const consumer = path.join(directory, "consumer.ts")
@@ -447,7 +526,7 @@ test("readable contract types preserve recursive metadata and helper-name collis
         type Incoming = actors.Room.Incoming
         type Outgoing = actors.Room.Outgoing
         type Authorization = actors.Room.Authorization
-        const metadata: Metadata = { connection: { id: "a", parent: { id: "b" } } }
+        const metadata: Metadata = { connection: { id: "a", parent: { id: "b", parent: { id: "c" } } } }
         const authorization: Authorization = { actorName: "Room", actorId: "one", metadata }
         const incoming: Incoming = null
         const outgoing: Outgoing = { anything: true }
@@ -464,7 +543,7 @@ function checkTypes(consumer: string): void {
     const options: ts.CompilerOptions = {
         strict: true,
         noEmit: true,
-        skipLibCheck: true,
+        skipLibCheck: false,
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -483,14 +562,20 @@ test("regeneration replaces managed runtime files and preserves application file
     const directory = await mkdtemp(path.join(os.tmpdir(), "actor-regenerate-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const { generateClient } = await import("../../../src/compiler/generators/client-generator.js")
-    await generateClient([], directory)
+    await generateClient({ version: 1, actors: [], typescript: declarations({}) }, directory)
     const runtime = path.join(directory, "runtime")
     const files = await readdir(runtime)
     await writeFile(path.join(runtime, "stale.js"), "throw new Error('stale runtime')")
-    await writeFile(path.join(runtime, "client.ts"), "throw new Error('edited runtime')")
+    await writeFile(path.join(runtime, "client.js"), "throw new Error('edited runtime')")
     await writeFile(path.join(directory, "backend.ts"), "export const application = true")
-    await generateClient([], directory)
+    await generateClient({ version: 1, actors: [], typescript: declarations({}) }, directory)
     assert.deepEqual(await readdir(runtime), files)
-    assert.match(await readFile(path.join(runtime, "client.ts"), "utf8"), /class HttpActorClient/)
+    const consumer = path.join(directory, "consumer.ts")
+    await writeFile(
+        consumer,
+        'import { actors, ActorProxy } from "./index.js"; const proxy: typeof ActorProxy = ActorProxy'
+    )
+    checkTypes(consumer)
+    assert.match(await readFile(path.join(runtime, "client.js"), "utf8"), /class HttpActorClient/)
     assert.equal(await readFile(path.join(directory, "backend.ts"), "utf8"), "export const application = true")
 })

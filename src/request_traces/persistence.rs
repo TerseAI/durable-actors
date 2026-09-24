@@ -22,14 +22,19 @@ const LOCAL_RETENTION: usize = 10_000;
 
 #[async_trait]
 pub(crate) trait TracePersistence: Send + Sync {
+    async fn initialize(&self) -> Result<()>;
     // Events have stable IDs; repeated appends must not duplicate them.
     async fn append(&self, events: &[TraceEvent]) -> Result<()>;
-    async fn history(&self, query: &HistoryQuery) -> Result<TracePage>;
-    async fn metrics(&self, query: &TimeRange) -> Result<OverviewMetrics>;
-    async fn queue_waits(&self, query: &QueueWaitQuery) -> Result<Vec<QueueWaitRow>>;
-    async fn websockets(&self, query: &TimeRange) -> Result<Vec<SocketSession>>;
+    async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage>;
+    async fn metrics(&self, project_id: &str, query: &TimeRange) -> Result<OverviewMetrics>;
+    async fn queue_waits(
+        &self,
+        project_id: &str,
+        query: &QueueWaitQuery,
+    ) -> Result<Vec<QueueWaitRow>>;
+    async fn websockets(&self, project_id: &str, query: &TimeRange) -> Result<Vec<SocketSession>>;
 
-    async fn replay(&self, query: &ReplayQuery) -> Result<TracePage>;
+    async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage>;
 }
 
 pub(crate) struct SqliteTracePersistence {
@@ -74,6 +79,10 @@ impl SqliteTracePersistence {
 
 #[async_trait]
 impl TracePersistence for SqliteTracePersistence {
+    async fn initialize(&self) -> Result<()> {
+        self.run(|_| Ok(())).await
+    }
+
     async fn append(&self, events: &[TraceEvent]) -> Result<()> {
         let events = events.to_vec();
         let retention = self.retention;
@@ -91,46 +100,60 @@ impl TracePersistence for SqliteTracePersistence {
         }).await
     }
 
-    async fn metrics(&self, query: &TimeRange) -> Result<OverviewMetrics> {
+    async fn metrics(&self, project_id: &str, query: &TimeRange) -> Result<OverviewMetrics> {
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        let project_id = project_id.to_owned();
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| metrics::overview(connection, &query))
+        self.run(move |connection| metrics::overview(connection, &project_id, &query))
             .await
     }
 
-    async fn queue_waits(&self, query: &QueueWaitQuery) -> Result<Vec<QueueWaitRow>> {
+    async fn queue_waits(
+        &self,
+        project_id: &str,
+        query: &QueueWaitQuery,
+    ) -> Result<Vec<QueueWaitRow>> {
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        let project_id = project_id.to_owned();
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| metrics::queue_waits(connection, &query))
+        self.run(move |connection| metrics::queue_waits(connection, &project_id, &query))
             .await
     }
 
-    async fn websockets(&self, query: &TimeRange) -> Result<Vec<SocketSession>> {
+    async fn websockets(&self, project_id: &str, query: &TimeRange) -> Result<Vec<SocketSession>> {
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        let project_id = project_id.to_owned();
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| metrics::websockets(connection, &query))
+        self.run(move |connection| metrics::websockets(connection, &project_id, &query))
             .await
     }
 
-    async fn history(&self, query: &HistoryQuery) -> Result<TracePage> {
+    async fn history(&self, project_id: &str, query: &HistoryQuery) -> Result<TracePage> {
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        let project_id = project_id.to_owned();
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| history::query(connection, &query))
+        self.run(move |connection| history::query(connection, &project_id, &query))
             .await
     }
 
-    async fn replay(&self, query: &ReplayQuery) -> Result<TracePage> {
+    async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
+        crate::control_plane::admin::validate_component("project ID", project_id, 64)?;
+        let project_id = project_id.to_owned();
         query.validate()?;
         let query = query.clone();
-        self.run(move |connection| replay::query(connection, &query))
+        self.run(move |connection| replay::query(connection, &project_id, &query))
             .await
     }
 }
 
 fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 4, "unsupported request trace database version");
-    if version == 4 {
+    ensure!(version <= 5, "unsupported request trace database version");
+    if version == 5 {
         return Ok(());
     }
     let transaction = connection.transaction()?;
@@ -160,13 +183,28 @@ fn initialize(connection: &mut Connection, path: &Path) -> Result<()> {
     transaction.execute_batch(
         "DROP VIEW IF EXISTS request_events; DROP VIEW IF EXISTS request_history;",
     )?;
-    transaction.pragma_update(None, "user_version", 4)?;
+    transaction.execute_batch(
+        "ALTER TABLE traces ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+        UPDATE traces SET project_id = COALESCE(json_extract(event, '$.projectId'), '');
+        CREATE INDEX traces_project_time ON traces(project_id, started_at_ms DESC, position DESC);
+        CREATE INDEX traces_project_position ON traces(project_id, position);
+        CREATE TABLE trace_projects (project_id TEXT PRIMARY KEY, total INTEGER NOT NULL, head INTEGER NOT NULL, pruned INTEGER NOT NULL);
+        INSERT INTO trace_projects SELECT project_id, COUNT(*), MAX(position), 0 FROM traces WHERE project_id <> '' GROUP BY project_id;
+        CREATE TRIGGER traces_project_insert AFTER INSERT ON traces WHEN NEW.project_id <> '' BEGIN
+            INSERT INTO trace_projects VALUES (NEW.project_id, 1, NEW.position, 0)
+            ON CONFLICT(project_id) DO UPDATE SET total = total + 1, head = NEW.position;
+        END;
+        CREATE TRIGGER traces_project_delete AFTER DELETE ON traces BEGIN
+            UPDATE trace_projects SET pruned = MAX(pruned, OLD.position) WHERE project_id = OLD.project_id;
+        END;",
+    )?;
+    transaction.pragma_update(None, "user_version", 5)?;
     transaction.commit()?;
     Ok(())
 }
 
 fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result<usize> {
-    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (event_id) DO NOTHING")?;
+    let mut statement = transaction.prepare("INSERT INTO traces (event_id, event, started_at_ms, actor_name, actor_id, outcome, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (event_id) DO NOTHING")?;
     let mut inserted = 0;
     for event in events {
         let outcome = serde_json::to_value(event.trace.outcome)?;
@@ -176,7 +214,8 @@ fn insert_events(transaction: &Transaction<'_>, events: &[TraceEvent]) -> Result
             i64::try_from(event.trace.started_at_ms)?,
             event.trace.actor_name,
             event.trace.actor_id,
-            outcome.as_str()
+            outcome.as_str(),
+            event.trace.project_id
         ])?;
     }
     Ok(inserted)
@@ -194,10 +233,19 @@ fn import_snapshot(transaction: &Transaction<'_>, path: &Path) -> Result<()> {
         saved.version == 1,
         "unsupported legacy request history version"
     );
-    for event in saved.history.records {
+    for mut event in saved.history.records {
+        let id = event
+            .get("eventId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        event
+            .as_object_mut()
+            .context("invalid legacy trace record")?
+            .insert("eventId".into(), id.clone().into());
         transaction.execute(
             "INSERT INTO traces (event_id, event) VALUES (?1, ?2)",
-            params![event.event_id, serde_json::to_string(&event)?],
+            params![id, serde_json::to_string(&event)?],
         )?;
     }
     Ok(())
@@ -211,7 +259,7 @@ struct LegacySnapshot {
 
 #[derive(Deserialize)]
 struct LegacyHistory {
-    records: Vec<TraceEvent>,
+    records: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]

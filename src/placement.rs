@@ -79,5 +79,5 @@ pub struct ActorInventory {
 
 #[async_trait]
 pub trait ActorInventoryReader: Send + Sync {
-    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>>;
+    async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>>;
 }

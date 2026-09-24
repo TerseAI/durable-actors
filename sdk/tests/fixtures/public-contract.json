@@ -110,5 +110,9 @@
         ]
       }
     }
-  ]
+  ],
+  "typescript": {
+    "declarations": "interface SendMessageInput { text: string }\ninterface SendMessageResult { id: string; text: string }\nexport interface ActorTypes {\n    ChatRoom: {\n        Metadata: {}; Incoming: { text: string }; Outgoing: SendMessageResult; State: {};\n        Methods: { clear(): Promise<void>; sendMessage(input: SendMessageInput): Promise<SendMessageResult> }\n    }\n}\n",
+    "dependencies": {}
+  }
 }

@@ -238,7 +238,7 @@ func (s *fakeSandbox) BuildCode(_ context.Context, directory, entrypoint string)
 	if s.contract != nil {
 		return s.contract, s.buildErr
 	}
-	return json.RawMessage(`{"version":1,"actors":[]}`), s.buildErr
+	return json.RawMessage(`{"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}}`), s.buildErr
 }
 
 func (s *fakeSandbox) ControlRoute(context.Context) (string, error) {

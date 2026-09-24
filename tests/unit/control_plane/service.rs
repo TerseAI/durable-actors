@@ -1263,7 +1263,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
                 .starts_with("sha256:")
         );
     }
-    deployment["contract"] = serde_json::json!({"version":1,"actors":[]});
+    deployment["contract"] = serde_json::json!({"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}});
     client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")

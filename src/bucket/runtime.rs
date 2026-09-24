@@ -534,7 +534,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
 
 #[async_trait]
 impl ActorInventoryReader for RuntimeStorage {
-    async fn actor_inventory(&self) -> Result<Vec<ActorInventory>> {
+    async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>> {
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);
         for key in self.authority.list(&prefix).await? {
@@ -542,6 +542,9 @@ impl ActorInventoryReader for RuntimeStorage {
                 continue;
             };
             let record: Ownership = serde_json::from_slice(&object.bytes)?;
+            if record.actor.project_id != project_id {
+                continue;
+            }
             let row = actors
                 .entry(record.actor.actor_name.clone())
                 .or_insert_with(|| ActorInventory {

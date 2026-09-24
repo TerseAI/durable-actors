@@ -5,7 +5,8 @@ import { JsonSchemaGenerator, getDefaultArgs } from "typescript-json-schema"
 import { ActorDefinitionError } from "../errors.js"
 
 function jsonSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>): JSONSchema7 {
-    const generator = new JsonSchemaGenerator([], types, {}, {}, checker, {
+    const { allTypes, namesByType } = collectSchemaTypes(checker, types)
+    const generator = new JsonSchemaGenerator([], allTypes, {}, {}, checker, {
         ...getDefaultArgs(),
         required: true,
         strictNullChecks: true,
@@ -15,46 +16,112 @@ function jsonSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>): JS
         topRef: false,
         defaultProps: false
     })
-    const names = Object.keys(types).filter(name => !(types[name].flags & ts.TypeFlags.Never))
+    const names = Object.keys(allTypes).filter(
+        name => !(allTypes[name].flags & (ts.TypeFlags.Never | ts.TypeFlags.Undefined))
+    )
     const generated = generator.getSchemaForSymbols(names) as JSONSchema7
     const definitions: Record<string, JSONSchema7Definition> = { ...generated.definitions }
-    for (const name of Object.keys(types)) if (types[name].flags & ts.TypeFlags.Never) definitions[name] = false
+    for (const [name, type] of Object.entries(allTypes)) {
+        if (type.flags & ts.TypeFlags.Never) definitions[name] = false
+        if (type.flags & ts.TypeFlags.Undefined) definitions[name] = { anyOf: [false] }
+    }
     const seen = new Set<JSONSchema7>()
-    for (const [name, type] of Object.entries(types))
-        preserveTypeNames(checker, type, definitions[name], definitions, seen)
+    for (const [name, type] of Object.entries(allTypes))
+        preserveTypes(checker, type, definitions[name], definitions, namesByType, seen)
     return { $schema: "http://json-schema.org/draft-07/schema#", definitions }
 }
 
-function preserveTypeNames(
+function collectSchemaTypes(checker: ts.TypeChecker, roots: Record<string, ts.Type>) {
+    const allTypes = { ...roots }
+    const namesByType = new Map(Object.entries(roots).map(([name, type]) => [type, name]))
+    const seen = new Set<ts.Type>()
+    const register = (type: ts.Type) => {
+        if (!namesByType.has(type)) {
+            const name = `Type:${namesByType.size}`
+            namesByType.set(type, name)
+            allTypes[name] = type
+        }
+        visit(type)
+    }
+    const visit = (type: ts.Type) => {
+        if (seen.has(type)) return
+        seen.add(type)
+        if (type.isUnionOrIntersection()) {
+            type.types.forEach(register)
+            return
+        }
+        if (isArray(checker, type)) {
+            checker.getTypeArguments(type as ts.TypeReference).forEach(visit)
+            return
+        }
+        if (!(type.flags & ts.TypeFlags.Object)) return
+        for (const property of type.getProperties()) {
+            const declaration = property.valueDeclaration ?? property.declarations?.[0]
+            if (declaration) visit(checker.getTypeOfSymbolAtLocation(property, declaration))
+        }
+        const indexType = checker.getIndexTypeOfType(type, ts.IndexKind.String)
+        if (indexType) register(indexType)
+    }
+    Object.values(roots).forEach(visit)
+    return { allTypes, namesByType }
+}
+
+function preserveTypes(
     checker: ts.TypeChecker,
     type: ts.Type,
     schema: JSONSchema7Definition | undefined,
     definitions: Record<string, JSONSchema7Definition>,
+    namesByType: ReadonlyMap<ts.Type, string>,
     seen: Set<JSONSchema7>
 ): void {
     if (!schema || typeof schema === "boolean" || seen.has(schema)) return
     seen.add(schema)
-    if (schema.$ref) {
+    const reference = (child: ts.Type) => ({
+        $ref: `#/definitions/${namesByType.get(child)!.replaceAll("~", "~0").replaceAll("/", "~1")}`
+    })
+    if (
+        type.isUnion() &&
+        type.types.some(
+            member =>
+                member.flags &
+                (ts.TypeFlags.Object |
+                    ts.TypeFlags.Intersection |
+                    ts.TypeFlags.TemplateLiteral |
+                    ts.TypeFlags.Undefined)
+        )
+    ) {
+        // Rebuild branches from compiler types: the schema library coalesces primitive unions and loses their correspondence.
+        for (const key of ["$ref", "type", "enum", "const", "anyOf", "oneOf"] as const) delete schema[key]
+        schema.anyOf = type.types.filter(member => !(member.flags & ts.TypeFlags.Undefined)).map(reference)
+    } else if (schema.$ref) {
         const key = decodeURIComponent(schema.$ref.slice("#/definitions/".length))
             .replaceAll("~1", "/")
             .replaceAll("~0", "~")
-        preserveTypeNames(checker, type, definitions[key], definitions, seen)
+        preserveTypes(checker, type, definitions[key], definitions, namesByType, seen)
         return
     }
-    const name = sourceTypeName(type)
-    if (type.isUnion()) {
-        const members = type.types.filter(member => !(member.flags & ts.TypeFlags.Undefined))
-        if (members.length !== 1) {
-            if (name) schema.title ??= name
-            return
-        }
-        type = members[0]
-    }
-    const title = name ?? sourceTypeName(type)
+    const title = sourceTypeName(type)
     if (title) schema.title ??= title
-    const visit = (child: ts.Type, definition: JSONSchema7Definition | undefined) =>
-        preserveTypeNames(checker, child, definition, definitions, seen)
-    if (checker.isArrayType(type) || checker.isTupleType(type) || type.getSymbol()?.name === "ReadonlyArray") {
+    if (type.isUnion()) return
+    if (type.isIntersection() && schema.allOf) {
+        schema.allOf = type.types.map(reference)
+        return
+    }
+    preserveChildren(checker, type, schema, (child, definition) =>
+        preserveTypes(checker, child, definition, definitions, namesByType, seen)
+    )
+    const indexType = checker.getIndexTypeOfType(type, ts.IndexKind.String)
+    if (indexType && type.flags & ts.TypeFlags.Object && !isArray(checker, type))
+        schema.additionalProperties = reference(indexType)
+}
+
+function preserveChildren(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    schema: JSONSchema7,
+    visit: (type: ts.Type, schema: JSONSchema7Definition | undefined) => void
+): void {
+    if (isArray(checker, type)) {
         const elements = checker.getTypeArguments(type as ts.TypeReference)
         if (Array.isArray(schema.items))
             schema.items.forEach((item, index) => {
@@ -63,13 +130,16 @@ function preserveTypeNames(
         else if (elements[0]) visit(elements[0], schema.items)
         return
     }
+    if (!(type.flags & ts.TypeFlags.Object)) return
     for (const property of type.getProperties()) {
         const declaration = property.valueDeclaration ?? property.declarations?.[0]
         if (declaration)
             visit(checker.getTypeOfSymbolAtLocation(property, declaration), schema.properties?.[property.name])
     }
-    const indexType = checker.getIndexTypeOfType(type, ts.IndexKind.String)
-    if (indexType) visit(indexType, schema.additionalProperties)
+}
+
+function isArray(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return checker.isArrayType(type) || checker.isTupleType(type) || type.getSymbol()?.name === "ReadonlyArray"
 }
 
 function sourceTypeName(type: ts.Type): string | undefined {

@@ -444,6 +444,34 @@ fn controlled_host() -> (
     (Arc::new(host), receiver, release)
 }
 
+#[tokio::test]
+async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<()> {
+    let (host, mut started, release) = controlled_host();
+    let activity = host.activity();
+    assert_eq!(invoke(&host, "warm").await?, completed(1));
+    assert_eq!(started.recv().await.as_deref(), Some("warm"));
+    let last_active = activity.borrow().last_active;
+
+    let caller = host.clone();
+    let running = tokio::spawn(async move { invoke(&caller, "first").await });
+    assert_eq!(started.recv().await.as_deref(), Some("first"));
+    host.evict_idle(last_active).await?;
+    assert!(activity.borrow().resident);
+    assert_eq!(activity.borrow().active, 1);
+
+    release.add_permits(1);
+    assert_eq!(running.await??, completed(2));
+    host.evict_idle(last_active).await?;
+    assert!(activity.borrow().resident);
+
+    let last_active = activity.borrow().last_active;
+    host.evict_idle(last_active).await?;
+    assert!(!activity.borrow().resident);
+    assert_eq!(invoke(&host, "after-eviction").await?, completed(3));
+    assert!(activity.borrow().resident);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {
@@ -456,7 +484,7 @@ async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_sta
         let panicking = tokio::spawn(async move { invoke(&caller, "panic").await });
         tokio::time::timeout(
             Duration::from_secs(2),
-            activity.wait_for(|count| *count == 2),
+            activity.wait_for(|activity| activity.active == 2),
         )
         .await??;
         release.add_permits(1);
@@ -473,7 +501,7 @@ async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_sta
             ActorExecutionResult::HostUnavailable
         );
         host.drain(Duration::from_secs(1)).await?;
-        assert_eq!(*activity.borrow(), 0);
+        assert_eq!(activity.borrow().active, 0);
         assert!(host.queues().inventory().is_empty());
     }
     Ok(())
@@ -538,7 +566,7 @@ async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
     let mut activity = host.activity();
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|count| *count == 2),
+        activity.wait_for(|activity| activity.active == 2),
     )
     .await??;
     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -629,7 +657,7 @@ async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Resul
     }
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|count| *count == 33),
+        activity.wait_for(|activity| activity.active == 33),
     )
     .await??;
     assert_eq!(
@@ -664,7 +692,7 @@ async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Resul
         assert_eq!(caller.await??, ActorExecutionResult::HostUnavailable);
     }
     host.drain(Duration::from_secs(1)).await?;
-    assert_eq!(*activity.borrow(), 0);
+    assert_eq!(activity.borrow().active, 0);
     assert!(host.queues().inventory().is_empty());
     Ok(())
 }

@@ -161,8 +161,9 @@ paths:
                 Send the discovery token and ownerEpoch to the discovered host origin.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
-                Only HTTP 401 or an explicit reroute permits rediscovery and one retry.
-                Network errors, other HTTP failures and failed outcomes must not be retried automatically.
+                HTTP 401, an explicit reroute, or a confirmed connection refusal before dispatch permits rediscovery and one shared retry.
+                Ambiguous network errors, other HTTP failures and failed outcomes must not be retried automatically.
+                Exhausted connection refusals and discovery transport failures are unavailable; ambiguous invocation transport failures are outcome_unknown.
                 requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
             requestBody:
                 required: true
@@ -254,7 +255,9 @@ paths:
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
-    /v1/observe/actors:
+    /v1/projects/{project_id}/observe/actors:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: getActorInventory
             tags: [Observability]
@@ -270,7 +273,9 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
-    /v1/observe/events:
+    /v1/projects/{project_id}/observe/events:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: streamActorInventory
             tags: [Observability]
@@ -279,7 +284,9 @@ paths:
             responses:
                 "200": { $ref: "#/components/responses/EventStream" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
-    /v1/observe/requests:
+    /v1/projects/{project_id}/observe/requests:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: listRequestHistory
             tags: [Observability]
@@ -330,7 +337,9 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/observe/metrics:
+    /v1/projects/{project_id}/observe/metrics:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: getObserverMetrics
             tags: [Observability]
@@ -350,7 +359,9 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/observe/queue-waits:
+    /v1/projects/{project_id}/observe/queue-waits:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: listQueueWaits
             tags: [Observability]
@@ -376,7 +387,9 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/observe/websockets:
+    /v1/projects/{project_id}/observe/websockets:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: listWebSocketSessions
             tags: [Observability]
@@ -399,7 +412,9 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
-    /v1/observe/requests/events:
+    /v1/projects/{project_id}/observe/requests/events:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
         get:
             operationId: streamRequestHistory
             tags: [Observability]
@@ -682,8 +697,17 @@ components:
         PublicActorContract:
             type: object
             additionalProperties: false
-            required: [version, actors]
+            required: [version, actors, typescript]
             properties:
+                typescript:
+                    type: object
+                    additionalProperties: false
+                    required: [declarations, dependencies]
+                    properties:
+                        declarations: { type: string, minLength: 1 }
+                        dependencies:
+                            type: object
+                            additionalProperties: { type: string, minLength: 1 }
                 version: { type: integer, const: 1 }
                 actors:
                     type: array
@@ -882,8 +906,9 @@ components:
                 reset: { type: boolean }
         TraceRecord:
             type: object
-            required: [sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
+            required: [projectId, sequence, eventId, hostId, sessionId, requestId, actorName, actorId, kind, operation, connectionId, startedAtMs, durationMs, queueWaitMs, outcome]
             properties:
+                projectId: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$" }
                 metadata: { description: Bounded JSON metadata from an onConnect event, when retained. }
                 sequence: { type: integer, minimum: 0 }
                 eventId: { type: string, format: uuid }

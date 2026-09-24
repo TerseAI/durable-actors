@@ -11,6 +11,7 @@ use crate::request_traces::{
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
+    project_id: String,
     generation: String,
     watermark: u64,
     pruned: u64,
@@ -19,27 +20,35 @@ struct Cursor {
     filters: String,
 }
 
-pub(super) fn query(connection: &mut Connection, query: &HistoryQuery) -> Result<TracePage> {
+pub(super) fn query(
+    connection: &mut Connection,
+    project_id: &str,
+    query: &HistoryQuery,
+) -> Result<TracePage> {
     let transaction = connection.transaction()?;
-    let metadata = replay::metadata(&transaction)?;
-    let retained: i64 =
-        transaction.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?;
+    let metadata = replay::metadata(&transaction, project_id)?;
+    let retained: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM traces WHERE project_id = ?1",
+        [project_id],
+        |row| row.get(0),
+    )?;
     let cursor = query
         .cursor
         .as_deref()
-        .map(|value| decode(value, query, &metadata))
+        .map(|value| decode(value, project_id, query, &metadata))
         .transpose()?;
     let reset = cursor
         .as_ref()
         .is_some_and(|c| c.generation != metadata.generation || c.pruned < metadata.pruned);
     let cursor = cursor.filter(|_| !reset);
     let watermark = cursor.as_ref().map_or(metadata.head, |c| c.watermark);
-    let mut records = select(&transaction, query, watermark, cursor.as_ref())?;
+    let mut records = select(&transaction, project_id, query, watermark, cursor.as_ref())?;
     let more = records.len() > query.limit;
     records.truncate(query.limit);
     let next_cursor = if more {
         let last = records.last().unwrap();
         Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Cursor {
+            project_id: project_id.into(),
             generation: metadata.generation.clone(),
             watermark,
             pruned: metadata.pruned,
@@ -51,7 +60,7 @@ pub(super) fn query(connection: &mut Connection, query: &HistoryQuery) -> Result
         None
     };
     Ok(TracePage {
-        resume_cursor: replay::resume_cursor(&metadata.generation, watermark)?,
+        resume_cursor: replay::resume_cursor(project_id, &metadata.generation, watermark)?,
         epoch: metadata.generation,
         cursor: watermark,
         capacity: query.limit,
@@ -66,12 +75,16 @@ pub(super) fn query(connection: &mut Connection, query: &HistoryQuery) -> Result
 
 fn select(
     transaction: &Transaction<'_>,
+    project_id: &str,
     query: &HistoryQuery,
     watermark: u64,
     cursor: Option<&Cursor>,
 ) -> Result<Vec<TraceRecord>> {
-    let mut clauses = vec!["position <= ?"];
-    let mut values = vec![Value::Integer(watermark as i64)];
+    let mut clauses = vec!["project_id = ?", "position <= ?"];
+    let mut values = vec![
+        Value::Text(project_id.into()),
+        Value::Integer(watermark as i64),
+    ];
     for (clause, value) in [
         ("actor_name = ?", query.actor_name.clone().map(Value::Text)),
         ("actor_id = ?", query.actor_id.clone().map(Value::Text)),
@@ -122,12 +135,18 @@ fn select(
     .collect()
 }
 
-fn decode(value: &str, query: &HistoryQuery, metadata: &replay::Metadata) -> Result<Cursor> {
+fn decode(
+    value: &str,
+    project_id: &str,
+    query: &HistoryQuery,
+    metadata: &replay::Metadata,
+) -> Result<Cursor> {
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| InvalidTraceCursor)?;
     let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| InvalidTraceCursor)?;
-    if cursor.generation.is_empty()
+    if cursor.project_id != project_id
+        || cursor.generation.is_empty()
         || cursor.generation.len() > 64
         || cursor.watermark > i64::MAX as u64
         || cursor.pruned > cursor.watermark

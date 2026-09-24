@@ -87,6 +87,7 @@ impl InitialReplication {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
+
     async fn preconnect(
         source: Arc<dyn InitialReplicaSource>,
         scope: ReplicaScope,

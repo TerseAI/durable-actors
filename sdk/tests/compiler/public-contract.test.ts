@@ -5,23 +5,38 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
+import ts from "typescript"
 
 import { ActorCompiler } from "../../src/compiler/actor-compiler.js"
+import { generateClientArtifacts } from "../../src/compiler/generators/client-artifacts.js"
 
-test("public contracts survive JSON transport without actor source or dependency imports", async t => {
+test("public contracts survive JSON transport without actor source and with explicit dependency imports", async t => {
     const project = await createProject(t)
-    await mkdir(path.join(project.root, "node_modules/private-data"))
+    await mkdir(path.join(project.root, "node_modules/@example/private-data"), { recursive: true })
     await writeFile(
-        path.join(project.root, "node_modules/private-data/package.json"),
-        JSON.stringify({ name: "private-data", type: "module", types: "index.d.ts", main: "index.js" })
+        path.join(project.root, "node_modules/@example/private-data/package.json"),
+        JSON.stringify({
+            name: "@example/private-data",
+            version: "1.0.0",
+            type: "module",
+            exports: { "./message": { types: "./index.d.ts", default: "./index.js" } },
+            main: "index.js"
+        })
     )
     await writeFile(
-        path.join(project.root, "node_modules/private-data/index.d.ts"),
+        path.join(project.root, "node_modules/@example/private-data/index.d.ts"),
         `export interface Message { id: string; text: string; reply?: Message; status: "sent" | "pending" }`
     )
-    await writeFile(path.join(project.root, "node_modules/private-data/index.js"), 'throw new Error("never load")')
+    await writeFile(
+        path.join(project.root, "node_modules/@example/private-data/index.js"),
+        'throw new Error("never load")'
+    )
+    await writeFile(
+        path.join(project.root, "message.ts"),
+        'export type { Message } from "@example/private-data/message"'
+    )
     await project.write(`
-        import type { Message } from "private-data"
+        import type { Message } from "./message.js"
         export class Room extends Actor<{ userId: string }, { text: string }, Message> {
             @Persisted @Emittable messages: Message[] = []
             @Persisted private secret = "hidden"
@@ -41,6 +56,7 @@ test("public contracts survive JSON transport without actor source or dependency
     const serialized = JSON.stringify(contract)
     assert.deepEqual(JSON.parse(serialized), contract)
     assert.equal(contract.version, 1)
+    assert.deepEqual(contract.typescript.dependencies, { "@example/private-data": "1.0.0" })
     const [actor] = contract.actors
     assert.equal(actor.actorName, "Room")
     assert.deepEqual(
@@ -49,7 +65,7 @@ test("public contracts survive JSON transport without actor source or dependency
     )
     assert.deepEqual(actor.rpc.methods[0].result, { kind: "void" })
     assert.deepEqual(actor.socket.emittable, ["messages"])
-    for (const absent of [project.root, "private-data", "secret", "hidden", "internal", "onConnect"])
+    for (const absent of [project.root, "secret", "hidden", "internal", "onConnect"])
         assert.equal(serialized.includes(absent), false, absent)
     await rm(project.root, { recursive: true, force: true })
     const fetched = JSON.parse(serialized)
@@ -64,6 +80,80 @@ test("public contracts survive JSON transport without actor source or dependency
     const validateResult = new Ajv().compile({ ...fetched.actors[0].rpc.schema, ...method.result.type })
     assert.equal(validateResult({ id: "1", text: "hello", status: "sent" }), true)
     assert.equal(validateResult({ id: 1, text: "hello", status: "sent" }), false)
+})
+
+test("bundles local type dependencies through the project's path aliases", async t => {
+    const project = await createProject(t)
+    await mkdir(path.join(project.root, "types"))
+    await writeFile(
+        path.join(project.root, "tsconfig.json"),
+        JSON.stringify({
+            compilerOptions: {
+                target: "ES2022",
+                module: "NodeNext",
+                strict: true,
+                skipLibCheck: true,
+                paths: { "@model/*": ["./types/*"] }
+            }
+        })
+    )
+    await writeFile(path.join(project.root, "types/value.ts"), "export interface Value { readonly text: string }")
+    await writeFile(
+        path.join(project.root, "types/message.ts"),
+        'import type { Value } from "@model/value.js"; export interface Message { values: readonly Value[] }'
+    )
+    await project.write(`
+        import type { Message } from "@model/message.js"
+        export class Room extends Actor<{}, Message, Message> {
+            async echo(message: Message): Promise<Message> { return message }
+        }
+    `)
+    const contract = new ActorCompiler().compileContract(project.entrypoint)
+    assert.deepEqual(contract.typescript.dependencies, {})
+    await rm(path.join(project.root, "types"), { recursive: true })
+    await rm(project.entrypoint)
+    for (const [name, contents] of await generateClientArtifacts(contract)) {
+        const file = path.join(project.root, "generated", name)
+        await mkdir(path.dirname(file), { recursive: true })
+        await writeFile(file, contents)
+    }
+    const consumer = path.join(project.root, "consumer.ts")
+    await writeFile(
+        consumer,
+        `
+        import { actors } from "./generated/index.js"
+        const message: actors.Room.Incoming = { values: [{ text: "hello" }] }
+        const returned: actors.Room.Outgoing = await actors.Room.get("one").echo(message)
+        // @ts-expect-error nested readonly fields survive bundling
+        returned.values[0].text = "changed"
+    `
+    )
+    const program = ts.createProgram([consumer], {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: false,
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.NodeNext
+    })
+    assert.deepEqual(
+        ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, "\n")),
+        []
+    )
+})
+
+test("declaration bundling accepts separate actor exports and omits unused implementation declarations", async t => {
+    const project = await createProject(t)
+    await project.write(`
+        class Room extends Actor<{}, never, never> {
+            async echo(value: string) { return value }
+            private async cache() { return new Map<string, Date>() }
+        }
+        export { Room }
+        export function createRoomType(): typeof Room { return Room }
+    `)
+    const contract = new ActorCompiler().compileContract(project.entrypoint)
+    assert.match(contract.typescript.declarations, /echo\(value: string\): Promise<string>/)
+    assert.doesNotMatch(contract.typescript.declarations, /createRoomType|cache|Map|Date|class Room/)
 })
 
 test("captures optional, default, rest and nullable parameters and inferred promise results", async t => {
@@ -122,13 +212,14 @@ test("extracts named re-exports and orders actors and methods deterministically"
     )
 })
 
-test("unknown message payloads support arbitrary JSON in contracts", async t => {
+test("explicit recursive JSON types support varied payloads in contracts", async t => {
     const project = await createProject(t)
     await project.write(`
+        type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
         interface Message {
             id: string
-            metadata?: unknown
-            parts: { [key: string]: unknown }[]
+            metadata?: Json
+            parts: { [key: string]: Json }[]
         }
         export class Room extends Actor<{}, never, never> {
             async send(message: Message): Promise<Message> { return message }
@@ -154,6 +245,39 @@ test("unknown message payloads support arbitrary JSON in contracts", async t => 
         assert.equal(validate({ id: "1", parts: [{ type: "text", text: "hello" }] }), true)
         assert.equal(validate({ id: 1, parts: [] }), false)
         assert.equal(validate({ id: "1", parts: "invalid" }), false)
+    }
+})
+
+test("unknown accepts varied JSON values throughout public contracts", async t => {
+    const project = await createProject(t)
+    const cases: [string, unknown[]][] = [
+        ["unknown", [null, true, 42, "hello", [1, null], { nested: false }]],
+        ["{ metadata?: unknown }", [{}, { metadata: null }, { metadata: 42 }]],
+        ["Record<string, unknown>", [{ text: "hello", number: 42, array: [null] }]],
+        ["readonly unknown[]", [[null, 42, "hello", { nested: false }]]],
+        [
+            "[string, unknown]",
+            [
+                ["label", null],
+                ["label", 42]
+            ]
+        ],
+        ['{ kind: "text"; value: string } | { kind: "raw"; value: unknown }', [{ kind: "raw", value: 42 }]],
+        ["{ id: string } & Record<string, unknown>", [{ id: "one", payload: null }]]
+    ]
+    for (const [type, values] of cases) {
+        await t.test(type, async () => {
+            await project.write(`export class Room extends Actor<{}, never, never> {
+                async send(value: ${type}): Promise<${type}> { return value }
+            }`)
+            const { rpc } = new ActorCompiler().compileContract(project.entrypoint).actors[0]
+            const [send] = rpc.methods
+            if (send.result.kind !== "value") assert.fail("expected result schema")
+            for (const reference of [send.parameters[0].type, send.result.type]) {
+                const validate = new Ajv().compile({ ...rpc.schema, ...reference })
+                for (const value of values) assert.equal(validate(value), true)
+            }
+        })
     }
 })
 

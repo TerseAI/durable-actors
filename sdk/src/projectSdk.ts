@@ -6,11 +6,12 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 export async function projectSdkModule(
     project: string,
     entrypoint: string,
-    caller: string
+    caller: string,
+    sdkResolveFrom?: string
 ): Promise<string | undefined> {
     let target: string
     try {
-        const parent = pathToFileURL(path.resolve(project, "package.json")).href
+        const parent = sdkResolveFrom ?? pathToFileURL(path.resolve(project, "package.json")).href
         const host = resolve("durable-actors/host", parent)
         target = await realpath(fileURLToPath(new URL(entrypoint, host)))
     } catch (cause) {

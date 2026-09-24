@@ -10,6 +10,7 @@ function trace(overrides: Partial<RequestTrace>): RequestTrace {
     counter++
     return {
         sequence: counter,
+        projectId: "default",
         requestId: `request-${counter}`,
         hostId: "host",
         sessionId: "session",
