@@ -23,9 +23,11 @@ const server = http.createServer((incoming, response) => {
       response.end('x'.repeat(5 * 1024 * 1024 + 1));
     } else if (request.malformed) {
       response.end('not json');
-    } else if (request.exit) {
+    } else if (request.disconnect) {
       fs.appendFileSync(request.attempts, 'attempt\n');
-      process.exit(1);
+      server.close();
+      incoming.socket.destroy();
+      setInterval(() => {}, 1000);
     } else if (request.marker) {
       fs.writeFileSync(request.marker + '.tmp', String(process.pid));
       fs.renameSync(request.marker + '.tmp', request.marker);

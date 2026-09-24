@@ -18,7 +18,7 @@ import (
 )
 
 func TestProviderServerRetainsTheSpareAcrossCommands(t *testing.T) {
-	sb := &fakeSandbox{controlRoute: assignmentServer(t).URL}
+	sb := &fakeSandbox{}
 	api := &fakeAPI{created: sb, findErr: errors.New("unexpected lookup")}
 	client, _ := startProviderServer(t, func() (modalAPI, func(), error) { return api, func() {}, nil })
 	call := func(operation string, request any, result any) {
@@ -46,12 +46,9 @@ func TestProviderServerRetainsTheSpareAcrossCommands(t *testing.T) {
 	}
 	var spare spareHandle
 	call("create_spare", spareRequest{Kind: "actor", Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}}, &spare)
-	request := testRequest()
-	request.Spare = &spare
-	var host hostHandle
-	call("ensure_host", request, &host)
-	if host.OwnerEpoch == 0 {
-		t.Fatal("claimed host did not become ready")
+	call("retire_spare", spare, &struct{}{})
+	if sb.calls[len(sb.calls)-2] != "terminate" || sb.calls[len(sb.calls)-1] != "detach" {
+		t.Fatal("retained spare was not retired", sb.calls)
 	}
 }
 

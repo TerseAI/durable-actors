@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	modal "github.com/modal-labs/modal-client/go"
-	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -103,7 +101,6 @@ func (a *fakeAPI) Find(_ context.Context, name string) (sandbox, error) {
 }
 
 type fakeSandbox struct {
-	controlRoute      string
 	mounted           string
 	assignment        map[string]string
 	mountErr          error
@@ -225,9 +222,6 @@ func (s *fakeSandbox) BuildCode(_ context.Context, directory, entrypoint string)
 }
 
 func (s *fakeSandbox) ControlRoute(context.Context) (string, error) {
-	if s.controlRoute != "" {
-		return s.controlRoute, nil
-	}
 	return "https://control.test", nil
 }
 
@@ -253,19 +247,4 @@ func (a fakeAssigner) Assign(ctx context.Context, spare spareHandle, environment
 		return handle, err
 	}
 	return hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42}, nil
-}
-
-func assignmentServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var environment map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&environment); err != nil {
-			t.Error(err)
-			w.WriteHeader(400)
-			return
-		}
-		json.NewEncoder(w).Encode(hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42})
-	}))
-	t.Cleanup(server.Close)
-	return server
 }

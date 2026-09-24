@@ -1,4 +1,4 @@
-use std::{collections::HashMap, process::Stdio, time::Instant};
+use std::{collections::HashMap, process::Stdio, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -30,21 +30,15 @@ impl Process {
         let client = self
             .client(command, environment, started_at, timings)
             .await?;
-        let response = client
-            .post("http://localhost/")
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(document)
-            .send()
-            .await
-            .context("sandbox provider request failed; outcome may be unknown")?;
-        ensure!(
-            response.status().is_success(),
-            "sandbox provider returned HTTP {}; outcome may be unknown",
-            response.status()
-        );
-        let response = read_response(response).await?;
+        let response = send_request(&client, document).await;
+        if response
+            .as_ref()
+            .is_err_and(|error| error.downcast_ref::<reqwest::Error>().is_some())
+        {
+            self.discard(&client).await;
+        }
         let response: ProviderResponse<Reply> =
-            serde_json::from_slice(&response).context("decode provider response")?;
+            serde_json::from_slice(&response?).context("decode provider response")?;
         timings.response_decoded_at_ms = Some(elapsed_ms(started_at));
         match response {
             ProviderResponse::Success { result } => Ok(result),
@@ -60,7 +54,7 @@ impl Process {
         environment: &HashMap<String, String>,
         started_at: Instant,
         timings: &mut ProviderCommandTimings,
-    ) -> Result<reqwest::Client> {
+    ) -> Result<Arc<reqwest::Client>> {
         let mut worker = self.0.lock().await;
         if let Some(worker) = worker.as_mut() {
             if worker.child.try_wait()?.is_none() {
@@ -73,11 +67,21 @@ impl Process {
         *worker = Some(started);
         Ok(client)
     }
+
+    async fn discard(&self, failed: &Arc<reqwest::Client>) {
+        let mut worker = self.0.lock().await;
+        if worker
+            .as_ref()
+            .is_some_and(|worker| Arc::ptr_eq(&worker.client, failed))
+        {
+            *worker = None;
+        }
+    }
 }
 
 struct Worker {
     child: Child,
-    client: reqwest::Client,
+    client: Arc<reqwest::Client>,
     _directory: tempfile::TempDir,
 }
 
@@ -124,10 +128,26 @@ impl Worker {
             .build()?;
         Ok(Self {
             child,
-            client,
+            client: Arc::new(client),
             _directory: directory,
         })
     }
+}
+
+async fn send_request(client: &reqwest::Client, document: Vec<u8>) -> Result<Vec<u8>> {
+    let response = client
+        .post("http://localhost/")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(document)
+        .send()
+        .await
+        .context("sandbox provider request failed; outcome may be unknown")?;
+    ensure!(
+        response.status().is_success(),
+        "sandbox provider returned HTTP {}; outcome may be unknown",
+        response.status()
+    );
+    read_response(response).await
 }
 
 async fn read_response(mut response: reqwest::Response) -> Result<Vec<u8>> {

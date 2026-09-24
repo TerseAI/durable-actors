@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -20,11 +21,15 @@ func (a httpSpareAssigner) Assign(ctx context.Context, spare spareHandle, enviro
 	if spare.ControlRoute == "" || spare.ControlToken == "" {
 		return hostHandle{}, fmt.Errorf("spare assignment endpoint missing")
 	}
+	endpoint, err := assignmentEndpoint(spare.ControlRoute)
+	if err != nil {
+		return hostHandle{}, err
+	}
 	body, err := json.Marshal(environment)
 	if err != nil {
 		return hostHandle{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(spare.ControlRoute, "/")+"/assign", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return hostHandle{}, err
 	}
@@ -48,4 +53,16 @@ func (a httpSpareAssigner) Assign(ctx context.Context, spare spareHandle, enviro
 	var handle hostHandle
 	err = json.Unmarshal(document, &handle)
 	return handle, err
+}
+
+func assignmentEndpoint(route string) (string, error) {
+	endpoint, err := url.Parse(route)
+	if err != nil {
+		return "", fmt.Errorf("invalid spare assignment endpoint: %w", err)
+	}
+	if endpoint.Scheme != "https" || !strings.HasSuffix(endpoint.Host, ".modal.host") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
+		return "", fmt.Errorf("spare assignment requires a Modal HTTPS tunnel")
+	}
+	endpoint.Path = "/assign"
+	return endpoint.String(), nil
 }

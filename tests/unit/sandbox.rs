@@ -129,7 +129,7 @@ async fn failed_worker_is_replaced_without_replaying_the_command() -> Result<()>
     let failed = provider
         .execute::<_, serde_json::Value>(
             "test",
-            &serde_json::json!({"exit": true, "attempts": attempts}),
+            &serde_json::json!({"disconnect": true, "attempts": attempts}),
         )
         .await;
     assert!(

@@ -45,14 +45,14 @@ func TestCommandReportsSDKInitializationFailure(t *testing.T) {
 }
 
 func TestCommandReturnsOneCamelCaseReplyAndClosesSDK(t *testing.T) {
-	api := &fakeAPI{created: &fakeSandbox{controlRoute: assignmentServer(t).URL}}
+	api := &fakeAPI{created: &fakeSandbox{}}
 	closed := false
 	factory := func() (modalAPI, func(), error) { return api, func() { closed = true }, nil }
-	request, err := json.Marshal(testRequest())
+	request, err := json.Marshal(spareRequest{Kind: "actor", Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := json.Marshal(command{Operation: "ensure_host", Request: request})
+	input, err := json.Marshal(command{Operation: "create_spare", Request: request})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,15 +62,15 @@ func TestCommandReturnsOneCamelCaseReplyAndClosesSDK(t *testing.T) {
 	}
 	var reply struct {
 		Status string
-		Result hostHandle
+		Result spareHandle
 	}
 	if err := json.Unmarshal(output.Bytes(), &reply); err != nil {
 		t.Fatal(err)
 	}
-	if !closed || reply.Status != "success" || reply.Result.HostID != testRequest().HostID {
+	if !closed || reply.Status != "success" || reply.Result.ResourceID != "sb-test" {
 		t.Fatal(output.String())
 	}
-	if !strings.Contains(output.String(), `"sdkLoadedAtMs":`) || strings.Count(output.String(), "\n") != 1 {
+	if !strings.Contains(output.String(), `"resourceId":`) || strings.Count(output.String(), "\n") != 1 {
 		t.Fatal(output.String())
 	}
 }
