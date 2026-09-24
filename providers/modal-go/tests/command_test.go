@@ -118,6 +118,9 @@ func TestDeploymentBuildPublishesAfterCompilationAndAlwaysStopsTheBuilder(t *tes
 		if api.params.MemoryMiB != 0 || api.params.MemoryLimitMiB != 0 {
 			t.Fatalf("compiler must use Modal's default memory allocation without an explicit hard cap: %+v", api.params)
 		}
+		if api.params.Cloud != "gcp" {
+			t.Fatalf("compiler cloud = %q, want gcp", api.params.Cloud)
+		}
 		if len(sb.calls) < 3 || sb.calls[0] != "build:/project:src/actors.ts" || sb.calls[len(sb.calls)-2] != "terminate" || sb.calls[len(sb.calls)-1] != "detach" {
 			t.Fatalf("build lifecycle: %v, %s", sb.calls, output.String())
 		}

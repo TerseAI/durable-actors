@@ -205,7 +205,7 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
 		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
 		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
-		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
+		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,
 		MemoryMiB: limits.MemoryMiB, MemoryLimitMiB: limits.MemoryMiB,
 	}, nil
@@ -252,7 +252,7 @@ func (p *provider) buildCode(ctx context.Context, request buildCodeRequest) (map
 	if err != nil {
 		return nil, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion), CPU: 1, CPULimit: 1})
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
 	if err != nil {
 		return nil, err
 	}
