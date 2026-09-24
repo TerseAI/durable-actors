@@ -21,8 +21,6 @@ In your separate application project's directory:
 2. Use the local defaults: project `local`, URL `http://127.0.0.1:7100`, and no secret. If you configure a different project, port, or optional secret on the actor server, put matching settings in your application’s `.env` or `.env.local` file.
 3. Run `npx durable-actors generate`; the CLI loads both environment files automatically. Exported environment variables take precedence over `.env.local`, which takes precedence over `.env`.
 
-`generate` writes executable JavaScript and TypeScript declarations to `generated/`, including its standalone runtime. Import `./generated/index.js` directly; no extra compilation step or production SDK dependency is needed. TypeScript applications retain typed methods, arguments, results, and autocomplete.
-
 Your application backend can then use the generated client:
 
 ```ts

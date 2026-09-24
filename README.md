@@ -45,8 +45,6 @@ Then generate your client from the same application directory:
 npx durable-actors generate
 ```
 
-`generate` writes executable JavaScript and TypeScript declarations to `generated/`, including its standalone runtime. Import `./generated/index.js` directly; no extra compilation step or production SDK dependency is needed. TypeScript applications retain typed methods, arguments, results, and autocomplete.
-
 Now you may call your actor and access the state.
 
 ```ts
