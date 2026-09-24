@@ -11,11 +11,22 @@ pub const MAX_ACTOR_STATE_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<StateAttribution>,
     pub state_version: u64,
     pub owner_epoch: u64,
     pub request_id: String,
     pub state: Box<RawValue>,
     pub result: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateAttribution {
+    pub operation: String,
+    pub connection_id: Option<String>,
+    pub committed_at_ms: u64,
+    pub interleaved: bool,
 }
 
 impl StateSnapshot {
@@ -27,6 +38,7 @@ impl StateSnapshot {
         result: Value,
     ) -> Result<Self> {
         let snapshot = Self {
+            attribution: None,
             state_version,
             owner_epoch,
             request_id,

@@ -168,9 +168,12 @@ async fn control_plane_routes(
     .with_socket_event_sink(socket_events);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
-    let inspector =
-        super::inspection::ActorInspector::new(storage.clone(), service.changes.clone())
-            .with_traces(service.traces.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        storage.clone(),
+        storage.clone(),
+        service.changes.clone(),
+    )
+    .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
         .merge(storage.router());

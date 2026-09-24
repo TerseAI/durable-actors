@@ -81,6 +81,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
             "host",
             "session",
             vec![crate::request_traces::RequestTrace {
+                state_version: None,
                 project_id: "default".into(),
                 request_id: "request".into(),
                 actor_name: "Counter".into(),

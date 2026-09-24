@@ -31,3 +31,5 @@ export type { TimeRange, ResolvedRange } from "./time-range.js"
 export type { OverviewMetrics, ClassMetrics } from "./overview-metrics.js"
 export type { QueueWaitRow, QueueWaitStats } from "./queue-wait.js"
 export type { SocketSession, SocketSessionRow, SocketSessionStatus } from "./socket-sessions.js"
+
+export type { StateAttribution, StateRecord, StateSnapshot, StateQuery, StateResponse, StateHistoryPage } from "./state-data.js"

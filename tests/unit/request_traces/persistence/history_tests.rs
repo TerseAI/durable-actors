@@ -168,3 +168,38 @@ fn ids(page: &TracePage) -> Vec<&str> {
         .map(|r| r.event.event_id.as_str())
         .collect()
 }
+
+#[tokio::test]
+async fn request_and_connection_links_filter_actor_scoped_history() -> Result<()> {
+    let store = SqliteTracePersistence::in_memory();
+    let mut first = event("one");
+    first.trace.request_id = "request-a".into();
+    first.trace.connection_id = Some("socket-a".into());
+    let mut second = event("two");
+    second.trace.request_id = "request-b".into();
+    second.trace.connection_id = Some("socket-b".into());
+    store.append(&[first, second]).await?;
+    let page = store
+        .history(
+            "default",
+            &HistoryQuery {
+                request_id: Some("request-a".into()),
+                actor_id: Some("one".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(ids(&page), ["one"]);
+    let page = store
+        .history(
+            "default",
+            &HistoryQuery {
+                connection_id: Some("socket-b".into()),
+                actor_id: Some("one".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(ids(&page), ["two"]);
+    Ok(())
+}

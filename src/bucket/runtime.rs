@@ -35,6 +35,8 @@ use crate::{
 use super::{Bucket, ReplicaPeers, peers::grant, replace};
 
 mod activation;
+mod history;
+pub(crate) use history::ActorStateReader;
 mod repair;
 mod session;
 mod startup;

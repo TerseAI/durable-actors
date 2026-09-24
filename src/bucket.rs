@@ -11,6 +11,7 @@ pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmGcs;
 pub use peers::{GrpcReplicaPeers, ReplicaPeers};
+pub(crate) use runtime::ActorStateReader;
 pub use runtime::{LoadedActor, ReplicaMembership, RuntimeStorage};
 
 #[derive(Clone, Debug)]

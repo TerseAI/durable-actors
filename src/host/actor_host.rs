@@ -543,6 +543,7 @@ async fn run_actor(
             }
         };
         if let Some(trace) = &mut request.trace {
+            trace.state_version(runtime.state_version());
             trace.complete(&result);
         }
         if completed
@@ -620,6 +621,15 @@ enum ActorOperation {
 }
 
 impl ActorOperation {
+    fn commit_origin(&self) -> super::actor_runtime::CommitOrigin {
+        match self {
+            Self::Socket(invocation) => {
+                super::actor_runtime::CommitOrigin::socket(&invocation.event)
+            }
+            _ => super::actor_runtime::CommitOrigin::default(),
+        }
+    }
+
     fn resets_idle_timer(&self) -> bool {
         matches!(
             self,
