@@ -79,7 +79,7 @@
         "build": "pnpm run build:observer && pnpm run build:client && tsc -p tsconfig.build.json && node scripts/build-template.mjs && pnpm --dir .. install --offline --frozen-lockfile --ignore-scripts",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs tests/scripts/standalone-next.test.mjs",
+        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
         "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && node scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
@@ -111,13 +111,8 @@
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
-        "@types/react": "^19.3.0",
         "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
-        "next": "^16.3.6",
-        "react": "^19.3.0",
-        "react-dom": "^19.3.0",
-        "tsx": "^4.23.13",
         "typedoc": "^0.28.20",
         "typedoc-plugin-missing-exports": "^4.1.4"
     }

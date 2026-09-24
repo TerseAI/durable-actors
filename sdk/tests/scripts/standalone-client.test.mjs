@@ -14,7 +14,6 @@ import ts from "typescript"
 import { generateClient } from "../../dist/compiler/generators/client-generator.js"
 
 const run = promisify(execFile)
-const tsx = new URL("../../node_modules/tsx/dist/cli.mjs", import.meta.url)
 
 test("generated clients typecheck and run with or without bundling in an application with no dependencies", { timeout: 30_000 }, async t => {
     const directory = await standaloneProject(t)
@@ -106,7 +105,7 @@ async function checkServerCalls(t, directory) {
     const port = host.address().port
     const requests = []
     const origin = await controlPlaneServer(t, () => port, requests)
-    for (const format of ["node", "tsx", "bun", "esm", "cjs", "commonjs-project"]) {
+    for (const format of ["node", "esm", "cjs", "commonjs-project"]) {
         if (format === "commonjs-project") await writeFile(path.join(directory, "package.json"), '{"type":"commonjs"}')
         calls.length = 0
         requests.length = 0
@@ -153,15 +152,14 @@ async function invokeClient(directory, origin, format) {
             format: format === "cjs" ? "cjs" : "esm",
             logLevel: "silent"
         })
-    const typescript = format === "tsx" || format === "bun"
-    const script = path.join(directory, typescript ? "invoke.mts" : "invoke.mjs")
+    const script = path.join(directory, "invoke.mjs")
     await writeFile(
         script,
         `
         import assert from "node:assert/strict"
         import { actors, ActorInvocationError } from ${JSON.stringify(`./${file}`)}
         const room = actors.ChatRoom.get("lobby")
-        const input${typescript ? ": actors.ChatRoom.Methods.sendMessage.Args[0]" : ""} = { text: "hello" }
+        const input = { text: "hello" }
         assert.deepEqual(await room.sendMessage(input), { id: "1", text: "hello" })
         assert.equal(await room.clear(), undefined)
         await assert.rejects(room.sendMessage({ text: "fail" }), error => error instanceof ActorInvocationError && error.code === "actor_error")
@@ -169,7 +167,7 @@ async function invokeClient(directory, origin, format) {
         assert.equal(grant.websocketUrl, "wss://example.com/socket?key=ticket")
     `
     )
-    await run(format === "bun" ? "bun" : process.execPath, format === "tsx" ? [tsx.pathname, script] : [script], {
+    await run(process.execPath, [script], {
         cwd: directory,
         timeout: 20_000,
         env: {

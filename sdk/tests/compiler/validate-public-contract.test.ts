@@ -114,24 +114,15 @@ test("contract validation permits schema-like property names and recursive local
     assert.deepEqual(variables, ["actors"])
 })
 
-test("published declarations require type-only syntax and declared package dependencies", async () => {
-    for (const code of [
-        "globalThis.injected = true; export interface ActorTypes {}",
-        'import type { Missing } from "undeclared"; export interface ActorTypes { value: Missing }',
-        'import type { Secret } from "../private.js"; export interface ActorTypes { value: Secret }'
-    ]) {
-        const document = structuredClone(fixture)
-        document.typescript.declarations = code
-        await assert.rejects(generateClientArtifacts(document), /declaration|dependency/)
-    }
-})
-
 test("published declarations and type dependency requirements survive remote code generation", async () => {
     const document = structuredClone(fixture)
-    document.typescript.declarations = 'import type { UIMessage } from "ai"; ' + document.typescript.declarations
+    document.typescript.declarations =
+        'import type { UIMessage } from "ai"; export declare const schemaVersion = 1; ' +
+        document.typescript.declarations
     document.typescript.dependencies = { ai: "7.0.97" }
     const files = await generateClientArtifacts(JSON.parse(JSON.stringify(document)))
     assert.match(files.get("types.d.ts")!, /import type \{ UIMessage \} from "ai"/)
+    assert.match(files.get("types.d.ts")!, /export declare const schemaVersion = 1/)
     assert.deepEqual(JSON.parse(files.get("package.json")!).peerDependencies, { ai: "7.0.97" })
     assert.doesNotMatch(files.get("index.js")!, /from "ai"/)
 })

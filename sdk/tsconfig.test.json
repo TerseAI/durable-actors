@@ -7,6 +7,5 @@
         "sourceMap": false,
         "rootDir": "."
     },
-    "include": ["src/**/*.ts", "tests/**/*.ts"],
-    "exclude": ["tests/fixtures/next-client"]
+    "include": ["src/**/*.ts", "tests/**/*.ts"]
 }
