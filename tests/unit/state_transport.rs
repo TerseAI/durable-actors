@@ -70,48 +70,34 @@ async fn reuses_connection_without_reusing_request_credentials() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_write_reuses_pending_preconnection_and_recovers_if_it_is_cancelled() -> Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let transport = GrpcStateTransport::new();
-    let connecting = transport.clone();
-    let preconnection =
-        tokio::spawn(async move { connecting.preconnect(&format!("https://{address}")).await });
-    let (_socket, _) = listener.accept().await?;
-    let url = format!("grpcs://{address}?token=write");
-    let capability = transport.capability(&url);
-    tokio::pin!(capability);
-    let pending = tokio::time::timeout(std::time::Duration::from_millis(50), &mut capability).await;
-    preconnection.abort();
-    let _ = preconnection.await;
-    assert!(
-        pending.is_err(),
-        "write opened a second channel during preconnection"
-    );
-    let (_, token) = tokio::time::timeout(std::time::Duration::from_secs(1), capability).await??;
-    assert_eq!(token, "write");
-    Ok(())
-}
-
-#[tokio::test]
-async fn stalled_preconnection_releases_a_waiting_request_promptly() -> Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let transport = GrpcStateTransport::new();
-    let connecting = transport.clone();
-    let preconnection =
-        tokio::spawn(async move { connecting.preconnect(&format!("https://{address}")).await });
-    let (_socket, _) = listener.accept().await?;
-    let url = format!("grpcs://{address}?token=write");
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        transport.capability(&url),
-    )
-    .await;
-    preconnection.abort();
-    let _ = preconnection.await;
-    let (_, token) = result.context("request waited too long for stalled preconnection")??;
-    assert_eq!(token, "write");
+async fn pending_preconnection_releases_waiters_on_cancel_or_timeout() -> Result<()> {
+    for cancel in [true, false] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let transport = GrpcStateTransport::new();
+        let connecting = transport.clone();
+        let preconnection =
+            tokio::spawn(async move { connecting.preconnect(&format!("https://{address}")).await });
+        let (_socket, _) = listener.accept().await?;
+        let url = format!("grpcs://{address}?token=write");
+        let capability = transport.capability(&url);
+        tokio::pin!(capability);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut capability)
+                .await
+                .is_err(),
+            "write opened a second channel during preconnection (cancel={cancel})"
+        );
+        if cancel {
+            preconnection.abort();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), capability).await;
+        preconnection.abort();
+        let _ = preconnection.await;
+        let (_, token) =
+            result.with_context(|| format!("request stayed blocked (cancel={cancel})"))??;
+        assert_eq!(token, "write");
+    }
     Ok(())
 }
 

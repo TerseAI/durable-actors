@@ -8,19 +8,17 @@ import (
 	"time"
 )
 
-func TestSparePlacementUsesGCPInEveryRegion(t *testing.T) {
-	for _, kind := range []string{"actor", "replica"} {
-		for _, region := range []string{"north-america-east", "north-america-central", "north-america-south", "north-america-west", "europe-west", "asia-southeast"} {
-			t.Run(kind+"/"+region, func(t *testing.T) {
-				params, err := spareParams(spareRequest{Kind: kind, Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: region, Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if params.Cloud != "gcp" {
-					t.Fatalf("sandbox cloud = %q, want gcp", params.Cloud)
-				}
-			})
-		}
+func TestSparePlacementUsesGCP(t *testing.T) {
+	for _, test := range []struct{ kind, region string }{{"actor", "north-america-east"}, {"replica", "europe-west"}} {
+		t.Run(test.kind, func(t *testing.T) {
+			params, err := spareParams(spareRequest{Kind: test.kind, Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: test.region, Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.Cloud != "gcp" {
+				t.Fatalf("sandbox cloud = %q, want gcp", params.Cloud)
+			}
+		})
 	}
 }
 

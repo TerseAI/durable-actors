@@ -15,44 +15,39 @@ use serde_json::json;
 use super::*;
 
 #[tokio::test]
-async fn warmed_storage_binds_credentials_and_reuses_the_anonymous_connection() -> Result<()> {
+async fn warmed_connections_keep_credentials_isolated_and_refreshable() -> Result<()> {
     let server = WarmServer::start(false).await?;
     let warm = server.client().await?;
     warm.preconnect().await;
     let token = TestCredentials::new("first");
-    let bucket = warm.bind("test-bucket", token.clone().into())?;
-    assert_eq!(bucket.get("owner").await?.unwrap().bytes, b"lease");
+    let first = warm.bind("test-bucket", token.clone().into())?;
+    assert_eq!(first.get("owner").await?.unwrap().bytes, b"lease");
+
+    let warm = server.client().await?;
+    warm.preconnect().await;
+    let second = warm.bind("test-bucket", TestCredentials::new("second").into())?;
+    second.get("owner").await?;
     *token.0.lock().unwrap() = "refreshed".into();
     assert!(
-        bucket
+        first
             .compare_and_swap("owner", None, b"lease".to_vec())
             .await?
     );
-    let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].1, None);
-    assert_eq!(requests[1].1.as_deref(), Some("Bearer first"));
-    assert_eq!(requests[2].1.as_deref(), Some("Bearer refreshed"));
-    assert!(requests.iter().all(|request| request.0 == requests[0].0));
-    Ok(())
-}
 
-#[tokio::test]
-async fn spare_credentials_are_isolated() -> Result<()> {
-    let server = WarmServer::start(false).await?;
-    let first = server.client().await?;
-    let second = server.client().await?;
-    first.preconnect().await;
-    let bucket = first.bind("test-bucket", TestCredentials::new("first").into())?;
-    bucket.get("owner").await?;
-    second.preconnect().await;
-    let bucket = second.bind("test-bucket", TestCredentials::new("second").into())?;
-    bucket.get("owner").await?;
     let requests = server.requests.lock().unwrap();
     assert_eq!(
         requests.iter().map(|r| r.1.as_deref()).collect::<Vec<_>>(),
-        [None, Some("Bearer first"), None, Some("Bearer second")]
+        [
+            None,
+            Some("Bearer first"),
+            None,
+            Some("Bearer second"),
+            Some("Bearer refreshed")
+        ]
     );
+    assert_eq!(requests[0].0, requests[1].0);
+    assert_eq!(requests[0].0, requests[4].0);
+    assert_eq!(requests[2].0, requests[3].0);
     Ok(())
 }
 

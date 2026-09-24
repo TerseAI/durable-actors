@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"slices"
 	"sync"
 	"testing"
@@ -71,21 +70,5 @@ func TestSpareHandleHasOneOwnerAndShutdownClosesUnclaimedHandles(t *testing.T) {
 	handles.keep(late)
 	if !slices.Equal(late.calls, []string{"detach"}) {
 		t.Fatal("shutdown retained a late handle")
-	}
-}
-
-func TestRetirementConsumesTheCachedHandle(t *testing.T) {
-	sb := &fakeSandbox{}
-	api := &fakeAPI{created: sb, found: sb}
-	p := newTestProvider(api)
-	p.handles.keep(sb)
-	if err := p.retireSpare(context.Background(), spareHandle{ResourceID: sb.ID()}); err != nil {
-		t.Fatal(err)
-	}
-	if api.finds != 0 || !slices.Equal(sb.calls, []string{"terminate", "detach"}) {
-		t.Fatal(api.finds, sb.calls)
-	}
-	if p.handles.take(sb.ID()) != nil {
-		t.Fatal("retired handle retained")
 	}
 }

@@ -11,17 +11,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestProviderServerRetainsTheSpareAcrossCommands(t *testing.T) {
+func TestProviderServerRetainsAndConsumesTheSpareAcrossCommands(t *testing.T) {
 	sb := &fakeSandbox{}
 	api := &fakeAPI{created: sb, findErr: errors.New("unexpected lookup")}
 	client, _ := startProviderServer(t, func() (modalAPI, func(), error) { return api, func() {}, nil })
-	call := func(operation string, request any, result any) {
+	call := func(operation string, request any, result any) error {
 		t.Helper()
 		document, _ := json.Marshal(map[string]any{"operation": operation, "request": request})
 		reply, err := client.Post("http://provider/", "application/json", bytes.NewReader(document))
@@ -38,17 +39,26 @@ func TestProviderServerRetainsTheSpareAcrossCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		if value.Status != "success" {
-			t.Fatal(value.Error)
+			return errors.New(value.Error)
 		}
 		if err := json.Unmarshal(value.Result, result); err != nil {
 			t.Fatal(err)
 		}
+		return nil
 	}
 	var spare spareHandle
-	call("create_spare", spareRequest{Kind: "actor", Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}}, &spare)
-	call("retire_spare", spare, &struct{}{})
-	if sb.calls[len(sb.calls)-2] != "terminate" || sb.calls[len(sb.calls)-1] != "detach" {
+	if err := call("create_spare", spareRequest{Kind: "actor", Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}}, &spare); err != nil {
+		t.Fatal(err)
+	}
+	createdCalls := len(sb.calls)
+	if err := call("retire_spare", spare, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sb.calls[createdCalls:], []string{"terminate", "detach"}) {
 		t.Fatal("retained spare was not retired", sb.calls)
+	}
+	if err := call("retire_spare", spare, &struct{}{}); err == nil || err.Error() != api.findErr.Error() {
+		t.Fatalf("retirement did not consume the cached handle: %v", err)
 	}
 }
 
@@ -68,54 +78,50 @@ func (a *cancellableAPI) ByID(ctx context.Context, id string) (sandbox, error) {
 	return &fakeSandbox{}, nil
 }
 
-func TestProviderServerSharesClientAndCancelsOnlyTheDisconnectedRequest(t *testing.T) {
-	api := &cancellableAPI{modalAPI: &fakeAPI{}, started: make(chan struct{}), stopped: make(chan struct{})}
-	var opened, closed atomic.Int32
-	factory := func() (modalAPI, func(), error) { opened.Add(1); return api, func() { closed.Add(1) }, nil }
-	client, shutdown := startProviderServer(t, factory)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://provider/", strings.NewReader(`{"operation":"retire_spare","request":{"resourceId":"blocked"}}`))
-	done := make(chan error, 1)
-	go func() {
-		response, err := client.Do(request)
-		if response != nil {
-			response.Body.Close()
-		}
-		done <- err
-	}()
-	waitSignal(t, api.started)
-	assertProviderReply(t, client)
-	cancel()
-	waitSignal(t, api.stopped)
-	if err := <-done; err == nil {
-		t.Fatal("cancelled request succeeded")
+func TestProviderServerSharesClientAndCancelsActiveRequests(t *testing.T) {
+	for _, stop := range []string{"disconnect", "shutdown"} {
+		t.Run(stop, func(t *testing.T) {
+			api := &cancellableAPI{modalAPI: &fakeAPI{}, started: make(chan struct{}), stopped: make(chan struct{})}
+			var opened, closed atomic.Int32
+			factory := func() (modalAPI, func(), error) { opened.Add(1); return api, func() { closed.Add(1) }, nil }
+			client, shutdown := startProviderServer(t, factory)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://provider/", strings.NewReader(`{"operation":"retire_spare","request":{"resourceId":"blocked"}}`))
+			done := make(chan error, 1)
+			go func() {
+				response, err := client.Do(request)
+				if response != nil {
+					response.Body.Close()
+				}
+				done <- err
+			}()
+			waitSignal(t, api.started)
+			assertProviderReply(t, client)
+			if opened.Load() != 1 || closed.Load() != 0 {
+				t.Fatal("client was not shared")
+			}
+			if stop == "disconnect" {
+				cancel()
+			} else {
+				shutdown()
+			}
+			waitSignal(t, api.stopped)
+			if err := <-done; stop == "disconnect" && err == nil {
+				t.Fatal("cancelled request succeeded")
+			}
+			if stop == "disconnect" {
+				assertProviderReply(t, client)
+				if closed.Load() != 0 {
+					t.Fatal("request cancellation closed the shared client")
+				}
+			}
+			shutdown()
+			if opened.Load() != 1 || closed.Load() != 1 {
+				t.Fatal("provider did not release its single shared client")
+			}
+		})
 	}
-	assertProviderReply(t, client)
-	if opened.Load() != 1 || closed.Load() != 0 {
-		t.Fatal("client was not shared")
-	}
-	shutdown()
-	if closed.Load() != 1 {
-		t.Fatal("provider did not close its client")
-	}
-}
-
-func TestProviderServerShutdownCancelsActiveRequests(t *testing.T) {
-	api := &cancellableAPI{modalAPI: &fakeAPI{}, started: make(chan struct{}), stopped: make(chan struct{})}
-	client, shutdown := startProviderServer(t, func() (modalAPI, func(), error) { return api, func() {}, nil })
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		response, _ := client.Post("http://provider/", "application/json", strings.NewReader(`{"operation":"retire_spare","request":{"resourceId":"blocked"}}`))
-		if response != nil {
-			response.Body.Close()
-		}
-	}()
-	waitSignal(t, api.started)
-	shutdown()
-	waitSignal(t, api.stopped)
-	waitSignal(t, done)
 }
 
 func startProviderServer(t *testing.T, factory apiFactory) (*http.Client, func()) {
