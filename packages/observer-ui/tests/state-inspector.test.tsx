@@ -1,5 +1,6 @@
 import React from "react"
 
+import { JSDOM } from "jsdom"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
@@ -67,9 +68,23 @@ test("trace version signals refresh storage while a selected historical comparis
 
 test("diff formatting escapes actor-controlled keys and values", async () => {
     const { stateDiff } = await import("../src/state-diff.js")
-    const html = stateDiff({}, { '<img src=x onerror="alert(1)">': "<script>alert(1)</script>" })
-    assert.doesNotMatch(html, /<script>|<img/u)
-    assert.match(html, /&lt;/u)
+    const payloads = [
+        "<script>alert(1)</script>",
+        "<SCRIPT>alert(1)</SCRIPT>",
+        "<ScRiPt src=x></ScRiPt >",
+        '<IMG SRC=x ONERROR="alert(1)">',
+        '<svg onload="alert(1)"></svg>',
+        '\"><img src=x onerror=alert(1)>',
+        "&lt;script&gt;alert(1)&lt;/script&gt;"
+    ]
+    for (const payload of payloads) {
+        const fragment = JSDOM.fragment(stateDiff({}, { [payload]: payload }))
+        assert.equal(fragment.querySelector("script, img, svg, iframe, object, embed"), null)
+        for (const element of fragment.querySelectorAll("*")) {
+            assert.ok([...element.attributes].every(attribute => !attribute.name.toLowerCase().startsWith("on")))
+        }
+        assert.ok(fragment.textContent?.includes(payload))
+    }
 })
 
 test("refresh keeps pagination available when newer commits exceed the first history page", async () => {
