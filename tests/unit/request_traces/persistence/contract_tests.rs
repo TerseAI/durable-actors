@@ -9,10 +9,12 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
     let initial = store.replay("default", &ReplayQuery::default()).await?;
     assert!(initial.records.is_empty());
     let mut records = vec![event("first"), event("second"), event("last")];
+    records[0].trace.request_id = "request\0id".into();
     for (index, record) in records.iter_mut().enumerate() {
         record.trace.started_at_ms = 1000 + index as u64;
         record.trace.duration_ms = (index + 1) as f64 * 10.0;
         record.trace.queue_wait_ms = Some(index as f64);
+        record.trace.validate()?;
     }
     records[1].trace.outcome = RequestOutcome::Failed;
     records[2].trace.outcome = RequestOutcome::Rerouted;
@@ -44,6 +46,10 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         )
         .await?;
     assert_eq!(ids(&second), ["first"]);
+    assert_eq!(
+        serde_json::to_value(&second.records[0].event)?,
+        serde_json::to_value(&records[0])?
+    );
     assert!(
         store
             .history(
@@ -155,39 +161,6 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         1
     );
     socket_contract(store).await?;
-    metadata_contract(store).await?;
-    Ok(())
-}
-
-async fn metadata_contract(store: &dyn TracePersistence) -> Result<()> {
-    let mut ordinary = event("metadata-ordinary");
-    ordinary.trace.project_id = "metadata".into();
-    ordinary.trace.request_id = "request\0id".into();
-    let mut socket = event("metadata-socket");
-    socket.trace.project_id = "metadata".into();
-    socket.trace.kind = RequestKind::Websocket;
-    socket.trace.operation = "onConnect".into();
-    socket.trace.connection_id = Some("metadata-connection".into());
-    socket.trace.metadata = Some(serde_json::json!({
-        "value": "a\0b",
-        "key\0": ["nested\0value", "é"]
-    }));
-    let records = [ordinary, socket];
-    for record in &records {
-        record.trace.validate()?;
-    }
-    store.append(&records).await?;
-    let page = store.history("metadata", &HistoryQuery::default()).await?;
-    assert_eq!(ids(&page), ["metadata-socket", "metadata-ordinary"]);
-    for (actual, expected) in page.records.iter().zip(records.iter().rev()) {
-        assert_eq!(
-            serde_json::to_value(&actual.event)?,
-            serde_json::to_value(expected)?
-        );
-    }
-    let sessions = store.websockets("metadata", &TimeRange::default()).await?;
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].metadata, records[1].trace.metadata);
     Ok(())
 }
 
@@ -204,8 +177,14 @@ async fn socket_contract(store: &dyn TracePersistence) -> Result<()> {
         record.trace.operation = operation.into();
         record.trace.started_at_ms = time;
         record.trace.outcome = outcome;
-        record.trace.metadata =
-            (operation == "onConnect").then(|| serde_json::json!({"userId":"ada"}));
+        record.trace.metadata = (operation == "onConnect").then(|| {
+            serde_json::json!({
+                "userId": "ada",
+                "value": "a\0b",
+                "key\0": ["nested\0value", "é"]
+            })
+        });
+        record.trace.validate()?;
         record.host_id = "z-first-host".into();
         records.push(record);
     }
@@ -236,7 +215,7 @@ async fn socket_contract(store: &dyn TracePersistence) -> Result<()> {
         ),
         (Some(1000), Some(5000), 1, 1)
     );
-    assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
+    assert_eq!(session.metadata, records[0].trace.metadata);
     assert_eq!(session.host_id.as_deref(), Some("z-first-host"));
     // A session can overlap the range without an event inside it.
     let gap = store
