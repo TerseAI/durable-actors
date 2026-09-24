@@ -1,9 +1,6 @@
 use super::*;
 use crate::postgres::testing::with_postgres;
 
-#[path = "pool_sizing.rs"]
-mod sizing;
-
 fn pool(database: PostgresDatabase) -> Arc<SparePool> {
     SparePool::new(
         database,
@@ -213,10 +210,8 @@ fn config(idle: u32) -> PoolConfig {
     PoolConfig {
         kind: SpareKind::Actor,
         idle,
-        maximum: idle,
         fleet_maximum: 64,
         max_starting: 8,
-        shrink_after_seconds: 300,
         idle_ttl_seconds: 600,
         regions: vec!["region".into()],
         resources: ResourceLimits::default(),

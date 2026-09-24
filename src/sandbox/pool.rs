@@ -12,16 +12,13 @@ use crate::{
 
 mod replenishment;
 mod replica;
-mod sizing;
 
 #[derive(Clone)]
 pub(crate) struct PoolConfig {
     pub kind: SpareKind,
     pub idle: u32,
-    pub maximum: u32,
     pub fleet_maximum: u32,
     pub max_starting: u32,
-    pub shrink_after_seconds: u32,
     pub idle_ttl_seconds: u32,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
@@ -348,22 +345,20 @@ struct PoolStore(PostgresDatabase, SpareKind);
 
 impl PoolStore {
     async fn publish(&self, key: &str, handle: &SpareHandle, ttl: u32) -> Result<bool> {
-        let row = self.0.query_opt(
-            "WITH published AS (UPDATE durable_actors_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \
-             WHERE name = $1 AND pool_key = $2 AND status = 'starting' AND expires_at > clock_timestamp() RETURNING created_at), \
-             sample AS (INSERT INTO durable_actors_pool_events (pool_key, event_kind, identity, startup_ms) SELECT $2, 'ready', $1, greatest(1, (extract(epoch FROM (clock_timestamp() - created_at)) * 1000)::bigint) FROM published ON CONFLICT DO NOTHING) SELECT count(*) FROM published",
+        let published = self.0.execute(
+            "UPDATE durable_actors_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \
+             WHERE name = $1 AND pool_key = $2 AND status = 'starting' AND expires_at > clock_timestamp()",
             &[&handle.name, &key, &serde_json::to_string(handle)?, &f64::from(ttl)],
-        ).await?.context("publish spare result missing")?;
-        let published = row.get::<_, i64>(0) == 1;
+        ).await? == 1;
         if published {
-            self.0.execute("UPDATE durable_actors_pool_targets SET failures = 0, retry_after = clock_timestamp() WHERE pool_key = $1", &[&key]).await?;
+            self.0.execute("UPDATE durable_actors_pool_backoffs SET failures = 0, retry_after = clock_timestamp() WHERE pool_key = $1", &[&key]).await?;
         }
         Ok(published)
     }
 
     async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
         self.0.query_opt(
-            "WITH demand AS (INSERT INTO durable_actors_pool_events (pool_key, event_kind, identity) VALUES ($1, 'acquire', $2) ON CONFLICT DO NOTHING) UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
+            "UPDATE durable_actors_spares SET status = 'claimed', host_id = $2, host_config_key = $3, expires_at = clock_timestamp() + interval '120 seconds' \
              WHERE name = (SELECT name FROM durable_actors_spares WHERE pool_key = $1 AND status = 'ready' AND expires_at > clock_timestamp() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING handle",
             &[&key, &host, &config_key],
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
@@ -376,8 +371,7 @@ impl PoolStore {
              OR (status = 'ready' AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
             &[&keys, &enabled, &self.1.as_str()],
         ).await?;
-        self.0.execute("DELETE FROM durable_actors_pool_events WHERE created_at < clock_timestamp() - interval '10 minutes'", &[]).await?;
-        self.0.execute("DELETE FROM durable_actors_pool_targets WHERE kind = $2 AND NOT (pool_key = ANY($1))", &[&keys, &self.1.as_str()]).await?;
+        self.0.execute("DELETE FROM durable_actors_pool_backoffs WHERE kind = $2 AND NOT (pool_key = ANY($1))", &[&keys, &self.1.as_str()]).await?;
         Ok(())
     }
 

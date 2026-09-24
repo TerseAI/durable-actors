@@ -16,7 +16,7 @@ fn handle(name: String) -> SpareHandle {
 }
 
 #[tokio::test]
-async fn misses_are_counted_once_and_shared_by_controllers() -> Result<()> {
+async fn fixed_capacity_is_replenished_after_claims_across_controllers() -> Result<()> {
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let first = PoolStore(database.clone(), SpareKind::Actor);
@@ -31,26 +31,26 @@ async fn misses_are_counted_once_and_shared_by_controllers() -> Result<()> {
                 );
             }
         }
-        let count: i64 = database
-            .query_one(
-                "SELECT count(*) FROM durable_actors_pool_events WHERE event_kind = 'acquire'",
-                &[],
-            )
-            .await?
-            .get(0);
-        assert_eq!(count, 20);
-        let mut config = config(5);
-        config.maximum = 32;
-        assert_eq!(second.replenish("busy", &config, 32).await?.len(), 8);
+        let config = config(5);
+        let names = second.replenish("busy", &config, 32).await?;
+        assert_eq!(names.len(), 5);
         assert!(first.replenish("busy", &config, 32).await?.is_empty());
-        let target: i32 = database
-            .query_one(
-                "SELECT target FROM durable_actors_pool_targets WHERE pool_key = 'busy'",
-                &[],
-            )
-            .await?
-            .get(0);
-        assert_eq!(target, 32);
+        for name in names {
+            first.publish("busy", &handle(name), 600).await?;
+        }
+        for index in 0..3 {
+            assert!(
+                first
+                    .claim("busy", &format!("assigned-{index}"), "revision")
+                    .await?
+                    .is_some()
+            );
+        }
+        let (first, second) = tokio::try_join!(
+            first.replenish("busy", &config, 32),
+            second.replenish("busy", &config, 32)
+        )?;
+        assert_eq!(first.len() + second.len(), 3);
         Ok(())
     })
     .await
@@ -92,8 +92,7 @@ async fn expiring_spares_stay_claimable_until_a_replacement_is_ready() -> Result
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let store = PoolStore(database.clone(), SpareKind::Actor);
-        let mut config = config(1);
-        config.maximum = 2;
+        let config = config(1);
         let old = store.replenish("pool", &config, 8).await?.remove(0);
         store.publish("pool", &handle(old.clone()), 600).await?;
         database.execute("UPDATE durable_actors_spares SET expires_at = clock_timestamp() + interval '1 second' WHERE name = $1", &[&old]).await?;
@@ -118,7 +117,7 @@ async fn failed_builds_back_off_without_blocking_other_pools() -> Result<()> {
         store.build_failed("failed", &name).await?;
         assert!(store.replenish("failed", &config, 8).await?.is_empty());
         assert_eq!(store.replenish("healthy", &config, 8).await?.len(), 1);
-        database.execute("UPDATE durable_actors_pool_targets SET retry_after = clock_timestamp() - interval '1 second' WHERE pool_key = 'failed'", &[]).await?;
+        database.execute("UPDATE durable_actors_pool_backoffs SET retry_after = clock_timestamp() - interval '1 second' WHERE pool_key = 'failed'", &[]).await?;
         assert_eq!(store.replenish("failed", &config, 8).await?.len(), 1);
         Ok(())
     }).await
@@ -156,29 +155,7 @@ async fn retiring_spares_hold_build_slots_until_ready_and_budget_until_terminati
 }
 
 #[tokio::test]
-async fn target_shrink_deadlines_survive_controller_changes() -> Result<()> {
-    with_postgres(async |fixture| {
-        let database = PostgresDatabase::connect(&fixture.url).await?;
-        let first = PoolStore(database.clone(), SpareKind::Actor);
-        let second = PoolStore(database.clone(), SpareKind::Actor);
-        let mut config = config(5);
-        config.maximum = 32;
-        first.replenish("pool", &config, 0).await?;
-        database.execute("UPDATE durable_actors_pool_targets SET target = 20, shrink_at_ms = (extract(epoch FROM clock_timestamp()) * 1000)::bigint - 1 WHERE pool_key = 'pool'", &[]).await?;
-        second.replenish("pool", &config, 0).await?;
-        let row = database.query_one("SELECT target, shrink_at_ms FROM durable_actors_pool_targets WHERE pool_key = 'pool'", &[]).await?;
-        assert_eq!(row.get::<_, i32>(0), 18);
-        let deadline: i64 = row.get(1);
-        first.replenish("pool", &config, 0).await?;
-        let row = database.query_one("SELECT target, shrink_at_ms FROM durable_actors_pool_targets WHERE pool_key = 'pool'", &[]).await?;
-        assert_eq!(row.get::<_, i32>(0), 18);
-        assert_eq!(row.get::<_, i64>(1), deadline);
-        Ok(())
-    }).await
-}
-
-#[tokio::test]
-async fn shrinking_cannot_retire_a_spare_claimed_while_it_waits_for_a_lock() -> Result<()> {
+async fn trimming_cannot_retire_a_spare_claimed_while_it_waits_for_a_lock() -> Result<()> {
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let store = Arc::new(PoolStore(database.clone(), SpareKind::Actor));

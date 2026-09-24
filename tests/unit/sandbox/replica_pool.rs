@@ -24,26 +24,3 @@ async fn retrying_a_replica_claim_reuses_the_reservation_and_pool_cleanup_preser
         Ok(())
     }).await
 }
-
-#[tokio::test]
-async fn replica_retries_do_not_inflate_acquisition_demand() -> Result<()> {
-    with_postgres(async |fixture| {
-        let database = PostgresDatabase::connect(&fixture.url).await?;
-        let store = PoolStore(database.clone(), SpareKind::Replica);
-        for _ in 0..8 {
-            store.reserve_replica("replicas", "one-host").await?;
-        }
-        assert_eq!(
-            database
-                .query_one(
-                    "SELECT count(*) FROM durable_actors_pool_events WHERE event_kind = 'acquire'",
-                    &[]
-                )
-                .await?
-                .get::<_, i64>(0),
-            1
-        );
-        Ok(())
-    })
-    .await
-}
