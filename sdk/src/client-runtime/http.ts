@@ -6,6 +6,9 @@ export class HttpActorHostTransport implements ActorHostTransport {
     constructor(private readonly fetchRequest: typeof globalThis.fetch = globalThis.fetch) {}
 
     async invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply> {
+        // TODO: Replace this extra round trip with durable idempotency keys for safe invocation retries.
+        const readiness = await this.ping(target, invocation)
+        if (readiness !== "ready") return { type: readiness }
         let response: Response
         try {
             response = await this.post(target, invocation, "invoke", {
@@ -40,6 +43,27 @@ export class HttpActorHostTransport implements ActorHostTransport {
     async publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void> {
         const response = await this.post(target, actor, "socket-effects", { ownerEpoch: target.ownerEpoch, effects })
         if (!response.ok) throw new Error(`socket effects returned HTTP ${response.status}`)
+    }
+
+    private async ping(
+        target: ActorHostTarget,
+        actor: ActorAddress
+    ): Promise<"ready" | "unauthenticated" | "not_dispatched"> {
+        try {
+            const response = await this.fetchRequest(
+                `${validateOrigin(target.route)}${projectActorPath(actor.projectId, actor.actorName, actor.actorId)}/invoke`,
+                {
+                    method: "HEAD",
+                    redirect: "error",
+                    headers: { authorization: `Bearer ${target.token}` },
+                    signal: AbortSignal.timeout(5_000)
+                }
+            )
+            if (response.status === 401) return "unauthenticated"
+            return response.status === 204 ? "ready" : "not_dispatched"
+        } catch {
+            return "not_dispatched"
+        }
     }
 
     private post(target: ActorHostTarget, actor: ActorAddress, endpoint: string, body: unknown): Promise<Response> {
