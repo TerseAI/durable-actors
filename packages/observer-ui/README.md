@@ -31,3 +31,11 @@ Control-plane endpoints require a project in the path: `/v1/projects/{project_id
 The observer version follows the SDK and runtime version. Run `pnpm release:prepare <version>` at the repository root before publishing a GitHub release. Release preflight checks all versions, and the workflow publishes the observer before the SDK. The SDK's `workspace:*` dependency becomes the exact observer version when packed.
 
 The localhost-only `durable-actors dev` runtime allows observability requests without a secret, even when a secret is configured for application routes. Hosted runtimes retain their configured admin authentication.
+
+## Persisted actor state
+
+Select an actor instance in `ActorObserver` to inspect persisted fields, JSON types, nested values, and version diffs. Request and connection links filter the existing request history. The standard `HttpObserverClient` and `durable-actors observe` include this capability; custom clients implement `getState` and `listStateHistory` to enable it.
+
+Values come from the actor's existing snapshot objects in the configured storage bucket, including dormant actors. Analytics stores only a state-version signal. Request events trigger a refresh; polling recovers from missed events and asynchronous bucket uploads. History uses rebuildable metadata-only sidecars beside snapshots and retains no duplicate state bodies. Available versions follow the bucket's snapshot retention/lifecycle policy.
+
+Attribution identifies the committing request. A reentrant commit may include mutations from other interleaved requests; the UI labels this explicitly. Declared field types describe the current deployment schema, which may differ from older stored values. Inspection is read-only and uses the existing authenticated project observability API.

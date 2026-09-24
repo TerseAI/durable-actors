@@ -143,6 +143,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
         host_id: "host".into(),
         session_id: "session".into(),
         trace: RequestTrace {
+            state_version: None,
             project_id: "default".into(),
             request_id: "same-request".into(),
             actor_name: "Counter".into(),

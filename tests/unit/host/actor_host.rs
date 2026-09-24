@@ -51,6 +51,11 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
     ));
     assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
     assert_eq!(state.writes.lock().unwrap().len(), 1);
+    let snapshot = StateSnapshot::decode(&state.writes.lock().unwrap()[0])?;
+    let attribution = snapshot.attribution.unwrap();
+    assert_eq!(attribution.operation, "increment");
+    assert!(attribution.connection_id.is_none());
+    assert!(attribution.committed_at_ms > 0);
     Ok(())
 }
 
@@ -594,6 +599,8 @@ async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
     let second_trace = traces.recv().await.unwrap();
     assert_eq!(first_trace.request_id, "first");
     assert_eq!(second_trace.request_id, "second");
+    assert_eq!(first_trace.state_version, Some(1));
+    assert_eq!(second_trace.state_version, Some(2));
     assert!(second_trace.queue_wait_ms.unwrap() >= 25.0);
     assert!(second_trace.duration_ms >= second_trace.queue_wait_ms.unwrap());
     let _ = invoke(&host, "panic").await?;
@@ -1396,7 +1403,13 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         ActorExecutionResult::Completed { result: Value::Null, ref effects } if effects.len() == 1
     ));
     assert_eq!(state.writes.lock().unwrap().len(), 1);
-    assert!(!state.writes.lock().unwrap().is_empty());
+    let saved = state.writes.lock().unwrap()[0].clone();
+    let snapshot = crate::state_log::StateSnapshot::decode(&saved)?;
+    let attribution = snapshot.attribution.unwrap();
+    assert_eq!(snapshot.request_id, "committed");
+    assert_eq!(attribution.connection_id.as_deref(), Some("socket-1"));
+    assert_eq!(attribution.operation, "onConnect");
+    assert!(!attribution.interleaved);
 
     state.failures.store(1, Ordering::SeqCst);
     let failed = host

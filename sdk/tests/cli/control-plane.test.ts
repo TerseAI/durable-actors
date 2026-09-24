@@ -172,7 +172,9 @@ test("request history uses bounded filters with server-side credentials", async 
 for (const [method, path] of [
     ["getMetrics", "metrics"],
     ["listQueueWaits", "queue-waits"],
-    ["listWebSockets", "websockets"]
+    ["listWebSockets", "websockets"],
+    ["getState", "state"],
+    ["listStateHistory", "state/history"]
 ] as const) {
     test(`${path} reads use typed routes and server-side credentials`, async () => {
         const client = new ControlPlaneClient(connection, async (url, options) => {

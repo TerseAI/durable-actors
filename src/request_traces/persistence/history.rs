@@ -86,6 +86,14 @@ fn select(
         Value::Integer(watermark as i64),
     ];
     for (clause, value) in [
+        (
+            "json_extract(event, '$.requestId') = ?",
+            query.request_id.clone().map(Value::Text),
+        ),
+        (
+            "json_extract(event, '$.connectionId') = ?",
+            query.connection_id.clone().map(Value::Text),
+        ),
         ("actor_name = ?", query.actor_name.clone().map(Value::Text)),
         ("actor_id = ?", query.actor_id.clone().map(Value::Text)),
         (

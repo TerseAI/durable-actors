@@ -5,6 +5,7 @@ import { Box, CircleHelp, RefreshCw, Search, Unplug } from "lucide-react"
 import { FilterCombobox } from "./FilterCombobox.js"
 import type { FilterSuggestion } from "./FilterCombobox.js"
 import { RequestObserver } from "./RequestObserver.js"
+import { StateInspector } from "./StateInspector.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInstance, ActorInventory, ObserverClient } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
@@ -356,6 +357,8 @@ function ActorInstances({
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
     const connectionDetailsId = `${id}-connections`
+    const [requestFocus, setRequestFocus] = useState<{ requestId?: string; connectionId?: string }>()
+    useEffect(() => setRequestFocus(undefined), [selectedInstanceId])
     const filtered = instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status))
     filtered.sort((a, b) => Number(b.status === "live") - Number(a.status === "live"))
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
@@ -382,8 +385,21 @@ function ActorInstances({
                 {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
                 {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} range={range} />}
                 {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
+                {client.getState && client.listStateHistory && (
+                    <StateInspector
+                        key={`state-${selectedInstanceId}`}
+                        client={client}
+                        actorName={actorName}
+                        actorId={selectedInstanceId}
+                        onInspectRequest={focus => {
+                            setRequestFocus(focus)
+                            document.getElementById(`${id}-requests`)?.scrollIntoView({ block: "start", behavior: "smooth" })
+                        }}
+                    />
+                )}
+                <div id={`${id}-requests`} />
                 {client.watchRequests || client.listRequests ? (
-                    <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} />
+                    <RequestObserver key={`requests-${selectedInstanceId}`} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} focus={requestFocus} />
                 ) : (
                     <section>
                         <h3>Requests</h3>
@@ -400,7 +416,7 @@ function ActorInstances({
                     <h2 ref={instanceHeading} tabIndex={-1} id={`${id}-heading`}>
                         {actorName} instances <Badge aria-hidden="true">{instances.length.toLocaleString()}</Badge>
                     </h2>
-                    <p>Select an instance to inspect its waiting line, requests, and WebSocket connections.</p>
+                    <p>Select an instance to inspect its persisted state, requests, and WebSocket connections.</p>
                 </div>
             </div>
             {instances.length ? (

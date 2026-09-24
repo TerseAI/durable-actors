@@ -17,18 +17,22 @@ import { defaultTimeRange, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
 interface RequestObserverProps {
+    focus?: { requestId?: string; connectionId?: string }
     client: Pick<ObserverClient, "watchRequests" | "listRequests">
     actor?: Pick<RequestTrace, "actorName" | "actorId">
     timeRange?: TimeRange
     onTimeRangeChange?: (range: TimeRange) => void
 }
 
-function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: RequestObserverProps) {
+function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }: RequestObserverProps) {
     const [query, setQuery] = useState<HistoryFilters>()
     const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
     const range = timeRange ?? localRange
     const setRange = onTimeRangeChange ?? setLocalRange
-    const scopedQuery = useMemo(() => (query ? { ...query, ...actor, ...resolveRange(range, Date.now()) } : undefined), [query, actor?.actorName, actor?.actorId, range])
+    const scopedQuery = useMemo(
+        () => (query ? { ...query, ...actor, ...(query.requestId || query.connectionId ? {} : resolveRange(range, Date.now())) } : undefined),
+        [query, actor?.actorName, actor?.actorId, range]
+    )
     const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
@@ -43,9 +47,20 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: Reques
         setFrozen(undefined)
         setQuery(undefined)
     }, [client, actor?.actorName, actor?.actorId])
+    useEffect(() => {
+        if (focus) setQuery(focus)
+    }, [focus])
     useEffect(() => setSelected(undefined), [client, page?.epoch, query, actor?.actorName, actor?.actorId])
     return (
         <section ref={container} className="la-observer la-requests" aria-label="Request observer">
+            {(query?.requestId || query?.connectionId) && (
+                <p>
+                    Showing {query.requestId ? `request ${query.requestId}` : `connection ${query?.connectionId}`}{" "}
+                    <Button variant="link" onClick={() => setQuery(undefined)}>
+                        Clear filter
+                    </Button>
+                </p>
+            )}
             <div className="la-observer-toolbar">
                 <div>
                     <Heading>Requests</Heading>

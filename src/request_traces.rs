@@ -23,6 +23,8 @@ pub(crate) const TRACE_METADATA_LIMIT: usize = 4096;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RequestTrace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_version: Option<u64>,
     pub project_id: String,
     pub request_id: String,
     pub actor_name: String,
@@ -377,6 +379,7 @@ impl RequestSpan {
             sender,
             started,
             trace: Some(RequestTrace {
+                state_version: None,
                 project_id: invocation.actor.project_id.clone(),
                 request_id: invocation.request_id.clone(),
                 actor_name: invocation.actor.actor_name.clone(),
@@ -390,6 +393,12 @@ impl RequestSpan {
                 outcome: RequestOutcome::Interrupted,
                 metadata: bounded_metadata(metadata),
             }),
+        }
+    }
+
+    pub(crate) fn state_version(&mut self, version: Option<u64>) {
+        if let Some(trace) = &mut self.trace {
+            trace.state_version = version;
         }
     }
 

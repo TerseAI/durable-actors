@@ -3,6 +3,7 @@ import { createParser } from "eventsource-parser"
 import { type OverviewMetrics, parseOverviewMetrics } from "./overview-metrics.js"
 import { type QueueWaitRow, queueWaitRows } from "./queue-wait.js"
 import { type SocketSessionRow, sessionRows } from "./socket-sessions.js"
+import { type StateHistoryPage, type StateQuery, type StateResponse, parseStateHistory, parseStateResponse } from "./state-data.js"
 import type { ResolvedRange } from "./time-range.js"
 
 type ActorResidency = "live" | "dormant" | "unknown"
@@ -24,6 +25,8 @@ interface ActorInventory {
 }
 
 interface ObserverClient {
+    getState?(query: StateQuery, signal?: AbortSignal): Promise<StateResponse>
+    listStateHistory?(query: Omit<StateQuery, "version"> & { before?: number; limit?: number }, signal?: AbortSignal): Promise<StateHistoryPage>
     getMetrics?(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics>
     listQueueWaits?(query: ResolvedRange & { actorName?: string }, signal?: AbortSignal): Promise<QueueWaitRow[]>
     listWebSockets?(range: ResolvedRange, signal?: AbortSignal): Promise<SocketSessionRow[]>
@@ -40,6 +43,14 @@ class HttpObserverClient implements ObserverClient {
         private readonly baseUrl: string = "/api/observe",
         private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)
     ) {}
+
+    async getState(query: StateQuery, signal?: AbortSignal): Promise<StateResponse> {
+        return parseStateResponse(await this.get(`state${queryString(query)}`, signal))
+    }
+
+    async listStateHistory(query: Omit<StateQuery, "version"> & { before?: number; limit?: number }, signal?: AbortSignal): Promise<StateHistoryPage> {
+        return parseStateHistory(await this.get(`state/history${queryString(query)}`, signal))
+    }
 
     async getMetrics(range: ResolvedRange, signal?: AbortSignal): Promise<OverviewMetrics> {
         return parseOverviewMetrics(await this.get(`metrics${queryString(range)}`, signal))
@@ -177,6 +188,7 @@ export { HttpObserverClient }
 export type { ActorConnection, ActorInstance, ActorInventory, ActorResidency, ObserverClient }
 
 export interface RequestTrace {
+    stateVersion?: number
     projectId: string
     metadata?: unknown
     eventId?: string
@@ -196,6 +208,8 @@ export interface RequestTrace {
 }
 
 export interface RequestHistoryQuery {
+    requestId?: string
+    connectionId?: string
     actorName?: string
     actorId?: string
     outcome?: RequestTrace["outcome"]
