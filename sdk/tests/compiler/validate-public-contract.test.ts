@@ -4,7 +4,7 @@ import { test } from "node:test"
 import ts from "typescript"
 import { z } from "zod"
 
-import { generateTypeScript } from "../../src/compiler/generators/typescript-generator.js"
+import { generateClientArtifacts } from "../../src/compiler/generators/client-artifacts.js"
 import { parsePublicContract } from "../../src/compiler/validate-public-contract.js"
 
 const fixture = JSON.parse(
@@ -87,7 +87,7 @@ test("codegen rejects malformed contracts and unsafe type overrides", async () =
     for (const [label, mutate, expected] of cases) {
         const document = structuredClone(fixture)
         mutate(document)
-        await assert.rejects(generateTypeScript(document), expected, label)
+        await assert.rejects(generateClientArtifacts(document), expected, label)
     }
 })
 
@@ -103,9 +103,8 @@ test("contract validation permits schema-like property names and recursive local
         }
     }
     assert.deepEqual(parsePublicContract(document), document)
-    const files = await generateTypeScript(document)
-    const code = files.get("index.ts")!
-    assert.match(code, /next\?: SendMessageResult/)
+    const files = await generateClientArtifacts(document)
+    const code = files.get("index.d.ts")!
     const source = ts.createSourceFile("backend.ts", code, ts.ScriptTarget.Latest, true)
     const variables = source.statements
         .filter(ts.isVariableStatement)
@@ -113,4 +112,17 @@ test("contract validation permits schema-like property names and recursive local
             statement.declarationList.declarations.map(declaration => declaration.name.getText(source))
         )
     assert.deepEqual(variables, ["actors"])
+})
+
+test("published declarations and type dependency requirements survive remote code generation", async () => {
+    const document = structuredClone(fixture)
+    document.typescript.declarations =
+        'import type { UIMessage } from "ai"; export declare const schemaVersion = 1; ' +
+        document.typescript.declarations
+    document.typescript.dependencies = { ai: "7.0.97" }
+    const files = await generateClientArtifacts(JSON.parse(JSON.stringify(document)))
+    assert.match(files.get("types.d.ts")!, /import type \{ UIMessage \} from "ai"/)
+    assert.match(files.get("types.d.ts")!, /export declare const schemaVersion = 1/)
+    assert.deepEqual(JSON.parse(files.get("package.json")!).peerDependencies, { ai: "7.0.97" })
+    assert.doesNotMatch(files.get("index.js")!, /from "ai"/)
 })

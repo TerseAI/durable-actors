@@ -4,12 +4,19 @@ import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import type { Socket } from "node:net"
 import { createInterface } from "node:readline"
-import { test } from "node:test"
+import { before, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
 import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorSession, parseHostSettings, serializeWithinBytes } from "../../src/host/actor-host.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
+
+before(
+    async () => {
+        await actorBundle()
+    },
+    { timeout: 30_000 }
+)
 
 test("loads a prepared JavaScript artifact only inside the first execution Worker", { timeout: 5_000 }, async () => {
     const root = await mkdtemp("/tmp/actor-discovery-")

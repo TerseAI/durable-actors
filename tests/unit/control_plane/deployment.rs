@@ -259,7 +259,7 @@ fn source() -> HostLaunchSpec {
 }
 
 fn contract() -> serde_json::Value {
-    serde_json::json!({"version":1,"actors":[]})
+    serde_json::json!({"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}})
 }
 
 #[derive(Default)]

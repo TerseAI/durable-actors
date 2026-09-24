@@ -2,7 +2,7 @@ import { build } from "esbuild"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
@@ -17,6 +17,7 @@ const run = promisify(execFile)
 
 test("generated clients typecheck and run with or without bundling in an application with no dependencies", { timeout: 30_000 }, async t => {
     const directory = await standaloneProject(t)
+    await checkArtifacts(directory)
     await checkTypes(directory)
     await checkServerCalls(t, directory)
     await checkBrowser(directory)
@@ -35,8 +36,7 @@ test("a generated client rediscovers a retired host on its first subsequent call
     let port = oldHost.address().port
     const requests = []
     const origin = await controlPlaneServer(t, () => port, requests)
-    const clientPath = path.join(directory, "client.mjs")
-    await build({ entryPoints: [path.join(directory, "generated/index.ts")], outfile: clientPath, bundle: true, platform: "node", format: "esm", logLevel: "silent" })
+    const clientPath = path.join(directory, "generated/index.js")
     const { actors, createActorTransport } = await import(pathToFileURL(clientPath).href)
     const transport = createActorTransport({ projectId: "team-a", apiKey: "app-key", controlPlaneUrl: origin })
     const room = actors.ChatRoom.get("lobby", transport)
@@ -55,6 +55,16 @@ async function standaloneProject(t) {
     const contract = JSON.parse(await readFile(new URL("../fixtures/public-contract.json", import.meta.url), "utf8"))
     await generateClient(contract, path.join(directory, "generated"))
     return directory
+}
+
+async function checkArtifacts(directory) {
+    const generated = path.join(directory, "generated")
+    assert.deepEqual((await readdir(generated)).sort(), ["index.d.ts", "index.js", "package.json", "runtime", "types.d.ts"])
+    const files = await readdir(path.join(generated, "runtime"))
+    for (const file of files) {
+        if (file.endsWith(".js")) assert.ok(files.includes(file.replace(/\.js$/, ".d.ts")), file)
+        else assert.ok(file.endsWith(".d.ts") || ["LICENSE.md", "package.json"].includes(file), file)
+    }
 }
 
 async function checkTypes(directory) {
@@ -95,7 +105,8 @@ async function checkServerCalls(t, directory) {
     const port = host.address().port
     const requests = []
     const origin = await controlPlaneServer(t, () => port, requests)
-    for (const format of ["files", "esm", "cjs"]) {
+    for (const format of ["node", "esm", "cjs", "commonjs-project"]) {
+        if (format === "commonjs-project") await writeFile(path.join(directory, "package.json"), '{"type":"commonjs"}')
         calls.length = 0
         requests.length = 0
         await invokeClient(directory, origin, format)
@@ -130,57 +141,47 @@ async function controlPlaneServer(t, port, requests) {
 }
 
 async function invokeClient(directory, origin, format) {
-    const file = format === "files" ? "generated/index.js" : `client.${format === "cjs" ? "cjs" : "mjs"}`
-    if (format === "files") {
-        const program = ts.createProgram([path.join(directory, "generated/index.ts")], {
-            strict: true,
-            types: [],
-            target: ts.ScriptTarget.ES2022,
-            module: ts.ModuleKind.NodeNext
-        })
-        assert.deepEqual(ts.getPreEmitDiagnostics(program), [])
-        assert.equal(program.emit().emitSkipped, false)
-    } else
+    const bundled = format === "esm" || format === "cjs"
+    const file = bundled ? `client.${format === "cjs" ? "cjs" : "mjs"}` : "generated/index.js"
+    if (bundled)
         await build({
-            entryPoints: [path.join(directory, "generated/index.ts")],
+            entryPoints: [path.join(directory, "generated/index.js")],
             outfile: path.join(directory, file),
-            bundle: format !== "files",
+            bundle: true,
             platform: "node",
             format: format === "cjs" ? "cjs" : "esm",
             logLevel: "silent"
         })
-    await run(
-        process.execPath,
-        [
-            "--input-type=module",
-            "--eval",
-            `
+    const script = path.join(directory, "invoke.mjs")
+    await writeFile(
+        script,
+        `
         import assert from "node:assert/strict"
         import { actors, ActorInvocationError } from ${JSON.stringify(`./${file}`)}
         const room = actors.ChatRoom.get("lobby")
-        assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
+        const input = { text: "hello" }
+        assert.deepEqual(await room.sendMessage(input), { id: "1", text: "hello" })
         assert.equal(await room.clear(), undefined)
         await assert.rejects(room.sendMessage({ text: "fail" }), error => error instanceof ActorInvocationError && error.code === "actor_error")
         const grant = await actors.ChatRoom.prepareWebsocket({ actorId: "lobby", metadata: { userId: "alice" } })
         assert.equal(grant.websocketUrl, "wss://example.com/socket?key=ticket")
     `
-        ],
-        {
-            cwd: directory,
-            timeout: 20_000,
-            env: {
-                ...process.env,
-                NODE_PATH: "",
-                DURABLE_ACTORS_PROJECT_ID: "team-a",
-                DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
-                DURABLE_ACTORS_SECRET: "app-key"
-            }
-        }
     )
+    await run(process.execPath, [script], {
+        cwd: directory,
+        timeout: 20_000,
+        env: {
+            ...process.env,
+            NODE_PATH: "",
+            DURABLE_ACTORS_PROJECT_ID: "team-a",
+            DURABLE_ACTORS_CONTROL_PLANE_URL: origin,
+            DURABLE_ACTORS_SECRET: "app-key"
+        }
+    })
 }
 
 async function checkBrowser(directory) {
-    const browser = await build({ entryPoints: [path.join(directory, "generated/index.ts")], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" })
+    const browser = await build({ entryPoints: [path.join(directory, "generated/index.js")], bundle: true, platform: "browser", format: "esm", write: false, logLevel: "silent" })
     const module = await import(`data:text/javascript;base64,${Buffer.from(browser.outputFiles[0].text).toString("base64")}`)
     assert.throws(() => module.actors.ChatRoom.get("lobby"), /server/)
     assert.throws(() => new module.ActorProxy(), /server/)

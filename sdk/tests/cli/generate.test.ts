@@ -39,7 +39,7 @@ test("generate accepts a control-plane URL overriding environment settings and d
         env: localEnv
     })
     assert.match(result.stdout, /Generated 1 actor contract/u)
-    assert.match(await readFile(path.join(directory, "generated/index.ts"), "utf8"), /export const actors/u)
+    assert.match(await readFile(path.join(directory, "generated/index.js"), "utf8"), /export const actors/u)
     assert.deepEqual(requests, ["/v1/projects/local/deployment/contract"])
 })
 
@@ -80,7 +80,7 @@ test("generate defaults to the server using .env settings and exported environme
     }
     const result = await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/)
-    assert.ok((await readdir(path.join(directory, "generated"))).includes("index.ts"))
+    assert.ok((await readdir(path.join(directory, "generated"))).includes("index.js"))
     await writeFile(
         envFile,
         "DURABLE_ACTORS_PROJECT_ID=wrong\nDURABLE_ACTORS_CONTROL_PLANE_URL=http://unreachable.invalid\nDURABLE_ACTORS_SECRET=wrong\n"
@@ -123,7 +123,7 @@ test("generate loads .env.local before .env and preserves exported environment o
     await writeFile(localFile, `DURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`)
     const result = await run(process.execPath, [cli, "generate"], { cwd: directory, env: fileEnv })
     assert.match(result.stdout, /Generated 1 actor contract/u)
-    assert.match(await readFile(path.join(directory, "generated/index.ts"), "utf8"), /export const actors/u)
+    assert.match(await readFile(path.join(directory, "generated/index.js"), "utf8"), /export const actors/u)
     assert.deepEqual(requests, ["/v1/projects/local/deployment/contract"])
 
     await writeFile(
@@ -159,7 +159,10 @@ test("a separate consumer generates identical clients from the deployed contract
     await mkdir(path.join(author, "node_modules"))
     await symlink(sdk, path.join(author, "node_modules/durable-actors"), "dir")
     await mkdir(path.join(author, "node_modules/private-data"))
-    await writeFile(path.join(author, "node_modules/private-data/package.json"), '{"types":"index.d.ts"}')
+    await writeFile(
+        path.join(author, "node_modules/private-data/package.json"),
+        '{"name":"private-data","version":"1.0.0","types":"index.d.ts"}'
+    )
     await writeFile(
         path.join(author, "node_modules/private-data/index.d.ts"),
         "export interface Message { text: string }"
@@ -188,9 +191,6 @@ test("a separate consumer generates identical clients from the deployed contract
         throw new Error("do not execute actor source")
     `
     )
-    await mkdir(path.join(author, "generated"))
-    await writeFile(path.join(author, "generated/contract.json"), "old generated contract")
-    await writeFile(path.join(author, "generated/contract-source.json"), "old generated provenance")
     await run(process.execPath, [cli, "generate", "src/actors.ts", "--config", "tsconfig.json"], {
         cwd: author,
         env: { ...env, DURABLE_ACTORS_CONTROL_PLANE_URL: "http://unreachable.invalid" }
@@ -198,11 +198,11 @@ test("a separate consumer generates identical clients from the deployed contract
     const local = path.join(author, "generated")
     const entries = await readdir(local, { recursive: true })
     const files = entries.filter(file => file !== "runtime")
-    for (const file of ["index.ts"]) assert.ok(files.includes(file), `missing ${file}`)
+    for (const file of ["index.js", "index.d.ts", "runtime/index.js", "runtime/index.d.ts"])
+        assert.ok(files.includes(file), `missing ${file}`)
     const expected = new Map(
         await Promise.all(files.map(async file => [file, await readFile(path.join(local, file), "utf8")] as const))
     )
-    assert.ok(files.includes("runtime/index.ts"))
     const requests: string[] = []
     const publication = {
         contractHash: `sha256:${"a".repeat(64)}`,
@@ -236,6 +236,7 @@ test("a separate consumer generates identical clients from the deployed contract
     assert.equal(contract.version, 1)
     assert.equal(contract.actors[0].actorName, "ChatRoom")
     assert.equal(contract.actors[0].rpc.methods[0].name, "sendMessage")
+    assert.deepEqual(contract.typescript.dependencies, { "private-data": "1.0.0" })
     await rm(author, { recursive: true })
     const result = await run(process.execPath, [cli, "generate"], {
         cwd: directory,
@@ -246,6 +247,7 @@ test("a separate consumer generates identical clients from the deployed contract
         assert.equal(await readFile(path.join(directory, "generated", file), "utf8"), content)
     assert.deepEqual(await readdir(path.join(directory, "generated"), { recursive: true }), entries)
     assert.match(result.stdout, /Generated 1 actor contract/)
+    assert.match(result.stdout, /Type dependencies: private-data@1.0.0/)
 
     await run(process.execPath, [cli, "generate", "--out-dir", "active"], {
         cwd: directory,
@@ -258,7 +260,7 @@ test("generate rejects remote errors and invalid inputs before changing output",
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-generate-errors-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "generated"))
-    await writeFile(path.join(directory, "generated/index.ts"), "keep existing output")
+    await writeFile(path.join(directory, "generated/index.js"), "keep existing output")
     const contract = JSON.parse(await readFile(path.join(sdk, "tests/fixtures/public-contract.json"), "utf8"))
     let status = 200
     let body: unknown = {
@@ -298,8 +300,8 @@ test("generate rejects remote errors and invalid inputs before changing output",
     status = 404
     body = { error: { code: "contract_not_found", message: "No public actor contract is published" } }
     await assert.rejects(generate(), /No public actor contract is published/)
-    assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.ts"])
-    assert.equal(await readFile(path.join(directory, "generated/index.ts"), "utf8"), "keep existing output")
+    assert.deepEqual(await readdir(path.join(directory, "generated")), ["index.js"])
+    assert.equal(await readFile(path.join(directory, "generated/index.js"), "utf8"), "keep existing output")
 })
 
 test("generate needs no project or secret for a local server", async t => {

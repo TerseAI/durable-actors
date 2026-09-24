@@ -132,6 +132,10 @@ const component = z
     .regex(/^[A-Za-z0-9._-]+$/u)
 const documentSchema = z.strictObject({
     version: z.literal(1),
+    typescript: z.strictObject({
+        declarations: z.string().min(1),
+        dependencies: z.record(z.string().regex(/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/u), z.string().min(1))
+    }),
     actors: z.array(
         z.strictObject({
             actorName: component,

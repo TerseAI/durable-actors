@@ -1,5 +1,4 @@
 import { Command } from "commander"
-import { rm } from "node:fs/promises"
 import path from "node:path"
 import { z } from "zod"
 
@@ -17,7 +16,7 @@ function registerGenerateCommand(program: Command): void {
         .command("generate")
         .argument("[entrypoint]", "actor source file to compile instead of fetching from the server")
         .description("Generate actor clients from the running server or an explicit source file")
-        .option("--out-dir <directory>", "generated source directory", "generated")
+        .option("--out-dir <directory>", "generated JavaScript and declaration directory", "generated")
         .option("--config <file>", "TypeScript configuration file (local source only)")
         .option("--control-plane-url <url>", "control-plane origin (overrides DURABLE_ACTORS_CONTROL_PLANE_URL)")
         .addHelpText("after", connectionHelp)
@@ -32,9 +31,12 @@ async function generate(entrypoint: string | undefined, options: GenerateOptions
         : await remoteContract(options.controlPlaneUrl)
     const directory = path.resolve(options.outDir)
     await generateClient(contract, directory)
-    for (const obsolete of ["contract.json", "contract-source.json"])
-        await rm(path.join(directory, obsolete), { force: true })
     console.log(`Generated ${contract.actors.length} actor contract(s) in ${directory}.`)
+    const dependencies = Object.entries(contract.typescript.dependencies)
+    if (dependencies.length)
+        console.log(
+            `Type dependencies: ${dependencies.map(([name, version]) => `${name}@${version}`).join(", ")}. Install compatible versions in the calling project.`
+        )
 }
 
 function validateOptions(entrypoint: string | undefined, options: GenerateOptions): void {

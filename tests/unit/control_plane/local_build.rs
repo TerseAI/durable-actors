@@ -13,7 +13,9 @@ impl LocalCodeCompiler for Compiler {
         self.calls.fetch_add(1, Ordering::SeqCst);
         ensure!(!self.fail.load(Ordering::SeqCst), "invalid actor source");
         tokio::fs::write(output.join("actors.mjs"), "compiled actors").await?;
-        PublicActorContract::new(serde_json::json!({"version": 1, "actors": []}))
+        PublicActorContract::new(
+            serde_json::json!({"version": 1, "actors": [], "typescript": {"declarations": "export interface ActorTypes {}", "dependencies": {}}}),
+        )
     }
 }
 

@@ -5,6 +5,12 @@ import type { SocketContract } from "./contract.js"
 interface PublicActorContract {
     readonly version: 1
     readonly actors: readonly ActorApi[]
+    readonly typescript: TypeScriptContract
+}
+
+interface TypeScriptContract {
+    readonly declarations: string
+    readonly dependencies: Readonly<Record<string, string>>
 }
 
 interface ActorApi {
@@ -35,4 +41,4 @@ interface TypeReference {
     readonly $ref: string
 }
 
-export type { ActorApi, TypeReference, PublicActorContract, RpcContract, RpcMethod, RpcParameter }
+export type { ActorApi, TypeReference, PublicActorContract, RpcContract, RpcMethod, RpcParameter, TypeScriptContract }
