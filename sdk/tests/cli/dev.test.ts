@@ -75,7 +75,7 @@ test("dev explains invalid project paths before starting the runtime", async t =
                         assert.equal(error.stdout, "")
                         assert.ok(error.stderr?.includes(path.join(directory, scenario.expected)), error.stderr)
                         assert.ok(error.stderr?.includes(scenario.hint), error.stderr)
-                        assert.match(error.stderr!, /durable-actors init my-project/u)
+                        assert.match(error.stderr!, /da init my-project/u)
                         return true
                     }
                 )

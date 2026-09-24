@@ -14,17 +14,17 @@ We offer a clean API to manage webSocket connections, Swift inspired syntax for 
 
 ## Local development
 
-Install Node.js 22.19+, pnpm, and Bun 1.3.9+.
+Install Node.js 22.19+, pnpm, and Bun 1.3.9+. The `durable-actors` package provides the `da` CLI.
 
 ### Create your actor project in your directory of choice
 
 ```sh
-npx durable-actors init my-actors
+npx --package durable-actors da init my-actors
 cd my-actors
 pnpm install
 # Or with npm:
 npm install
-npx durable-actors dev # Run the server locally on your machine
+npx da dev # Run the server locally on your machine
 ```
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
@@ -42,7 +42,7 @@ npm install --save-dev durable-actors
 Then generate your client from the same application directory:
 
 ```sh
-npx durable-actors generate
+npx da generate
 ```
 
 Now you may call your actor and access the state.
@@ -66,7 +66,7 @@ pnpm install ai
 npm install ai
 ```
 
-Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
+Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `da dev`. For example, a chat history actor:
 
 ```ts
 import type { UIMessage } from "ai"
@@ -88,7 +88,7 @@ export class ChatHistory extends Actor {
 
 ## Stream from the backend (Express)
 
-After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
+After adding `ChatHistory`, rerun `npx da generate` in your application and use its generated client:
 
 ```ts
 import { openai } from "@ai-sdk/openai"

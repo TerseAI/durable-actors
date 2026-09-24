@@ -16,7 +16,7 @@ try {
     config({ path: [".env.local", ".env"], quiet: true })
     Object.assign(process.env, actorEnvironment(process.env))
     const program = new Command()
-        .name("durable-actors")
+        .name("da")
         .description("Run durable TypeScript actors locally or in the cloud")
         .version(await version())
         .enablePositionalOptions()
@@ -85,7 +85,7 @@ From that directory, run:
   cp .env.example .env${template === "ai-chat" ? "\n  # Add your OpenAI API key to .env" : ""}
   npm run dev:actors
 
-Add the connection settings printed by durable-actors dev to .env, then in another terminal:
+Add the connection settings printed by da dev to .env, then in another terminal:
   npm run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`
@@ -105,7 +105,7 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
     ${styleText("cyan", "pnpm install")}
 
   ${styleText("bold", "Start the actor server")}
-    ${styleText("cyan", "pnpm exec durable-actors dev")}
+    ${styleText("cyan", "pnpm exec da dev")}
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.

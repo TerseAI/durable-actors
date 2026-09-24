@@ -6,7 +6,7 @@ info:
         Manage durable-actors deployments, find actor hosts, and inspect activity.
         When DURABLE_ACTORS_SECRET is set on the server, authenticate backend requests
         with that bearer API key; never expose it to browsers. When unset, no API key is required.
-        Project-scoped actor routes work in development and production. Run `durable-actors dev`
+        Project-scoped actor routes work in development and production. Run `da dev`
         and copy the printed connection settings into your backend's environment. The default
         local project ID is `local`; use it as `project_id` in requests.
         Servers listening beyond localhost warn when the secret is unset but still start.

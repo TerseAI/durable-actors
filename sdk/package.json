@@ -31,7 +31,7 @@
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
-        "durable-actors": "dist/cli.js"
+        "da": "dist/cli.js"
     },
     "exports": {
         "./backend": {

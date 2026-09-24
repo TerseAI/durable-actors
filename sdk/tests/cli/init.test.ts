@@ -24,6 +24,7 @@ for (const template of ["actor", "chat", "ai-chat", "documents"]) {
         assert.deepEqual((await readdir(project)).sort(), files.sort())
         assert.equal(metadata.name, name)
         assert.equal(metadata.private, true)
+        assert.equal(metadata.scripts[template === "actor" ? "dev" : "dev:actors"], "da dev")
     })
 }
 
@@ -60,7 +61,7 @@ test("init presents copyable next steps with optional terminal color", async t =
     assert.ok(plain.stdout.includes(`✓ ${name} is ready.`))
     assert.match(plain.stdout, /Start here/)
     assert.ok(plain.stdout.includes("cd -- 'Sam'\\''s actors'"))
-    assert.match(plain.stdout, /pnpm install\n\n\s+Start the actor server\n\s+pnpm exec durable-actors dev/)
+    assert.match(plain.stdout, /pnpm install\n\n\s+Start the actor server\n\s+pnpm exec da dev/)
     assert.match(plain.stdout, /src\/actors\.ts/)
     assert.match(plain.stdout, /Connect your app/)
     assert.equal(plain.stdout, stripVTControlCharacters(plain.stdout))
@@ -81,12 +82,12 @@ test("init defaults to a standalone actor project that can typecheck and generat
     const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
     const installed = JSON.parse(await readFile(path.join(sdk, "package.json"), "utf8"))
     assert.deepEqual(metadata.dependencies, { "durable-actors": installed.version })
-    assert.equal(metadata.scripts.dev, "durable-actors dev")
+    assert.equal(metadata.scripts.dev, "da dev")
     assert.equal(metadata.scripts.check, "tsc --noEmit")
     assert.deepEqual(await readdir(path.join(project, "src")), ["actors.ts"])
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
     assert.match(stdout, /pnpm install/)
-    assert.match(stdout, /\n\s+pnpm exec durable-actors dev\n/)
+    assert.match(stdout, /\n\s+pnpm exec da dev\n/)
     assert.match(stdout, /separate.*project/i)
     assert.doesNotMatch(stdout, /localhost:3000|127\.0\.0\.1:3000|another terminal/)
 

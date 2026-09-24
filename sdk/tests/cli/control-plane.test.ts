@@ -88,7 +88,7 @@ test("missing contract endpoints identify the server and project without exposin
         const message = (error as Error).message
         assert.match(message, /HTTP 404.*Not Found/u)
         assert.match(message, /GET https:\/\/control\.example\/v1\/projects\/default\/deployment\/contract/u)
-        assert.match(message, /durable-actors dev/u)
+        assert.match(message, /da dev/u)
         assert.match(message, /DURABLE_ACTORS_PROJECT_ID/u)
         assert.doesNotMatch(message, /admin-key/u)
         return true

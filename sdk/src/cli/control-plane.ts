@@ -135,7 +135,7 @@ async function readResponse(response: Response, method: string, url: string): Pr
     if (!response.ok) {
         const hint =
             response.status === 404 && url.endsWith("/deployment/contract")
-                ? "\nCheck the control-plane URL and DURABLE_ACTORS_PROJECT_ID. For local development, run durable-actors dev in the actor project and wait for Ready."
+                ? "\nCheck the control-plane URL and DURABLE_ACTORS_PROJECT_ID. For local development, run da dev in the actor project and wait for Ready."
                 : ""
         throw new Error(
             `Control-plane request failed (HTTP ${response.status}): ${errorMessage(result) ?? response.statusText}\n${method} ${url}${hint}`

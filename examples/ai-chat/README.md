@@ -7,7 +7,7 @@ An Express + React app that streams replies with the Vercel AI SDK and saves con
 Requires Node.js 22.19+, Bun 1.3.9+, and an OpenAI API key.
 
 ```sh
-npx durable-actors init ai-chat-example --template ai-chat
+npx --package durable-actors da init ai-chat-example --template ai-chat
 cd ai-chat-example
 npm install
 cp .env.example .env

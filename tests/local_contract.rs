@@ -199,7 +199,7 @@ impl LocalRuntime {
                 if let Some((_, value)) = line.split_once("  Ready  ") {
                     origin = Some(value.trim().to_owned());
                 }
-                if line.contains("durable-actors generate") {
+                if line.contains("da generate") {
                     return origin.context("missing origin");
                 }
                 line.clear();

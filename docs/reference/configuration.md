@@ -32,7 +32,7 @@ Used by `dev`.
 
 The server requires a `DURABLE_ACTORS_CONTROL_PLANE_URL` reachable by its actor hosts and clients, which may be on a private network.
 
-`DURABLE_ACTORS_SECRET` is optional for `durable-actors start`, the native executable, and the container. When the listening address is not localhost and no secret is configured, startup warns that anyone who can reach the server can access its API, then continues. The SDK also accepts `DURABLE_ACTORS_API_KEY`, with `DURABLE_ACTORS_SECRET` taking precedence. Internal actor and storage credentials are still required and are managed separately.
+`DURABLE_ACTORS_SECRET` is optional for `da start`, the native executable, and the container. When the listening address is not localhost and no secret is configured, startup warns that anyone who can reach the server can access its API, then continues. The SDK also accepts `DURABLE_ACTORS_API_KEY`, with `DURABLE_ACTORS_SECRET` taking precedence. Internal actor and storage credentials are still required and are managed separately.
 
 | Variable                            | Default                                                 | Meaning                                                                            |
 | ----------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |

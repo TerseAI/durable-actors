@@ -6,7 +6,7 @@
         "node": ">=22.19.0"
     },
     "scripts": {
-        "dev": "durable-actors dev",
+        "dev": "da dev",
         "check": "tsc --noEmit"
     },
     "dependencies": {

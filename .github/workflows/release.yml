@@ -226,7 +226,7 @@ jobs:
                   node --test tests/scripts/build-runtime.test.mjs
                   npm pkg set "pnpm.overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
                   pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
-                  pnpm --dir examples/chat exec durable-actors generate src/actors.ts
+                  pnpm --dir examples/chat exec da generate src/actors.ts
                   pnpm --dir examples/chat build
             - name: Upload native bundles and checksums
               env:

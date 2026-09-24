@@ -45,7 +45,7 @@ No configuration is required. Optional overrides in .env:
   DURABLE_ACTORS_PROJECT     project directory (default: current directory)
   DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: src/actors.ts)
 
-Create a project with: durable-actors init my-project`
+Create a project with: da init my-project`
         )
         .action(async (options: { watch: boolean; port: number }) => {
             process.exitCode = await runDev(developmentOptions(options, process.env))
@@ -94,7 +94,7 @@ async function developmentProject(options: DevOptions): Promise<string> {
         throw new Error(
             `No actor project directory found at ${directory}.\n` +
                 "Run from your actor project directory, or set DURABLE_ACTORS_PROJECT in .env.\n" +
-                "Create a project with: durable-actors init my-project"
+                "Create a project with: da init my-project"
         )
     const project = await realpath(directory)
     const entrypoint = path.resolve(project, options.entrypoint)
@@ -102,7 +102,7 @@ async function developmentProject(options: DevOptions): Promise<string> {
         throw new Error(
             `No actor source file found at ${entrypoint}.\n` +
                 "Run from your actor project directory, or set DURABLE_ACTORS_PROJECT and DURABLE_ACTORS_ENTRYPOINT in .env.\n" +
-                "Create a project with: durable-actors init my-project"
+                "Create a project with: da init my-project"
         )
     return project
 }
