@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { installSdk } from "../fixtures/installed-sdk.js"
@@ -58,6 +58,54 @@ test("global dev uses the selected project's SDK and native runtime version", as
     assert.equal(args[args.indexOf("--port") + 1], "7300")
 })
 
+test("embedded dev and local startup resolve the SDK from the wrapper, preserving the actor project", async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "wrapped-dev-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const project = path.join(directory, "actor's project")
+    const wrapper = path.join(project, "node_modules/wrapper-sdk")
+    const sdk = await installSdk(wrapper, "9.8.7")
+    await writeFile(path.join(project, "package.json"), '{"type":"module"}')
+    await writeFile(path.join(project, "actors.ts"), "export {}")
+    const anchor = path.join(wrapper, "index.js")
+    await writeFile(anchor, "export {}")
+    const cache = path.join(directory, "cache")
+    const binary = await cacheRuntime(cache, "9.8.7")
+    const module = pathToFileURL(fileURLToPath(new URL("../../../dist/localRuntime.js", import.meta.url))).href
+    const options = {
+        project,
+        entrypoint: "actors.ts",
+        projectId: "local",
+        port: 7301,
+        storage: "local",
+        watch: false,
+        sdkResolveFrom: pathToFileURL(anchor).href
+    }
+    for (const operation of ["runDev", "startLocalActors"]) {
+        const { stdout } = await run(
+            process.execPath,
+            [
+                "--input-type=module",
+                "--eval",
+                `
+            import { ${operation} } from ${JSON.stringify(module)};
+            const result = await ${operation}(${JSON.stringify(options)});
+            if (result && typeof result === "object") await result.closed;
+        `
+            ],
+            {
+                cwd: directory,
+                env: { ...process.env, DURABLE_ACTORS_BINARY: undefined, DURABLE_ACTORS_CACHE_DIR: cache },
+                timeout: 15_000
+            }
+        )
+        const launched = JSON.parse(stdout)
+        assert.equal(launched.binary, binary)
+        assert.equal(launched.args[launched.args.indexOf("--sdk-host") + 1], path.join(sdk, "dist/host.js"))
+        assert.equal(await realpath(launched.args[launched.args.indexOf("--project") + 1]), await realpath(project))
+        assert.equal(launched.args[launched.args.indexOf("--port") + 1], "7301")
+    }
+})
+
 async function cacheRuntime(cache: string, version: string): Promise<string> {
     const runtime = path.join(cache, version, `${process.platform}-${process.arch}`)
     await mkdir(runtime, { recursive: true })
@@ -66,7 +114,7 @@ async function cacheRuntime(cache: string, version: string): Promise<string> {
         binary,
         `#!${process.execPath}
 require("node:fs").createWriteStream(null, { fd: 3 }).end(JSON.stringify({
-    projectId: "local", controlPlaneUrl: "http://127.0.0.1:7100", apiKey: "test-key"
+    projectId: "local", controlPlaneUrl: "http://127.0.0.1:7100", apiKey: "test-key", storageRegion: "local", pid: process.pid
 }))
 console.log(JSON.stringify({ binary: __filename, args: process.argv.slice(2) }))
 `
