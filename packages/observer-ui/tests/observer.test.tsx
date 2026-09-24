@@ -184,6 +184,16 @@ test("actor search filters the inventory and can recover from no matches", async
     assert.ok(view.getByRole("button", { name: "Counter" }))
 })
 
+test("an exact actor class search keeps its keyboard navigation option", async () => {
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    const search = await view.findByRole("combobox", { name: "Search actors and instances" })
+    fireEvent.change(search, { target: { value: "room" } })
+    assert.ok(view.getByRole("option", { name: "Room 3 instances" }))
+    fireEvent.keyDown(search, { key: "Enter" })
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room", level: 1 }))
+    assert.ok(view.getByRole("heading", { name: "Room instances" }))
+})
+
 test("actor search finds instance IDs and opens their requests and WebSockets directly", async () => {
     const searchable = {
         actors: [inventory.actors[0]!, { ...inventory.actors[1]!, live: 1, instances: [{ actorId: "general", status: "live" as const, connections: [] }] }]
@@ -198,6 +208,9 @@ test("actor search finds instance IDs and opens their requests and WebSockets di
     assert.ok(view.getByRole("region", { name: "Room / general" }))
     assert.ok(view.getByRole("heading", { name: "Requests" }))
     assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
+    assert.ok(document.activeElement === view.getByRole("heading", { name: "general", level: 2 }), "the opened instance receives focus")
+    fireEvent.click(view.getByRole("button", { name: "Back to instances" }))
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room instances" }))
 })
 
 test("instance search and residency filtering combine without changing inventory totals", async () => {

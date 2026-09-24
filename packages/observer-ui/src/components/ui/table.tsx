@@ -2,9 +2,9 @@ import * as React from "react"
 
 import { cn } from "../../lib/utils.js"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({ className, containerProps, ...props }: React.ComponentProps<"table"> & { containerProps?: React.ComponentProps<"div"> }) {
     return (
-        <div data-slot="table-container" className="la:relative la:w-full la:overflow-x-auto">
+        <div {...containerProps} data-slot="table-container" className={cn("la:relative la:w-full la:overflow-x-auto", containerProps?.className)}>
             <table data-slot="table" className={cn("la:w-full la:caption-bottom la:text-sm la:tabular-nums", className)} {...props} />
         </div>
     )

@@ -180,44 +180,46 @@ function ClassTable({ inventory, metrics, failed, onSelectActor }: { inventory?:
                         <NativeSelectOption value="unknown">Unknown residency</NativeSelectOption>
                     </NativeSelect>
                 </div>
-                <div className="overview-table-scroll" role="region" aria-label="Actor class metrics" tabIndex={0}>
-                    <Table className="overview-table" aria-label="Actor class metrics">
-                        <colgroup>
-                            <col className="overview-class-column" />
-                            <col span={6} />
-                        </colgroup>
-                        <TableHeader>
-                            <TableRow className="overview-groups">
-                                <TableHead scope="colgroup" colSpan={2}>
-                                    Actors
-                                </TableHead>
-                                <TableHead scope="colgroup" colSpan={4}>
-                                    Requests
-                                </TableHead>
-                                <TableHead scope="colgroup">WebSockets</TableHead>
-                            </TableRow>
-                            <TableRow>
-                                <TableHead scope="col">Class</TableHead>
-                                <TableHead scope="col">Instances</TableHead>
-                                <TableHead scope="col">Total</TableHead>
-                                <TableHead scope="col">Success</TableHead>
-                                <TableHead scope="col">p95 latency</TableHead>
-                                <TableHead scope="col">p95 queue wait</TableHead>
-                                <TableHead scope="col">Connected</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {actors.map(actor => (
-                                <ClassRow
-                                    key={actor.actorName}
-                                    actor={actor}
-                                    metrics={metrics && (metrics.classes.find(row => row.actorName === actor.actorName) ?? empty(actor.actorName))}
-                                    onSelectActor={onSelectActor}
-                                />
-                            ))}
-                        </TableBody>
-                    </Table>
-                </div>
+                <Table
+                    className="overview-table"
+                    aria-label="Actor class metrics"
+                    containerProps={{ className: "overview-table-scroll", role: "region", "aria-label": "Actor class metrics", tabIndex: 0 }}
+                >
+                    <colgroup>
+                        <col className="overview-class-column" />
+                        <col span={6} />
+                    </colgroup>
+                    <TableHeader>
+                        <TableRow className="overview-groups">
+                            <TableHead scope="colgroup" colSpan={2}>
+                                Actors
+                            </TableHead>
+                            <TableHead scope="colgroup" colSpan={4}>
+                                Requests
+                            </TableHead>
+                            <TableHead scope="colgroup">WebSockets</TableHead>
+                        </TableRow>
+                        <TableRow>
+                            <TableHead scope="col">Class</TableHead>
+                            <TableHead scope="col">Instances</TableHead>
+                            <TableHead scope="col">Total</TableHead>
+                            <TableHead scope="col">Success</TableHead>
+                            <TableHead scope="col">p95 latency</TableHead>
+                            <TableHead scope="col">p95 queue wait</TableHead>
+                            <TableHead scope="col">Connected</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {actors.map(actor => (
+                            <ClassRow
+                                key={actor.actorName}
+                                actor={actor}
+                                metrics={metrics && (metrics.classes.find(row => row.actorName === actor.actorName) ?? empty(actor.actorName))}
+                                onSelectActor={onSelectActor}
+                            />
+                        ))}
+                    </TableBody>
+                </Table>
                 {!actors.length && (
                     <div className="overview-empty" role="status">
                         <strong>{!inventory ? (failed ? "Inventory unavailable" : "Loading actor classes…") : inventory.actors.length ? "No matching actor classes" : "No actors yet"}</strong>

@@ -52,9 +52,9 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
         setQuery("")
     }, [client, initialActorName])
     useEffect(() => {
-        if (previousActor.current !== selectedActorName) heading.current?.focus()
+        if (previousActor.current !== selectedActorName && selectedInstanceId === undefined) heading.current?.focus()
         previousActor.current = selectedActorName
-    }, [selectedActorName])
+    }, [selectedActorName, selectedInstanceId])
     const selectActor = (actorName?: string) => {
         setSelectedInstanceId(undefined)
         setSelectedActorName(actorName)

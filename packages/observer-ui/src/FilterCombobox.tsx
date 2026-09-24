@@ -25,7 +25,7 @@ export interface FilterComboboxProps {
 // A free-text filter whose suggestions come from what is on screen; cmdk owns the listbox keyboard model.
 export function FilterCombobox({ label, placeholder, value, onChange, onSelectSuggestion, suggestions, limit = 8, className }: FilterComboboxProps) {
     const [open, setOpen] = useState(false)
-    const matches = matchSuggestions(suggestions, value, limit)
+    const matches = matchSuggestions(suggestions, value, limit, !!onSelectSuggestion)
     const groups = matches.reduce((grouped, suggestion) => grouped.set(suggestion.group, [...(grouped.get(suggestion.group) ?? []), suggestion]), new Map<string, FilterSuggestion[]>())
     const expanded = open && matches.length > 0
     return (
@@ -79,7 +79,7 @@ export function FilterCombobox({ label, placeholder, value, onChange, onSelectSu
     )
 }
 
-export function matchSuggestions(suggestions: FilterSuggestion[], value: string, limit: number): FilterSuggestion[] {
+export function matchSuggestions(suggestions: FilterSuggestion[], value: string, limit: number, includeExactMatches = false): FilterSuggestion[] {
     const needle = value.trim().toLocaleLowerCase()
     const terms = needle.split(/\s+/u).filter(Boolean)
     const seen = new Set<string>()
@@ -88,7 +88,7 @@ export function matchSuggestions(suggestions: FilterSuggestion[], value: string,
         const key = suggestion.id ?? `${suggestion.group}:${suggestion.value}`
         const text = [suggestion.value, ...(suggestion.keywords ?? [])].join(" ").toLocaleLowerCase()
         const exactValue = suggestion.value.toLocaleLowerCase() === needle && !suggestion.keywords?.length
-        if (seen.has(key) || exactValue || !terms.every(term => text.includes(term))) continue
+        if (seen.has(key) || (exactValue && !includeExactMatches) || !terms.every(term => text.includes(term))) continue
         seen.add(key)
         matches.push(suggestion)
     }

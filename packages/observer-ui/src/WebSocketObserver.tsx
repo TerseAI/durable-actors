@@ -154,37 +154,39 @@ export function WebSocketObserver({ client, onSelectActor, timeRange, onTimeRang
                 </section>
             )}
             <div className="overview-panel">
-                <div className="overview-table-scroll" role="region" aria-label="WebSocket connections" tabIndex={0}>
-                    <Table className="overview-table socket-table" aria-label="WebSocket connections">
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead scope="col">Status</TableHead>
-                                <TableHead scope="col">Connection</TableHead>
-                                <TableHead scope="col">Actor class</TableHead>
-                                <TableHead scope="col">Instance</TableHead>
-                                <TableHead scope="col">Opened</TableHead>
-                                <TableHead scope="col">Duration</TableHead>
-                                <TableHead scope="col">Messages</TableHead>
-                                <TableHead scope="col">Metadata</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {visible.map(session => (
-                                <SessionRow
-                                    key={JSON.stringify([session.actorName, session.actorId, session.connectionId])}
-                                    session={session}
-                                    now={now}
-                                    longest={longest}
-                                    selected={selected === session}
-                                    onSelect={element => {
-                                        trigger.current = element
-                                        setSelected(session)
-                                    }}
-                                />
-                            ))}
-                        </TableBody>
-                    </Table>
-                </div>
+                <Table
+                    className="overview-table socket-table"
+                    aria-label="WebSocket connections"
+                    containerProps={{ className: "overview-table-scroll", role: "region", "aria-label": "WebSocket connections", tabIndex: 0 }}
+                >
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead scope="col">Status</TableHead>
+                            <TableHead scope="col">Connection</TableHead>
+                            <TableHead scope="col">Actor class</TableHead>
+                            <TableHead scope="col">Instance</TableHead>
+                            <TableHead scope="col">Opened</TableHead>
+                            <TableHead scope="col">Duration</TableHead>
+                            <TableHead scope="col">Messages</TableHead>
+                            <TableHead scope="col">Metadata</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {visible.map(session => (
+                            <SessionRow
+                                key={JSON.stringify([session.actorName, session.actorId, session.connectionId])}
+                                session={session}
+                                now={now}
+                                longest={longest}
+                                selected={selected === session}
+                                onSelect={element => {
+                                    trigger.current = element
+                                    setSelected(session)
+                                }}
+                            />
+                        ))}
+                    </TableBody>
+                </Table>
                 {!visible.length && (
                     <div className="overview-empty" role="status">
                         <strong>{emptyTitle(ready, history, sessions.length)}</strong>
