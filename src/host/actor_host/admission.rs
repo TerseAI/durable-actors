@@ -259,6 +259,7 @@ impl Mailbox {
         let _ = self
             .completed
             .send(ActorCompletion {
+                resets_idle_timer: request.operation.resets_idle_timer(),
                 object: self.object.clone(),
                 reply: request.reply,
                 result,

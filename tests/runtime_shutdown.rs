@@ -33,14 +33,49 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
-    let project = tempfile::tempdir()?;
-    local_project::write_actor(
-        project.path(),
+    assert_idle_behavior(
         "@Persisted count = 0;
          async increment(): Promise<number> { return ++this.count }
          async read(): Promise<number> { return this.count }
          async processId(): Promise<number> { return process.pid }",
-    )?;
+        "host-idle-client.mjs",
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn idle_actors_rehydrate_with_live_websockets() -> Result<()> {
+    assert_idle_behavior(
+        r#"
+        @Persisted count = 0;
+        @Ephemeral instance = crypto.randomUUID();
+        async inspect() {
+            return { instance: this.instance, count: this.count, pid: process.pid,
+                sockets: (await this.getConnections()).map(socket => ({ id: socket.id, metadata: socket.metadata, tags: socket.tags })) };
+        }
+        async hold() {
+            await new Promise(resolve => setTimeout(resolve, 800));
+            return this.inspect();
+        }
+        async onConnect(socket: ActorSocket) {
+            this.count++;
+            socket.metadata = { user: "restored" };
+            socket.setTags("room");
+        }
+        async onMessage(socket: ActorSocket) {
+            this.count++;
+            socket.send(await this.inspect());
+        }
+        "#,
+        "socket-idle-client.mjs",
+    )
+    .await
+}
+
+async fn assert_idle_behavior(actor: &str, client: &str) -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(project.path(), actor)?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_durable-actors"))
         .args([
             "dev",
@@ -75,7 +110,7 @@ async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
     let result = timeout(
         Duration::from_secs(20),
         Command::new("node")
-            .arg(root.join("tests/fixtures/host-idle-client.mjs"))
+            .arg(root.join("tests/fixtures").join(client))
             .arg(root.join("sdk/dist/client/remoteClient.js"))
             .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
             .env("DURABLE_ACTORS_PROJECT_ID", "default")
@@ -165,11 +200,13 @@ async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
 
 async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -> Result<String> {
     let mut line = String::new();
+    let mut startup = String::new();
     loop {
         ensure!(
             output.read_line(&mut line).await? != 0,
-            "runtime exited before readiness"
+            "runtime exited before readiness: {startup}"
         );
+        startup.push_str(&line);
         if let Some((_, origin)) = line.split_once("  Ready  ") {
             return Ok(origin.trim().to_owned());
         }
