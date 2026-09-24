@@ -22,6 +22,18 @@ impl Default for Channels {
 }
 
 impl Channels {
+    pub(crate) async fn preconnect(&self, origin: &str) -> Result<()> {
+        let origin = reqwest::Url::parse(origin)?.to_string();
+        let endpoint = endpoint(&origin)?;
+        self.0
+            .try_get_with(origin, async {
+                endpoint.connect().await.map_err(anyhow::Error::from)
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("connect storage endpoint: {error}"))?;
+        Ok(())
+    }
+
     pub(crate) async fn capability(&self, url: &str) -> Result<(Channel, String)> {
         let (origin, token) = capability_origin(url)?;
         let channel = self
@@ -34,6 +46,10 @@ impl Channels {
 }
 
 pub(crate) fn channel(origin: &str) -> Result<Channel> {
+    Ok(endpoint(origin)?.connect_lazy())
+}
+
+fn endpoint(origin: &str) -> Result<Endpoint> {
     let url = reqwest::Url::parse(origin)?;
     ensure!(
         matches!(url.scheme(), "http" | "https")
@@ -51,7 +67,7 @@ pub(crate) fn channel(origin: &str) -> Result<Channel> {
     if url.scheme() == "https" {
         endpoint = endpoint.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
     }
-    Ok(endpoint.connect_lazy())
+    Ok(endpoint)
 }
 
 fn capability_origin(url: &str) -> Result<(String, String)> {
@@ -68,13 +84,14 @@ fn capability_origin(url: &str) -> Result<(String, String)> {
     );
     let token = query[0].1.to_string();
     url.set_query(None);
-    let origin = format!(
+    let origin = reqwest::Url::parse(&format!(
         "{scheme}:{}",
         url.as_str()
             .split_once(':')
             .context("missing capability scheme")?
             .1
-    );
+    ))?
+    .to_string();
     ensure!(
         url.username().is_empty() && url.password().is_none() && url.fragment().is_none(),
         "invalid storage capability authority"

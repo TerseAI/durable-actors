@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	modal "github.com/modal-labs/modal-client/go"
-	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -67,7 +65,7 @@ func TestMountAndAssignmentOverlapAndFailureTerminatesTheClaimedSpare(t *testing
 }
 
 func newTestProvider(api modalAPI) *provider {
-	return &provider{api: api, assigner: fakeAssigner{api}, now: time.Now, started: time.Now()}
+	return &provider{api: api, handles: newSpareHandles(128, time.Hour, time.Now), assigner: fakeAssigner{api}, now: time.Now, started: time.Now()}
 }
 func testRequest() ensureRequest {
 	return ensureRequest{SessionID: "00000000-0000-4000-8000-000000000001", Actor: json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`), CodeSnapshot: "im-code", WorkingDirectory: "/customer", ActorEntrypoint: "actors.mjs", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}, HostConfigKey: "r1", CanonicalRegion: "north-america-east", HostID: "host.v3.r1.new", HostToken: "test-token", ImageRef: "im-test", HostIdleTimeoutMS: 300000}
@@ -75,7 +73,7 @@ func testRequest() ensureRequest {
 
 type fakeAPI struct {
 	created, found                         sandbox
-	createErr, findErr                     error
+	createErr, findErr, resolveErr         error
 	creates, finds, resolves, succeedAfter int
 	params                                 *modal.SandboxCreateParams
 	name                                   string
@@ -83,7 +81,7 @@ type fakeAPI struct {
 
 func (a *fakeAPI) Resolve(_ context.Context, id string) (*modal.App, *modal.Image, error) {
 	a.resolves++
-	return &modal.App{}, &modal.Image{ImageID: id}, nil
+	return &modal.App{}, &modal.Image{ImageID: id}, a.resolveErr
 }
 func (a *fakeAPI) Secret(_ context.Context, name string) (*modal.Secret, error) {
 	return &modal.Secret{Name: name}, nil
@@ -103,7 +101,6 @@ func (a *fakeAPI) Find(_ context.Context, name string) (sandbox, error) {
 }
 
 type fakeSandbox struct {
-	controlRoute      string
 	mounted           string
 	assignment        map[string]string
 	mountErr          error
@@ -187,8 +184,8 @@ func TestHostIdentityUsesOnlyRevisionAndSession(t *testing.T) {
 }
 
 func (a *fakeAPI) ByID(ctx context.Context, id string) (sandbox, error) { return a.Find(ctx, id) }
-func (s *fakeSandbox) Mount(ctx context.Context, image *modal.Image) error {
-	s.mounted = image.ImageID
+func (s *fakeSandbox) Mount(ctx context.Context, snapshotID string) error {
+	s.mounted = snapshotID
 	if s.mountStarted != nil {
 		close(s.mountStarted)
 		select {
@@ -225,9 +222,6 @@ func (s *fakeSandbox) BuildCode(_ context.Context, directory, entrypoint string)
 }
 
 func (s *fakeSandbox) ControlRoute(context.Context) (string, error) {
-	if s.controlRoute != "" {
-		return s.controlRoute, nil
-	}
 	return "https://control.test", nil
 }
 
@@ -253,19 +247,4 @@ func (a fakeAssigner) Assign(ctx context.Context, spare spareHandle, environment
 		return handle, err
 	}
 	return hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42}, nil
-}
-
-func assignmentServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var environment map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&environment); err != nil {
-			t.Error(err)
-			w.WriteHeader(400)
-			return
-		}
-		json.NewEncoder(w).Encode(hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42})
-	}))
-	t.Cleanup(server.Close)
-	return server
 }

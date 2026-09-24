@@ -10,12 +10,15 @@ use crate::{
     postgres::PostgresDatabase,
 };
 
+mod replenishment;
 mod replica;
 
 #[derive(Clone)]
 pub(crate) struct PoolConfig {
     pub kind: SpareKind,
     pub idle: u32,
+    pub fleet_maximum: u32,
+    pub max_starting: u32,
     pub idle_ttl_seconds: u32,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
@@ -139,27 +142,62 @@ impl SparePool {
     }
 
     pub fn start(self: &Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
-        let pool = self.clone();
-        tokio::spawn(async move {
-            loop {
-                let result = tokio::select! {
-                    biased;
-                    () = stop.cancelled() => break,
-                    result = pool.reconcile(registry.as_ref()) => result,
-                };
-                if let Err(error) = result {
-                    warn!(error = %format!("{error:#}"), "generic spare reconciliation failed");
-                }
-                tokio::select! {
-                    () = stop.cancelled() => break,
-                    () = pool.wake.notified() => {},
-                    () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                }
-            }
-        });
+        tokio::spawn(self.clone().run(registry, stop));
     }
 
-    async fn reconcile(&self, registry: &dyn AdminRegistry) -> Result<()> {
+    async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
+        let mut jobs = tokio::task::JoinSet::new();
+        let mut cleaning = false;
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                Some(result) = jobs.join_next(), if !jobs.is_empty() => {
+                    match result {
+                        Ok(Background::Build(result)) => {
+                            report(result);
+                            self.wake.notify_one();
+                        }
+                        Ok(Background::Cleanup(result)) => {
+                            cleaning = false;
+                            report(result);
+                        }
+                        Err(error) => warn!(%error, "spare maintenance task stopped"),
+                    }
+                    continue;
+                }
+                () = self.wake.notified() => {},
+                _ = interval.tick() => {},
+            }
+            let plans = tokio::select! {
+                () = stop.cancelled() => break,
+                result = self.reconcile(registry.as_ref()) => result,
+            };
+            match plans {
+                Ok(plans) => {
+                    for plan in plans {
+                        let pool = self.clone();
+                        jobs.spawn(async move {
+                            Background::Build(
+                                pool.build(&plan.key, &plan.image, &plan.region, plan.name)
+                                    .await,
+                            )
+                        });
+                    }
+                }
+                Err(error) => report(Err(error)),
+            }
+            if !cleaning {
+                cleaning = true;
+                let pool = self.clone();
+                jobs.spawn(async move { Background::Cleanup(pool.cleanup().await) });
+            }
+        }
+    }
+
+    async fn reconcile(&self, registry: &dyn AdminRegistry) -> Result<Vec<Build>> {
         let deployments = registry.launch_specs().await?;
         let images: std::collections::BTreeSet<_> = deployments
             .iter()
@@ -178,21 +216,32 @@ impl SparePool {
                     .map(|region| self.key(image, region))
             })
             .collect();
-        self.store.retire_unwanted(&keys, self.config.idle).await?;
-        self.cleanup().await?;
+        self.store
+            .retire_unwanted(&keys, self.config.idle > 0)
+            .await?;
+        let batch = (self.config.max_starting / keys.len().max(1) as u32).max(1);
+        let mut builds = Vec::new();
         for image in images {
             for region in &self.config.regions {
                 let key = self.key(image, region);
-                let mut builds = Vec::new();
-                while let Some(name) = self.store.reserve(&key, self.config.idle).await? {
-                    builds.push(self.build(&key, image, region, name));
-                }
-                for result in futures_util::future::join_all(builds).await {
-                    result?;
+                let names = match self.store.replenish(&key, &self.config, batch).await {
+                    Ok(names) => names,
+                    Err(error) => {
+                        report(Err(error));
+                        continue;
+                    }
+                };
+                for name in names {
+                    builds.push(Build {
+                        key: key.clone(),
+                        image: image.into(),
+                        region: region.clone(),
+                        name,
+                    });
                 }
             }
         }
-        Ok(())
+        Ok(builds)
     }
 
     async fn build(&self, key: &str, image: &str, region: &str, name: String) -> Result<()> {
@@ -209,29 +258,26 @@ impl SparePool {
                 Ok(())
             }
             Err(error) => {
-                self.store
-                    .0
-                    .execute(
-                        "UPDATE durable_actors_spares SET status = 'retiring' WHERE name = $1",
-                        &[&name],
-                    )
-                    .await?;
+                self.store.build_failed(key, &name).await?;
                 Err(error)
             }
         }
     }
 
     async fn create(&self, image: &str, region: &str, name: &str) -> Result<SpareHandle> {
-        let handle = self
-            .provider
-            .create_spare(&CreateSpareRequest {
-                name: name.into(),
-                image_ref: image.into(),
-                canonical_region: region.into(),
-                resources: self.config.resources.clone(),
-                kind: self.config.kind,
-            })
-            .await?;
+        let request = CreateSpareRequest {
+            name: name.into(),
+            image_ref: image.into(),
+            canonical_region: region.into(),
+            resources: self.config.resources.clone(),
+            kind: self.config.kind,
+        };
+        let handle = tokio::time::timeout(
+            Duration::from_secs(110),
+            self.provider.create_spare(&request),
+        )
+        .await
+        .context("spare creation timed out")??;
         ensure!(
             handle.name == name
                 && handle.canonical_region == region
@@ -245,16 +291,29 @@ impl SparePool {
     }
 
     async fn cleanup(&self) -> Result<()> {
-        for handle in self.store.retiring().await? {
-            self.provider.retire_spare(&handle).await?;
-            self.store
-                .0
-                .execute(
-                    "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
-                    &[&handle.name],
-                )
-                .await?;
+        use futures_util::StreamExt;
+        let results = futures_util::stream::iter(self.store.retiring().await?)
+            .map(|handle| self.retire(handle))
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+        for result in results {
+            result?;
         }
+        Ok(())
+    }
+
+    async fn retire(&self, handle: SpareHandle) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), self.provider.retire_spare(&handle))
+            .await
+            .context("spare retirement timed out")??;
+        self.store
+            .0
+            .execute(
+                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
+                &[&handle.name],
+            )
+            .await?;
         Ok(())
     }
 
@@ -264,39 +323,37 @@ impl SparePool {
     }
 }
 
+struct Build {
+    key: String,
+    image: String,
+    region: String,
+    name: String,
+}
+
+enum Background {
+    Build(Result<()>),
+    Cleanup(Result<()>),
+}
+
+fn report(result: Result<()>) {
+    if let Err(error) = result {
+        warn!(error = %format!("{error:#}"), "generic spare reconciliation failed");
+    }
+}
+
 struct PoolStore(PostgresDatabase, SpareKind);
 
 impl PoolStore {
-    async fn reserve(&self, key: &str, target: u32) -> Result<Option<String>> {
-        if target == 0 {
-            return Ok(None);
-        }
-        let mut client = self.0.connection().await?;
-        let transaction = client.transaction().await?;
-        transaction
-            .query_one(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                &[&key],
-            )
-            .await?;
-        let count: i64 = transaction.query_one(
-            "SELECT count(*) FROM durable_actors_spares WHERE pool_key = $1 AND status IN ('ready', 'starting') AND expires_at > clock_timestamp()", &[&key],
-        ).await?.get(0);
-        if count >= i64::from(target) {
-            return Ok(None);
-        }
-        let name = format!("do-spare-{}", uuid::Uuid::new_v4().simple());
-        transaction.execute("INSERT INTO durable_actors_spares (name, pool_key, status, expires_at, kind) VALUES ($1, $2, 'starting', clock_timestamp() + interval '120 seconds', $3)", &[&name, &key, &self.1.as_str()]).await?;
-        transaction.commit().await?;
-        Ok(Some(name))
-    }
-
     async fn publish(&self, key: &str, handle: &SpareHandle, ttl: u32) -> Result<bool> {
-        Ok(self.0.execute(
+        let published = self.0.execute(
             "UPDATE durable_actors_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \
              WHERE name = $1 AND pool_key = $2 AND status = 'starting' AND expires_at > clock_timestamp()",
             &[&handle.name, &key, &serde_json::to_string(handle)?, &f64::from(ttl)],
-        ).await? == 1)
+        ).await? == 1;
+        if published {
+            self.0.execute("UPDATE durable_actors_pool_backoffs SET failures = 0, retry_after = clock_timestamp() WHERE pool_key = $1", &[&key]).await?;
+        }
+        Ok(published)
     }
 
     async fn claim(&self, key: &str, host: &str, config_key: &str) -> Result<Option<SpareHandle>> {
@@ -307,18 +364,14 @@ impl PoolStore {
         ).await?.map(|row| serde_json::from_str(row.get::<_, &str>(0)).context("decode spare handle")).transpose()
     }
 
-    async fn retire_unwanted(&self, keys: &[String], target: u32) -> Result<()> {
+    async fn retire_unwanted(&self, keys: &[String], enabled: bool) -> Result<()> {
+        // Keep unfinished builds counted and out of cleanup until they publish or their lease expires.
         self.0.execute(
             "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND (kind = 'actor' OR status != 'active')) \
-             OR (status IN ('ready', 'starting') AND (NOT (pool_key = ANY($1)) OR $2::bigint = 0)))",
-            &[&keys, &(target as i64), &self.1.as_str()],
+             OR (status = 'ready' AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
+            &[&keys, &enabled, &self.1.as_str()],
         ).await?;
-        self.0.execute(
-            "UPDATE durable_actors_spares SET status = 'retiring' WHERE name IN \
-             (SELECT name FROM (SELECT name, row_number() OVER (PARTITION BY pool_key ORDER BY created_at) AS n \
-             FROM durable_actors_spares WHERE kind = $2 AND status IN ('ready', 'starting')) ranked WHERE n > $1)",
-            &[&(target as i64), &self.1.as_str()],
-        ).await?;
+        self.0.execute("DELETE FROM durable_actors_pool_backoffs WHERE kind = $2 AND NOT (pool_key = ANY($1))", &[&keys, &self.1.as_str()]).await?;
         Ok(())
     }
 

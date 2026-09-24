@@ -24,21 +24,21 @@ type response struct {
 	Error  string `json:"error,omitempty"`
 }
 
+type commandRunner struct {
+	api      modalAPI
+	handles  *spareHandles
+	assigner spareAssigner
+	now      func() time.Time
+}
+
+func newCommandRunner(api modalAPI, now func() time.Time) *commandRunner {
+	client := &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &commandRunner{api: api, handles: newSpareHandles(128, time.Hour, now), assigner: httpSpareAssigner{client: client}, now: now}
+}
+
 func runCommand(ctx context.Context, input io.Reader, output io.Writer, factory apiFactory, now func() time.Time) error {
 	result, err := executeCommand(ctx, input, factory, now)
-	reply := response{Status: "success", Result: result}
-	if err != nil {
-		reply = response{Status: "failure", Error: err.Error()}
-	}
-	document, err := json.Marshal(reply)
-	if err != nil {
-		return err
-	}
-	if len(document) >= maximumResponseBytes {
-		return fmt.Errorf("provider response is too large")
-	}
-	_, err = output.Write(append(document, '\n'))
-	return err
+	return writeReply(output, result, err)
 }
 
 func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, now func() time.Time) (any, error) {
@@ -53,7 +53,13 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 		return nil, err
 	}
 	defer closeClient()
-	p := &provider{assigner: httpSpareAssigner{client: &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, api: api, now: now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, now())}
+	runner := newCommandRunner(api, now)
+	defer runner.handles.close()
+	return runner.execute(ctx, cmd, started, parsed)
+}
+
+func (r *commandRunner) execute(ctx context.Context, cmd command, started time.Time, parsed int64) (any, error) {
+	p := &provider{assigner: r.assigner, api: r.api, handles: r.handles, now: r.now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, r.now())}
 	switch cmd.Operation {
 	case "create_spare":
 		var request spareRequest
@@ -88,6 +94,22 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 	default:
 		return nil, fmt.Errorf("unsupported sandbox operation")
 	}
+}
+
+func writeReply(output io.Writer, result any, failure error) error {
+	reply := response{Status: "success", Result: result}
+	if failure != nil {
+		reply = response{Status: "failure", Error: failure.Error()}
+	}
+	document, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	if len(document) >= maximumResponseBytes {
+		return fmt.Errorf("provider response is too large")
+	}
+	_, err = output.Write(append(document, '\n'))
+	return err
 }
 
 func readCommand(input io.Reader) (command, error) {

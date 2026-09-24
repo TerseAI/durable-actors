@@ -1,5 +1,6 @@
 use super::*;
 use crate::grpc::proto;
+use anyhow::Context;
 use futures_util::StreamExt;
 use std::sync::{
     Arc,
@@ -46,6 +47,14 @@ async fn reuses_connection_without_reusing_request_credentials() -> Result<()> {
             .serve_with_incoming(incoming),
     );
     let transport = GrpcStateTransport::new();
+    transport.preconnect(&format!("http://{address}")).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while connections.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
     for token in ["first", "second"] {
         assert_eq!(
             transport
@@ -57,6 +66,38 @@ async fn reuses_connection_without_reusing_request_credentials() -> Result<()> {
     }
     server.abort();
     assert_eq!(connections.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_preconnection_releases_waiters_on_cancel_or_timeout() -> Result<()> {
+    for cancel in [true, false] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let transport = GrpcStateTransport::new();
+        let connecting = transport.clone();
+        let preconnection =
+            tokio::spawn(async move { connecting.preconnect(&format!("https://{address}")).await });
+        let (_socket, _) = listener.accept().await?;
+        let url = format!("grpcs://{address}?token=write");
+        let capability = transport.capability(&url);
+        tokio::pin!(capability);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut capability)
+                .await
+                .is_err(),
+            "write opened a second channel during preconnection (cancel={cancel})"
+        );
+        if cancel {
+            preconnection.abort();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), capability).await;
+        preconnection.abort();
+        let _ = preconnection.await;
+        let (_, token) =
+            result.with_context(|| format!("request stayed blocked (cancel={cancel})"))??;
+        assert_eq!(token, "write");
+    }
     Ok(())
 }
 

@@ -8,6 +8,7 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
     PrepareInitialReplicas,
+    PrepareReplicaConnections,
     EnsureReplicas {
         failed: Vec<String>,
     },

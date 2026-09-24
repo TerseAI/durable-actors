@@ -3,9 +3,48 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestSparePlacementUsesGCP(t *testing.T) {
+	for _, test := range []struct{ kind, region string }{{"actor", "north-america-east"}, {"replica", "europe-west"}} {
+		t.Run(test.kind, func(t *testing.T) {
+			params, err := spareParams(spareRequest{Kind: test.kind, Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: test.region, Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.Cloud != "gcp" {
+				t.Fatalf("sandbox cloud = %q, want gcp", params.Cloud)
+			}
+		})
+	}
+}
+
+func TestSpareRetainsItsConnectionUntilClaimed(t *testing.T) {
+	sb := &fakeSandbox{}
+	api := &fakeAPI{created: sb, found: sb}
+	p := newTestProvider(api)
+	spare, err := p.createSpare(context.Background(), spareRequest{Kind: "actor", Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-east", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(sb.calls, "detach") {
+		t.Fatal("ready spare connection was discarded")
+	}
+	request := testRequest()
+	request.Spare = &spare
+	if _, err := p.ensureHost(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if api.finds != 0 {
+		t.Fatal("claimed spare was looked up again")
+	}
+	if !slices.Contains(sb.calls, "detach") {
+		t.Fatal("claimed handle was not released")
+	}
+}
 
 func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 	api := &fakeAPI{created: &fakeSandbox{}}

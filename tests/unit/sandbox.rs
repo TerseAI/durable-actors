@@ -37,7 +37,7 @@ fn rejects_ambiguous_command_configuration() {
 }
 
 #[tokio::test]
-async fn provider_calls_use_independent_processes() -> Result<()> {
+async fn provider_calls_share_a_process_without_serializing() -> Result<()> {
     let (directory, provider) = test_provider()?;
     let requests = (0..5)
         .map(|index| {
@@ -56,12 +56,12 @@ async fn provider_calls_use_independent_processes() -> Result<()> {
         ),
     )
     .await
-    .expect("all five independent processes must start before any replies")?;
+    .expect("all five commands must start before any replies")?;
     let pids = replies
         .iter()
         .map(|reply| reply["pid"].as_u64().unwrap())
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(pids.len(), 5);
+    assert_eq!(pids.len(), 1);
     for (index, reply) in replies.iter().enumerate() {
         assert_eq!(reply["index"], index);
     }
@@ -73,12 +73,11 @@ async fn provider_failures_do_not_affect_other_calls() -> Result<()> {
     let (_directory, provider) = test_provider()?;
     for (request, message) in [
         (serde_json::json!({"fail": true}), "test failure"),
-        (serde_json::json!({"oversized": true}), "stdout exceeds"),
+        (serde_json::json!({"oversized": true}), "response exceeds"),
         (
             serde_json::json!({"malformed": true}),
             "decode provider response",
         ),
-        (serde_json::json!({"exit": true}), "exited"),
     ] {
         let healthy_request = serde_json::json!({"index": 42});
         let (failed, healthy) = tokio::join!(
@@ -92,7 +91,7 @@ async fn provider_failures_do_not_affect_other_calls() -> Result<()> {
 }
 
 #[tokio::test]
-async fn cancelling_one_provider_call_terminates_only_its_process() -> Result<()> {
+async fn cancelling_one_provider_call_preserves_the_worker() -> Result<()> {
     let (directory, provider) = test_provider()?;
     let marker = directory.path().join("cancelled.pid");
     let request = serde_json::json!({"marker": marker});
@@ -112,6 +111,51 @@ async fn cancelling_one_provider_call_terminates_only_its_process() -> Result<()
         .execute("test", &serde_json::json!({"index": 42}))
         .await?;
     assert_eq!(healthy["index"], 42);
+    assert_eq!(healthy["pid"], pid);
+    tokio::time::timeout(PROCESS_DEADLINE, async {
+        while !directory.path().join("cancelled.pid.cancelled").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_worker_is_replaced_without_replaying_the_command() -> Result<()> {
+    let (directory, provider) = test_provider()?;
+    let warm: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
+    let attempts = directory.path().join("attempts");
+    let failed = provider
+        .execute::<_, serde_json::Value>(
+            "test",
+            &serde_json::json!({"disconnect": true, "attempts": attempts}),
+        )
+        .await;
+    assert!(
+        failed
+            .unwrap_err()
+            .to_string()
+            .contains("outcome may be unknown")
+    );
+    let next: serde_json::Value = provider
+        .execute("test", &serde_json::json!({"index": 42}))
+        .await?;
+    assert_eq!(next["index"], 42);
+    assert_ne!(next["pid"], warm["pid"]);
+    assert_eq!(std::fs::read_to_string(attempts)?, "attempt\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_provider_stops_its_worker() -> Result<()> {
+    let (_directory, provider) = test_provider()?;
+    let reply: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
+    drop(provider);
+    wait_for_exit(reply["pid"].as_u64().unwrap() as u32).await
+}
+
+async fn wait_for_exit(pid: u32) -> Result<()> {
     tokio::time::timeout(PROCESS_DEADLINE, async {
         while tokio::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
@@ -132,39 +176,7 @@ fn test_provider() -> Result<(tempfile::TempDir, CommandSandboxProvider)> {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("custom-provider");
-    std::fs::write(
-        &path,
-        r#"#!/usr/bin/env node
-const fs = require('node:fs');
-const command = JSON.parse(fs.readFileSync(0, 'utf8'));
-const request = command.request;
-const reply = result => process.stdout.write(JSON.stringify({status: 'success', result}) + '\n');
-if (request.barrier) {
-  fs.writeFileSync(request.barrier + '/' + process.pid + '.started', '');
-  const timer = setInterval(() => {
-    if (fs.readdirSync(request.barrier).filter(name => name.endsWith('.started')).length === 5) {
-      clearInterval(timer);
-      reply({pid: process.pid, index: request.index});
-    }
-  }, 5);
-} else if (request.fail) {
-  process.stdout.write(JSON.stringify({status: 'failure', error: 'test failure'}) + '\n');
-} else if (request.oversized) {
-  process.stdout.write('x'.repeat(5 * 1024 * 1024 + 1));
-} else if (request.malformed) {
-  process.stdout.write('not json\n');
-} else if (request.exit) {
-  process.exitCode = 1;
-} else if (request.marker) {
-  const pendingMarker = request.marker + '.tmp';
-  fs.writeFileSync(pendingMarker, String(process.pid));
-  fs.renameSync(pendingMarker, request.marker);
-  setInterval(() => {}, 1000);
-} else {
-  reply({pid: process.pid, index: request.index});
-}
-"#,
-    )?;
+    std::fs::write(&path, include_str!("../fixtures/sandbox-provider.cjs"))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
     let provider =
         CommandSandboxProvider::new("modal".into(), path.display().to_string(), HashMap::new())?;

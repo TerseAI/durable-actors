@@ -220,6 +220,7 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
         scope.clone(),
         true,
         stop.clone(),
+        storage.transport.clone(),
     );
     let writer = crate::host::replication::ActorReplication::start(
         storage.clone(),

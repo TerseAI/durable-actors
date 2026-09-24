@@ -50,7 +50,7 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		if len(request.SecretRefs) != 0 || request.Spare.CanonicalRegion != request.CanonicalRegion {
 			return hostHandle{}, fmt.Errorf("spare scope mismatch")
 		}
-		sb, err = p.api.ByID(ctx, request.Spare.ResourceID)
+		sb, err = p.sandboxByID(ctx, request.Spare.ResourceID)
 		spare = *request.Spare
 		phases.Reused = true
 	} else {
@@ -67,15 +67,11 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		}
 	}()
 	phases.SandboxScheduledAtMS = p.elapsed()
-	_, code, err := p.api.Resolve(ctx, request.CodeSnapshot)
-	if err != nil {
-		return hostHandle{}, err
-	}
 	environment := hostEnvironment(request)
 	environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
 	environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 	group, assignmentContext := errgroup.WithContext(ctx)
-	group.Go(func() error { return sb.Mount(assignmentContext, code) })
+	group.Go(func() error { return sb.Mount(assignmentContext, request.CodeSnapshot) })
 	var handle hostHandle
 	group.Go(func() error {
 		var err error
@@ -105,7 +101,11 @@ func (p *provider) createSpare(ctx context.Context, request spareRequest) (spare
 	if err != nil {
 		return spareHandle{}, err
 	}
-	defer sb.Detach()
+	if request.Kind == "actor" {
+		p.handles.keep(sb)
+	} else {
+		sb.Detach()
+	}
 	return handle, nil
 }
 
@@ -155,7 +155,7 @@ func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {
 	var sb sandbox
 	var err error
 	if request.ResourceID != "" {
-		sb, err = p.api.ByID(ctx, request.ResourceID)
+		sb, err = p.sandboxByID(ctx, request.ResourceID)
 	} else {
 		sb, err = p.api.Find(ctx, request.Name)
 	}
@@ -165,6 +165,9 @@ func (p *provider) retireSpare(ctx context.Context, request spareHandle) error {
 	}
 	if err != nil {
 		return err
+	}
+	if cached := p.handles.take(sb.ID()); cached != nil {
+		cached.Detach()
 	}
 	defer sb.Detach()
 	return sb.Terminate(ctx)
@@ -202,7 +205,7 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
 		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
 		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
-		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
+		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,
 		MemoryMiB: limits.MemoryMiB, MemoryLimitMiB: limits.MemoryMiB,
 	}, nil
@@ -249,7 +252,7 @@ func (p *provider) buildCode(ctx context.Context, request buildCodeRequest) (map
 	if err != nil {
 		return nil, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion), CPU: 1, CPULimit: 1})
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
 	if err != nil {
 		return nil, err
 	}

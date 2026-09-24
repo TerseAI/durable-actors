@@ -77,13 +77,6 @@ func modalRegion(region string) (string, error) {
 	return "", fmt.Errorf("canonical region %q has no Modal placement", region)
 }
 
-func modalCloud(region string) string {
-	if region == "north-america-east" {
-		return ""
-	}
-	return "gcp"
-}
-
 func hostEnvironment(r ensureRequest) map[string]string {
 	env := map[string]string{
 		"DURABLE_ACTORS_PROCESS_ROLE": "host", "DURABLE_ACTORS_HOST_TOKEN": r.HostToken,

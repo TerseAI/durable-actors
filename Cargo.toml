@@ -57,3 +57,4 @@ protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

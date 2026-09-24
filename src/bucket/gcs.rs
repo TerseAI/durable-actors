@@ -1,11 +1,28 @@
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+
 use anyhow::Result;
 use async_trait::async_trait;
+use google_cloud_auth::credentials::{
+    CacheableResource, Credentials, CredentialsProvider, EntityTag,
+};
 use google_cloud_storage::client::{Storage, StorageControl};
 
 use super::{Bucket, BucketObject};
 
 pub struct GcsBucket {
     bucket: String,
+    clients: GcsClients,
+}
+
+pub(crate) struct WarmGcs {
+    clients: GcsClients,
+    credentials: PendingCredentials,
+}
+
+struct GcsClients {
     storage: Storage,
     control: StorageControl,
 }
@@ -19,16 +36,59 @@ impl GcsBucket {
         .await
     }
 
-    pub async fn with_credentials(
-        bucket: &str,
-        credentials: google_cloud_auth::credentials::Credentials,
-    ) -> Result<Self> {
-        anyhow::ensure!(
-            !bucket.is_empty() && !bucket.contains('/'),
-            "invalid storage bucket"
-        );
+    pub async fn with_credentials(bucket: &str, credentials: Credentials) -> Result<Self> {
         Ok(Self {
-            bucket: format!("projects/_/buckets/{bucket}"),
+            bucket: bucket_name(bucket)?,
+            clients: GcsClients::new(credentials).await?,
+        })
+    }
+}
+
+impl WarmGcs {
+    pub async fn new() -> Result<Self> {
+        let credentials = PendingCredentials::default();
+        Ok(Self {
+            clients: GcsClients::new(credentials.clone().into()).await?,
+            credentials,
+        })
+    }
+
+    pub async fn preconnect(&self) {
+        // An anonymous read warms the HTTP pool without granting an idle spare access.
+        let probe = self
+            .clients
+            .storage
+            .read_object("projects/_/buckets/durable-actors-warmup", "connection")
+            .send();
+        let _ = tokio::time::timeout(Duration::from_millis(250), probe).await;
+    }
+
+    pub async fn keep_warm(&self) {
+        let period = Duration::from_secs(20);
+        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            self.preconnect().await;
+        }
+    }
+
+    pub fn bind(self, bucket: &str, credentials: Credentials) -> Result<GcsBucket> {
+        let bucket = bucket_name(bucket)?;
+        anyhow::ensure!(
+            self.credentials.0.set(credentials).is_ok(),
+            "storage already assigned"
+        );
+        Ok(GcsBucket {
+            bucket,
+            clients: self.clients,
+        })
+    }
+}
+
+impl GcsClients {
+    async fn new(credentials: Credentials) -> Result<Self> {
+        Ok(Self {
             storage: Storage::builder()
                 .with_credentials(credentials.clone())
                 .build()
@@ -44,7 +104,13 @@ impl GcsBucket {
 #[async_trait]
 impl Bucket for GcsBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
-        let mut response = match self.storage.read_object(&self.bucket, key).send().await {
+        let mut response = match self
+            .clients
+            .storage
+            .read_object(&self.bucket, key)
+            .send()
+            .await
+        {
             Ok(response) => response,
             Err(error)
                 if error.http_status_code() == Some(404)
@@ -71,6 +137,7 @@ impl Bucket for GcsBucket {
         bytes: Vec<u8>,
     ) -> Result<bool> {
         match self
+            .clients
             .storage
             .write_object(&self.bucket, key, bytes::Bytes::from(bytes))
             .set_if_generation_match(generation.unwrap_or(0))
@@ -95,6 +162,7 @@ impl Bucket for GcsBucket {
         let mut token = String::new();
         loop {
             let response = self
+                .clients
                 .control
                 .list_objects()
                 .set_parent(&self.bucket)
@@ -108,6 +176,45 @@ impl Bucket for GcsBucket {
                 return Ok(keys);
             }
         }
+    }
+}
+
+fn bucket_name(bucket: &str) -> Result<String> {
+    anyhow::ensure!(
+        !bucket.is_empty() && !bucket.contains('/'),
+        "invalid storage bucket"
+    );
+    Ok(format!("projects/_/buckets/{bucket}"))
+}
+
+#[derive(Clone, Default)]
+struct PendingCredentials(Arc<OnceLock<Credentials>>);
+
+impl std::fmt::Debug for PendingCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingCredentials")
+    }
+}
+
+impl CredentialsProvider for PendingCredentials {
+    async fn headers(
+        &self,
+        extensions: axum::http::Extensions,
+    ) -> std::result::Result<
+        CacheableResource<axum::http::HeaderMap>,
+        google_cloud_auth::errors::CredentialsError,
+    > {
+        match self.0.get() {
+            Some(credentials) => credentials.headers(extensions).await,
+            None => Ok(CacheableResource::New {
+                entity_tag: EntityTag::new(),
+                data: axum::http::HeaderMap::new(),
+            }),
+        }
+    }
+
+    async fn universe_domain(&self) -> Option<String> {
+        Some("googleapis.com".into())
     }
 }
 

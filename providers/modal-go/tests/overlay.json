@@ -1,5 +1,9 @@
 {
     "Replace": {
+        "server_test.go": "tests/server_test.go",
+        "tests/server_test.go": "",
+        "spare_handles_test.go": "tests/spare_handles_test.go",
+        "tests/spare_handles_test.go": "",
         "assignment_test.go": "tests/assignment_test.go",
         "tests/assignment_test.go": "",
         "command_test.go": "tests/command_test.go",

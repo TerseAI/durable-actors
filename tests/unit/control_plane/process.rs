@@ -41,6 +41,39 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 }
 
 #[test]
+fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
+    };
+    let defaults = parse(&values)?.sandbox_provider.pool;
+    assert_eq!(
+        (defaults.idle, defaults.fleet_maximum, defaults.max_starting),
+        (5, 64, 8)
+    );
+    values.extend([
+        ("DURABLE_ACTORS_SPARE_IDLE", "2"),
+        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "20"),
+        ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
+    ]);
+    let configured = parse(&values)?.sandbox_provider.pool;
+    assert_eq!(
+        (
+            configured.idle,
+            configured.fleet_maximum,
+            configured.max_starting
+        ),
+        (2, 20, 4)
+    );
+    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "1");
+    assert!(parse(&values).is_err());
+    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "20");
+    values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "0");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
+#[test]
 fn host_idle_timeout_is_configurable_and_bounded() -> Result<()> {
     for value in ["1", "120000", "86400000"] {
         let mut values = process_environment();

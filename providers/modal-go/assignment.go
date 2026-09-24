@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -16,15 +17,20 @@ type spareAssigner interface {
 
 type httpSpareAssigner struct{ client *http.Client }
 
+var modalTunnelRoute = regexp.MustCompile(`^https://[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.modal\.host/?$`)
+
 func (a httpSpareAssigner) Assign(ctx context.Context, spare spareHandle, environment map[string]string) (hostHandle, error) {
 	if spare.ControlRoute == "" || spare.ControlToken == "" {
 		return hostHandle{}, fmt.Errorf("spare assignment endpoint missing")
+	}
+	if !modalTunnelRoute.MatchString(spare.ControlRoute) {
+		return hostHandle{}, fmt.Errorf("spare assignment requires a Modal HTTPS tunnel")
 	}
 	body, err := json.Marshal(environment)
 	if err != nil {
 		return hostHandle{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(spare.ControlRoute, "/")+"/assign", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(spare.ControlRoute, "/")+"/assign", bytes.NewReader(body))
 	if err != nil {
 		return hostHandle{}, err
 	}

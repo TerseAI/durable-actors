@@ -28,7 +28,7 @@ type sandbox interface {
 	Route(context.Context) (string, error)
 	Connect(context.Context) (socketCredentials, error)
 	ControlRoute(context.Context) (string, error)
-	Mount(context.Context, *modal.Image) error
+	Mount(context.Context, string) error
 	Snapshot(context.Context) (string, error)
 	BuildCode(context.Context, string, string) (json.RawMessage, error)
 	Ready(context.Context) error
@@ -40,9 +40,17 @@ type sandbox interface {
 type provider struct {
 	assigner               spareAssigner
 	api                    modalAPI
+	handles                *spareHandles
 	now                    func() time.Time
 	started                time.Time
 	inputParsed, sdkLoaded int64
+}
+
+func (p *provider) sandboxByID(ctx context.Context, id string) (sandbox, error) {
+	if sb := p.handles.take(id); sb != nil {
+		return sb, nil
+	}
+	return p.api.ByID(ctx, id)
 }
 
 func (p *provider) socketCredentials(ctx context.Context, request socketRequest) (socketCredentials, error) {

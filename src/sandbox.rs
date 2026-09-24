@@ -216,6 +216,7 @@ pub struct CommandSandboxProvider {
     provider_name: String,
     command: String,
     environment: HashMap<String, String>,
+    process: command_process::Process,
 }
 
 impl CommandSandboxProvider {
@@ -239,6 +240,7 @@ impl CommandSandboxProvider {
             provider_name,
             command,
             environment,
+            process: command_process::Process::default(),
         })
     }
 }
@@ -325,7 +327,7 @@ impl CommandSandboxProvider {
         timings: &mut ProviderCommandTimings,
     ) -> Result<Reply> {
         let command = ProviderCommand { operation, request };
-        let execution = command_process::exchange(
+        let execution = self.process.exchange(
             &self.command,
             &self.environment,
             &command,

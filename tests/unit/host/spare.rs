@@ -107,6 +107,7 @@ async fn run_activation(
         executor,
         javascript,
         entrypoint: code.to_str().unwrap().into(),
+        storage: WarmGcs::new().await?,
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();

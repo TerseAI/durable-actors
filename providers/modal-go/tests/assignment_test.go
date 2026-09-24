@@ -3,27 +3,25 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestDirectAssignmentAuthenticatesAndReturnsReadiness(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/assign" || r.Header.Get("Authorization") != "Bearer secret" {
+	client := &http.Client{Transport: assignmentTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.String() != "https://spare.w.modal.host/assign" || r.Header.Get("Authorization") != "Bearer secret" {
 			t.Errorf("unexpected assignment request")
-			w.WriteHeader(http.StatusUnauthorized)
-			return
 		}
 		var environment map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&environment); err != nil || environment["actor"] != "one" {
 			t.Errorf("assignment missing actor: %v", err)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"hostId": "host.v3.r1.one", "sessionId": "session", "route": "https://actor.test", "canonicalRegion": "north-america-east", "ownerEpoch": 42})
-	}))
-	defer server.Close()
-	assigner := httpSpareAssigner{client: server.Client()}
-	handle, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: server.URL, ControlToken: "secret"}, map[string]string{"actor": "one"})
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"sessionId":"session","ownerEpoch":42}`))}, nil
+	})}
+	assigner := httpSpareAssigner{client: client}
+	handle, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: "https://spare.w.modal.host/", ControlToken: "secret"}, map[string]string{"actor": "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,10 +31,28 @@ func TestDirectAssignmentAuthenticatesAndReturnsReadiness(t *testing.T) {
 }
 
 func TestDirectAssignmentRejectsFailedReadiness(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
-	defer server.Close()
-	assigner := httpSpareAssigner{client: server.Client()}
-	if _, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: server.URL, ControlToken: "secret"}, nil); err == nil {
+	assigner := httpSpareAssigner{client: &http.Client{Transport: assignmentTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody}, nil
+	})}}
+	if _, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: "https://spare.r5.modal.host", ControlToken: "secret"}, nil); err == nil {
 		t.Fatal("failed initialization reported ready")
 	}
 }
+
+func TestDirectAssignmentRejectsUntrustedEndpointsBeforeSendingCredentials(t *testing.T) {
+	assigner := httpSpareAssigner{client: &http.Client{Transport: assignmentTransport(func(*http.Request) (*http.Response, error) {
+		t.Error("sent credentials to an untrusted endpoint")
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}}
+	for _, route := range []string{"http://spare.w.modal.host", "https://169.254.169.254", "https://spare.modal.host.attacker.test", "https://spare.w.modal.host@attacker.test", "https://spare.w.modal.host:8080", "https://spare.w.modal.host/redirect?to=elsewhere"} {
+		t.Run(route, func(t *testing.T) {
+			if _, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: route, ControlToken: "secret"}, nil); err == nil {
+				t.Fatal("accepted untrusted assignment endpoint")
+			}
+		})
+	}
+}
+
+type assignmentTransport func(*http.Request) (*http.Response, error)
+
+func (f assignmentTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

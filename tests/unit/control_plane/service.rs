@@ -1384,17 +1384,20 @@ async fn initial_replica_registration_is_authenticated_and_does_not_require_an_a
         Arc::new(UnavailableProvisioner),
     )
     .with_runtime_access(initial.clone());
-    let request =
-        super::super::protocol::encode_command(ControlPlaneCommand::PrepareInitialReplicas)?;
-    assert_eq!(
-        service
-            .execute(Request::new(request))
-            .await
-            .unwrap_err()
-            .code(),
-        tonic::Code::Unauthenticated
-    );
-    initial.prewarm(scope.clone());
+    for command in [
+        ControlPlaneCommand::PrepareInitialReplicas,
+        ControlPlaneCommand::PrepareReplicaConnections,
+    ] {
+        let request = super::super::protocol::encode_command(command)?;
+        assert_eq!(
+            service
+                .execute(Request::new(request))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+    }
     let request = |command| -> Result<_> {
         let mut request = Request::new(super::super::protocol::encode_command(command)?);
         request
@@ -1402,6 +1405,18 @@ async fn initial_replica_registration_is_authenticated_and_does_not_require_an_a
             .insert("authorization", format!("Bearer {}", token.token).parse()?);
         Ok(request)
     };
+    let reply = service
+        .execute(request(ControlPlaneCommand::PrepareReplicaConnections)?)
+        .await?
+        .into_inner();
+    let ControlPlaneCommandReply::Replicas { targets: assigned } =
+        super::super::protocol::decode_reply(reply)?
+    else {
+        anyhow::bail!("expected replica connection targets");
+    };
+    assert_eq!(assigned, targets);
+    assert!(runtime.replica_members(&scope).await?.is_empty());
+    initial.prewarm(scope.clone());
     let reply = service
         .execute(request(ControlPlaneCommand::PrepareInitialReplicas)?)
         .await?

@@ -135,8 +135,8 @@ func (s *sdkSandbox) Connect(ctx context.Context) (socketCredentials, error) {
 	return socketCredentials{URL: credentials.URL, Token: credentials.Token}, nil
 }
 
-func (s *sdkSandbox) Mount(ctx context.Context, image *modal.Image) error {
-	return s.sb.MountImage(ctx, "/customer", image, nil)
+func (s *sdkSandbox) Mount(ctx context.Context, snapshotID string) error {
+	return s.sb.MountImage(ctx, "/customer", &modal.Image{ImageID: snapshotID}, nil)
 }
 
 func (s *sdkSandbox) Snapshot(ctx context.Context) (string, error) {
