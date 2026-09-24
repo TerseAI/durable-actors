@@ -43,9 +43,51 @@ test("only a pre-dispatch HTTP 401 is an authentication refresh signal", async (
 })
 
 test("HTTP replies require an explicit valid outcome", async () => {
-    for (const document of [{}, { type: "completed" }, { type: "failed", code: 3 }, { type: "unauthenticated" }]) {
+    for (const document of [
+        {},
+        { type: "completed" },
+        { type: "failed", code: 3 },
+        { type: "unauthenticated" },
+        { type: "not_dispatched" }
+    ]) {
         const transport = new HttpActorHostTransport(async () => Response.json(document))
         await assert.rejects(transport.invoke(target, invocation), ActorProtocolError)
+    }
+})
+
+test("connection refusals identify requests that were never dispatched", async () => {
+    const refused = () => Object.assign(new Error("refused"), { code: "ECONNREFUSED", syscall: "connect" })
+    for (const error of [
+        refused(),
+        new TypeError("fetch failed", { cause: refused() }),
+        new TypeError("fetch failed", { cause: new AggregateError([refused(), refused()]) })
+    ]) {
+        const transport = new HttpActorHostTransport(async () => {
+            throw error
+        })
+        assert.deepEqual(await transport.invoke(target, invocation), { type: "not_dispatched" })
+    }
+})
+
+test("unproven transport failures preserve ambiguity", async () => {
+    const refused = Object.assign(new Error("refused"), { code: "ECONNREFUSED", syscall: "connect" })
+    const cyclic = new Error("cycle")
+    cyclic.cause = cyclic
+    for (const error of [
+        new TypeError("fetch failed"),
+        new Error("connect ECONNREFUSED"),
+        Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+        Object.assign(new Error("reset"), { code: "ECONNRESET", syscall: "read", cause: refused }),
+        Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }),
+        new AggregateError([refused, new Error("connection lost")]),
+        Object.assign(new AggregateError([refused, cyclic]), { code: "ECONNREFUSED" }),
+        new AggregateError([]),
+        cyclic
+    ]) {
+        const transport = new HttpActorHostTransport(async () => {
+            throw error
+        })
+        await assert.rejects(transport.invoke(target, invocation), failure => failure === error)
     }
 })
 

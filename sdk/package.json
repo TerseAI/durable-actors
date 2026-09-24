@@ -1,6 +1,6 @@
 {
     "name": "durable-actors",
-    "version": "0.4.0",
+    "version": "0.4.2",
     "description": "Provider-neutral actors for sandbox compute",
     "type": "module",
     "license": "MIT",
@@ -95,7 +95,7 @@
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
         "dotenv": "^18.0.0",
-        "durable-actors-observer": "workspace:0.1.0",
+        "durable-actors-observer": "workspace:*",
         "esbuild": "^0.28.2",
         "import-meta-resolve": "^4.2.0",
         "json-schema-to-typescript": "^16.0.0",

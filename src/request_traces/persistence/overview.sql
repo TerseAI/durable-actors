@@ -1,6 +1,6 @@
 WITH scoped AS (
     SELECT actor_name, outcome, json_extract(event, '$.durationMs') AS duration_ms, json_extract(event, '$.queueWaitMs') AS queue_wait_ms FROM traces
-    WHERE (?1 IS NULL OR started_at_ms >= ?1) AND (?2 IS NULL OR started_at_ms <= ?2)
+    WHERE project_id = ?3 AND (?1 IS NULL OR started_at_ms >= ?1) AND (?2 IS NULL OR started_at_ms <= ?2)
 ), events AS (
     SELECT actor_name, outcome, duration_ms, queue_wait_ms FROM scoped
     UNION ALL

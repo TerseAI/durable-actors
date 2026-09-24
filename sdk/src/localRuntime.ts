@@ -10,7 +10,11 @@ import { actorEnvironment } from "./environment.js"
 import { projectSdkModule } from "./projectSdk.js"
 import { fetchRuntimeExecutablePath } from "./runtimeInstaller.js"
 
+export { runDev, type DevOptions } from "./cli/dev.js"
+
 export interface LocalActorOptions {
+    /** Module URL from which to resolve the SDK dependency when embedded in a wrapper. */
+    sdkResolveFrom?: string
     projectId?: string
     /** Enables local authentication when set; omitted by default. */
     apiKey?: string
@@ -51,7 +55,7 @@ export interface LocalActorRuntime {
 export async function startLocalActors(options: LocalActorOptions): Promise<LocalActorRuntime> {
     if (options.projectId !== undefined) validateProjectId(options.projectId)
     const project = path.resolve(options.project ?? ".")
-    const local = await projectSdkModule(project, "./localRuntime.js", import.meta.url)
+    const local = await projectSdkModule(project, "./localRuntime.js", import.meta.url, options.sdkResolveFrom)
     if (local !== undefined) return (await import(local)).startLocalActors({ ...options, project })
     const child = launch(await fetchRuntimeExecutablePath(), options)
     const { closed, stop } = lifecycle(child)

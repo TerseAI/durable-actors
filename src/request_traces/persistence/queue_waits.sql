@@ -1,5 +1,5 @@
 WITH events AS (
-    SELECT actor_name, actor_id, outcome, started_at_ms, json_extract(event, '$.queueWaitMs') AS queue_wait_ms FROM traces
+    SELECT actor_name, actor_id, outcome, started_at_ms, json_extract(event, '$.queueWaitMs') AS queue_wait_ms FROM traces WHERE project_id = ?4
 )
 SELECT actor_name, actor_id, COUNT(*) AS admitted, AVG(queue_wait_ms), MAX(queue_wait_ms)
 FROM events

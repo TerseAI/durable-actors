@@ -34,7 +34,10 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
 #[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
     assert_idle_behavior(
-        "async processId(): Promise<number> { return process.pid }",
+        "@Persisted count = 0;
+         async increment(): Promise<number> { return ++this.count }
+         async read(): Promise<number> { return this.count }
+         async processId(): Promise<number> { return process.pid }",
         "host-idle-client.mjs",
     )
     .await

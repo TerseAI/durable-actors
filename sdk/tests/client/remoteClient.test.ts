@@ -335,7 +335,7 @@ test("resolves a fresh host socket grant before connecting", async () => {
     ])
 })
 
-test("does not retry a control-plane transport failure", async () => {
+test("a control-plane transport failure is unavailable before actor dispatch", async () => {
     let calls = 0
     const server = createServer(request => {
         calls += 1
@@ -350,7 +350,7 @@ test("does not retry a control-plane transport failure", async () => {
     try {
         await assert.rejects(
             client.invoke("Counter", "counter-1", "increment", [2]),
-            error => error instanceof ActorInvocationError && error.code === "outcome_unknown"
+            error => error instanceof ActorInvocationError && error.code === "unavailable"
         )
         assert.equal(calls, 1)
     } finally {

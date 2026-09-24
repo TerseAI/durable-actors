@@ -77,9 +77,11 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     state
         .traces
         .record(
+            "default",
             "host",
             "session",
             vec![crate::request_traces::RequestTrace {
+                project_id: "default".into(),
                 request_id: "request".into(),
                 actor_name: "Counter".into(),
                 actor_id: "one".into(),
@@ -95,14 +97,22 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
             0,
         )
         .await?;
-    let event_id = state.traces.replay(&Default::default()).await?.records[0]
+    let event_id = state
+        .traces
+        .replay("default", &Default::default())
+        .await?
+        .records[0]
         .event
         .event_id
         .clone();
     drop(state);
     let restored = local_storage(&options, relative, "http://localhost:7100").await?;
     assert_eq!(
-        restored.traces.replay(&Default::default()).await?.records[0]
+        restored
+            .traces
+            .replay("default", &Default::default())
+            .await?
+            .records[0]
             .event
             .event_id,
         event_id
