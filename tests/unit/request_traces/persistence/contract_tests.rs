@@ -12,6 +12,7 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
     assert!(initial.records.is_empty());
     let mut records = vec![event("first"), event("second"), event("last")];
     records[0].trace.request_id = "request\0id".into();
+    records[0].trace.state_version = Some(42);
     for (index, record) in records.iter_mut().enumerate() {
         record.trace.started_at_ms = 1000 + index as u64;
         record.trace.duration_ms = (index + 1) as f64 * 10.0;
@@ -164,6 +165,56 @@ async fn contract(store: &dyn TracePersistence) -> Result<()> {
         1
     );
     socket_contract(store).await?;
+    request_and_connection_links_filter_actor_scoped_history(store).await?;
+    Ok(())
+}
+
+async fn request_and_connection_links_filter_actor_scoped_history(
+    store: &dyn TracePersistence,
+) -> Result<()> {
+    let mut first = event("one");
+    first.trace.project_id = "links".into();
+    first.trace.request_id = "request\0a".into();
+    first.trace.connection_id = Some("socket-a".into());
+    let mut second = event("two");
+    second.trace.project_id = "links".into();
+    second.trace.request_id = "request-b".into();
+    second.trace.connection_id = Some("socket-b".into());
+    store.append(&[first, second]).await?;
+    let page = store
+        .history(
+            "links",
+            &HistoryQuery {
+                request_id: Some("request\0a".into()),
+                actor_id: Some("one".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(ids(&page), ["one"]);
+    let page = store
+        .history(
+            "links",
+            &HistoryQuery {
+                connection_id: Some("socket-b".into()),
+                actor_id: Some("one".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(ids(&page), ["two"]);
+    let page = store
+        .history(
+            "links",
+            &HistoryQuery {
+                request_id: Some("request\0a".into()),
+                connection_id: Some("socket-b".into()),
+                actor_id: Some("one".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(page.records.is_empty());
     Ok(())
 }
 
@@ -442,6 +493,7 @@ pub(super) fn event(id: &str) -> TraceEvent {
         host_id: "host".into(),
         session_id: "session".into(),
         trace: RequestTrace {
+            state_version: None,
             project_id: "default".into(),
             request_id: "same-request".into(),
             actor_name: "Counter".into(),

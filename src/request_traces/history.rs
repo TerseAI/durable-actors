@@ -6,6 +6,8 @@ use super::{RequestOutcome, TRACE_CAPACITY};
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct HistoryQuery {
+    pub request_id: Option<String>,
+    pub connection_id: Option<String>,
     pub actor_name: Option<String>,
     pub actor_id: Option<String>,
     pub outcome: Option<RequestOutcome>,
@@ -19,6 +21,8 @@ pub(crate) struct HistoryQuery {
 impl Default for HistoryQuery {
     fn default() -> Self {
         Self {
+            request_id: None,
+            connection_id: None,
             actor_name: None,
             actor_id: None,
             outcome: None,
@@ -32,6 +36,13 @@ impl Default for HistoryQuery {
 
 impl HistoryQuery {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.request_id
+                .iter()
+                .chain(self.connection_id.iter())
+                .all(|id| !id.is_empty() && id.len() <= 256),
+            "invalid request or connection ID"
+        );
         ensure!(
             (1..=TRACE_CAPACITY).contains(&self.limit),
             "limit must be between 1 and 500"
@@ -65,6 +76,8 @@ impl HistoryQuery {
 
     pub(super) fn filter_key(&self) -> Result<String> {
         Ok(serde_json::to_string(&(
+            &self.request_id,
+            &self.connection_id,
             &self.actor_name,
             &self.actor_id,
             self.outcome,

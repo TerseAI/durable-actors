@@ -189,6 +189,7 @@ impl Mailbox {
                     &invocation,
                     request.owner_epoch,
                     result,
+                    request.operation.commit_origin(),
                     &mut request.timings,
                 )
                 .await;
@@ -207,6 +208,7 @@ impl Mailbox {
                     &invocation,
                     request.owner_epoch,
                     outcome,
+                    request.operation.commit_origin(),
                     &mut request.timings,
                 )
                 .await;
@@ -254,6 +256,7 @@ impl Mailbox {
             &result,
         );
         if let Some(trace) = &mut request.trace {
+            trace.state_version(self.runtime.state_version());
             trace.complete(&result);
         }
         let _ = self

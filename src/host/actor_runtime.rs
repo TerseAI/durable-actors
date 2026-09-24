@@ -54,6 +54,27 @@ pub(crate) struct ActorActivation {
     pub state: Option<bytes::Bytes>,
 }
 
+#[derive(Default)]
+pub(super) struct CommitOrigin {
+    pub connection_id: Option<String>,
+    pub interleaved: bool,
+}
+
+impl CommitOrigin {
+    pub(super) fn socket(event: &crate::actor::ActorSocketEvent) -> Self {
+        use crate::actor::ActorSocketEvent;
+        let connection = match event {
+            ActorSocketEvent::Connect { connection }
+            | ActorSocketEvent::Disconnect { connection, .. } => &connection.id,
+            ActorSocketEvent::Message { connection_id, .. } => connection_id,
+        };
+        Self {
+            connection_id: Some(connection.clone()),
+            interleaved: false,
+        }
+    }
+}
+
 pub(super) struct ActorRuntime {
     endpoint: HostEndpoint,
     executor: Arc<dyn ActorExecutor>,
@@ -81,6 +102,13 @@ impl ActorRuntime {
             cached_state: None,
             activation: None,
         }
+    }
+
+    pub(super) fn state_version(&self) -> Option<u64> {
+        self.cached_state
+            .as_ref()
+            .map(|state| state.state_version)
+            .filter(|version| *version > 0)
     }
 
     pub(super) fn endpoint(&self) -> &HostEndpoint {
@@ -134,10 +162,11 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         outcome: Result<ActorMethodOutcome>,
+        origin: CommitOrigin,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
         let executed = self.method_result(invocation, outcome).await;
-        self.finish_method(invocation, owner_epoch, executed, timings)
+        self.finish_method(invocation, owner_epoch, executed, origin, timings)
             .await
     }
 
@@ -146,10 +175,12 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         outcome: crate::actor::ActorInterleavedOutcome,
+        mut origin: CommitOrigin,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
         self.storage.ensure_authority()?;
         validate_socket_effects(&outcome.effects)?;
+        origin.interleaved = true;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let mut cached = self
             .cached_state
@@ -166,6 +197,7 @@ impl ActorRuntime {
                 &mut cached,
                 outcome.result.clone(),
                 outcome.state,
+                origin,
             )
             .await
         } else {
@@ -276,6 +308,7 @@ impl ActorRuntime {
             });
         }
         timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
+        let origin = CommitOrigin::socket(&invocation.event);
         let outcome = self.execute_socket_event(invocation, cached.state()).await;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (next_state, effects) = match outcome {
@@ -299,6 +332,7 @@ impl ActorRuntime {
                 &mut cached,
                 Value::Null,
                 next_state,
+                origin,
             )
             .await;
         timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
@@ -333,8 +367,14 @@ impl ActorRuntime {
             PreparedInvocation::Completed(result) => return Ok(result),
         };
         let executed = self.execute_method(invocation, state).await;
-        self.finish_method(invocation, owner_epoch, executed, timings)
-            .await
+        self.finish_method(
+            invocation,
+            owner_epoch,
+            executed,
+            CommitOrigin::default(),
+            timings,
+        )
+        .await
     }
 
     async fn finish_method(
@@ -342,6 +382,7 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         executed: std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult>,
+        origin: CommitOrigin,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
@@ -362,7 +403,14 @@ impl ActorRuntime {
         }
 
         let published = self
-            .publish_result(invocation, owner_epoch, &mut cached, result, next_state)
+            .publish_result(
+                invocation,
+                owner_epoch,
+                &mut cached,
+                result,
+                next_state,
+                origin,
+            )
             .await;
         timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
         if published.is_err() {
@@ -557,6 +605,7 @@ impl ActorRuntime {
         cached: &mut CachedActorState,
         result: Value,
         next_state: Value,
+        origin: CommitOrigin,
     ) -> Result<ActorExecutionResult> {
         let mut timings = StateWriteTimings::new();
         let next_version = cached.state_version.checked_add(1);
@@ -567,6 +616,7 @@ impl ActorRuntime {
                 cached,
                 result,
                 next_state,
+                origin,
                 &mut timings,
             )
             .await;
@@ -581,6 +631,7 @@ impl ActorRuntime {
         cached: &mut CachedActorState,
         result: Value,
         next_state: Value,
+        origin: CommitOrigin,
         timings: &mut StateWriteTimings,
     ) -> Result<ActorExecutionResult> {
         let next_version = cached
@@ -617,13 +668,19 @@ impl ActorRuntime {
             "write capability belongs to another owner epoch"
         );
         timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
-        let snapshot = StateSnapshot::new(
+        let mut snapshot = StateSnapshot::new(
             next_version,
             owner_epoch,
             invocation.request_id.clone(),
             &next_state,
             result.clone(),
         )?;
+        snapshot.attribution = Some(crate::state_log::StateAttribution {
+            operation: invocation.method.clone(),
+            connection_id: origin.connection_id,
+            committed_at_ms: unix_millis()? as u64,
+            interleaved: origin.interleaved,
+        });
         timings.snapshot_created_at_ms = Some(timings.elapsed_ms());
         let bytes = snapshot.encode()?;
         timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());

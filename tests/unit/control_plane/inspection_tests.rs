@@ -175,6 +175,8 @@ async fn observability_requires_admin_credentials() -> Result<()> {
         "/v1/projects/default/observe/metrics",
         "/v1/projects/default/observe/queue-waits",
         "/v1/projects/default/observe/websockets",
+        "/v1/projects/default/observe/state?actorName=Room&actorId=one",
+        "/v1/projects/default/observe/state/history?actorName=Room&actorId=one",
     ] {
         for credential in [None, Some(""), Some("wrong"), Some(token.as_str())] {
             let mut request = fixture.client.get(format!("{}{path}", fixture.origin));
@@ -225,8 +227,8 @@ impl Fixture {
             issuer.clone(),
         )?;
         let changes = tokio::sync::watch::channel(()).0;
-        let inspector =
-            ActorInspector::new(store.clone(), changes.clone()).with_traces(traces.clone());
+        let inspector = ActorInspector::new(store.clone(), store.clone(), changes.clone())
+            .with_traces(traces.clone());
         let routes = super::inspection::router(inspector, admin.clone());
         let server = tokio::spawn(async { axum::serve(listener, routes).await });
         let host = HostId::new("host.v3.test");
@@ -469,6 +471,7 @@ async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> 
                 "host",
                 "session",
                 vec![RequestTrace {
+                    state_version: None,
                     project_id: "default".into(),
                     request_id: id.into(),
                     actor_name: "Room".into(),
@@ -665,6 +668,7 @@ async fn record_request(
             "host",
             "session",
             vec![crate::request_traces::RequestTrace {
+                state_version: None,
                 project_id: "default".into(),
                 request_id: id.into(),
                 actor_name: actor_name.into(),
@@ -783,4 +787,95 @@ async fn postgres_request_stream_observes_writes_from_another_control_plane() ->
         assert_eq!(history["records"][0]["requestId"], "remote-instance-request");
         Ok(())
     }).await
+}
+
+#[tokio::test]
+async fn state_inspection_reads_committed_values_and_retained_attribution() -> Result<()> {
+    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
+    let fixture = Fixture::start().await?;
+    let actor = fixture.actor("state-demo");
+    let loaded = fixture
+        .store
+        .register_activation(
+            &actor,
+            &HostLeaseRequest {
+                id: fixture.host.clone(),
+                session_id: "state-session".into(),
+                route: "http://localhost:7101".into(),
+                duration_ms: 60_000,
+            },
+            "north-america-east",
+            true,
+        )
+        .await?;
+    for version in 1..=3 {
+        let plan = fixture
+            .store
+            .prepare_actor_write(&actor, &loaded.placement.lease, 1, version)
+            .await?;
+        let snapshot: StateSnapshot = serde_json::from_value(json!({
+            "stateVersion": version, "ownerEpoch": 1, "requestId": format!("req-{version}"),
+            "state": {"count": version, "settings": {"enabled": true}}, "result": null,
+            "attribution": {"operation": "onMessage", "connectionId": "socket-a", "committedAtMs": 1234, "interleaved": false}
+        }))?;
+        fixture
+            .store
+            .write_snapshot(&plan, snapshot.encode()?)
+            .await?;
+    }
+    let path = "/v1/projects/default/observe/state?actorName=Room.with.dots&actorId=state-demo";
+    let response = fixture.get(path).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let current: Value = response.json().await?;
+    assert_eq!(current["snapshot"]["state"]["count"], 3);
+    assert_eq!(current["snapshot"]["requestId"], "req-3");
+    assert!(current["snapshot"].get("result").is_none());
+    let page: Value = fixture
+        .get(&path.replace("/state?", "/state/history?"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page["records"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        page["records"][0]["attribution"]["connectionId"],
+        "socket-a"
+    );
+    assert!(page["records"][0].get("state").is_none());
+    let page_path = path.replace("/state?", "/state/history?");
+    let first: Value = fixture
+        .get(&format!("{page_path}&limit=2"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(first["records"].as_array().unwrap().len(), 2);
+    assert_eq!(first["nextBefore"], 2);
+    let next: Value = fixture
+        .get(&format!("{page_path}&before=2&limit=2"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(next["records"][0]["stateVersion"], 1);
+    assert!(next["nextBefore"].is_null());
+    let old: Value = fixture
+        .get(&format!("{path}&version=1"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(old["snapshot"]["state"]["count"], 1);
+    let isolated: Value = fixture
+        .get(&path.replace("projects/default", "projects/other"))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(isolated["snapshot"].is_null());
+    assert_eq!(
+        fixture.get(&format!("{path}&version=0")).await?.status(),
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
 }

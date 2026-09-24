@@ -40,7 +40,13 @@ class Observer {
     constructor(
         private readonly client: Pick<
             ControlPlaneClient,
-            "checkConnection" | "listActors" | "getMetrics" | "listQueueWaits" | "listWebSockets"
+            | "checkConnection"
+            | "listActors"
+            | "getMetrics"
+            | "listQueueWaits"
+            | "listWebSockets"
+            | "getState"
+            | "listStateHistory"
         > &
             Partial<Pick<ControlPlaneClient, "openActorStream" | "openRequestStream" | "listRequests">>,
         private readonly openBrowser: (url: string) => Promise<unknown>,
@@ -137,6 +143,8 @@ class Observer {
             return
         }
         const history = {
+            "/api/observe/state": this.client.getState,
+            "/api/observe/state/history": this.client.listStateHistory,
             "/api/observe/requests": this.client.listRequests,
             "/api/observe/metrics": this.client.getMetrics,
             "/api/observe/queue-waits": this.client.listQueueWaits,

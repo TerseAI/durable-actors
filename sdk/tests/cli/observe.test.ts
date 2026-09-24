@@ -14,6 +14,8 @@ const metricsClient = {
         classes: []
     }),
     listQueueWaits: async () => [],
+    getState: async () => ({ snapshot: null, schema: null }),
+    listStateHistory: async () => ({ records: [], retention: null, nextBefore: null }),
     listWebSockets: async () => []
 }
 
@@ -36,7 +38,7 @@ test("observer serves the installed UI package by default", async t => {
 test("observer serves generated assets without a hardcoded filename list", async t => {
     const directory = await mkdtemp(join(tmpdir(), "observer-assets-"))
     await cp(assets, directory, { recursive: true })
-    await mkdir(join(directory, "assets"))
+    await mkdir(join(directory, "assets"), { recursive: true })
     await writeFile(join(directory, "assets", "details-abc123.js"), "export const details = true")
     const observer = new Observer(
         { ...metricsClient, checkConnection: async () => {}, listActors: async () => ({ actors: [] }) },
@@ -336,7 +338,9 @@ test("history proxy cancels the upstream request when the viewer disconnects", a
 for (const [method, path] of [
     ["getMetrics", "metrics"],
     ["listQueueWaits", "queue-waits"],
-    ["listWebSockets", "websockets"]
+    ["listWebSockets", "websockets"],
+    ["getState", "state"],
+    ["listStateHistory", "state/history"]
 ] as const) {
     test(`observer proxies ${path} filters with origin and method checks`, async t => {
         let signal: AbortSignal | undefined

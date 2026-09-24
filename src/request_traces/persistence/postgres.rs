@@ -87,6 +87,8 @@ impl TracePersistence for PostgresTracePersistence {
                     &page.after.as_ref().map(|c| c.time as i64),
                     &page.after.as_ref().map(|c| c.sequence as i64),
                     &((query.limit + 1) as i64),
+                    &query.request_id.as_deref().map(str::as_bytes),
+                    &query.connection_id,
                 ],
             )
             .await?;
@@ -300,6 +302,10 @@ async fn insert_events(
         .map(|e| e.trace.connection_id.as_deref())
         .collect();
     let hosts: Vec<_> = events.iter().map(|e| e.host_id.as_str()).collect();
+    let requests: Vec<_> = events
+        .iter()
+        .map(|e| e.trace.request_id.as_bytes())
+        .collect();
     // Reports contain up to 64 events; one insert avoids a round trip per event.
     // Parameter order must match the unnest types and aliases in append.sql.
     transaction
@@ -320,6 +326,7 @@ async fn insert_events(
                 &operations,
                 &connections,
                 &hosts,
+                &requests,
             ],
         )
         .await?;

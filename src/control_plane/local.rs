@@ -338,9 +338,12 @@ async fn local_routes(
     .with_traces(storage.traces.clone());
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
-    let inspector =
-        super::inspection::ActorInspector::new(storage.runtime.clone(), service.changes.clone())
-            .with_traces(service.traces.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        storage.runtime.clone(),
+        storage.runtime.clone(),
+        service.changes.clone(),
+    )
+    .with_traces(service.traces.clone());
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::local_router(inspector, admin))
         .merge(storage.runtime.clone().router());

@@ -2,12 +2,16 @@ import { useEffect, useId, useRef, useState } from "react"
 
 import { Box, CircleHelp, RefreshCw, Search, Unplug } from "lucide-react"
 
+import { FilterCombobox } from "./FilterCombobox.js"
+import type { FilterSuggestion } from "./FilterCombobox.js"
 import { RequestObserver } from "./RequestObserver.js"
+import { StateInspector } from "./StateInspector.js"
 import { TimeRangePicker } from "./TimeRangePicker.js"
 import type { ActorInstance, ActorInventory, ObserverClient } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useInventory } from "./observer-hooks.js"
 import { useQueueWaits } from "./queue-wait-history.js"
@@ -33,6 +37,7 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
     const [localActorName, setLocalActorName] = useState(initialActorName)
     const selectedActorName = navigation ? navigation.actorName : localActorName
     const setSelectedActorName = navigation ? navigation.onSelectActor : setLocalActorName
+    const [selectedInstanceId, setSelectedInstanceId] = useState<string>()
     const [query, setQuery] = useState("")
     const heading = useRef<HTMLHeadingElement>(null)
     const previousActor = useRef(initialActorName)
@@ -44,21 +49,36 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
     const totalWait = waits.supported ? (waits.rows ? queueWaitTotal(waits.rows) : undefined) : undefined
     useEffect(() => {
         setLocalActorName(initialActorName)
+        setSelectedInstanceId(undefined)
         setQuery("")
     }, [client, initialActorName])
     useEffect(() => {
-        if (previousActor.current !== selectedActorName) heading.current?.focus()
+        if (previousActor.current !== selectedActorName && selectedInstanceId === undefined) heading.current?.focus()
         previousActor.current = selectedActorName
-    }, [selectedActorName])
+    }, [selectedActorName, selectedInstanceId])
+    const selectActor = (actorName?: string) => {
+        setSelectedInstanceId(undefined)
+        setSelectedActorName(actorName)
+    }
+    const selectInstance = (actorName: string, actorId: string) => {
+        setSelectedInstanceId(actorId)
+        setSelectedActorName(actorName)
+    }
     return (
         <section className={`la-observer ${className}`} aria-label="Actor observer">
             {selectedActorName !== undefined && (
                 <nav className="la-observer-breadcrumb" aria-label="Breadcrumb">
-                    <Button variant="link" type="button" aria-label="Back to actors" onClick={() => setSelectedActorName(undefined)}>
+                    <Button variant="link" type="button" aria-label="Back to actors" onClick={() => selectActor(undefined)}>
                         Actors
                     </Button>
                     <span aria-hidden="true">/</span>
-                    <span aria-current="page">{selectedActorName}</span>
+                    <span aria-current={selectedInstanceId === undefined ? "page" : undefined}>{selectedActorName}</span>
+                    {selectedInstanceId !== undefined && (
+                        <>
+                            <span aria-hidden="true">/</span>
+                            <span aria-current="page">{selectedInstanceId}</span>
+                        </>
+                    )}
                 </nav>
             )}
             <div className="la-observer-toolbar">
@@ -99,6 +119,8 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                                     instances={selectedActor.instances}
                                     waits={waits.supported ? waitsByInstance : undefined}
                                     range={range}
+                                    selectedInstanceId={selectedInstanceId}
+                                    onSelectInstance={setSelectedInstanceId}
                                 />
                             </>
                         ) : (
@@ -108,7 +130,14 @@ function ActorObserver({ client, className = "", initialActorName, navigation, t
                         <>
                             <InventorySummary inventory={inventory} queueWait={waits.supported ? (totalWait ?? null) : undefined} range={range} />
                             {inventory.actors.length ? (
-                                <ActorTable inventory={inventory} query={query} onQueryChange={setQuery} onSelectActor={setSelectedActorName} waits={waits.supported ? waitsByActor : undefined} />
+                                <ActorTable
+                                    inventory={inventory}
+                                    query={query}
+                                    onQueryChange={setQuery}
+                                    onSelectActor={selectActor}
+                                    onSelectInstance={selectInstance}
+                                    waits={waits.supported ? waitsByActor : undefined}
+                                />
                             ) : (
                                 <EmptyState title="No actors yet" description="Deploy your actor classes to see them here. Instance counts appear as actors are used." />
                             )}
@@ -193,23 +222,39 @@ function ActorTable({
     query,
     onQueryChange,
     onSelectActor,
+    onSelectInstance,
     waits
 }: {
     inventory: ActorInventory
     query: string
     onQueryChange: (query: string) => void
     onSelectActor: (actorName: string) => void
+    onSelectInstance: (actorName: string, actorId: string) => void
     waits?: Map<string, QueueWaitStats>
 }) {
     const hasUnknown = inventory.actors.some(actor => actor.unknown > 0)
-    const actors = inventory.actors.filter(actor => matches(actor.actorName, query)).sort((a, b) => Number(b.live > 0) - Number(a.live > 0))
+    const actors = inventory.actors.filter(actor => matchesActor(actor, query)).sort((a, b) => Number(b.live > 0) - Number(a.live > 0))
+    const suggestions = actorSuggestions(inventory)
     return (
         <>
             <div className="la-observer-list-toolbar">
                 <h2>
                     Actor names <Badge>{inventory.actors.length}</Badge>
                 </h2>
-                <SearchField label="Search actors" placeholder="Search actors…" value={query} onChange={onQueryChange} />
+                <FilterCombobox
+                    label="Search actors and instances"
+                    placeholder="Search actor name or instance ID…"
+                    value={query}
+                    onChange={onQueryChange}
+                    onSelectSuggestion={suggestion => {
+                        const target = JSON.parse(suggestion.id!) as { actorName: string; actorId?: string }
+                        if (target.actorId === undefined) onSelectActor(target.actorName)
+                        else onSelectInstance(target.actorName, target.actorId)
+                    }}
+                    suggestions={suggestions}
+                    limit={12}
+                    className="la-observer-lookup"
+                />
             </div>
             <div className="la-observer-table-frame">
                 {actors.length ? (
@@ -266,13 +311,39 @@ function ActorTable({
     )
 }
 
+function actorSuggestions(inventory: ActorInventory): FilterSuggestion[] {
+    return inventory.actors.flatMap(actor => [
+        {
+            id: JSON.stringify({ actorName: actor.actorName }),
+            group: "Actor classes",
+            value: actor.actorName,
+            hint: `${actor.instances.length.toLocaleString()} ${actor.instances.length === 1 ? "instance" : "instances"}`
+        },
+        ...actor.instances.map(instance => ({
+            id: JSON.stringify({ actorName: actor.actorName, actorId: instance.actorId }),
+            group: "Instances",
+            value: instance.actorId,
+            keywords: [actor.actorName],
+            hint: `${actor.actorName} · ${labelStatus(instance.status)} · ${instance.connections.length.toLocaleString()} ${instance.connections.length === 1 ? "connection" : "connections"}`
+        }))
+    ])
+}
+
+function matchesActor(actor: ActorInventory["actors"][number], query: string) {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+    const value = [actor.actorName, ...actor.instances.map(instance => instance.actorId)].join(" ").toLocaleLowerCase()
+    return terms.every(term => value.includes(term))
+}
+
 function ActorInstances({
     client,
     id,
     actorName,
     instances,
     waits,
-    range
+    range,
+    selectedInstanceId,
+    onSelectInstance
 }: {
     client: ObserverClient
     id: string
@@ -280,11 +351,14 @@ function ActorInstances({
     instances: ActorInstance[]
     waits?: Map<string, QueueWaitStats>
     range: TimeRange
+    selectedInstanceId?: string
+    onSelectInstance: (actorId?: string) => void
 }) {
     const [query, setQuery] = useState("")
     const [status, setStatus] = useState("all")
-    const [selectedInstanceId, setSelectedInstanceId] = useState<string>()
     const connectionDetailsId = `${id}-connections`
+    const [requestFocus, setRequestFocus] = useState<{ requestId?: string; connectionId?: string }>()
+    useEffect(() => setRequestFocus(undefined), [selectedInstanceId])
     const filtered = instances.filter(instance => matches(instance.actorId, query) && (status === "all" || instance.status === status))
     filtered.sort((a, b) => Number(b.status === "live") - Number(a.status === "live"))
     const selectedInstance = instances.find(instance => instance.actorId === selectedInstanceId)
@@ -295,7 +369,7 @@ function ActorInstances({
     if (selectedInstanceId !== undefined)
         return (
             <section className="la-observer-instance-detail" aria-label={`${actorName} / ${selectedInstanceId}`}>
-                <Button variant="link" aria-label="Back to instances" onClick={() => setSelectedInstanceId(undefined)}>
+                <Button variant="link" aria-label="Back to instances" onClick={() => onSelectInstance(undefined)}>
                     Back to instances
                 </Button>
                 <div className="la-observer-instance-heading">
@@ -311,8 +385,21 @@ function ActorInstances({
                 {!selectedInstance && <p role="status">This instance is no longer in the current inventory. Its retained requests are still available below.</p>}
                 {waits && <InstanceQueueWait stats={waits.get(selectedInstanceId)} range={range} />}
                 {selectedInstance && <WaitingRequests waiting={selectedInstance.waiting} />}
+                {client.getState && client.listStateHistory && (
+                    <StateInspector
+                        key={`state-${selectedInstanceId}`}
+                        client={client}
+                        actorName={actorName}
+                        actorId={selectedInstanceId}
+                        onInspectRequest={focus => {
+                            setRequestFocus(focus)
+                            document.getElementById(`${id}-requests`)?.scrollIntoView({ block: "start", behavior: "smooth" })
+                        }}
+                    />
+                )}
+                <div id={`${id}-requests`} />
                 {client.watchRequests || client.listRequests ? (
-                    <RequestObserver key={selectedInstanceId} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} />
+                    <RequestObserver key={`requests-${selectedInstanceId}`} client={client} actor={{ actorName, actorId: selectedInstanceId }} timeRange={range} focus={requestFocus} />
                 ) : (
                     <section>
                         <h3>Requests</h3>
@@ -329,19 +416,19 @@ function ActorInstances({
                     <h2 ref={instanceHeading} tabIndex={-1} id={`${id}-heading`}>
                         {actorName} instances <Badge aria-hidden="true">{instances.length.toLocaleString()}</Badge>
                     </h2>
-                    <p>Select an instance to inspect its waiting line, requests, and WebSocket connections.</p>
+                    <p>Select an instance to inspect its persisted state, requests, and WebSocket connections.</p>
                 </div>
             </div>
             {instances.length ? (
                 <>
                     <div className="la-observer-filters">
                         <SearchField label="Search instances" placeholder="Search instance IDs…" value={query} onChange={setQuery} />
-                        <select className="la-observer-select" aria-label="Instance state" value={status} onChange={event => setStatus(event.target.value)}>
-                            <option value="all">All states</option>
-                            <option value="live">Live</option>
-                            <option value="dormant">Dormant</option>
-                            <option value="unknown">Unknown</option>
-                        </select>
+                        <NativeSelect className="la-observer-select" aria-label="Instance state" value={status} onChange={event => setStatus(event.target.value)}>
+                            <NativeSelectOption value="all">All states</NativeSelectOption>
+                            <NativeSelectOption value="live">Live</NativeSelectOption>
+                            <NativeSelectOption value="dormant">Dormant</NativeSelectOption>
+                            <NativeSelectOption value="unknown">Unknown</NativeSelectOption>
+                        </NativeSelect>
                     </div>
                     <div className="la-observer-table-frame">
                         {filtered.length ? (
@@ -363,7 +450,7 @@ function ActorInstances({
                                 </TableHeader>
                                 <TableBody>
                                     {filtered.map(instance => (
-                                        <TableRow key={instance.actorId} className="la-clickable-row" onClick={() => setSelectedInstanceId(instance.actorId)}>
+                                        <TableRow key={instance.actorId} className="la-clickable-row" onClick={() => onSelectInstance(instance.actorId)}>
                                             <TableCell className="la-observer-instance-id">
                                                 <Button variant="ghost" type="button" className="la-observer-actor-button">
                                                     <span>{instance.actorId}</span>

@@ -65,13 +65,13 @@ test("opening an actor replaces the inventory with a dedicated page and returns 
     const view = render(<ActorObserver client={client} />)
     const room = await view.findByRole("button", { name: "Room" })
 
-    fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "room" } })
+    fireEvent.change(view.getByRole("combobox", { name: "Search actors and instances" }), { target: { value: "room" } })
     assert.equal(room.hasAttribute("aria-expanded"), false)
     fireEvent.click(room)
 
     assert.ok(view.getByRole("heading", { name: "Room", level: 1 }))
     assert.equal(view.queryByRole("table", { name: "Actor instance counts" }), null)
-    assert.equal(view.queryByRole("searchbox", { name: "Search actors" }), null)
+    assert.equal(view.queryByRole("combobox", { name: "Search actors and instances" }), null)
     assert.equal(document.activeElement, view.getByRole("heading", { name: "Room", level: 1 }))
     assert.ok(view.getByRole("heading", { name: "Room instances" }))
     assert.match(view.getByRole("row", { name: /general/i }).textContent!, /generalLive3/u)
@@ -86,7 +86,7 @@ test("opening an actor replaces the inventory with a dedicated page and returns 
 
     fireEvent.click(view.getByRole("button", { name: "Back to actors" }))
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
-    assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "room")
+    assert.equal((view.getByRole("combobox", { name: "Search actors and instances" }) as HTMLInputElement).value, "room")
     assert.equal(view.queryByRole("button", { name: "Counter" }), null)
     assert.equal(document.activeElement, view.getByRole("heading", { name: "Actors", level: 1 }))
 })
@@ -174,14 +174,43 @@ test("the inventory adapter uses the configured backend and validates counts", a
 
 test("actor search filters the inventory and can recover from no matches", async () => {
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
-    const search = await view.findByRole("searchbox", { name: "Search actors" })
-    fireEvent.input(search, { target: { value: "room" } })
+    const search = await view.findByRole("combobox", { name: "Search actors and instances" })
+    fireEvent.change(search, { target: { value: "room" } })
     assert.ok(view.getByRole("button", { name: "Room" }))
     assert.equal(view.queryByRole("button", { name: "Counter" }), null)
-    fireEvent.input(search, { target: { value: "missing" } })
+    fireEvent.change(search, { target: { value: "missing" } })
     assert.ok(view.getByText("No matching actors"))
     fireEvent.click(view.getByRole("button", { name: "Clear search" }))
     assert.ok(view.getByRole("button", { name: "Counter" }))
+})
+
+test("an exact actor class search keeps its keyboard navigation option", async () => {
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
+    const search = await view.findByRole("combobox", { name: "Search actors and instances" })
+    fireEvent.change(search, { target: { value: "room" } })
+    assert.ok(view.getByRole("option", { name: "Room 3 instances" }))
+    fireEvent.keyDown(search, { key: "Enter" })
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room", level: 1 }))
+    assert.ok(view.getByRole("heading", { name: "Room instances" }))
+})
+
+test("actor search finds instance IDs and opens their requests and WebSockets directly", async () => {
+    const searchable = {
+        actors: [inventory.actors[0]!, { ...inventory.actors[1]!, live: 1, instances: [{ actorId: "general", status: "live" as const, connections: [] }] }]
+    }
+    const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => searchable }} />)
+    const search = await view.findByRole("combobox", { name: "Search actors and instances" })
+    fireEvent.change(search, { target: { value: "Room general" } })
+    assert.ok(view.getByRole("button", { name: "Room" }), "an instance match keeps its actor class in the table")
+    assert.equal(view.queryByRole("button", { name: "Counter" }), null)
+    const result = view.getByRole("option", { name: /general.*Room.*Live.*3 connections/iu })
+    fireEvent.click(result)
+    assert.ok(view.getByRole("region", { name: "Room / general" }))
+    assert.ok(view.getByRole("heading", { name: "Requests" }))
+    assert.ok(view.getByRole("heading", { name: "general WebSockets" }))
+    assert.ok(document.activeElement === view.getByRole("heading", { name: "general", level: 2 }), "the opened instance receives focus")
+    fireEvent.click(view.getByRole("button", { name: "Back to instances" }))
+    assert.equal(document.activeElement, view.getByRole("heading", { name: "Room instances" }))
 })
 
 test("instance search and residency filtering combine without changing inventory totals", async () => {
@@ -201,12 +230,12 @@ test("instance search and residency filtering combine without changing inventory
 test("switching clients clears actor selection and search", async () => {
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
     await view.findByRole("button", { name: "Room" })
-    fireEvent.input(view.getByRole("searchbox", { name: "Search actors" }), { target: { value: "Room" } })
+    fireEvent.change(view.getByRole("combobox", { name: "Search actors and instances" }), { target: { value: "Room" } })
     fireEvent.click(view.getByRole("button", { name: "Room" }))
     view.rerender(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => ({ ...inventory }) }} />)
     await view.findByRole("button", { name: "Room" })
     assert.equal(view.queryByRole("heading", { name: "Room instances" }), null)
-    assert.equal((view.getByRole("searchbox", { name: "Search actors" }) as HTMLInputElement).value, "")
+    assert.equal((view.getByRole("combobox", { name: "Search actors and instances" }) as HTMLInputElement).value, "")
 })
 
 test("a live subscription updates inventory without polling and is aborted on unmount", async () => {
@@ -297,6 +326,8 @@ test("SSE snapshots and heartbeats preserve the selected instance and its live s
     const client = new HttpObserverClient("/api/observe", async url => {
         if (String(url).includes("/requests/")) return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } })
         if (String(url).includes("/queue-waits")) return Response.json([])
+        if (String(url).includes("/state/history")) return Response.json({ records: [], retention: null, nextBefore: null })
+        if (String(url).includes("/state")) return Response.json({ snapshot: null, schema: null })
         requests++
         return new Response(
             new ReadableStream<Uint8Array>({

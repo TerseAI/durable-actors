@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 
 import { Pause, Play, RefreshCw } from "lucide-react"
 
@@ -8,6 +8,7 @@ import type { RequestHistoryQuery as HistoryFilters } from "./client.js"
 import { Badge } from "./components/ui/badge.js"
 import { Button } from "./components/ui/button.js"
 import { Input } from "./components/ui/input.js"
+import { NativeSelect, NativeSelectOption } from "./components/ui/native-select.js"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "./components/ui/sheet.js"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table.js"
 import { useRequests } from "./observer-hooks.js"
@@ -16,18 +17,22 @@ import { defaultTimeRange, resolveRange } from "./time-range.js"
 import type { TimeRange } from "./time-range.js"
 
 interface RequestObserverProps {
+    focus?: { requestId?: string; connectionId?: string }
     client: Pick<ObserverClient, "watchRequests" | "listRequests">
     actor?: Pick<RequestTrace, "actorName" | "actorId">
     timeRange?: TimeRange
     onTimeRangeChange?: (range: TimeRange) => void
 }
 
-function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: RequestObserverProps) {
+function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }: RequestObserverProps) {
     const [query, setQuery] = useState<HistoryFilters>()
     const [localRange, setLocalRange] = useState<TimeRange>(defaultTimeRange)
     const range = timeRange ?? localRange
     const setRange = onTimeRangeChange ?? setLocalRange
-    const scopedQuery = useMemo(() => (query ? { ...query, ...actor, ...resolveRange(range, Date.now()) } : undefined), [query, actor?.actorName, actor?.actorId, range])
+    const scopedQuery = useMemo(
+        () => (query ? { ...query, ...actor, ...(query.requestId || query.connectionId ? {} : resolveRange(range, Date.now())) } : undefined),
+        [query, actor?.actorName, actor?.actorId, range]
+    )
     const history = useRequestHistory(client, scopedQuery)
     const { page, failed, retry } = useRequests(client)
     const [frozen, setFrozen] = useState<RequestTracePage>()
@@ -42,9 +47,20 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange }: Reques
         setFrozen(undefined)
         setQuery(undefined)
     }, [client, actor?.actorName, actor?.actorId])
+    useEffect(() => {
+        if (focus) setQuery(focus)
+    }, [focus])
     useEffect(() => setSelected(undefined), [client, page?.epoch, query, actor?.actorName, actor?.actorId])
     return (
         <section ref={container} className="la-observer la-requests" aria-label="Request observer">
+            {(query?.requestId || query?.connectionId) && (
+                <p>
+                    Showing {query.requestId ? `request ${query.requestId}` : `connection ${query?.connectionId}`}{" "}
+                    <Button variant="link" onClick={() => setQuery(undefined)}>
+                        Clear filter
+                    </Button>
+                </p>
+            )}
             <div className="la-observer-toolbar">
                 <div>
                     <Heading>Requests</Heading>
@@ -260,6 +276,8 @@ function HistoryFilters({
     onSearch: (query: HistoryFilters) => void
     scoped: boolean
 }) {
+    const actorId = useId()
+    const outcomeId = useId()
     return (
         <form
             className="la-request-history-filters"
@@ -277,22 +295,22 @@ function HistoryFilters({
                 <TimeRangePicker value={range} onChange={onRangeChange} align="start" />
             </div>
             {!scoped && (
-                <label>
-                    Actor ID
-                    <Input name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
-                </label>
+                <div className="la-request-history-field">
+                    <label htmlFor={actorId}>Actor ID</label>
+                    <Input id={actorId} name="actorId" placeholder="All actors" maxLength={256} defaultValue={query.actorId} />
+                </div>
             )}
-            <label>
-                Outcome
-                <select className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
-                    <option value="">All outcomes</option>
+            <div className="la-request-history-field">
+                <label htmlFor={outcomeId}>Outcome</label>
+                <NativeSelect id={outcomeId} className="la-observer-select" name="outcome" defaultValue={query.outcome ?? ""}>
+                    <NativeSelectOption value="">All outcomes</NativeSelectOption>
                     {["completed", "failed", "rejected", "rerouted", "interrupted"].map(outcome => (
-                        <option key={outcome} value={outcome}>
+                        <NativeSelectOption key={outcome} value={outcome}>
                             {outcome[0]!.toUpperCase() + outcome.slice(1)}
-                        </option>
+                        </NativeSelectOption>
                     ))}
-                </select>
-            </label>
+                </NativeSelect>
+            </div>
             <Button type="submit" variant="outline" disabled={loading}>
                 Search
             </Button>

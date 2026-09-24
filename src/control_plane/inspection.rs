@@ -23,6 +23,11 @@ pub(super) fn router(inspector: ActorInspector, admin: AdminService) -> Router {
 
 pub(super) fn local_router(inspector: ActorInspector, admin: AdminService) -> Router {
     Router::new()
+        .route("/v1/projects/{project_id}/observe/state", get(actor_state))
+        .route(
+            "/v1/projects/{project_id}/observe/state/history",
+            get(state_history),
+        )
         .route(
             "/v1/projects/{project_id}/observe/actors",
             get(actor_inventory),
@@ -72,6 +77,7 @@ struct InspectionApi {
 #[derive(Clone)]
 pub(super) struct ActorInspector {
     traces: crate::request_traces::TraceStore,
+    state: Arc<dyn crate::bucket::ActorStateReader>,
     inventory: Arc<dyn crate::placement::ActorInventoryReader>,
     changes: tokio::sync::watch::Sender<()>,
 }
@@ -79,11 +85,13 @@ pub(super) struct ActorInspector {
 impl ActorInspector {
     pub(super) fn new(
         inventory: Arc<dyn crate::placement::ActorInventoryReader>,
+        state: Arc<dyn crate::bucket::ActorStateReader>,
         changes: tokio::sync::watch::Sender<()>,
     ) -> Self {
         Self {
             traces: crate::request_traces::TraceStore::default(),
             inventory,
+            state,
             changes,
         }
     }
@@ -357,4 +365,89 @@ async fn stream_requests(
             }
         };
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StateQuery {
+    actor_name: String,
+    actor_id: String,
+    version: Option<u64>,
+    before: Option<u64>,
+    limit: Option<usize>,
+}
+
+impl StateQuery {
+    fn actor(&self, project_id: String) -> Result<crate::actor::ActorKey, ApiError> {
+        let actor = crate::actor::ActorKey {
+            project_id,
+            actor_name: self.actor_name.clone(),
+            actor_id: self.actor_id.clone(),
+        };
+        actor.validate().map_err(ApiError::bad_request)?;
+        if self.version == Some(0)
+            || self.before == Some(0)
+            || self.limit.is_some_and(|n| n == 0 || n > 100)
+        {
+            return Err(ApiError::bad_request(
+                "invalid state version or history limit",
+            ));
+        }
+        Ok(actor)
+    }
+}
+
+async fn actor_state(
+    State(api): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<StateQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let actor = query.actor(project_id(path)?)?;
+    let snapshot = tokio::time::timeout(
+        Duration::from_secs(25),
+        api.inspector.state.inspect_state(&actor, query.version),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("State inspection timed out"))?
+    .map_err(ApiError::internal)?;
+    let contract = api
+        .admin
+        .deployment_contract(&actor.project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    let schema = contract
+        .as_ref()
+        .and_then(|contract| contract.contract["actors"].as_array())
+        .and_then(|actors| {
+            actors
+                .iter()
+                .find(|item| item["actorName"] == actor.actor_name)
+        })
+        .and_then(|actor| actor.get("socket"))
+        .and_then(|socket| socket.get("schema"));
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "snapshot": snapshot, "schema": schema })),
+    )
+        .into_response())
+}
+
+async fn state_history(
+    State(api): State<InspectionApi>,
+    path: Path<ProjectPath>,
+    query: Result<Query<StateQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(ApiError::bad_request)?;
+    let actor = query.actor(project_id(path)?)?;
+    let page = tokio::time::timeout(
+        Duration::from_secs(25),
+        api.inspector
+            .state
+            .state_history(&actor, query.before, query.limit.unwrap_or(25)),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable("State history timed out"))?
+    .map_err(ApiError::internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(page)).into_response())
 }
