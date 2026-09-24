@@ -1,4 +1,11 @@
 <div align="center">
+  <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/assets/durable-actors.gif">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/durable-actors.png">
+      <img alt="Humans and AI agents edit one shared Canvas actor; updates are serialized, persisted, and synchronized across collaborators." src="docs/assets/durable-actors.gif" width="1000">
+    </picture>
+  </a>
+
   <h1>Durable Actors</h1>
 
   <p><strong>Durable state for collaborative apps and AI agents.</strong></p>
