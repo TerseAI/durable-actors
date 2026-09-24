@@ -571,7 +571,16 @@ async fn replay_limits_do_not_count_retained_requests_as_evicted() -> Result<()>
     let page = store.replay("default", &ReplayQuery::default()).await?;
     assert_eq!(page.records.len(), TRACE_CAPACITY);
     assert_eq!(page.evicted, 0);
-    assert_eq!(page.records[0].event.trace.request_id, "501");
+    assert_eq!(
+        page.records
+            .iter()
+            .map(|r| r.event.trace.request_id.clone())
+            .collect::<Vec<_>>(),
+        (2..TRACE_CAPACITY + 2)
+            .rev()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(page.cursor, (TRACE_CAPACITY + 2) as u64);
     assert!(
         store

@@ -6,7 +6,8 @@ use tokio_postgres::IsolationLevel;
 
 use super::{
     HistoryQuery, OverviewMetrics, QueueWaitQuery, QueueWaitRow, ReplayQuery, SocketSession,
-    TimeRange, TracePersistence, pagination::Metadata,
+    TimeRange, TracePersistence,
+    pagination::{EMPTY_GENERATION, Metadata},
 };
 use crate::{
     postgres::PostgresDatabase,
@@ -148,7 +149,7 @@ async fn metadata(
             evicted: row.get::<_, i64>(3) as u64,
         },
         None => Metadata {
-            generation: "empty".into(),
+            generation: EMPTY_GENERATION.into(),
             head: 0,
             pruned: 0,
             evicted: 0,

@@ -242,6 +242,31 @@ async fn cursor_survives_reopening() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn replay_resets_after_database_recreation_even_from_position_zero() -> Result<()> {
+    let old = SqliteTracePersistence::in_memory();
+    let empty = old.replay("default", &ReplayQuery::default()).await?;
+    old.append(&[event("old")]).await?;
+    let populated = old.replay("default", &ReplayQuery::default()).await?;
+    let fresh = SqliteTracePersistence::in_memory();
+    fresh.append(&[event("a"), event("b")]).await?;
+    for cursor in [empty.resume_cursor, populated.resume_cursor] {
+        let page = fresh
+            .replay(
+                "default",
+                &ReplayQuery {
+                    cursor: Some(cursor),
+                    limit: 1,
+                },
+            )
+            .await?;
+        assert!(page.reset);
+        assert_eq!(page.records[0].event.event_id, "b");
+        assert!(page.next_cursor.is_none());
+    }
+    Ok(())
+}
+
 impl SqliteTracePersistence {
     async fn load_recent(&self, limit: usize) -> Result<Vec<TraceEvent>> {
         if limit == 0 {

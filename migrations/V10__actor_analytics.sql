@@ -28,4 +28,4 @@ CREATE INDEX durable_actors_traces_time ON durable_actors_traces (project_id, st
 CREATE INDEX durable_actors_traces_actor ON durable_actors_traces (project_id, actor_name, actor_id, started_at_ms DESC, position DESC);
 CREATE INDEX durable_actors_traces_outcome ON durable_actors_traces (project_id, outcome, started_at_ms DESC, position DESC);
 CREATE INDEX durable_actors_traces_retention ON durable_actors_traces (received_at);
-CREATE INDEX durable_actors_traces_sockets ON durable_actors_traces (project_id, connection_id, actor_name, actor_id) WHERE kind = 'websocket';
+CREATE INDEX durable_actors_traces_sockets ON durable_actors_traces (project_id, connection_id, actor_name, actor_id, (operation = 'onConnect') DESC, started_at_ms, position) WHERE kind = 'websocket';

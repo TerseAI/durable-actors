@@ -238,6 +238,46 @@ async fn socket_contract(store: &dyn TracePersistence) -> Result<()> {
     );
     assert_eq!(session.metadata, Some(serde_json::json!({"userId":"ada"})));
     assert_eq!(session.host_id.as_deref(), Some("z-first-host"));
+    // A session can overlap the range without an event inside it.
+    let gap = store
+        .websockets(
+            "default",
+            &TimeRange {
+                from_ms: Some(3500),
+                to_ms: Some(4000),
+            },
+        )
+        .await?;
+    assert_eq!(gap.len(), 1);
+    assert_eq!(gap[0].messages, 1);
+    assert_eq!(gap[0].closed_at_ms, Some(5000));
+    assert_eq!(gap[0].metadata, session.metadata);
+    for range in [
+        TimeRange {
+            from_ms: Some(5001),
+            to_ms: None,
+        },
+        TimeRange {
+            from_ms: None,
+            to_ms: Some(999),
+        },
+    ] {
+        assert!(store.websockets("default", &range).await?.is_empty());
+    }
+    let mut orphan = records[1].clone();
+    orphan.trace.project_id = "orphan".into();
+    orphan.event_id = "orphan-first".into();
+    let mut later = orphan.clone();
+    later.event_id = "orphan-later".into();
+    later.host_id = "a-later-host".into();
+    // Equal timestamps use insertion position to choose the earliest host.
+    store.append(&[orphan, later]).await?;
+    let orphan = store.websockets("orphan", &TimeRange::default()).await?;
+    assert_eq!(orphan.len(), 1);
+    assert_eq!(orphan[0].host_id.as_deref(), Some("z-first-host"));
+    assert_eq!(orphan[0].messages, 2);
+    assert!(orphan[0].metadata.is_none());
+    assert!(orphan[0].opened_at_ms.is_none());
     assert!(
         store
             .websockets("other", &TimeRange::default())

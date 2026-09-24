@@ -8,6 +8,8 @@ use crate::request_traces::{
     replay::{InvalidTraceCursor, ReplayQuery},
 };
 
+pub(super) const EMPTY_GENERATION: &str = "empty";
+
 pub(super) struct Metadata {
     pub generation: String,
     pub head: u64,
@@ -139,9 +141,10 @@ impl Replay {
                 Ok(cursor)
             })
             .transpose()?;
-        // A cursor at zero can follow the first write that creates a project's generation.
         let reset = cursor.as_ref().is_some_and(|c| {
-            (c.position > 0 && c.generation != metadata.generation) || c.position < metadata.pruned
+            // PostgreSQL creates the generation on first append; SQLite always has one.
+            let empty_project = c.position == 0 && c.generation == EMPTY_GENERATION;
+            (!empty_project && c.generation != metadata.generation) || c.position < metadata.pruned
         });
         let after = cursor.filter(|_| !reset).map(|c| c.position);
         Ok(Self {
