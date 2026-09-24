@@ -18,7 +18,8 @@ test("HTTP invocation sends the actor ticket, epoch, method and JSON arguments",
     const methods: string[] = []
     const transport = new HttpActorHostTransport(async (url, init) => {
         assert.equal(url, "https://host.example/v1/projects/team/actors/Counter/one/invoke")
-        methods.push(init!.method!)
+        assert.ok(init?.method)
+        methods.push(init.method)
         if (init?.method === "HEAD") {
             assert.equal(init.body, undefined)
             assert.equal(new Headers(init.headers).get("authorization"), "Bearer ticket")
@@ -117,7 +118,8 @@ test("a failed ping never sends an actor invocation", async () => {
     for (const status of [0, 200, 401, 404, 503]) {
         const methods: string[] = []
         const transport = new HttpActorHostTransport(async (_url, init) => {
-            methods.push(init!.method!)
+            assert.ok(init?.method)
+            methods.push(init.method)
             assert.equal(init?.body, undefined)
             if (status === 0) throw new TypeError("fetch failed", { cause: new Error("other side closed") })
             return new Response(null, { status })

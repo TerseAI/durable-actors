@@ -452,29 +452,12 @@ async fn ping_refreshes_idle_deadline_without_invoking_the_actor() -> Result<()>
     assert_eq!(started.recv().await.as_deref(), Some("warm"));
     let old_deadline = activity.borrow().last_active;
 
-    assert!(host.ping().await?);
+    host.ping().await?;
     assert!(activity.borrow().last_active > old_deadline);
-    assert!(!host.expire_idle(old_deadline, true).await?);
-    assert!(!host.expire_idle(old_deadline, false).await?);
+    host.evict_idle(old_deadline).await?;
     assert!(activity.borrow().resident);
     assert!(started.try_recv().is_err());
     assert_eq!(invoke(&host, "after-ping").await?, completed(2));
-    Ok(())
-}
-
-#[tokio::test]
-async fn idle_shutdown_winning_the_race_rejects_ping_and_invocation() -> Result<()> {
-    let (host, mut started, _) = controlled_host();
-    let activity = host.activity();
-    let last_active = activity.borrow().last_active;
-    assert!(host.expire_idle(last_active, true).await?);
-    assert!(!host.ping().await?);
-    assert_eq!(activity.borrow().last_active, last_active);
-    assert_eq!(
-        invoke(&host, "too-late").await?,
-        ActorExecutionResult::HostUnavailable
-    );
-    assert!(started.try_recv().is_err());
     Ok(())
 }
 
@@ -489,18 +472,17 @@ async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<
     let caller = host.clone();
     let running = tokio::spawn(async move { invoke(&caller, "first").await });
     assert_eq!(started.recv().await.as_deref(), Some("first"));
-    host.expire_idle(last_active, false).await?;
-    assert!(!host.expire_idle(last_active, true).await?);
+    host.evict_idle(last_active).await?;
     assert!(activity.borrow().resident);
     assert_eq!(activity.borrow().active, 1);
 
     release.add_permits(1);
     assert_eq!(running.await??, completed(2));
-    host.expire_idle(last_active, false).await?;
+    host.evict_idle(last_active).await?;
     assert!(activity.borrow().resident);
 
     let last_active = activity.borrow().last_active;
-    host.expire_idle(last_active, false).await?;
+    host.evict_idle(last_active).await?;
     assert!(!activity.borrow().resident);
     assert_eq!(invoke(&host, "after-eviction").await?, completed(3));
     assert!(activity.borrow().resident);

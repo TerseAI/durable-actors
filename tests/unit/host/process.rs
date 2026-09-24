@@ -126,13 +126,10 @@ async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
         &mut lease,
         (&mut activity, &mut socket_activity, &mut actor_stopped),
         Duration::from_millis(100),
-        |_, stop_host| {
-            if stop_host {
-                return std::future::ready(Ok(true));
-            }
+        |_| {
             evictions.set(evictions.get() + 1);
             requests.send_modify(|activity| activity.resident = false);
-            std::future::ready(Ok(false))
+            std::future::ready(Ok(()))
         },
     ));
     assert!(
@@ -185,9 +182,9 @@ async fn failed_activation_stops_host_during_idle_eviction() -> Result<()> {
         &mut lease,
         (&mut activity, &mut socket_activity, &mut actor_stopped),
         Duration::from_millis(10),
-        |_, _| {
+        |_| {
             evicting.set(true);
-            std::future::pending::<Result<bool>>()
+            std::future::pending::<Result<()>>()
         },
     ));
     assert!(

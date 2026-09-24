@@ -1050,15 +1050,6 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
             .status(),
         reqwest::StatusCode::UNPROCESSABLE_ENTITY
     );
-    stack.host.drain(Duration::from_secs(1)).await?;
-    assert_eq!(
-        http.head(format!("{url}/invoke"))
-            .bearer_auth(token)
-            .send()
-            .await?
-            .status(),
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
-    );
     stack
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")

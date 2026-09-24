@@ -138,12 +138,12 @@ async fn ping(
         .map(|capability| capability.owner_epoch)
         .unwrap_or(0);
     service.authorize(&principal, &actor, owner_epoch)?;
-    if !service.host.ping().await.unwrap_or(false) {
-        return Err(HttpError(
+    service.host.ping().await.map_err(|_| {
+        HttpError(
             StatusCode::SERVICE_UNAVAILABLE,
-            "actor host is shutting down".into(),
-        ));
-    }
+            "actor host unavailable".into(),
+        )
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 

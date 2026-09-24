@@ -104,7 +104,7 @@ impl ActorHost {
         self.stopped.clone()
     }
 
-    pub(super) async fn ping(&self) -> Result<bool> {
+    pub(super) async fn ping(&self) -> Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
             .send(HostCommand::Ping(reply))
@@ -113,23 +113,15 @@ impl ActorHost {
         result.await.context("actor ping was not completed")
     }
 
-    pub(super) async fn expire_idle(
-        &self,
-        last_active: tokio::time::Instant,
-        stop_host: bool,
-    ) -> Result<bool> {
+    pub(super) async fn evict_idle(&self, last_active: tokio::time::Instant) -> Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
-            .send(HostCommand::ExpireIdle {
-                last_active,
-                stop_host,
-                reply,
-            })
+            .send(HostCommand::EvictIdle { last_active, reply })
             .await
             .context("actor dispatcher stopped")?;
         result
             .await
-            .context("idle actor expiration was not completed")?
+            .context("idle actor eviction was not completed")?
     }
 
     pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
@@ -318,15 +310,12 @@ impl HostDispatcher {
                 command = commands.recv() => match command {
                     Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
                     Some(HostCommand::Ping(reply)) => {
-                        let ready = *self.accepting.borrow() && !*self.stopped.borrow();
-                        if ready {
-                            self.last_active = tokio::time::Instant::now();
-                            self.publish_activity();
-                        }
-                        let _ = reply.send(ready);
+                        self.last_active = tokio::time::Instant::now();
+                        self.publish_activity();
+                        let _ = reply.send(());
                     }
-                    Some(HostCommand::ExpireIdle { last_active, stop_host, reply }) => {
-                        let result = self.expire_idle(last_active, stop_host).await;
+                    Some(HostCommand::EvictIdle { last_active, reply }) => {
+                        let result = self.evict_idle(last_active).await;
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
@@ -451,21 +440,12 @@ impl HostDispatcher {
         let _ = completion.reply.send(completion.result);
     }
 
-    async fn expire_idle(
-        &mut self,
-        last_active: tokio::time::Instant,
-        stop_host: bool,
-    ) -> Result<bool> {
+    async fn evict_idle(&mut self, last_active: tokio::time::Instant) -> Result<()> {
         if self.active != 0 || self.last_active != last_active {
-            return Ok(false);
-        }
-        // Serialize idle shutdown with pings so a successful ping cancels a stale deadline.
-        if stop_host {
-            self.accepting.send_replace(false);
-            return Ok(true);
+            return Ok(());
         }
         let Some(mailbox) = self.mailbox.as_mut().filter(|mailbox| mailbox.resident) else {
-            return Ok(false);
+            return Ok(());
         };
         self.executor
             .evict(crate::actor::ActorMethodEviction {
@@ -474,7 +454,7 @@ impl HostDispatcher {
             .await?;
         mailbox.resident = false;
         self.publish_activity();
-        Ok(false)
+        Ok(())
     }
 
     fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
@@ -581,12 +561,11 @@ async fn run_actor(
 }
 
 enum HostCommand {
+    Ping(oneshot::Sender<()>),
     Invoke(Box<ActorRequest>),
-    Ping(oneshot::Sender<bool>),
-    ExpireIdle {
+    EvictIdle {
         last_active: tokio::time::Instant,
-        stop_host: bool,
-        reply: oneshot::Sender<Result<bool>>,
+        reply: oneshot::Sender<Result<()>>,
     },
     Drain(oneshot::Sender<()>),
 }
