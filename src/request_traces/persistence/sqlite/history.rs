@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, Transaction, params_from_iter, types::Value};
 
 use super::{
-    cursor::{HistoryCursor, HistoryPage},
+    super::cursor::{HistoryCursor, HistoryPage},
     replay,
 };
 use crate::request_traces::{TracePage, TraceRecord, history::HistoryQuery};

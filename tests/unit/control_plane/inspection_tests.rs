@@ -447,7 +447,8 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
 #[tokio::test]
 async fn request_history_streams_distinct_records_and_replays_on_reconnect() -> Result<()> {
     use crate::request_traces::{
-        RequestKind, RequestOutcome, RequestTrace, TraceStore, persistence::SqliteTracePersistence,
+        RequestKind, RequestOutcome, RequestTrace, TraceStore,
+        persistence::sqlite::SqliteTracePersistence,
     };
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("request-traces.sqlite3");

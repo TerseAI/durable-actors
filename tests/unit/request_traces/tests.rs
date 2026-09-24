@@ -1,4 +1,4 @@
-use super::persistence::{SqliteTracePersistence, TracePersistence};
+use super::persistence::{TracePersistence, sqlite::SqliteTracePersistence};
 use super::*;
 use std::sync::Mutex;
 

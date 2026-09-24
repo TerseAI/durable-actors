@@ -1,5 +1,5 @@
+use super::super::contract_tests::event;
 use super::*;
-use crate::request_traces::{RequestKind, RequestOutcome, RequestTrace};
 
 #[tokio::test]
 async fn live_snapshot_only_offers_a_resume_cursor() -> Result<()> {
@@ -135,28 +135,6 @@ async fn a_corrupt_legacy_snapshot_is_not_silently_discarded() -> Result<()> {
 
 fn ids(events: Vec<TraceEvent>) -> Vec<String> {
     events.into_iter().map(|event| event.event_id).collect()
-}
-
-pub(super) fn event(id: &str) -> TraceEvent {
-    TraceEvent {
-        event_id: id.into(),
-        host_id: "host".into(),
-        session_id: "session".into(),
-        trace: RequestTrace {
-            project_id: "default".into(),
-            request_id: "same-request".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-            kind: RequestKind::Method,
-            operation: "increment".into(),
-            connection_id: None,
-            started_at_ms: 1,
-            duration_ms: 1.0,
-            queue_wait_ms: None,
-            outcome: RequestOutcome::Completed,
-            metadata: None,
-        },
-    }
 }
 
 #[tokio::test]

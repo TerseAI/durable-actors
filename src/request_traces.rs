@@ -14,7 +14,7 @@ pub(crate) mod history;
 pub(crate) mod metrics;
 pub(crate) mod persistence;
 pub(crate) mod replay;
-use persistence::{SqliteTracePersistence, TracePersistence};
+use persistence::{TracePersistence, sqlite::SqliteTracePersistence};
 use replay::ReplayQuery;
 
 pub(crate) const TRACE_CAPACITY: usize = 500;

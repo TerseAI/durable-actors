@@ -271,7 +271,7 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
     )?);
     Ok(LocalState {
         traces: crate::request_traces::TraceStore::open(Arc::new(
-            crate::request_traces::persistence::SqliteTracePersistence::new(
+            crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(
                 directory.join("request-traces.sqlite3"),
             ),
         ))

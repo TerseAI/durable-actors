@@ -1,4 +1,4 @@
-use super::cursor::{Metadata, ReplayPage};
+use super::super::cursor::{Metadata, ReplayPage};
 use crate::request_traces::{TracePage, TraceRecord, replay::ReplayQuery};
 use anyhow::Result;
 use rusqlite::{Connection, Transaction, params};

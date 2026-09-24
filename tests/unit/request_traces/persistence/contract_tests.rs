@@ -1,8 +1,10 @@
+use std::{sync::Arc, time::Duration};
+
 use super::postgres::PostgresTracePersistence;
-use super::tests::event;
+use super::sqlite::SqliteTracePersistence;
 use super::*;
 use crate::postgres::{PostgresDatabase, testing::with_postgres};
-use crate::request_traces::{RequestKind, RequestOutcome};
+use crate::request_traces::{RequestKind, RequestOutcome, RequestTrace};
 
 async fn contract(store: &dyn TracePersistence) -> Result<()> {
     store.initialize().await?;
@@ -432,4 +434,26 @@ async fn postgres_failed_batches_roll_back_events_and_cursor_metadata() -> Resul
         assert_eq!(page.cursor, 1);
         Ok(())
     }).await
+}
+
+pub(super) fn event(id: &str) -> TraceEvent {
+    TraceEvent {
+        event_id: id.into(),
+        host_id: "host".into(),
+        session_id: "session".into(),
+        trace: RequestTrace {
+            project_id: "default".into(),
+            request_id: "same-request".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+            kind: RequestKind::Method,
+            operation: "increment".into(),
+            connection_id: None,
+            started_at_ms: 1,
+            duration_ms: 1.0,
+            queue_wait_ms: None,
+            outcome: RequestOutcome::Completed,
+            metadata: None,
+        },
+    }
 }
