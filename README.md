@@ -1,8 +1,8 @@
 <div align="center">
-  <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/assets/durable-actors.gif">
+  <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/assets/agent-visualization.gif">
     <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/durable-actors.png">
-      <img alt="Humans and AI agents edit one shared Canvas actor; updates are serialized, persisted, and synchronized across collaborators." src="docs/assets/durable-actors.gif" width="1000">
+      <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/agent-visualization.png">
+      <img alt="Legolas, Gimli, and Aragorn share one TeamAgent chat; prompts queue, replies stream to everyone, and conversation state is durably persisted." src="docs/assets/agent-visualization.gif" width="1000">
     </picture>
   </a>
 
