@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem with Durable Actors.
+body:
+    - type: markdown
+      attributes:
+          value: |
+              For security vulnerabilities, email security@useterse.ai instead of opening a public issue. Remove credentials and private data from examples and logs.
+    - type: textarea
+      id: description
+      attributes:
+          label: What happened?
+          description: Describe the actual behavior and what you expected.
+      validations:
+          required: true
+    - type: textarea
+      id: reproduction
+      attributes:
+          label: Steps to reproduce
+          description: Include a minimal actor, commands, or a small reproduction repository.
+      validations:
+          required: true
+    - type: input
+      id: version
+      attributes:
+          label: Durable Actors version
+          description: The installed package/runtime version, or commit SHA for a source checkout.
+      validations:
+          required: true
+    - type: textarea
+      id: environment
+      attributes:
+          label: Environment
+          description: OS and architecture, Node.js and Bun versions, and local or hosted deployment. Include Rust or Go versions when relevant.
+      validations:
+          required: true
+    - type: textarea
+      id: logs
+      attributes:
+          label: Relevant logs
+          description: Redact secrets and customer data.
+          render: text
