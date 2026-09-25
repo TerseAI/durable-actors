@@ -71,19 +71,34 @@ npm install ai
 Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
 ```ts
-import type { UIMessage } from "ai"
-import { Actor, Persisted } from "durable-actors"
+import { openai } from "@ai-sdk/openai"
+import { streamText } from "ai"
+import { Actor, Persisted, type ActorSocket } from "durable-actors"
 
-export class ChatHistory extends Actor {
-    @Persisted private messages: UIMessage[] = []
+type Member = { name: string }
+type Message = { role: "user" | "assistant"; content: string }
+type Chat = { messages: Message[]; busy: boolean }
 
-    async load() {
-        return this.messages
+export class ChatHistory extends Actor<Member, string, Chat> {
+    @Persisted messages: Message[] = []
+
+    async onConnect(socket: ActorSocket<Member, Chat>) {
+        socket.send({ messages: this.messages, busy: false })
     }
 
-    async append(message: UIMessage) {
-        this.messages.push(message)
-        return this.messages
+    async onMessage(socket: ActorSocket<Member, Chat>, text: string) {
+        const messages: Message[] = [...this.messages, { role: "user", content: `${socket.metadata.name}: ${text}` }]
+        this.broadcast({ messages, busy: true })
+
+        const reply: Message = { role: "assistant", content: "" }
+        const result = streamText({ model: openai("gpt-5-mini"), messages })
+        for await (const chunk of result.textStream) {
+            reply.content += chunk
+            this.broadcast({ messages: [...messages, reply], busy: true })
+        }
+
+        this.messages = [...messages, reply]
+        this.broadcast({ messages: this.messages, busy: false })
     }
 }
 ```
@@ -93,72 +108,80 @@ export class ChatHistory extends Actor {
 After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
 
 ```ts
-import { openai } from "@ai-sdk/openai"
-import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
 import express from "express"
 
-import { actors } from "./generated/index.js"
+import { actors } from "../generated/index.js"
 
-const app = express()
-app.use(express.json())
+export const app = express()
 
-app.get("/api/chat/:id", async (request, response) => {
-    response.json(await actors.ChatHistory.get(request.params.id).load())
-})
-
-app.post("/api/chat", async (request, response) => {
-    const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
-    if (message.role !== "user") return response.sendStatus(400)
-    const chat = actors.ChatHistory.get(request.body.id)
-    const messages = await chat.append(message)
-    const result = streamText({
-        model: openai("gpt-5-mini"),
-        messages: await convertToModelMessages(messages)
+app.post("/api/chat/:room/socket", async (req, res) => {
+    const grant = await actors.ChatHistory.prepareWebsocket({
+        actorId: req.params.room,
+        metadata: { name: String(req.query.name ?? "Guest") }
     })
-    await pipeUIMessageStreamToResponse({
-        response,
-        stream: toUIMessageStream({
-            stream: result.stream,
-            originalMessages: messages,
-            generateMessageId: generateId,
-            onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(responseMessage)
-            }
-        })
-    })
+    res.set("Cache-Control", "no-store").json(grant)
 })
 ```
 
 ## Connect the frontend (React)
 
 ```tsx
-import { useChat } from "@ai-sdk/react"
-import type { UIMessage } from "ai"
+import { useEffect, useRef, useState } from "react"
+import { createRoot } from "react-dom/client"
 
-const history: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
+import type { actors } from "../generated/index.js"
+
+const params = new URLSearchParams(location.search)
+const room = params.get("chat") ?? "lobby"
+const name = params.get("name") ?? "Guest"
 
 function Chat() {
-    const { messages, sendMessage, status } = useChat({ id: "lobby", messages: history })
-    const busy = status === "submitted" || status === "streaming"
+    const socket = useRef<WebSocket>(null)
+    const [chat, setChat] = useState<actors.ChatHistory.Outgoing>({ messages: [], busy: true })
+
+    useEffect(() => {
+        let active = true
+        async function connect() {
+            const response = await fetch(`/api/chat/${encodeURIComponent(room)}/socket?name=${encodeURIComponent(name)}`, { method: "POST" })
+            const { websocketUrl } = await response.json()
+            if (!active) return
+            socket.current = new WebSocket(websocketUrl)
+            socket.current.onmessage = event => setChat(JSON.parse(event.data))
+        }
+        void connect()
+        return () => {
+            active = false
+            socket.current?.close()
+        }
+    }, [])
+
+    function send(form: FormData) {
+        const text = String(form.get("message")).trim()
+        if (!text || socket.current?.readyState !== WebSocket.OPEN) return
+        socket.current.send(JSON.stringify(text))
+        setChat(chat => ({ ...chat, busy: true }))
+    }
 
     return (
-        <>
-            {messages.map(message => (
-                <p key={message.id}>
-                    {message.role}: {message.parts.map(part => (part.type === "text" ? part.text : "")).join("")}
-                </p>
-            ))}
-            <form
-                action={async form => {
-                    await sendMessage({ text: String(form.get("message")) })
-                }}
-            >
-                <input name="message" aria-label="Message" required disabled={busy} />
-                <button disabled={busy}>Send</button>
+        <main>
+            <h1>AI chat · {room}</h1>
+            <div role="log" aria-label="Messages">
+                {chat.messages.map((message, index) => (
+                    <article key={index}>
+                        <strong>{message.role}</strong>
+                        <p>{message.content}</p>
+                    </article>
+                ))}
+            </div>
+            <form action={send}>
+                <input name="message" aria-label="Message" required disabled={chat.busy} />
+                <button disabled={chat.busy}>Send</button>
             </form>
-        </>
+        </main>
     )
 }
+
+createRoot(document.getElementById("root")!).render(<Chat />)
 ```
 
 ## License
