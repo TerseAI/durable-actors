@@ -56,108 +56,147 @@ console.log(await counter.increment())
 
 For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
 
-## Define an Actor
+## Streaming AI chat
 
-Install `ai` in your actor project:
+One actor owns each conversation: it generates replies, streams them to every connected client over WebSockets, and persists the messages when the reply finishes. Messages are plain `{ role, content }` objects.
+
+### Actor
+
+Install `ai` and `@ai-sdk/openai` in your actor project, and set `OPENAI_API_KEY` in its `.env` file:
 
 ```sh
-pnpm install ai
+pnpm install ai @ai-sdk/openai
 # Or with npm:
-npm install ai
+npm install ai @ai-sdk/openai
 ```
 
-Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
-
-```ts
-import type { UIMessage } from "ai"
-import { Actor, Persisted } from "durable-actors"
-
-export class ChatHistory extends Actor {
-    @Persisted private messages: UIMessage[] = []
-
-    async load() {
-        return this.messages
-    }
-
-    async append(message: UIMessage) {
-        this.messages.push(message)
-        return this.messages
-    }
-}
-```
-
-## Stream from the backend (Express)
-
-After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
+Define and export `ChatHistory` in your actor project's `src/actors.ts`:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
-import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
-import express from "express"
+import { streamText } from "ai"
+import { Actor, Persisted, type ActorSocket } from "durable-actors"
 
-import { actors } from "./generated/index.js"
+type Member = { name: string }
+type Message = { role: "user" | "assistant"; content: string }
+type Chat = { messages: Message[]; busy: boolean }
 
-const app = express()
-app.use(express.json())
+export class ChatHistory extends Actor<Member, string, Chat> {
+    @Persisted messages: Message[] = []
 
-app.get("/api/chat/:id", async (request, response) => {
-    response.json(await actors.ChatHistory.get(request.params.id).load())
-})
+    async onConnect(socket: ActorSocket<Member, Chat>) {
+        socket.send({ messages: this.messages, busy: false })
+    }
 
-app.post("/api/chat", async (request, response) => {
-    const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
-    if (message.role !== "user") return response.sendStatus(400)
-    const chat = actors.ChatHistory.get(request.body.id)
-    const messages = await chat.append(message)
-    const result = streamText({
-        model: openai("gpt-5-mini"),
-        messages: await convertToModelMessages(messages)
-    })
-    await pipeUIMessageStreamToResponse({
-        response,
-        stream: toUIMessageStream({
-            stream: result.stream,
-            originalMessages: messages,
-            generateMessageId: generateId,
-            onEnd: async ({ responseMessage, outcome }) => {
-                if (outcome.status === "completed") await chat.append(responseMessage)
-            }
-        })
-    })
-})
-```
+    async onMessage(socket: ActorSocket<Member, Chat>, text: string) {
+        const messages: Message[] = [...this.messages, { role: "user", content: `${socket.metadata.name}: ${text}` }]
+        this.broadcast({ messages, busy: true })
 
-## Connect the frontend (React)
+        const reply: Message = { role: "assistant", content: "" }
+        const result = streamText({ model: openai("gpt-5-mini"), messages })
+        for await (const chunk of result.textStream) {
+            reply.content += chunk
+            this.broadcast({ messages: [...messages, reply], busy: true })
+        }
 
-```tsx
-import { useChat } from "@ai-sdk/react"
-import type { UIMessage } from "ai"
-
-const history: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
-
-function Chat() {
-    const { messages, sendMessage, status } = useChat({ id: "lobby", messages: history })
-    const busy = status === "submitted" || status === "streaming"
-
-    return (
-        <>
-            {messages.map(message => (
-                <p key={message.id}>
-                    {message.role}: {message.parts.map(part => (part.type === "text" ? part.text : "")).join("")}
-                </p>
-            ))}
-            <form
-                action={async form => {
-                    await sendMessage({ text: String(form.get("message")) })
-                }}
-            >
-                <input name="message" aria-label="Message" required disabled={busy} />
-                <button disabled={busy}>Send</button>
-            </form>
-        </>
-    )
+        this.messages = [...messages, reply]
+        this.broadcast({ messages: this.messages, busy: false })
+    }
 }
 ```
+
+The actor broadcasts the user's message immediately, streams the reply to all connected clients, and clears `busy` when it finishes. Replies run one at a time per conversation.
+
+### Backend (Express)
+
+In your application project, rerun `npx durable-actors generate` after adding the actor. Express only issues the WebSocket grant; the display name becomes connection metadata available to the actor.
+
+`src/app.ts`:
+
+```ts
+import express from "express"
+
+import { actors } from "../generated/index.js"
+
+export const app = express()
+
+app.post("/api/chat/:room/socket", async (req, res) => {
+    const grant = await actors.ChatHistory.prepareWebsocket({
+        actorId: req.params.room,
+        metadata: { name: String(req.query.name ?? "Guest") }
+    })
+    res.set("Cache-Control", "no-store").json(grant)
+})
+```
+
+Use this app in your HTTP server and serve the frontend from the same origin. Install `express`, `react`, and `react-dom` in the application project.
+
+### Frontend (React)
+
+In a React 19 browser app with a `root` element, each socket update replaces the displayed conversation. Sending stays disabled until the initial history arrives and while a reply is streaming.
+
+`src/Chat.tsx`:
+
+```tsx
+import { useEffect, useRef, useState } from "react"
+import { createRoot } from "react-dom/client"
+
+import type { actors } from "../generated/index.js"
+
+const params = new URLSearchParams(location.search)
+const room = params.get("chat") ?? "lobby"
+const name = params.get("name") ?? "Guest"
+
+function Chat() {
+    const socket = useRef<WebSocket>(null)
+    const [chat, setChat] = useState<actors.ChatHistory.Outgoing>({ messages: [], busy: true })
+
+    useEffect(() => {
+        let active = true
+        async function connect() {
+            const response = await fetch(`/api/chat/${encodeURIComponent(room)}/socket?name=${encodeURIComponent(name)}`, { method: "POST" })
+            const { websocketUrl } = await response.json()
+            if (!active) return
+            socket.current = new WebSocket(websocketUrl)
+            socket.current.onmessage = event => setChat(JSON.parse(event.data))
+        }
+        void connect()
+        return () => {
+            active = false
+            socket.current?.close()
+        }
+    }, [])
+
+    function send(form: FormData) {
+        const text = String(form.get("message")).trim()
+        if (!text || socket.current?.readyState !== WebSocket.OPEN) return
+        socket.current.send(JSON.stringify(text))
+        setChat(chat => ({ ...chat, busy: true }))
+    }
+
+    return (
+        <main>
+            <h1>AI chat · {room}</h1>
+            <div role="log" aria-label="Messages">
+                {chat.messages.map((message, index) => (
+                    <article key={index}>
+                        <strong>{message.role}</strong>
+                        <p>{message.content}</p>
+                    </article>
+                ))}
+            </div>
+            <form action={send}>
+                <input name="message" aria-label="Message" required disabled={chat.busy} />
+                <button disabled={chat.busy}>Send</button>
+            </form>
+        </main>
+    )
+}
+
+createRoot(document.getElementById("root")!).render(<Chat />)
+```
+
+Open `/?name=Alice` and `/?name=Bob` in separate tabs to share the lobby. Add `&chat=another-room` for a separate conversation; unnamed visitors use `Guest`. Reload to restore saved history. New connections wait for an active reply to finish.
 
 ## License
 
