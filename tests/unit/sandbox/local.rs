@@ -6,6 +6,8 @@ use crate::{bucket::testing::RuntimeFixture, host::HostId};
 use tokio_util::task::AbortOnDropHandle;
 
 const DEADLINE: Duration = Duration::from_secs(5);
+// Process startup can be delayed by other tests on shared CI runners.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn independent_actors_start_before_either_becomes_ready() -> Result<()> {
@@ -345,15 +347,20 @@ impl LocalFixture {
     }
 
     async fn started(&self, request: &EnsureHostRequest) -> Result<()> {
-        self.wait_marker(request, "started").await
+        self.wait_marker(request, "started", STARTUP_DEADLINE).await
     }
 
     async fn stopped(&self, request: &EnsureHostRequest) -> Result<()> {
-        self.wait_marker(request, "stopped").await
+        self.wait_marker(request, "stopped", DEADLINE).await
     }
 
-    async fn wait_marker(&self, request: &EnsureHostRequest, suffix: &str) -> Result<()> {
-        tokio::time::timeout(DEADLINE, async {
+    async fn wait_marker(
+        &self,
+        request: &EnsureHostRequest,
+        suffix: &str,
+        deadline: Duration,
+    ) -> Result<()> {
+        tokio::time::timeout(deadline, async {
             while !self.marker(request, suffix).exists() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
