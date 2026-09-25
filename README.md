@@ -48,7 +48,7 @@ We are fully serverless, and instances go dormant when not in use. Only pay for 
 
 We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
 
-Getting started is easy, build your actors, generate your type-safe client, test locally and deploy to prod.
+Getting started is easy, build your actors, generate your type-safe client, test locally and self host the production version.
 
 ## Local development
 
