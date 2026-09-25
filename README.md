@@ -45,9 +45,11 @@ Durable Actors is a primitive to help developers build the next generation of co
 
 Based on the Actor principle from Erlang, all state is durably persisted for you. Only one Agent/person can be in the actor at a time, protecting you from race conditions.
 
-We are fully horizontally scalable, and instances go dormant when not in use. Only pay for what your users are using.
+We are fully serverless, and instances go dormant when not in use. Only pay for what your users are using.
 
 We offer a clean API to manage webSocket connections, Swift inspired syntax for building your actor and full observability into your deployed actors.
+
+Getting started is easy, build your actors, generate your type-safe client, test locally and deploy to prod.
 
 ## Local development
 
