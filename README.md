@@ -67,34 +67,7 @@ npx durable-actors dev # Run the server locally on your machine
 
 Running dev will also start a watch, every-time you make a change to an actor and save, metadata changes will be stored automatically.
 
-### Connect your application
-
-We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
-
-```sh
-npx durable-actors generate
-```
-
-Now you may call your actor and access the state.
-
-```ts
-import { actors } from "./generated/index.js"
-
-const counter = actors.Counter.get("example")
-console.log(await counter.increment())
-```
-
-For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
-
 ## Define an Actor
-
-Install `ai` in your actor project:
-
-```sh
-pnpm install ai
-# Or with npm:
-npm install ai
-```
 
 Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
@@ -132,9 +105,18 @@ export class ChatHistory extends Actor<Member, string, Chat> {
 }
 ```
 
-## Stream from the backend (Express)
+Note
 
-After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
+
+### Connect your Backend
+
+We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
+
+```sh
+npx durable-actors generate
+```
+
+Now you may call your actor and access the state.
 
 ```ts
 import express from "express"
@@ -212,6 +194,8 @@ function Chat() {
 
 createRoot(document.getElementById("root")!).render(<Chat />)
 ```
+
+For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
 
 Here's what it looks like in action:
 
