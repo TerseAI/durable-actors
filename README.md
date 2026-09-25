@@ -76,15 +76,7 @@ Running dev will also start a watch, every-time you make a change to an actor an
 
 ### Connect your application
 
-In your separate application project's directory (ex: node server), install the generator as a development dependency:
-
-```sh
-pnpm install --save-dev durable-actors
-# Or with npm:
-npm install --save-dev durable-actors
-```
-
-Then generate your client from the same application directory:
+We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
 
 ```sh
 npx durable-actors generate
