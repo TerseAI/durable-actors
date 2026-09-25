@@ -37,6 +37,12 @@
 
 ---
 
+> [!TIP]
+> Get started by pasting this into your agent.
+```text
+Go to https://github.com/TerseAI/durable-actors, follow the readme and build a sample project. Get the development server running and ask the user where they would like to invoke their actors from.
+```
+
 Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
 
 Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
