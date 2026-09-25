@@ -1,8 +1,8 @@
 <div align="center">
-  <a href="https://github.com/TerseAI/durable-actors/blob/main/docs/assets/agent-visualization.gif">
+  <a href="https://github.com/TerseAI/durable-actors/blob/main/.github/assets/team-agent.gif">
     <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/TerseAI/durable-actors/main/docs/assets/agent-visualization.png">
-      <img alt="Legolas, Gimli, and Aragorn share one TeamAgent chat; prompts queue, replies stream to everyone, and conversation state is durably persisted." src="https://raw.githubusercontent.com/TerseAI/durable-actors/main/docs/assets/agent-visualization.gif" width="1000">
+      <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/TerseAI/durable-actors/main/.github/assets/team-agent.png">
+      <img alt="Teammates share one TeamAgent chat across regions; prompts queue, replies stream to everyone, and conversation state is durably persisted." src="https://raw.githubusercontent.com/TerseAI/durable-actors/main/.github/assets/team-agent.gif" width="1000">
     </picture>
   </a>
 

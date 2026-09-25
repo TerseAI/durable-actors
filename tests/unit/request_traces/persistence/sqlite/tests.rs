@@ -1,5 +1,5 @@
+use super::super::contract_tests::event;
 use super::*;
-use crate::request_traces::{RequestKind, RequestOutcome, RequestTrace};
 
 #[tokio::test]
 async fn live_snapshot_only_offers_a_resume_cursor() -> Result<()> {
@@ -137,29 +137,6 @@ fn ids(events: Vec<TraceEvent>) -> Vec<String> {
     events.into_iter().map(|event| event.event_id).collect()
 }
 
-pub(super) fn event(id: &str) -> TraceEvent {
-    TraceEvent {
-        event_id: id.into(),
-        host_id: "host".into(),
-        session_id: "session".into(),
-        trace: RequestTrace {
-            state_version: None,
-            project_id: "default".into(),
-            request_id: "same-request".into(),
-            actor_name: "Counter".into(),
-            actor_id: "one".into(),
-            kind: RequestKind::Method,
-            operation: "increment".into(),
-            connection_id: None,
-            started_at_ms: 1,
-            duration_ms: 1.0,
-            queue_wait_ms: None,
-            outcome: RequestOutcome::Completed,
-            metadata: None,
-        },
-    }
-}
-
 #[tokio::test]
 async fn replay_pages_do_not_skip_late_events_and_expired_cursors_reset() -> Result<()> {
     let store = SqliteTracePersistence {
@@ -240,6 +217,31 @@ async fn cursor_survives_reopening() -> Result<()> {
     let replay = store.replay("default", &query).await?;
     assert_eq!(replay.records.len(), 1);
     assert_eq!(replay.records[0].event.event_id, "c");
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_resets_after_database_recreation_even_from_position_zero() -> Result<()> {
+    let old = SqliteTracePersistence::in_memory();
+    let empty = old.replay("default", &ReplayQuery::default()).await?;
+    old.append(&[event("old")]).await?;
+    let populated = old.replay("default", &ReplayQuery::default()).await?;
+    let fresh = SqliteTracePersistence::in_memory();
+    fresh.append(&[event("a"), event("b")]).await?;
+    for cursor in [empty.resume_cursor, populated.resume_cursor] {
+        let page = fresh
+            .replay(
+                "default",
+                &ReplayQuery {
+                    cursor: Some(cursor),
+                    limit: 1,
+                },
+            )
+            .await?;
+        assert!(page.reset);
+        assert_eq!(page.records[0].event.event_id, "b");
+        assert!(page.next_cursor.is_none());
+    }
     Ok(())
 }
 

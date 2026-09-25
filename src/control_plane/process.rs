@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use crate::{
     bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
     postgres::PostgresDatabase,
+    request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
 };
 
@@ -33,6 +34,7 @@ pub struct ControlPlaneProcessConfig {
 
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
+    pub trace_retention: Duration,
     pub bucket: String,
     pub replica_regions: Vec<String>,
 }
@@ -112,6 +114,12 @@ async fn control_plane_routes(
         config.jwt_max_lifetime,
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
+    let trace_persistence = Arc::new(PostgresTracePersistence::new(
+        database.clone(),
+        config.storage.trace_retention,
+    ));
+    let traces = TraceStore::open(trace_persistence.clone()).await?;
+    trace_persistence.start_retention(stop.clone());
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
@@ -165,6 +173,7 @@ async fn control_plane_routes(
         provisioner,
     )
     .with_runtime_access(runtime_access)
+    .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
@@ -254,6 +263,7 @@ impl ControlPlaneProcessConfig {
         let storage = ControlPlaneStorageConfig {
             replica_regions,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
+            trace_retention: trace_retention(&mut get)?,
             bucket,
         };
         let sandbox_provider =
@@ -274,6 +284,19 @@ impl ControlPlaneProcessConfig {
             region,
         })
     }
+}
+
+fn trace_retention(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Duration> {
+    let days: u64 = get("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS")
+        .map(|value| value.parse())
+        .transpose()
+        .context("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS must be an integer")?
+        .unwrap_or(30);
+    ensure!(
+        (1..=3650).contains(&days),
+        "DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS must be between 1 and 3650"
+    );
+    Ok(Duration::from_secs(days * 86400))
 }
 
 fn socket_event_sink_config(

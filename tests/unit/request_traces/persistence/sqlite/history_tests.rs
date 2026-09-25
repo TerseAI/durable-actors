@@ -1,4 +1,4 @@
-use super::tests::event;
+use super::super::contract_tests::event;
 use super::*;
 use crate::request_traces::history::HistoryQuery;
 
@@ -83,6 +83,13 @@ async fn history_counts_pruned_events_without_counting_duplicate_appends() -> Re
     let page = store.history("default", &HistoryQuery::default()).await?;
     assert_eq!(ids(&page), ["c"]);
     assert_eq!(page.evicted, 2);
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .evicted,
+        2
+    );
     Ok(())
 }
 
@@ -92,6 +99,7 @@ async fn history_is_bounded_and_rejects_live_or_incompatible_cursors() -> Result
     store
         .append(&(0..502).map(|i| event(&i.to_string())).collect::<Vec<_>>())
         .await?;
+    let store = crate::request_traces::TraceStore::open(Arc::new(store)).await?;
     let first = store.history("default", &HistoryQuery::default()).await?;
     assert_eq!(first.records.len(), 100);
     let largest = store
@@ -167,39 +175,4 @@ fn ids(page: &TracePage) -> Vec<&str> {
         .iter()
         .map(|r| r.event.event_id.as_str())
         .collect()
-}
-
-#[tokio::test]
-async fn request_and_connection_links_filter_actor_scoped_history() -> Result<()> {
-    let store = SqliteTracePersistence::in_memory();
-    let mut first = event("one");
-    first.trace.request_id = "request-a".into();
-    first.trace.connection_id = Some("socket-a".into());
-    let mut second = event("two");
-    second.trace.request_id = "request-b".into();
-    second.trace.connection_id = Some("socket-b".into());
-    store.append(&[first, second]).await?;
-    let page = store
-        .history(
-            "default",
-            &HistoryQuery {
-                request_id: Some("request-a".into()),
-                actor_id: Some("one".into()),
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert_eq!(ids(&page), ["one"]);
-    let page = store
-        .history(
-            "default",
-            &HistoryQuery {
-                connection_id: Some("socket-b".into()),
-                actor_id: Some("one".into()),
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert_eq!(ids(&page), ["two"]);
-    Ok(())
 }

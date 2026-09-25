@@ -26,13 +26,3 @@ impl ReplayQuery {
         Ok(())
     }
 }
-
-#[derive(Debug)]
-pub(crate) struct InvalidTraceCursor;
-
-impl std::fmt::Display for InvalidTraceCursor {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Invalid or incompatible request history cursor")
-    }
-}
-impl std::error::Error for InvalidTraceCursor {}

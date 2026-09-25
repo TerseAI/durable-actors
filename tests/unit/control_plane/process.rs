@@ -248,3 +248,25 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ),
     ])
 }
+
+#[test]
+fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(
+        parse(&values)?.storage.trace_retention,
+        Duration::from_secs(30 * 86400)
+    );
+    values.insert("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS", "7");
+    assert_eq!(
+        parse(&values)?.storage.trace_retention,
+        Duration::from_secs(7 * 86400)
+    );
+    for invalid in ["0", "-1", "1.5", "3651", ""] {
+        values.insert("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS", invalid);
+        assert!(parse(&values).is_err());
+    }
+    Ok(())
+}
