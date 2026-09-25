@@ -86,6 +86,7 @@ export class ChatHistory extends Actor<Member, string, Chat> {
         socket.send({ messages: this.messages, busy: false })
     }
 
+    @Reentrant
     async onMessage(socket: ActorSocket<Member, Chat>, text: string) {
         const messages: Message[] = [...this.messages, { role: "user", content: `${socket.metadata.name}: ${text}` }]
         this.broadcast({ messages, busy: true })
