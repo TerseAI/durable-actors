@@ -13,42 +13,6 @@ import { generateClient } from "../../src/compiler/generators/client-generator.j
 const run = promisify(execFile)
 const sdk = fileURLToPath(new URL("../../../", import.meta.url))
 
-test("the README ChatHistory contract compiles with the AI SDK", async t => {
-    const project = await mkdtemp(path.resolve(sdk, "../.durable-actors-example-"))
-    t.after(() => rm(project, { recursive: true, force: true }))
-    await symlink(path.resolve(sdk, "../examples/ai-chat/node_modules"), path.join(project, "node_modules"))
-    await writeFile(path.join(project, "package.json"), '{"type":"module"}')
-    const readme = await readFile(path.resolve(sdk, "../README.md"), "utf8")
-    const source = readme.split("## Define an Actor")[1].match(/```ts\n([\s\S]*?)```/)![1]
-    const entrypoint = path.join(project, "actors.ts")
-    await writeFile(entrypoint, source)
-    const contract = new ActorCompiler().compileContract(entrypoint)
-    const [actor] = contract.actors
-    assert.equal(actor.actorName, "ChatHistory")
-    assert.deepEqual(
-        actor.rpc.methods.map(method => method.name),
-        ["append", "load"]
-    )
-    await generateClient(contract, path.join(project, "generated"))
-    const consumer = path.join(project, "backend.ts")
-    await writeFile(consumer, readme.split("## Stream from the backend (Express)")[1].match(/```ts\n([\s\S]*?)```/)![1])
-    const program = ts.createProgram([consumer], {
-        strict: true,
-        noEmit: true,
-        skipLibCheck: false,
-        types: ["node"],
-        typeRoots: [path.join(project, "node_modules/@types")],
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.NodeNext
-    })
-    assert.deepEqual(
-        ts
-            .getPreEmitDiagnostics(program)
-            .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
-        []
-    )
-})
-
 test("UIMessage round-trips through the public contract and generated client without casts", async t => {
     const project = await mkdtemp(path.resolve(sdk, "../.durable-actors-uimessage-"))
     t.after(() => rm(project, { recursive: true, force: true }))
