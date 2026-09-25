@@ -24,7 +24,7 @@ jobs:
         runs-on: ${{ matrix.runner }}
         timeout-minutes: 60
         steps:
-            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Set up Blacksmith Docker builder
               uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
               with:
@@ -43,12 +43,12 @@ jobs:
 
     go:
         name: Modal Go provider
-        runs-on: ubuntu-24.04
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         defaults:
             run:
                 working-directory: providers/modal-go
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
               with:
                   go-version: "1.27.1"
@@ -66,7 +66,7 @@ jobs:
             fail-fast: false
             matrix:
                 bun: ["1.3.9", "1.4.2"]
-        runs-on: ubuntu-24.04
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         services:
             postgres:
                 image: postgres:16
@@ -82,7 +82,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt && rustup default 1.89.0
             - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -95,10 +95,10 @@ jobs:
               env:
                   DURABLE_ACTORS_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_actors_test?sslmode=disable
               run: cargo test --locked --no-fail-fast
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
               with:
                   version: 10.17.1
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
                   node-version: "22.19.0"
                   cache: pnpm
@@ -128,13 +128,13 @@ jobs:
 
     npm:
         name: TypeScript package
-        runs-on: ubuntu-24.04
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
-            - uses: actions/checkout@v4
-            - uses: pnpm/action-setup@v4
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
               with:
                   version: 10.17.1
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
                   node-version: "22.19.0"
                   cache: pnpm
@@ -148,7 +148,7 @@ jobs:
             - run: pnpm --dir sdk test
             - name: Validate HTTP and build TypeScript documentation
               run: pnpm docs:build
-            - uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: typescript-api
                   path: .artifacts/api
