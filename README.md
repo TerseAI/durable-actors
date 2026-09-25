@@ -1,11 +1,4 @@
 <div align="center">
-  <a href="https://github.com/TerseAI/durable-actors/blob/main/.github/assets/team-agent.gif">
-    <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset=".github/assets/team-agent.png">
-      <img alt="Teammates share one TeamAgent chat across regions; prompts queue, replies stream to everyone, and conversation state is durably persisted." src=".github/assets/team-agent.gif" width="1000">
-    </picture>
-  </a>
-
   <h1>Durable Actors</h1>
 
   <p><strong>Durable state for collaborative apps and AI agents.</strong></p>
@@ -219,6 +212,17 @@ function Chat() {
 
 createRoot(document.getElementById("root")!).render(<Chat />)
 ```
+
+Here's what it looks like in action:
+
+<div align="center">
+  <a href="https://github.com/TerseAI/durable-actors/blob/main/.github/assets/team-agent.gif">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset=".github/assets/team-agent.png">
+      <img alt="Teammates share one TeamAgent chat across regions; prompts queue, replies stream to everyone, and conversation state is durably persisted." src=".github/assets/team-agent.gif" width="1000">
+    </picture>
+  </a>
+</div>
 
 ## Community
 
