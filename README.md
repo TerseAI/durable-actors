@@ -105,8 +105,6 @@ export class ChatHistory extends Actor<Member, string, Chat> {
 }
 ```
 
-Note
-
 
 ### Connect your Backend
 
