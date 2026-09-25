@@ -56,21 +56,17 @@ console.log(await counter.increment())
 
 For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative documents](examples/documents), and [Chatroom](examples/chat).
 
-## Streaming AI chat
+## Define an Actor
 
-One actor owns each conversation: it generates replies, streams them to every connected client over WebSockets, and persists the messages when the reply finishes. Messages are plain `{ role, content }` objects.
-
-### Actor
-
-Install `ai` and `@ai-sdk/openai` in your actor project, and set `OPENAI_API_KEY` in its `.env` file:
+Install `ai` in your actor project:
 
 ```sh
-pnpm install ai @ai-sdk/openai
+pnpm install ai
 # Or with npm:
-npm install ai @ai-sdk/openai
+npm install ai
 ```
 
-Define and export `ChatHistory` in your actor project's `src/actors.ts`:
+Define and export actors in your actor project’s `src/actors.ts`, the default entrypoint loaded by `durable-actors dev`. For example, a chat history actor:
 
 ```ts
 import { openai } from "@ai-sdk/openai"
@@ -105,13 +101,9 @@ export class ChatHistory extends Actor<Member, string, Chat> {
 }
 ```
 
-The actor broadcasts the user's message immediately, streams the reply to all connected clients, and clears `busy` when it finishes. Replies run one at a time per conversation.
+## Stream from the backend (Express)
 
-### Backend (Express)
-
-In your application project, rerun `npx durable-actors generate` after adding the actor. Express only issues the WebSocket grant; the display name becomes connection metadata available to the actor.
-
-`src/app.ts`:
+After adding `ChatHistory`, rerun `npx durable-actors generate` in your application and use its generated client:
 
 ```ts
 import express from "express"
@@ -129,13 +121,7 @@ app.post("/api/chat/:room/socket", async (req, res) => {
 })
 ```
 
-Use this app in your HTTP server and serve the frontend from the same origin. Install `express`, `react`, and `react-dom` in the application project.
-
-### Frontend (React)
-
-In a React 19 browser app with a `root` element, each socket update replaces the displayed conversation. Sending stays disabled until the initial history arrives and while a reply is streaming.
-
-`src/Chat.tsx`:
+## Connect the frontend (React)
 
 ```tsx
 import { useEffect, useRef, useState } from "react"
@@ -195,8 +181,6 @@ function Chat() {
 
 createRoot(document.getElementById("root")!).render(<Chat />)
 ```
-
-Open `/?name=Alice` and `/?name=Bob` in separate tabs to share the lobby. Add `&chat=another-room` for a separate conversation; unnamed visitors use `Guest`. Reload to restore saved history. New connections wait for an active reply to finish.
 
 ## License
 
