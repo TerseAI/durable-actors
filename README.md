@@ -1,5 +1,7 @@
 # Durable Actors
 
+![Shared agent chat coordinated across regions by Durable Actors](.github/assets/team-agent.gif)
+
 Managing state is hard! Back in the pre-agent era, building a multiplayer app showed just how hard this could be. You had to lock resources, deal with websockets at scale, handle peak loads etc...
 
 Now with AI, we've got agents working with agents and agents working with people to worry about. Furthermore, we have agent swarms coming!
