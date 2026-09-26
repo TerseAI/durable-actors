@@ -152,7 +152,6 @@ async fn control_plane_routes(
     let traces = TraceStore::open(trace_persistence.clone()).await?;
     trace_persistence.start_retention(stop.clone());
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
-    let rapid = authority.rapid();
     let proxy_jwt_issuer = config.sandbox_provider.runtime.jwt_issuer.clone();
     let (fleet, access) = super::replication::fleet(
         registry.clone(),
@@ -174,7 +173,6 @@ async fn control_plane_routes(
         crate::bucket::access::RuntimeAccess::new(
             crate::bucket::access::BucketLocation::Gcs {
                 bucket: config.storage.bucket.clone(),
-                rapid,
             },
             fleet.clone(),
             access,
