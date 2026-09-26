@@ -276,3 +276,28 @@ func TestClaimReportsMountAssignmentAndHostStartupTimings(t *testing.T) {
 		t.Fatalf("host startup timings were not relayed: %s", handle.Startup)
 	}
 }
+
+func TestOnlyActorSparesWarmTheirAssignmentConnection(t *testing.T) {
+	for kind, expected := range map[string]int{"actor": 1, "replica": 0} {
+		api := &fakeAPI{created: &fakeSandbox{}}
+		p := newTestProvider(api)
+		warmed := &warmCounter{}
+		p.assigner = warmed
+		if _, err := p.createSpare(context.Background(), spareRequest{Kind: kind, Name: kind, ImageRef: "im-runtime", CanonicalRegion: "north-america-west", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}}); err != nil {
+			t.Fatal(err)
+		}
+		if warmed.count != expected {
+			t.Fatalf("%s spare warmed %d times", kind, warmed.count)
+		}
+	}
+}
+
+type warmCounter struct{ count int }
+
+func (w *warmCounter) Assign(context.Context, spareHandle, map[string]string) (hostHandle, error) {
+	return hostHandle{}, errors.New("unused")
+}
+
+func (w *warmCounter) Warm(context.Context, spareHandle) { w.count++ }
+
+func (fakeAssigner) Warm(context.Context, spareHandle) {}

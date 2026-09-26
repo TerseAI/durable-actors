@@ -113,6 +113,9 @@ func (p *provider) createSpare(ctx context.Context, request spareRequest) (spare
 	}
 	if request.Kind == "actor" {
 		p.handles.keep(sb)
+		warm, cancel := context.WithTimeout(ctx, 3*time.Second)
+		p.assigner.Warm(warm, handle)
+		cancel()
 	} else {
 		sb.Detach()
 	}
