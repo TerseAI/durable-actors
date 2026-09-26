@@ -10,6 +10,8 @@ use crate::actor::ActorKey;
 mod process;
 pub use process::{GatewayConfig, serve_gateway};
 
+pub(crate) type RouteHint = Box<dyn FnOnce(String) + Send>;
+
 #[async_trait]
 pub(crate) trait RegionalEndpoints: Send + Sync {
     async fn actor_operation(
@@ -19,6 +21,18 @@ pub(crate) trait RegionalEndpoints: Send + Sync {
         operation: &str,
         body: Value,
     ) -> Result<Value>;
+
+    /// Resolves the primary, reporting a claimed spare's route before activation completes.
+    async fn find_actor_hinted(
+        &self,
+        region: Region,
+        actor: &ActorKey,
+        body: Value,
+        _hint: RouteHint,
+    ) -> Result<Value> {
+        self.actor_operation(region, actor, "find-actor", body)
+            .await
+    }
 }
 
 pub(crate) struct Gateway {
@@ -26,6 +40,7 @@ pub(crate) struct Gateway {
     pub ingress: Region,
     endpoints: Arc<dyn RegionalEndpoints>,
     hosts: reqwest::Client,
+    routes: moka::future::Cache<String, Value>,
 }
 
 pub(crate) enum InvocationOutcome {
@@ -41,6 +56,7 @@ enum Dispatch {
 
 #[derive(Default)]
 struct DispatchTiming {
+    cached: bool,
     resolved_ms: f64,
     ping_ms: Option<f64>,
     invoke_ms: Option<f64>,
@@ -62,6 +78,10 @@ impl Gateway {
                 .pool_idle_timeout(Duration::from_secs(90))
                 .build()
                 .expect("static actor-host client configuration"),
+            routes: moka::future::Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(Duration::from_secs(60))
+                .build(),
         }
     }
 
@@ -70,23 +90,41 @@ impl Gateway {
         let started = std::time::Instant::now();
         let mut timing = DispatchTiming::default();
         let mut attempts = 0;
+        let key = actor.storage_key().as_str().to_owned();
         let outcome = loop {
             attempts += 1;
-            let Ok(target) = self.resolve(actor, None).await else {
-                break InvocationOutcome::Unavailable;
+            let cached = match attempts {
+                1 => self.cached_route(&key).await,
+                _ => None,
+            };
+            timing.cached = cached.is_some();
+            let target = match cached {
+                Some(target) => target,
+                None => match self.resolve(actor, None).await {
+                    Ok(target) => target,
+                    Err(_) => break InvocationOutcome::Unavailable,
+                },
             };
             timing.resolved_ms = started.elapsed().as_secs_f64() * 1_000.0;
             match self
                 .dispatch(actor, &target, call, &mut timing, started)
                 .await
             {
-                Ok(Dispatch::Reply(mut reply)) => {
-                    reply["target"] = direct_target(&target);
+                Ok(Dispatch::Reply(reply)) => {
+                    self.routes.insert(key, target).await;
                     break InvocationOutcome::Reply(reply);
                 }
-                Ok(Dispatch::RefreshTarget) if attempts == 1 => continue,
-                Ok(Dispatch::RefreshTarget) => break InvocationOutcome::Unavailable,
-                Err(()) => break InvocationOutcome::OutcomeUnknown,
+                Ok(Dispatch::RefreshTarget) => {
+                    self.routes.invalidate(&key).await;
+                    if attempts == 1 {
+                        continue;
+                    }
+                    break InvocationOutcome::Unavailable;
+                }
+                Err(()) => {
+                    self.routes.invalidate(&key).await;
+                    break InvocationOutcome::OutcomeUnknown;
+                }
             }
         };
         tracing::info!(
@@ -94,6 +132,7 @@ impl Gateway {
             actor = %actor.storage_key(),
             request_id = call["requestId"].as_str().unwrap_or_default(),
             attempts,
+            cached_route = timing.cached,
             resolved_ms = timing.resolved_ms,
             ping_completed_ms = timing.ping_ms,
             invoke_completed_ms = timing.invoke_ms,
@@ -107,6 +146,36 @@ impl Gateway {
             "gateway invocation completed"
         );
         outcome
+    }
+
+    /// Opens the gateway's connection to a claimed host while it is still activating.
+    fn warm_connection(&self, actor: &ActorKey) -> RouteHint {
+        let hosts = self.hosts.clone();
+        let path = format!(
+            "/v1/projects/{}/actors/{}/{}/invoke",
+            actor.project_id, actor.actor_name, actor.actor_id
+        );
+        Box::new(move |route| {
+            if super::proxy::validate_origin(&route).is_err() {
+                return;
+            }
+            let url = format!("{}{path}", route.trim_end_matches('/'));
+            tokio::spawn(async move {
+                let _ = hosts.head(url).timeout(Duration::from_secs(5)).send().await;
+            });
+        })
+    }
+
+    async fn cached_route(&self, key: &str) -> Option<Value> {
+        let target = self.routes.get(key).await?;
+        let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock).ok()? as i64;
+        match target["expiresAtMs"].as_i64() {
+            Some(expires) if expires > now + 5_000 => Some(target),
+            _ => {
+                self.routes.invalidate(key).await;
+                None
+            }
+        }
     }
 
     async fn dispatch(
@@ -225,15 +294,17 @@ impl Gateway {
         socket: Option<Value>,
     ) -> Result<Value> {
         let home = assignment.home_region;
-        let primary = self
-            .endpoints
-            .actor_operation(
-                home,
-                &assignment.actor,
-                "find-actor",
-                json!({"homeRegion": home}),
-            )
-            .await?;
+        let body = json!({"homeRegion": home});
+        let primary = if socket.is_none() && home == self.ingress {
+            let warm = self.warm_connection(&assignment.actor);
+            self.endpoints
+                .find_actor_hinted(home, &assignment.actor, body, warm)
+                .await?
+        } else {
+            self.endpoints
+                .actor_operation(home, &assignment.actor, "find-actor", body)
+                .await?
+        };
         match socket {
             Some(mut request) => {
                 request["homeRegion"] = serde_json::to_value(home)?;
@@ -355,6 +426,20 @@ impl HttpRegionalEndpoints {
         path: &str,
         body: bytes::Bytes,
     ) -> Result<reqwest::Response> {
+        Ok(self
+            .prepare(region, method, path, body)
+            .await?
+            .send()
+            .await?)
+    }
+
+    async fn prepare(
+        &self,
+        region: Region,
+        method: reqwest::Method,
+        path: &str,
+        body: bytes::Bytes,
+    ) -> Result<reqwest::RequestBuilder> {
         ensure!(
             path.starts_with("/v1/projects/") && !path.contains('#'),
             "invalid regional API path"
@@ -371,7 +456,7 @@ impl HttpRegionalEndpoints {
                 crate::service_identity::authorization(identity).await?,
             );
         }
-        Ok(request.send().await?)
+        Ok(request)
     }
 }
 
@@ -414,15 +499,60 @@ impl RegionalEndpoints for HttpRegionalEndpoints {
             .json()
             .await?)
     }
+
+    async fn find_actor_hinted(
+        &self,
+        region: Region,
+        actor: &ActorKey,
+        body: Value,
+        hint: RouteHint,
+    ) -> Result<Value> {
+        actor.validate()?;
+        let path = format!(
+            "/v1/projects/{}/actors/{}/{}/find-actor",
+            actor.project_id, actor.actor_name, actor.actor_id
+        );
+        let response = self
+            .prepare(
+                region,
+                reqwest::Method::POST,
+                &path,
+                serde_json::to_vec(&body)?.into(),
+            )
+            .await?
+            .header(crate::control_plane::ROUTE_HINT_REQUEST, "1")
+            .send()
+            .await?
+            .error_for_status()?;
+        read_hinted_reply(response, hint).await
+    }
+}
+
+async fn read_hinted_reply(response: reqwest::Response, hint: RouteHint) -> Result<Value> {
+    use futures_util::StreamExt;
+    let mut hint = Some(hint);
+    let mut buffer = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        buffer.extend_from_slice(&chunk?);
+        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = buffer.drain(..=end).collect();
+            let document: Value = serde_json::from_slice(&line)?;
+            if let Some(route) = document["routeHint"].as_str() {
+                if let Some(hint) = hint.take() {
+                    hint(route.to_owned());
+                }
+                continue;
+            }
+            if let Some(failure) = document.get("failure") {
+                anyhow::bail!("control plane find-actor failed: {failure}");
+            }
+            return Ok(document);
+        }
+    }
+    anyhow::bail!("control plane find-actor ended without a reply")
 }
 
 #[cfg(test)]
 #[path = "../../tests/unit/regional/gateway.rs"]
 mod tests;
-
-fn direct_target(target: &Value) -> Value {
-    json!({
-        "route": target["route"], "token": target["token"],
-        "ownerEpoch": target["ownerEpoch"], "expiresAtMs": target["expiresAtMs"],
-    })
-}

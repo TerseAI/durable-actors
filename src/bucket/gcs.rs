@@ -15,6 +15,8 @@ use super::{Bucket, BucketObject};
 pub struct GcsBucket {
     bucket: String,
     clients: GcsClients,
+    /// Zonal Rapid buckets only accept appendable writes.
+    rapid: bool,
 }
 
 pub(crate) struct WarmGcs {
@@ -37,10 +39,37 @@ impl GcsBucket {
     }
 
     pub async fn with_credentials(bucket: &str, credentials: Credentials) -> Result<Self> {
+        let bucket = bucket_name(bucket)?;
+        let clients = GcsClients::new(credentials).await?;
+        let storage_class = clients
+            .control
+            .get_bucket()
+            .set_name(&bucket)
+            .send()
+            .await?
+            .storage_class;
+        Ok(Self {
+            bucket,
+            clients,
+            rapid: storage_class == "RAPID",
+        })
+    }
+
+    /// Builds a client for a bucket whose storage class the control plane already detected.
+    pub(crate) async fn with_known_class(
+        bucket: &str,
+        credentials: Credentials,
+        rapid: bool,
+    ) -> Result<Self> {
         Ok(Self {
             bucket: bucket_name(bucket)?,
             clients: GcsClients::new(credentials).await?,
+            rapid,
         })
+    }
+
+    pub(crate) fn rapid(&self) -> bool {
+        self.rapid
     }
 }
 
@@ -73,7 +102,7 @@ impl WarmGcs {
         }
     }
 
-    pub fn bind(self, bucket: &str, credentials: Credentials) -> Result<GcsBucket> {
+    pub fn bind(self, bucket: &str, credentials: Credentials, rapid: bool) -> Result<GcsBucket> {
         let bucket = bucket_name(bucket)?;
         anyhow::ensure!(
             self.credentials.0.set(credentials).is_ok(),
@@ -82,6 +111,7 @@ impl WarmGcs {
         Ok(GcsBucket {
             bucket,
             clients: self.clients,
+            rapid,
         })
     }
 }
@@ -136,6 +166,9 @@ impl Bucket for GcsBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        if self.rapid {
+            return self.append_and_finalize(key, generation, bytes).await;
+        }
         match self
             .clients
             .storage
@@ -177,6 +210,41 @@ impl Bucket for GcsBucket {
             }
         }
     }
+}
+
+impl GcsBucket {
+    async fn append_and_finalize(
+        &self,
+        key: &str,
+        generation: Option<i64>,
+        bytes: Vec<u8>,
+    ) -> Result<bool> {
+        let opened = self
+            .clients
+            .storage
+            .open_appendable_object(&self.bucket, key)
+            .set_if_generation_match(generation.unwrap_or(0))
+            .send()
+            .await;
+        let mut writer = match opened {
+            Ok(writer) => writer,
+            Err(error) if precondition_failed(&error) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        writer.append(bytes::Bytes::from(bytes)).await?;
+        match writer.finalize().await {
+            Ok(_) => Ok(true),
+            Err(error) if precondition_failed(&error) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+fn precondition_failed(error: &google_cloud_storage::Error) -> bool {
+    error.http_status_code() == Some(412)
+        || error
+            .status()
+            .is_some_and(|status| status.code.name() == "FAILED_PRECONDITION")
 }
 
 fn bucket_name(bucket: &str) -> Result<String> {

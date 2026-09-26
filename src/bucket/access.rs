@@ -26,8 +26,14 @@ pub(crate) struct HostStorageConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum BucketLocation {
-    Gcs { bucket: String },
-    File { directory: PathBuf },
+    Gcs {
+        bucket: String,
+        #[serde(default)]
+        rapid: bool,
+    },
+    File {
+        directory: PathBuf,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -169,7 +175,7 @@ impl RuntimeAccess {
     }
 
     async fn exchange(&self) -> Result<StorageToken> {
-        let BucketLocation::Gcs { bucket } = &self.location else {
+        let BucketLocation::Gcs { bucket, .. } = &self.location else {
             anyhow::bail!("local buckets do not need credentials")
         };
         let boundary = boundary(bucket);

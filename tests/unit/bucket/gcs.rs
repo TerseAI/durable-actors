@@ -20,12 +20,12 @@ async fn warmed_connections_keep_credentials_isolated_and_refreshable() -> Resul
     let warm = server.client().await?;
     warm.preconnect().await;
     let token = TestCredentials::new("first");
-    let first = warm.bind("test-bucket", token.clone().into())?;
+    let first = warm.bind("test-bucket", token.clone().into(), false)?;
     assert_eq!(first.get("owner").await?.unwrap().bytes, b"lease");
 
     let warm = server.client().await?;
     warm.preconnect().await;
-    let second = warm.bind("test-bucket", TestCredentials::new("second").into())?;
+    let second = warm.bind("test-bucket", TestCredentials::new("second").into(), false)?;
     second.get("owner").await?;
     *token.0.lock().unwrap() = "refreshed".into();
     assert!(
@@ -105,7 +105,11 @@ async fn stalled_warmup_is_bounded_and_can_be_cancelled_for_assignment() -> Resu
             } => {}
         }
     }
-    let bucket = warm.bind("test-bucket", TestCredentials::new("assigned").into())?;
+    let bucket = warm.bind(
+        "test-bucket",
+        TestCredentials::new("assigned").into(),
+        false,
+    )?;
     let result =
         tokio::time::timeout(std::time::Duration::from_secs(2), bucket.get("owner")).await??;
     assert_eq!(result.unwrap().bytes, b"lease");
@@ -246,6 +250,7 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let bucket = GcsBucket {
         bucket: "projects/_/buckets/test-bucket".into(),
+        rapid: false,
         clients: GcsClients {
             storage: Storage::builder()
                 .with_endpoint(&endpoint)
@@ -386,4 +391,45 @@ struct ListResponse {
 struct ListedObject {
     #[prost(string, tag = "1")]
     name: String,
+}
+
+#[tokio::test]
+#[ignore = "requires a Rapid zonal bucket in DURABLE_ACTORS_TEST_RAPID_BUCKET and Google credentials"]
+async fn rapid_buckets_preserve_the_bucket_contract() -> Result<()> {
+    let Ok(name) = std::env::var("DURABLE_ACTORS_TEST_RAPID_BUCKET") else {
+        return Ok(());
+    };
+    let bucket = GcsBucket::new(&name).await?;
+    assert!(bucket.rapid, "zonal Rapid bucket was not detected");
+    let prefix = format!("contract/{}", uuid::Uuid::new_v4());
+    let key = format!("{prefix}/ownership");
+    assert!(bucket.get(&key).await?.is_none());
+    assert!(
+        bucket
+            .compare_and_swap(&key, None, b"first".to_vec())
+            .await?
+    );
+    assert!(
+        !bucket
+            .compare_and_swap(&key, None, b"racer".to_vec())
+            .await?
+    );
+    let first = bucket.get(&key).await?.context("created object")?;
+    assert_eq!(first.bytes, b"first");
+    assert!(
+        bucket
+            .compare_and_swap(&key, Some(first.generation), b"second".to_vec())
+            .await?
+    );
+    assert!(
+        !bucket
+            .compare_and_swap(&key, Some(first.generation), b"stale".to_vec())
+            .await?
+    );
+    assert_eq!(
+        bucket.get(&key).await?.context("replaced object")?.bytes,
+        b"second"
+    );
+    assert_eq!(bucket.list(&prefix).await?, vec![key]);
+    Ok(())
 }

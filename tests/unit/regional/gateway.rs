@@ -292,3 +292,26 @@ async fn failed_service_identity_does_not_send_an_unauthenticated_request() -> R
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn hinted_replies_report_the_route_before_returning_the_target() -> Result<()> {
+    let body = "{\"routeHint\":\"https://host.test\"}\n{\"route\":\"https://host.test\",\"token\":\"t\",\"ownerEpoch\":1,\"expiresAtMs\":9}\n";
+    let (send, receive) = std::sync::mpsc::channel();
+    let target = read_hinted_reply(
+        reqwest::Response::from(axum::http::Response::new(body)),
+        Box::new(move |route| send.send(route).unwrap()),
+    )
+    .await?;
+    assert_eq!(receive.try_recv()?, "https://host.test");
+    assert_eq!(target["token"], "t");
+    let failure = "{\"failure\":{\"status\":503,\"body\":null}}\n";
+    assert!(
+        read_hinted_reply(
+            reqwest::Response::from(axum::http::Response::new(failure)),
+            Box::new(|_| {}),
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}

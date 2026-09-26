@@ -968,6 +968,9 @@ impl SandboxHostProvisioner {
         };
         let (runtime_config, spare) = tokio::join!(token, spare);
         request.spare = spare?;
+        if let Some(spare) = &request.spare {
+            super::route_hints::ROUTE_HINTS.publish(actor.storage_key().as_str(), &spare.route);
+        }
         if let Some(pool) = &self.pool {
             if request.spare.is_none() {
                 pool.reserve_host(

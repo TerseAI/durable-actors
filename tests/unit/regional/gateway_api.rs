@@ -303,13 +303,20 @@ impl RegionalEndpoints for HostEndpoints {
 }
 
 async fn fake_host(post_status: StatusCode) -> Result<String> {
+    fake_host_counting(post_status, Arc::default()).await
+}
+
+async fn fake_host_counting(post_status: StatusCode, warmups: Arc<AtomicUsize>) -> Result<String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let invoke = axum::routing::head(|headers: axum::http::HeaderMap| async move {
-        if headers["authorization"] == "Bearer ticket-1" {
-            StatusCode::UNAUTHORIZED
-        } else {
-            StatusCode::NO_CONTENT
+    let invoke = axum::routing::head(move |headers: axum::http::HeaderMap| async move {
+        match headers.get("authorization") {
+            None => {
+                warmups.fetch_add(1, Ordering::SeqCst);
+                StatusCode::UNAUTHORIZED
+            }
+            Some(value) if value == "Bearer ticket-1" => StatusCode::UNAUTHORIZED,
+            Some(_) => StatusCode::NO_CONTENT,
         }
     })
     .post(
@@ -382,15 +389,10 @@ async fn gateway_invokes_in_one_request_and_refreshes_a_rejected_ticket_once() -
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reply["type"], "completed");
     assert_eq!(reply["result"], 5);
-    assert_eq!(reply["target"]["token"], "ticket-2");
-    assert_eq!(reply["target"]["ownerEpoch"], 7);
     assert!(
-        reply["target"]["route"]
-            .as_str()
-            .unwrap()
-            .starts_with("http://127.0.0.1:")
+        reply.get("target").is_none(),
+        "warm calls stay on the gateway"
     );
-    assert!(reply["target"]["expiresAtMs"].as_u64().unwrap() > 0);
     assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
     Ok(())
 }
@@ -402,5 +404,76 @@ async fn gateway_never_retries_an_invocation_that_may_have_executed() -> Result<
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(reply["error"]["code"], "outcome_unknown");
     assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn warm_invocations_reuse_the_cached_route_without_resolving() -> Result<()> {
+    let (app, endpoints) = invoke_fixture(fake_host(StatusCode::OK).await?)?;
+    assert_eq!(invoke(app.clone()).await?.0, StatusCode::OK);
+    assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
+    for _ in 0..3 {
+        let (status, reply) = invoke(app.clone()).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["result"], 5);
+    }
+    assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+struct HintingEndpoints(Arc<HostEndpoints>);
+
+#[async_trait]
+impl RegionalEndpoints for HintingEndpoints {
+    async fn actor_operation(
+        &self,
+        region: Region,
+        actor: &ActorKey,
+        operation: &str,
+        body: Value,
+    ) -> Result<Value> {
+        self.0.actor_operation(region, actor, operation, body).await
+    }
+
+    async fn find_actor_hinted(
+        &self,
+        region: Region,
+        actor: &ActorKey,
+        body: Value,
+        hint: crate::regional::gateway::RouteHint,
+    ) -> Result<Value> {
+        hint(self.0.host.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.0
+            .actor_operation(region, actor, "find-actor", body)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn gateway_warms_the_claimed_host_connection_before_activation_finishes() -> Result<()> {
+    let warmups = Arc::new(AtomicUsize::new(0));
+    let host = fake_host_counting(StatusCode::OK, warmups.clone()).await?;
+    let (_, directory) = fixture()?;
+    let endpoints = Arc::new(HostEndpoints {
+        host,
+        resolutions: AtomicUsize::new(1),
+    });
+    let gateway = Arc::new(Gateway::new(
+        Arc::new(ActorDirectory::new(directory)),
+        Region::West,
+        Arc::new(HintingEndpoints(endpoints)),
+    ));
+    let app = router(GatewayApi {
+        gateway,
+        endpoints: Arc::new(HttpRegionalEndpoints::new(
+            [("us-west".into(), "http://127.0.0.1:1".into())].into(),
+            "internal".into(),
+        )?),
+        secret: "secret".into(),
+    });
+    let (status, reply) = invoke(app).await?;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(warmups.load(Ordering::SeqCst), 1);
     Ok(())
 }

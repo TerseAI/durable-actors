@@ -180,7 +180,77 @@ async fn register_deployment(
     Ok(Json(DeploymentReply { changed }))
 }
 
+pub(crate) const ROUTE_HINT_REQUEST: &str = "x-route-hint";
+
+/// With `x-route-hint: 1`, streams the claimed spare's route before the host finishes activating.
 async fn find_actor(
+    state: State<PublicApiState>,
+    Path(path): Path<ActorPath>,
+    headers: HeaderMap,
+    request: Result<Json<FindActorRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    if headers
+        .get(ROUTE_HINT_REQUEST)
+        .is_none_or(|value| value != "1")
+    {
+        return find_actor_reply(state, Path(path), headers, request).await;
+    }
+    let actor = path.clone().into_actor().storage_key().as_str().to_owned();
+    let hint = super::route_hints::ROUTE_HINTS.subscribe(&actor);
+    let (lines, body) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(2);
+    tokio::spawn(async move {
+        let reply = find_actor_reply(state, Path(path), headers, request);
+        let (response, hint) = stream_route_hint(reply, hint, &lines).await;
+        super::route_hints::ROUTE_HINTS.release(&actor, hint);
+        let _ = lines.send(Ok(final_line(response).await)).await;
+    });
+    Ok((
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body)),
+    )
+        .into_response())
+}
+
+async fn stream_route_hint(
+    reply: impl Future<Output = Result<Response, ApiError>>,
+    mut hint: tokio::sync::watch::Receiver<Option<String>>,
+    lines: &tokio::sync::mpsc::Sender<Result<bytes::Bytes, std::io::Error>>,
+) -> (Response, tokio::sync::watch::Receiver<Option<String>>) {
+    tokio::pin!(reply);
+    let mut hinted = false;
+    loop {
+        tokio::select! {
+            biased;
+            response = &mut reply => {
+                return (response.unwrap_or_else(IntoResponse::into_response), hint);
+            }
+            changed = hint.changed(), if !hinted => {
+                hinted = true;
+                let route = changed.ok().and_then(|()| hint.borrow().clone());
+                if let Some(route) = route {
+                    let line = format!("{}\n", serde_json::json!({"routeHint": route}));
+                    let _ = lines.send(Ok(line.into())).await;
+                }
+            }
+        }
+    }
+}
+
+async fn final_line(response: Response) -> bytes::Bytes {
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), MAX_CONTROL_PLANE_MESSAGE_BYTES)
+        .await
+        .unwrap_or_default();
+    let document: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let line = if status.is_success() {
+        document
+    } else {
+        serde_json::json!({"failure": {"status": status.as_u16(), "body": document}})
+    };
+    format!("{line}\n").into()
+}
+
+async fn find_actor_reply(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,
     headers: HeaderMap,
@@ -273,7 +343,7 @@ struct FindActorRequest {
     home_region: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct ActorPath {
     project_id: String,
     actor_name: String,
