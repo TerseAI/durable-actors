@@ -23,11 +23,16 @@ type resourceLimits struct {
 	MemoryMiB int `json:"memoryMib"`
 }
 type spareRequest struct {
-	Kind            string         `json:"kind"`
-	Name            string         `json:"name"`
-	ImageRef        string         `json:"imageRef"`
-	CanonicalRegion string         `json:"canonicalRegion"`
-	Resources       resourceLimits `json:"resources"`
+	Kind            string             `json:"kind"`
+	Name            string             `json:"name"`
+	ImageRef        string             `json:"imageRef"`
+	CanonicalRegion string             `json:"canonicalRegion"`
+	Resources       resourceLimits     `json:"resources"`
+	ControlPlane    *spareControlPlane `json:"controlPlane,omitempty"`
+}
+type spareControlPlane struct {
+	URL      string `json:"url"`
+	Identity string `json:"identity"`
 }
 type spareHandle struct {
 	ControlRoute    string `json:"controlRoute,omitempty"`
@@ -211,6 +216,10 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	environment := map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)}
 	if request.CanonicalRegion == "north-america-west" || request.CanonicalRegion == "north-america-central" || request.CanonicalRegion == "north-america-east" {
 		environment["DURABLE_ACTORS_GCP_REGION"] = request.CanonicalRegion
+	}
+	if request.Kind == "actor" && request.ControlPlane != nil {
+		environment["DURABLE_ACTORS_CONTROL_PLANE_URL"] = request.ControlPlane.URL
+		environment["DURABLE_ACTORS_CONTROL_PLANE_IDENTITY"] = request.ControlPlane.Identity
 	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",

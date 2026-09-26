@@ -22,6 +22,7 @@ pub(crate) struct PoolConfig {
     pub idle_ttl_seconds: u32,
     pub regions: Vec<String>,
     pub resources: ResourceLimits,
+    pub control_plane: Option<crate::sandbox::SpareControlPlane>,
 }
 
 pub(crate) struct SparePool {
@@ -295,6 +296,7 @@ impl SparePool {
             canonical_region: region.into(),
             resources: self.config.resources.clone(),
             kind: self.config.kind,
+            control_plane: self.config.control_plane.clone(),
         };
         let handle = tokio::time::timeout(
             Duration::from_secs(110),

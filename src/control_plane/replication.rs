@@ -41,6 +41,7 @@ pub(super) fn fleet(
     pool_config.regions.sort();
     pool_config.regions.dedup();
     pool_config.resources = ResourceLimits::default();
+    pool_config.control_plane = None;
     let pool = SparePool::new(
         database.clone(),
         Arc::new(CommandSandboxProvider::new(

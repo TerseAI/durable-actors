@@ -249,3 +249,60 @@ impl SandboxProvider for RegionalProvider {
         anyhow::bail!("unexpected termination")
     }
 }
+
+#[tokio::test]
+async fn actor_spares_carry_control_plane_prewarm_settings() -> Result<()> {
+    let provider = Arc::new(CapturingProvider::default());
+    let mut config = config(1);
+    config.control_plane = Some(crate::sandbox::SpareControlPlane {
+        url: "https://control.test".into(),
+        identity: r#"{"provider":"p","serviceAccount":"s"}"#.into(),
+    });
+    let database = PostgresDatabase::lazy("postgresql://127.0.0.1:1/unused")?;
+    let pool = SparePool::new(database, provider.clone(), config);
+    pool.create("im-runtime", "region", "spare").await?;
+    let requests = provider.requests.lock().unwrap();
+    let control_plane = requests[0]
+        .control_plane
+        .as_ref()
+        .expect("prewarm settings");
+    assert_eq!(control_plane.url, "https://control.test");
+    Ok(())
+}
+
+#[derive(Default)]
+struct CapturingProvider {
+    requests: std::sync::Mutex<Vec<CreateSpareRequest>>,
+}
+
+#[async_trait::async_trait]
+impl SandboxProvider for CapturingProvider {
+    async fn build_code(
+        &self,
+        _: &crate::sandbox::BuildCodeRequest,
+    ) -> Result<crate::sandbox::BuiltActorCode> {
+        anyhow::bail!("unused")
+    }
+    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(handle(request.name.clone()))
+    }
+    async fn socket_credentials(
+        &self,
+        _: &crate::sandbox::SocketCredentialsRequest,
+    ) -> Result<crate::sandbox::SocketCredentials> {
+        anyhow::bail!("unused")
+    }
+    async fn ensure_host(
+        &self,
+        _: &crate::sandbox::EnsureHostRequest,
+    ) -> Result<crate::sandbox::ActorHostHandle> {
+        anyhow::bail!("unused")
+    }
+    async fn terminate_hosts(
+        &self,
+        _: &crate::sandbox::TerminateHostsRequest,
+    ) -> Result<crate::sandbox::HostTermination> {
+        anyhow::bail!("unused")
+    }
+}

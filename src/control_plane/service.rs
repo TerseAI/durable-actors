@@ -1091,6 +1091,7 @@ impl SandboxHostProvisioner {
             host_executor_loaded_at_ms = startup.executor_loaded_at_ms,
             host_executor_initialized_at_ms = startup.executor_initialized_at_ms,
             host_identity_token_ms = startup.identity_token_ms,
+            host_control_plane_prewarmed = startup.control_plane_prewarmed,
             modal_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
             modal_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
             modal_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),

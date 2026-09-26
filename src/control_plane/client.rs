@@ -21,6 +21,7 @@ use super::{
 };
 
 const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_PLANE_KEEPALIVE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct ControlPlaneClient {
@@ -146,20 +147,41 @@ impl ControlPlaneClient {
     }
 
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
-        let endpoint = endpoint.into();
-        let mut channel = Endpoint::new(endpoint.clone())
-            .context("parse actor control-plane endpoint")?
-            .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
-            .timeout(CONTROL_PLANE_REQUEST_TIMEOUT);
-        if endpoint.starts_with("https:") {
-            channel = channel.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
-        }
-        let channel = channel.connect_lazy();
+        let channel = control_plane_endpoint(&endpoint.into())?.connect_lazy();
+        Self::from_channel(channel, token.as_ref())
+    }
+
+    /// Opens the connection and obtains the service identity while an actor spare is idle.
+    pub(crate) async fn prewarm(
+        endpoint: String,
+        identity: google_cloud_auth::credentials::idtoken::IDTokenCredentials,
+    ) -> Result<Self> {
+        let channel = control_plane_endpoint(&endpoint)?
+            .http2_keep_alive_interval(CONTROL_PLANE_KEEPALIVE)
+            .keep_alive_while_idle(true)
+            .connect()
+            .await
+            .context("prewarm actor control-plane connection")?;
+        let client = Self::from_channel(channel, "unassigned-spare")?;
+        let started = std::time::Instant::now();
+        crate::service_identity::authorization(&identity).await?;
+        let _ = client
+            .identity_token_ms
+            .set(started.elapsed().as_secs_f64() * 1_000.0);
+        Ok(client.with_service_identity(Some(identity)))
+    }
+
+    pub(crate) fn with_host_token(self, token: &str) -> Result<Self> {
+        self.replace_token(token)?;
+        Ok(self)
+    }
+
+    fn from_channel(channel: Channel, token: &str) -> Result<Self> {
         Ok(Self {
             client: ActorControlPlaneServiceClient::new(channel)
                 .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
-            authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
+            authorization: Arc::new(RwLock::new(bearer_authorization(token)?)),
             service_identity: None,
             identity_token_ms: Default::default(),
         })
@@ -250,6 +272,17 @@ impl ControlPlaneClient {
             bearer_authorization(token)?;
         Ok(())
     }
+}
+
+fn control_plane_endpoint(endpoint: &str) -> Result<Endpoint> {
+    let mut channel = Endpoint::new(endpoint.to_owned())
+        .context("parse actor control-plane endpoint")?
+        .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
+        .timeout(CONTROL_PLANE_REQUEST_TIMEOUT);
+    if endpoint.starts_with("https:") {
+        channel = channel.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+    }
+    Ok(channel)
 }
 
 fn bearer_authorization(token: &str) -> Result<MetadataValue<tonic::metadata::Ascii>> {

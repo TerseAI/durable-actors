@@ -467,6 +467,12 @@ fn sandbox_provider_config(
                 cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 1000, 100, 64000)?,
                 memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 1024, 128, 262144)?,
             },
+            control_plane: control_plane_identity.clone().map(|identity| {
+                crate::sandbox::SpareControlPlane {
+                    url: control_plane_url.clone(),
+                    identity,
+                }
+            }),
         },
         provider_name,
         command: get("DURABLE_ACTORS_SANDBOX_COMMAND")

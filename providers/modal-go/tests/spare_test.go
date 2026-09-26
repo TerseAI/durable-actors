@@ -219,3 +219,22 @@ func TestHostAssignmentPreservesFederationConfiguration(t *testing.T) {
 		t.Fatal("host assignment lost federation configuration")
 	}
 }
+
+func TestActorSparesPrewarmTheControlPlaneButReplicasDoNot(t *testing.T) {
+	identity := `{"provider":"projects/123/locations/global/workloadIdentityPools/actors/providers/modal","serviceAccount":"host@test-project.iam.gserviceaccount.com"}`
+	for kind, expected := range map[string]bool{"actor": true, "replica": false} {
+		params, err := spareParams(spareRequest{Kind: kind, Name: kind, ImageRef: "im-runtime", CanonicalRegion: "north-america-west", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024},
+			ControlPlane: &spareControlPlane{URL: "https://control.test", Identity: identity}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, hasURL := params.Env["DURABLE_ACTORS_CONTROL_PLANE_URL"]
+		_, hasIdentity := params.Env["DURABLE_ACTORS_CONTROL_PLANE_IDENTITY"]
+		if hasURL != expected || hasIdentity != expected {
+			t.Fatalf("%s spare control-plane prewarm = %v/%v, want %v", kind, hasURL, hasIdentity, expected)
+		}
+		if expected && params.Env["DURABLE_ACTORS_CONTROL_PLANE_IDENTITY"] != identity {
+			t.Fatal("identity configuration changed")
+		}
+	}
+}

@@ -96,3 +96,28 @@ async fn host_callbacks_send_service_identity_and_scoped_host_token() -> Result<
     task.abort();
     result
 }
+
+#[tokio::test]
+async fn prewarmed_client_obtains_identity_before_assignment_then_uses_the_host_token() -> Result<()>
+{
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(ActorControlPlaneServiceServer::new(
+                IdentityProtectedControlPlane,
+            ))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+    );
+    let warm = ControlPlaneClient::prewarm(endpoint, ServiceToken.into()).await?;
+    assert!(
+        warm.identity_token_ms().is_some(),
+        "identity must be obtained before assignment"
+    );
+    let result = warm
+        .with_host_token("host-token")?
+        .notify_inventory_changed()
+        .await;
+    task.abort();
+    result
+}

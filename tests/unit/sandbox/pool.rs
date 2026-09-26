@@ -215,6 +215,7 @@ fn config(idle: u32) -> PoolConfig {
         idle_ttl_seconds: 600,
         regions: vec!["region".into()],
         resources: ResourceLimits::default(),
+        control_plane: None,
     }
 }
 

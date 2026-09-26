@@ -72,6 +72,15 @@ pub struct CreateSpareRequest {
     pub image_ref: String,
     pub canonical_region: String,
     pub resources: ResourceLimits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_plane: Option<SpareControlPlane>,
+}
+
+/// Lets idle actor spares connect and obtain their service identity before assignment.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SpareControlPlane {
+    pub url: String,
+    pub identity: String,
 }
 
 #[derive(Serialize)]
@@ -141,6 +150,8 @@ pub struct HostStartupReport {
     pub executor_loaded_at_ms: Option<f64>,
     pub executor_initialized_at_ms: Option<f64>,
     pub identity_token_ms: Option<f64>,
+    #[serde(default)]
+    pub control_plane_prewarmed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

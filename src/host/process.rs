@@ -380,30 +380,25 @@ async fn prepare_actor_host(
 ) -> Result<PreparedActorHost> {
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage) = match warm {
+    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript, warm.entrypoint)),
             Some(warm.storage),
+            warm.control_plane,
         ),
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
+    let prewarmed = warm_control_plane.filter(|warm| {
+        warm.url == config.control_plane_url && config.control_plane_identity.is_some()
+    });
+    timings.report.control_plane_prewarmed = prewarmed.is_some();
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
-        ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
+        host_control_plane(config, prewarmed),
         bind_host_listener(config, warm_listener),
     )?;
     timings.report.control_plane_connected_at_ms = Some(timings.elapsed_ms());
-    let identity = config
-        .control_plane_identity
-        .as_ref()
-        .map(|identity| {
-            identity.credentials(
-                &config.control_plane_url,
-                env::var("MODAL_IDENTITY_TOKEN").context("Modal OIDC identity missing")?,
-            )
-        })
-        .transpose()?;
-    let control_plane = Arc::new(control_plane.with_service_identity(identity));
+    let control_plane = Arc::new(control_plane);
     let scope = crate::replication::ReplicaScope {
         actor: config.actor.clone().context("actor identity missing")?,
         host: config.host_id.clone(),
@@ -493,6 +488,27 @@ async fn prepare_actor_host(
         lease,
         renewal,
     })
+}
+
+async fn host_control_plane(
+    config: &ActorHostConfig,
+    prewarmed: Option<super::spare::WarmControlPlane>,
+) -> Result<ControlPlaneClient> {
+    if let Some(warm) = prewarmed {
+        return warm.client.with_host_token(&config.host_token);
+    }
+    let client = ControlPlaneClient::connect(&config.control_plane_url, &config.host_token).await?;
+    let identity = config
+        .control_plane_identity
+        .as_ref()
+        .map(|identity| {
+            identity.credentials(
+                &config.control_plane_url,
+                env::var("MODAL_IDENTITY_TOKEN").context("Modal OIDC identity missing")?,
+            )
+        })
+        .transpose()?;
+    Ok(client.with_service_identity(identity))
 }
 
 async fn prepare_storage(
