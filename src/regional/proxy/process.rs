@@ -56,7 +56,7 @@ fn router_with_activity(config: ProxyConfig, activity: Arc<Activity>) -> Result<
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
-            post(invoke),
+            post(invoke).head(readiness),
         )
         .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
@@ -192,6 +192,20 @@ impl ProxyService {
             .verify(crate::grpc::transport::token(request)?, kind)
             .map_err(|_| Status::unauthenticated("invalid proxy capability"))
     }
+}
+
+async fn readiness(
+    State(service): State<Arc<ProxyService>>,
+    Path(actor): Path<ActorKey>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    service
+        .ticket(&http_request((), &headers)?, ProxyTransport::Invocation)
+        .map_err(http_status)?;
+    if actor != service.verifier.config.actor {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

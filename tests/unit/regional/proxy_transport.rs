@@ -110,6 +110,47 @@ async fn proxy_forwards_once_with_scope_trace_and_deadline() -> Result<()> {
 }
 
 #[tokio::test]
+async fn proxy_readiness_accepts_only_the_scoped_invocation_ticket_without_dispatch() -> Result<()>
+{
+    let (origin, issuer, config, primary, calls, servers) = fixture().await?;
+    let client = reqwest::Client::new();
+    let url = format!("{origin}/v1/projects/project/actors/Counter/one/invoke");
+    let invocation = ticket(&issuer, &config, &primary, ProxyTransport::Invocation)?;
+    let socket = ticket(&issuer, &config, &primary, ProxyTransport::Socket)?;
+    assert_eq!(
+        client
+            .head(&url)
+            .bearer_auth(&invocation)
+            .send()
+            .await?
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        client.head(&url).send().await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        client.head(&url).bearer_auth(socket).send().await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        client
+            .head(url.replace("/one/", "/other/"))
+            .bearer_auth(invocation)
+            .send()
+            .await?
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    for server in servers {
+        server.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn proxy_websocket_receives_unsolicited_primary_effects_and_forwards_client_frames()
 -> Result<()> {
     let (proxy_url, issuer, config, primary_url, _, servers) = fixture().await?;
