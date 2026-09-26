@@ -66,6 +66,7 @@ pub(super) struct HostReadiness {
     pub canonical_region: String,
     pub owner_epoch: u64,
     pub lease: crate::host_leases::HostLease,
+    pub startup: crate::sandbox::HostStartupReport,
 }
 
 struct HostMetadataFile {
@@ -128,6 +129,8 @@ pub(super) async fn serve_assigned_host(
     let initialized = async {
         let (verifier, owner_epoch) =
             initialize_executor(&config, &executor_connection, &host, &sockets).await?;
+        timings.report.executor_initialized_at_ms = Some(timings.elapsed_ms());
+        timings.report.identity_token_ms = control_plane.identity_token_ms();
         let ready = HostReadiness {
             host_id: config.host_id.clone(),
             session_id: config.session_id.clone(),
@@ -135,6 +138,7 @@ pub(super) async fn serve_assigned_host(
             canonical_region: config.runtime_config.region.clone(),
             owner_epoch,
             lease: storage.current_lease()?,
+            startup: timings.report.clone(),
         };
         if let Some(path) = &config.ready_file {
             let temporary = path.with_extension("tmp");
@@ -388,6 +392,7 @@ async fn prepare_actor_host(
         ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
         bind_host_listener(config, warm_listener),
     )?;
+    timings.report.control_plane_connected_at_ms = Some(timings.elapsed_ms());
     let identity = config
         .control_plane_identity
         .as_ref()
@@ -415,6 +420,7 @@ async fn prepare_actor_host(
         stop.clone(),
         transport.clone(),
     );
+    let started_at = timings.started_at;
     let storage_ready = prepare_storage(
         config,
         &endpoint,
@@ -422,23 +428,29 @@ async fn prepare_actor_host(
         stop,
         warm_storage,
         transport,
+        started_at,
     );
     let executor_ready = async {
-        if let Some((executor, javascript, entrypoint)) = warm_executor {
-            let connection =
-                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
-            Ok((connection, javascript))
+        let executor = if let Some((executor, javascript, entrypoint)) = warm_executor {
+            match tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await {
+                Ok(loaded) => loaded.map(|connection| (connection, javascript)),
+                Err(elapsed) => Err(elapsed.into()),
+            }
         } else {
             connect_executor(
                 &config.executor_socket,
-                timings.started_at,
+                started_at,
                 &mut timings.javascript_spawned_at_ms,
             )
             .await
-        }
+        };
+        (executor, elapsed_since(started_at))
     };
-    let (storage, executor) = tokio::join!(storage_ready, executor_ready);
-    let (storage, lease, renewal) = storage?;
+    let (storage, (executor, executor_loaded_at_ms)) = tokio::join!(storage_ready, executor_ready);
+    timings.report.executor_loaded_at_ms = Some(executor_loaded_at_ms);
+    let (storage, lease, renewal, storage_prepared_at_ms, lease_started_at_ms) = storage?;
+    timings.report.storage_prepared_at_ms = Some(storage_prepared_at_ms);
+    timings.report.lease_started_at_ms = Some(lease_started_at_ms);
     let (executor_connection, javascript) = match executor {
         Ok(executor) => executor,
         Err(error) => {
@@ -490,10 +502,13 @@ async fn prepare_storage(
     stop: CancellationToken,
     warm: Option<crate::bucket::WarmGcs>,
     transport: crate::state_transport::GrpcStateTransport,
+    started_at: Instant,
 ) -> Result<(
     Arc<super::storage::HostStorage>,
     Arc<HostLeaseMaintainer>,
     LeaseRenewalTask,
+    f64,
+    f64,
 )> {
     let storage = Arc::new(
         super::storage::HostStorage::new(
@@ -509,6 +524,7 @@ async fn prepare_storage(
         .await?
         .with_actor(config.actor.clone(), config.new_actor),
     );
+    let storage_prepared_at_ms = elapsed_since(started_at);
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint.clone(),
         config.session_id.clone(),
@@ -518,7 +534,17 @@ async fn prepare_storage(
         config.renew_every,
     )?);
     let renewal = lease.clone().start().await?;
-    Ok((storage, lease, renewal))
+    Ok((
+        storage,
+        lease,
+        renewal,
+        storage_prepared_at_ms,
+        elapsed_since(started_at),
+    ))
+}
+
+fn elapsed_since(started_at: Instant) -> f64 {
+    started_at.elapsed().as_secs_f64() * 1_000.0
 }
 
 async fn bind_host_listener(
@@ -580,6 +606,7 @@ struct HostStartupTimings {
     javascript_spawned_at_ms: Option<f64>,
     lease_registered_at_ms: Option<f64>,
     executor_notified_at_ms: Option<f64>,
+    report: crate::sandbox::HostStartupReport,
 }
 
 impl HostStartupTimings {
@@ -591,6 +618,7 @@ impl HostStartupTimings {
             javascript_spawned_at_ms: None,
             lease_registered_at_ms: None,
             executor_notified_at_ms: None,
+            report: Default::default(),
         }
     }
 

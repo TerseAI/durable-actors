@@ -51,12 +51,20 @@ async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> any
                     route: "https://host.test".into(),
                     expires_at_ms: 60_000,
                 },
+                startup: crate::sandbox::HostStartupReport {
+                    storage_prepared_at_ms: Some(310.0),
+                    identity_token_ms: Some(280.0),
+                    ..Default::default()
+                },
             })
             .is_ok()
     );
     let reply = call.await??;
     assert_eq!(reply.status(), 200);
-    assert_eq!(reply.json::<serde_json::Value>().await?["ownerEpoch"], 42);
+    let reply = reply.json::<serde_json::Value>().await?;
+    assert_eq!(reply["ownerEpoch"], 42);
+    assert_eq!(reply["startup"]["storagePreparedAtMs"], 310.0);
+    assert_eq!(reply["startup"]["identityTokenMs"], 280.0);
     server.abort();
     Ok(())
 }

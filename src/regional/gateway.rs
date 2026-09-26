@@ -41,8 +41,21 @@ impl Gateway {
     }
 
     pub(crate) async fn resolve(&self, actor: &ActorKey, socket: Option<Value>) -> Result<Value> {
+        let started = std::time::Instant::now();
         let assignment = self.directory.get_or_create(actor, self.ingress).await?;
-        self.resolve_assignment(&assignment, socket).await
+        let directory_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let result = self.resolve_assignment(&assignment, socket).await;
+        tracing::info!(
+            event = "gateway_actor_resolution",
+            actor = %actor.storage_key(),
+            home_region = assignment.home_region.as_str(),
+            ingress_region = self.ingress.as_str(),
+            directory_ms,
+            completed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            outcome = if result.is_ok() { "resolved" } else { "failed" },
+            "gateway actor resolution completed"
+        );
+        result
     }
 
     pub(crate) async fn resolve_assignment(

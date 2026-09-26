@@ -71,11 +71,16 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 	environment["DURABLE_ACTORS_HOST_ROUTE"] = spare.Route
 	environment["DURABLE_ACTORS_ENTRYPOINT"] = path.Join("/customer", request.ActorEntrypoint)
 	group, assignmentContext := errgroup.WithContext(ctx)
-	group.Go(func() error { return sb.Mount(assignmentContext, request.CodeSnapshot) })
+	group.Go(func() error {
+		err := sb.Mount(assignmentContext, request.CodeSnapshot)
+		phases.CodeMountedAtMS = p.elapsed()
+		return err
+	})
 	var handle hostHandle
 	group.Go(func() error {
 		var err error
 		handle, err = p.assigner.Assign(assignmentContext, spare, environment)
+		phases.AssignedAtMS = p.elapsed()
 		return err
 	})
 	if err := group.Wait(); err != nil {

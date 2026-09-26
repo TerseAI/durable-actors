@@ -118,7 +118,7 @@ pub struct EnsureHostRequest {
     pub host_idle_timeout_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
     pub lease: Option<crate::host_leases::HostLease>,
@@ -128,6 +128,19 @@ pub struct ActorHostHandle {
     pub route: String,
     pub canonical_region: String,
     pub provisioning: Option<ActorHostProvisioning>,
+    #[serde(default)]
+    pub startup: Option<HostStartupReport>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStartupReport {
+    pub control_plane_connected_at_ms: Option<f64>,
+    pub storage_prepared_at_ms: Option<f64>,
+    pub lease_started_at_ms: Option<f64>,
+    pub executor_loaded_at_ms: Option<f64>,
+    pub executor_initialized_at_ms: Option<f64>,
+    pub identity_token_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -141,6 +154,10 @@ pub struct ActorHostProvisioning {
     pub sdk_loaded_at_ms: Option<u64>,
     pub resources_resolved_at_ms: Option<u64>,
     pub sandbox_scheduled_at_ms: Option<u64>,
+    #[serde(default)]
+    pub code_mounted_at_ms: Option<u64>,
+    #[serde(default)]
+    pub assigned_at_ms: Option<u64>,
     pub host_ready_observed_at_ms: Option<u64>,
     pub route_read_at_ms: Option<u64>,
     pub completed_at_ms: u64,

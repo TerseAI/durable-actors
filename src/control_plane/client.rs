@@ -27,6 +27,7 @@ pub struct ControlPlaneClient {
     client: ActorControlPlaneServiceClient<Channel>,
     authorization: Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>,
     service_identity: Option<google_cloud_auth::credentials::idtoken::IDTokenCredentials>,
+    identity_token_ms: Arc<std::sync::OnceLock<f64>>,
 }
 
 impl ControlPlaneClient {
@@ -132,6 +133,10 @@ impl ControlPlaneClient {
         }
     }
 
+    pub(crate) fn identity_token_ms(&self) -> Option<f64> {
+        self.identity_token_ms.get().copied()
+    }
+
     pub(crate) fn with_service_identity(
         mut self,
         identity: Option<google_cloud_auth::credentials::idtoken::IDTokenCredentials>,
@@ -156,6 +161,7 @@ impl ControlPlaneClient {
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
             authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
             service_identity: None,
+            identity_token_ms: Default::default(),
         })
     }
 }
@@ -217,12 +223,14 @@ impl ControlPlaneClient {
                 .clone(),
         );
         if let Some(identity) = &self.service_identity {
-            request.metadata_mut().insert(
-                "x-serverless-authorization",
-                crate::service_identity::authorization(identity)
-                    .await?
-                    .parse()?,
-            );
+            let started = std::time::Instant::now();
+            let authorization = crate::service_identity::authorization(identity).await?;
+            let _ = self
+                .identity_token_ms
+                .set(started.elapsed().as_secs_f64() * 1_000.0);
+            request
+                .metadata_mut()
+                .insert("x-serverless-authorization", authorization.parse()?);
         }
         let reply = self
             .client

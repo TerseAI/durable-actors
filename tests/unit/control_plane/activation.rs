@@ -75,6 +75,7 @@ impl SandboxProvider for HostProvider {
             owner_epoch: activated.placement.owner_epoch,
             lease: Some(activated.placement.lease),
             provisioning: None,
+            startup: None,
         })
     }
     async fn socket_credentials(&self, _: &SocketCredentialsRequest) -> Result<SocketCredentials> {
@@ -196,6 +197,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         canonical_region: assignment.canonical_region.clone(),
         owner_epoch: 1,
         provisioning: None,
+        startup: None,
     };
     assert!(ready_lease(&invalid, &assignment).is_ok());
     invalid.lease.as_mut().unwrap().session_id = "another-session".into();

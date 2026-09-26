@@ -1016,6 +1016,7 @@ impl SandboxHostProvisioner {
             }
         };
         let provisioning = handle.provisioning.clone();
+        let startup = handle.startup.clone().unwrap_or_default();
         let owner_epoch = handle.owner_epoch;
         let ready = async {
             ensure!(
@@ -1082,6 +1083,14 @@ impl SandboxHostProvisioner {
             modal_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
             modal_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
             modal_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
+            modal_code_mounted_at_ms = provisioning.as_ref().and_then(|value| value.code_mounted_at_ms),
+            modal_assigned_at_ms = provisioning.as_ref().and_then(|value| value.assigned_at_ms),
+            host_control_plane_connected_at_ms = startup.control_plane_connected_at_ms,
+            host_storage_prepared_at_ms = startup.storage_prepared_at_ms,
+            host_lease_started_at_ms = startup.lease_started_at_ms,
+            host_executor_loaded_at_ms = startup.executor_loaded_at_ms,
+            host_executor_initialized_at_ms = startup.executor_initialized_at_ms,
+            host_identity_token_ms = startup.identity_token_ms,
             modal_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
             modal_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
             modal_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),

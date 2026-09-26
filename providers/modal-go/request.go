@@ -38,6 +38,7 @@ type hostHandle struct {
 	Route           string           `json:"route"`
 	CanonicalRegion string           `json:"canonicalRegion"`
 	Provisioning    *provisioning    `json:"provisioning,omitempty"`
+	Startup         json.RawMessage  `json:"startup,omitempty"`
 }
 type activationLease struct {
 	ID          string `json:"id"`
@@ -55,6 +56,8 @@ type provisioning struct {
 	SDKLoadedAtMS         int64  `json:"sdkLoadedAtMs"`
 	ResourcesResolvedAtMS int64  `json:"resourcesResolvedAtMs"`
 	SandboxScheduledAtMS  int64  `json:"sandboxScheduledAtMs"`
+	CodeMountedAtMS       int64  `json:"codeMountedAtMs"`
+	AssignedAtMS          int64  `json:"assignedAtMs"`
 	HostReadyObservedAtMS int64  `json:"hostReadyObservedAtMs"`
 	RouteReadAtMS         int64  `json:"routeReadAtMs"`
 	CompletedAtMS         int64  `json:"completedAtMs"`

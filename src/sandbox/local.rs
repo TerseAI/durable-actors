@@ -401,6 +401,7 @@ fn handle(lease: crate::host_leases::HostLease, region: &str, owner_epoch: u64) 
         route: lease.route,
         canonical_region: region.to_owned(),
         provisioning: None,
+        startup: None,
     }
 }
 

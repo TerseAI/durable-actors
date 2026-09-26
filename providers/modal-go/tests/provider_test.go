@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	modal "github.com/modal-labs/modal-client/go"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -247,4 +249,30 @@ func (a fakeAssigner) Assign(ctx context.Context, spare spareHandle, environment
 		return handle, err
 	}
 	return hostHandle{Lease: &activationLease{ID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], ExpiresAtMS: uint64(time.Now().Add(time.Minute).UnixMilli())}, HostID: environment["DURABLE_ACTORS_HOST_ID"], SessionID: environment["DURABLE_ACTORS_SESSION_ID"], Route: environment["DURABLE_ACTORS_HOST_ROUTE"], CanonicalRegion: environment["DURABLE_ACTORS_REGION"], OwnerEpoch: 42}, nil
+}
+
+func TestClaimReportsMountAssignmentAndHostStartupTimings(t *testing.T) {
+	sb := &fakeSandbox{}
+	api := &fakeAPI{found: sb}
+	request := testRequest()
+	request.Spare = &spareHandle{ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
+	lease := time.Now().Add(time.Minute).UnixMilli()
+	sb.metadata = `{"hostId":"host.v3.r1.new","sessionId":"00000000-0000-4000-8000-000000000001","route":"https://host.test","canonicalRegion":"north-america-east","ownerEpoch":7,` +
+		`"lease":{"id":"host.v3.r1.new","session_id":"00000000-0000-4000-8000-000000000001","route":"https://host.test","expires_at_ms":` + fmt.Sprint(lease) + `},"startup":{"storagePreparedAtMs":12.5}}`
+	started := time.Now()
+	var ticks atomic.Int64
+	p := newTestProvider(api)
+	p.started = started
+	p.now = func() time.Time { return started.Add(time.Duration(ticks.Add(1)) * time.Millisecond) }
+	handle, err := p.ensureHost(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases := handle.Provisioning
+	if phases.CodeMountedAtMS < phases.SandboxScheduledAtMS || phases.AssignedAtMS < phases.SandboxScheduledAtMS || phases.CodeMountedAtMS == 0 || phases.AssignedAtMS == 0 {
+		t.Fatalf("missing claim step timings: %+v", phases)
+	}
+	if string(handle.Startup) != `{"storagePreparedAtMs":12.5}` {
+		t.Fatalf("host startup timings were not relayed: %s", handle.Startup)
+	}
 }

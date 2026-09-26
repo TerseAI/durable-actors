@@ -31,6 +31,34 @@ fn decodes_provider_provisioning_timings() {
 }
 
 #[test]
+fn decodes_claim_steps_and_host_startup_timings() {
+    let handle: ActorHostHandle = serde_json::from_value(serde_json::json!({
+        "hostId": "host.v3.revision.session",
+        "route": "https://host.example.com",
+        "canonicalRegion": "north-america-west",
+        "provisioning": {
+            "provider": "modal", "resourceId": "sb-actor", "reused": true,
+            "startedAtMs": 0, "sandboxScheduledAtMs": 3, "codeMountedAtMs": 210,
+            "assignedAtMs": 790, "completedAtMs": 791
+        },
+        "startup": {
+            "controlPlaneConnectedAtMs": 1.5, "storagePreparedAtMs": 310.0,
+            "leaseStartedAtMs": 620.0, "executorLoadedAtMs": 40.0,
+            "executorInitializedAtMs": 700.0, "identityTokenMs": 280.0
+        }
+    }))
+    .expect("actor host handle");
+
+    let provisioning = handle.provisioning.expect("provisioning timings");
+    assert_eq!(provisioning.code_mounted_at_ms, Some(210));
+    assert_eq!(provisioning.assigned_at_ms, Some(790));
+    let startup = handle.startup.expect("host startup timings");
+    assert_eq!(startup.storage_prepared_at_ms, Some(310.0));
+    assert_eq!(startup.lease_started_at_ms, Some(620.0));
+    assert_eq!(startup.identity_token_ms, Some(280.0));
+}
+
+#[test]
 fn rejects_ambiguous_command_configuration() {
     assert!(CommandSandboxProvider::new("".into(), "modal".into(), HashMap::new()).is_err());
     assert!(CommandSandboxProvider::new("modal".into(), "".into(), HashMap::new()).is_err());
