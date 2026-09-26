@@ -265,6 +265,12 @@ impl StorageCredentials {
     }
 }
 
+fn parent_folders() -> impl Iterator<Item = String> {
+    let root = crate::storage_paths::ROOT;
+    root.match_indices('/')
+        .map(move |(end, _)| root[..=end].to_owned())
+}
+
 fn boundary(bucket: &str) -> Value {
     let prefix = crate::storage_paths::ROOT;
     json!({"accessBoundary": {"accessBoundaryRules": [
@@ -274,9 +280,12 @@ fn boundary(bucket: &str) -> Value {
 }
 
 fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {
+    // Hierarchical buckets, required for Rapid storage, create parent folders implicitly.
+    let parents = parent_folders()
+        .map(|folder| format!("resource.name == 'projects/_/buckets/{bucket}/folders/{folder}'"));
     let expression = prefixes.iter().map(|prefix| format!(
-        "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefix}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefix}')"
-    )).collect::<Vec<_>>().join(" || ");
+        "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefix}') || resource.name.startsWith('projects/_/buckets/{bucket}/folders/{prefix}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefix}')"
+    )).chain(parents).collect::<Vec<_>>().join(" || ");
     json!({"availableResource": format!("//storage.googleapis.com/projects/_/buckets/{bucket}"),
         "availablePermissions": roles.iter().map(|role| format!("inRole:roles/{role}")).collect::<Vec<_>>(),
         "availabilityCondition": {"expression": expression}})

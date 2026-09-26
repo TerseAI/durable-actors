@@ -433,3 +433,45 @@ async fn rapid_buckets_preserve_the_bucket_contract() -> Result<()> {
     assert_eq!(bucket.list(&prefix).await?, vec![key]);
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires DURABLE_ACTORS_TEST_RAPID_BUCKET and a downscoped DURABLE_ACTORS_TEST_RAPID_TOKEN"]
+async fn rapid_buckets_accept_host_scoped_ownership_writes() -> Result<()> {
+    let (Ok(name), Ok(token)) = (
+        std::env::var("DURABLE_ACTORS_TEST_RAPID_BUCKET"),
+        std::env::var("DURABLE_ACTORS_TEST_RAPID_TOKEN"),
+    ) else {
+        return Ok(());
+    };
+    let bucket =
+        GcsBucket::with_known_class(&name, TestCredentials::new(&token).into(), true).await?;
+    let key = format!(
+        "{}owners/contract-{}",
+        crate::storage_paths::ROOT,
+        uuid::Uuid::new_v4()
+    );
+    assert!(
+        bucket
+            .compare_and_swap(&key, None, b"owner".to_vec())
+            .await?
+    );
+    assert_eq!(
+        bucket.get(&key).await?.context("owner record")?.bytes,
+        b"owner"
+    );
+    let snapshot = format!(
+        "{}snapshots/contract-{}/1",
+        crate::storage_paths::ROOT,
+        uuid::Uuid::new_v4()
+    );
+    assert!(
+        bucket
+            .compare_and_swap(&snapshot, None, b"state".to_vec())
+            .await?
+    );
+    assert_eq!(
+        bucket.get(&snapshot).await?.context("snapshot")?.bytes,
+        b"state"
+    );
+    Ok(())
+}
