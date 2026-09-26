@@ -5,6 +5,8 @@ export interface DurableActorsClientOptions {
     readonly apiKey?: string
     readonly homeRegion?: string
     readonly controlPlaneUrl: string
+    /** Resolve and invoke through a hosted gateway in one request instead of calling the actor host directly. */
+    readonly invokeThroughGateway?: boolean
 }
 
 export type Environment = Record<string, string | undefined>
@@ -14,7 +16,9 @@ export function configuredSettings(value: unknown) {
         typeof value !== "object" ||
         value === null ||
         Array.isArray(value) ||
-        Object.keys(value).some(key => !["projectId", "apiKey", "homeRegion", "controlPlaneUrl"].includes(key))
+        Object.keys(value).some(
+            key => !["projectId", "apiKey", "homeRegion", "controlPlaneUrl", "invokeThroughGateway"].includes(key)
+        )
     )
         throw new ActorConfigurationError("durable-actors client settings are invalid")
     const options = value as DurableActorsClientOptions
@@ -28,7 +32,17 @@ export function configuredSettings(value: unknown) {
     if (options.apiKey !== undefined && (typeof options.apiKey !== "string" || !options.apiKey.trim()))
         throw new ActorConfigurationError("durable-actors client settings are invalid: apiKey must not be empty")
     if (options.homeRegion !== undefined) validateActorComponent("home region", options.homeRegion)
-    return { projectId, credential: options.apiKey?.trim(), homeRegion: options.homeRegion, controlPlaneUrl }
+    if (options.invokeThroughGateway !== undefined && typeof options.invokeThroughGateway !== "boolean")
+        throw new ActorConfigurationError(
+            "durable-actors client settings are invalid: invokeThroughGateway must be a boolean"
+        )
+    return {
+        projectId,
+        credential: options.apiKey?.trim(),
+        homeRegion: options.homeRegion,
+        controlPlaneUrl,
+        invokeThroughGateway: options.invokeThroughGateway === true
+    }
 }
 
 export function environmentSettings(environment: Environment = runtimeEnvironment()): DurableActorsClientOptions {
@@ -36,7 +50,8 @@ export function environmentSettings(environment: Environment = runtimeEnvironmen
         projectId: environment.DURABLE_ACTORS_PROJECT_ID,
         apiKey: environment.DURABLE_ACTORS_SECRET ?? environment.DURABLE_ACTORS_API_KEY,
         homeRegion: environment.DURABLE_ACTORS_HOME_REGION,
-        controlPlaneUrl: environment.DURABLE_ACTORS_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100"
+        controlPlaneUrl: environment.DURABLE_ACTORS_CONTROL_PLANE_URL ?? "http://127.0.0.1:7100",
+        invokeThroughGateway: environment.DURABLE_ACTORS_INVOKE_THROUGH_GATEWAY === "1"
     }
 }
 

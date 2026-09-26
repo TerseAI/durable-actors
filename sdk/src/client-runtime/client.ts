@@ -29,6 +29,7 @@ export class HttpActorClient {
     protected readonly monotonicNow: () => number
     protected readonly telemetry: TelemetrySink
     protected readonly targets = new Map<string, TargetResolution>()
+    private gatewayInvocationAvailable = true
 
     constructor(options?: DurableActorsClientOptions, dependencies: HttpActorClientDependencies = {}) {
         this.beforeInvoke = dependencies.beforeInvoke ?? (() => {})
@@ -51,6 +52,14 @@ export class HttpActorClient {
             this.beforeInvoke(requestId)
             const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
+            if (this.settings.invokeThroughGateway && this.gatewayInvocationAvailable) {
+                const reply = await this.invokeThroughGateway(invocation)
+                timeline.mark("gateway_invocation_completed")
+                if (reply.handled) {
+                    outcome = "completed"
+                    return reply.result
+                }
+            }
             const target = await this.target(invocation, timeline)
             timeline.mark("target_resolved")
             const result = await this.direct(target, invocation, true, timeline)
@@ -111,6 +120,56 @@ export class HttpActorClient {
                 `actor-host HTTP request failed after dispatch: ${message}`
             )
         }
+    }
+
+    private async invokeThroughGateway(
+        invocation: DirectActorInvocation
+    ): Promise<{ readonly handled: true; readonly result: unknown } | { readonly handled: false }> {
+        let response: Response
+        try {
+            response = await this.fetchRequest(
+                `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, invocation.actorName, invocation.actorId)}/invoke`,
+                {
+                    method: "POST",
+                    redirect: "error",
+                    headers: {
+                        accept: "application/json",
+                        ...authorizationHeaders(this.settings.credential),
+                        "x-request-id": invocation.requestId,
+                        "content-type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        requestId: invocation.requestId,
+                        method: invocation.method,
+                        args: invocation.args
+                    })
+                }
+            )
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new ActorInvocationError(
+                "outcome_unknown",
+                invocation.requestId,
+                `gateway invocation failed after it may have been dispatched: ${message}`
+            )
+        }
+        if (response.status === 404) {
+            this.gatewayInvocationAvailable = false
+            return { handled: false }
+        }
+        const document = await responseDocument(response)
+        if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
+        if (isRecord(document) && document.type === "completed" && Object.hasOwn(document, "result"))
+            return { handled: true, result: document.result }
+        if (
+            isRecord(document) &&
+            document.type === "failed" &&
+            typeof document.code === "string" &&
+            document.code.length > 0 &&
+            typeof document.message === "string"
+        )
+            throw new ActorInvocationError(document.code, invocation.requestId, document.message)
+        throw new ActorProtocolError("gateway response did not contain a valid outcome")
     }
 
     private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {

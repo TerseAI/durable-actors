@@ -25,6 +25,18 @@ pub(crate) struct Gateway {
     pub directory: Arc<ActorDirectory>,
     pub ingress: Region,
     endpoints: Arc<dyn RegionalEndpoints>,
+    hosts: reqwest::Client,
+}
+
+pub(crate) enum InvocationOutcome {
+    Reply(Value),
+    Unavailable,
+    OutcomeUnknown,
+}
+
+enum Dispatch {
+    Reply(Value),
+    RefreshTarget,
 }
 
 impl Gateway {
@@ -37,6 +49,85 @@ impl Gateway {
             directory,
             ingress,
             endpoints,
+            hosts: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .pool_idle_timeout(Duration::from_secs(90))
+                .build()
+                .expect("static actor-host client configuration"),
+        }
+    }
+
+    /// Resolves and invokes in one client request. Only rejections that precede dispatch are retried.
+    pub(crate) async fn invoke(&self, actor: &ActorKey, call: &Value) -> InvocationOutcome {
+        for attempt in 0..2 {
+            let Ok(target) = self.resolve(actor, None).await else {
+                return InvocationOutcome::Unavailable;
+            };
+            match self.dispatch(actor, &target, call).await {
+                Ok(Dispatch::Reply(reply)) => return InvocationOutcome::Reply(reply),
+                Ok(Dispatch::RefreshTarget) if attempt == 0 => continue,
+                Ok(Dispatch::RefreshTarget) => return InvocationOutcome::Unavailable,
+                Err(()) => return InvocationOutcome::OutcomeUnknown,
+            }
+        }
+        InvocationOutcome::Unavailable
+    }
+
+    async fn dispatch(
+        &self,
+        actor: &ActorKey,
+        target: &Value,
+        call: &Value,
+    ) -> Result<Dispatch, ()> {
+        let (Some(route), Some(token), Some(owner_epoch)) = (
+            target["route"].as_str(),
+            target["token"].as_str(),
+            target["ownerEpoch"].as_u64(),
+        ) else {
+            return Ok(Dispatch::RefreshTarget);
+        };
+        let url = format!(
+            "{}/v1/projects/{}/actors/{}/{}/invoke",
+            route.trim_end_matches('/'),
+            actor.project_id,
+            actor.actor_name,
+            actor.actor_id
+        );
+        let ready = self
+            .hosts
+            .head(&url)
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await;
+        if !ready.is_ok_and(|response| response.status() == reqwest::StatusCode::NO_CONTENT) {
+            return Ok(Dispatch::RefreshTarget);
+        }
+        let mut body = call.clone();
+        body["ownerEpoch"] = owner_epoch.into();
+        let response = match self
+            .hosts
+            .post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if error.is_connect() => return Ok(Dispatch::RefreshTarget),
+            Err(_) => return Err(()),
+        };
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(Dispatch::RefreshTarget);
+        }
+        if !response.status().is_success() {
+            return Err(());
+        }
+        let reply: Value = response.json().await.map_err(|_| ())?;
+        match reply["type"].as_str() {
+            Some("reroute") => Ok(Dispatch::RefreshTarget),
+            Some("completed" | "failed") => Ok(Dispatch::Reply(reply)),
+            _ => Err(()),
         }
     }
 

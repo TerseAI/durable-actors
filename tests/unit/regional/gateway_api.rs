@@ -277,3 +277,119 @@ async fn gateway_forwards_only_supported_admin_methods_with_internal_credentials
     server.abort();
     Ok(())
 }
+
+struct HostEndpoints {
+    host: String,
+    resolutions: AtomicUsize,
+}
+
+#[async_trait]
+impl RegionalEndpoints for HostEndpoints {
+    async fn actor_operation(
+        &self,
+        _: Region,
+        _: &ActorKey,
+        operation: &str,
+        _: Value,
+    ) -> Result<Value> {
+        assert_eq!(operation, "find-actor");
+        let resolution = self.resolutions.fetch_add(1, Ordering::SeqCst) + 1;
+        let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
+        Ok(serde_json::json!({
+            "route": self.host, "token": format!("ticket-{resolution}"),
+            "ownerEpoch": 7, "expiresAtMs": now + 60_000
+        }))
+    }
+}
+
+async fn fake_host(post_status: StatusCode) -> Result<String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let invoke = axum::routing::head(|headers: axum::http::HeaderMap| async move {
+        if headers["authorization"] == "Bearer ticket-1" {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::NO_CONTENT
+        }
+    })
+    .post(
+        move |headers: axum::http::HeaderMap, body: axum::Json<Value>| async move {
+            assert_eq!(headers["authorization"], "Bearer ticket-2");
+            assert_eq!(body["ownerEpoch"], 7);
+            assert_eq!(body["method"], "increment");
+            if post_status != StatusCode::OK {
+                return (post_status, axum::Json(Value::Null));
+            }
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({"type": "completed", "result": body["args"][0]})),
+            )
+        },
+    );
+    let app = Router::new().route("/v1/projects/{project}/actors/{name}/{id}/invoke", invoke);
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    Ok(origin)
+}
+
+fn invoke_fixture(host: String) -> Result<(Router, Arc<HostEndpoints>)> {
+    let (_, directory) = fixture()?;
+    let endpoints = Arc::new(HostEndpoints {
+        host,
+        resolutions: AtomicUsize::new(0),
+    });
+    let gateway = Arc::new(Gateway::new(
+        Arc::new(ActorDirectory::new(directory)),
+        Region::West,
+        endpoints.clone(),
+    ));
+    let internal = Arc::new(HttpRegionalEndpoints::new(
+        [("us-west".into(), "http://127.0.0.1:1".into())].into(),
+        "internal".into(),
+    )?);
+    Ok((
+        router(GatewayApi {
+            gateway,
+            endpoints: internal,
+            secret: "secret".into(),
+        }),
+        endpoints,
+    ))
+}
+
+async fn invoke(app: Router) -> Result<(StatusCode, Value)> {
+    let response = app
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/v1/projects/project/actors/Counter/one/invoke")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"requestId":"request-1","method":"increment","args":[5]}"#,
+                ))?,
+        )
+        .await?;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 65_536).await?;
+    Ok((status, serde_json::from_slice(&body)?))
+}
+
+#[tokio::test]
+async fn gateway_invokes_in_one_request_and_refreshes_a_rejected_ticket_once() -> Result<()> {
+    let (app, endpoints) = invoke_fixture(fake_host(StatusCode::OK).await?)?;
+    let (status, reply) = invoke(app).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply, serde_json::json!({"type": "completed", "result": 5}));
+    assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_never_retries_an_invocation_that_may_have_executed() -> Result<()> {
+    let (app, endpoints) = invoke_fixture(fake_host(StatusCode::INTERNAL_SERVER_ERROR).await?)?;
+    let (status, reply) = invoke(app).await?;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(reply["error"]["code"], "outcome_unknown");
+    assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
+    Ok(())
+}

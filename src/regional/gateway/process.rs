@@ -130,6 +130,10 @@ fn router(state: GatewayApi) -> Router {
             post(find_actor),
         )
         .route(
+            "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
+            post(invoke_actor),
+        )
+        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
             post(find_socket),
         )
@@ -203,7 +207,8 @@ async fn authenticate(
         Ok(()) => next.run(request).await,
         Err(status) => axum::response::IntoResponse::into_response(status),
     };
-    if response.status().is_client_error() || response.status().is_server_error() {
+    let structured = response.extensions().get::<StructuredError>().is_some();
+    if !structured && (response.status().is_client_error() || response.status().is_server_error()) {
         let status = response.status();
         let message = status
             .canonical_reason()
@@ -246,6 +251,56 @@ async fn find_actor(
             .await
             .map_err(unavailable)?,
     ))
+}
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GatewayInvocation {
+    request_id: String,
+    method: String,
+    args: Vec<Value>,
+}
+
+async fn invoke_actor(
+    State(state): State<GatewayApi>,
+    Path(actor): Path<ActorKey>,
+    Json(call): Json<GatewayInvocation>,
+) -> HttpResponse {
+    if actor.validate().is_err() || call.request_id.is_empty() || call.method.is_empty() {
+        return json_status(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid actor invocation",
+        );
+    }
+    let call = serde_json::to_value(&call).expect("serializable invocation");
+    match state.gateway.invoke(&actor, &call).await {
+        super::InvocationOutcome::Reply(reply) => {
+            axum::response::IntoResponse::into_response(Json(reply))
+        }
+        super::InvocationOutcome::Unavailable => json_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "actor host could not be reached before execution",
+        ),
+        super::InvocationOutcome::OutcomeUnknown => json_status(
+            StatusCode::BAD_GATEWAY,
+            "outcome_unknown",
+            "actor host request failed after dispatch; the outcome is unknown",
+        ),
+    }
+}
+
+#[derive(Clone)]
+struct StructuredError;
+
+fn json_status(status: StatusCode, code: &str, message: &str) -> HttpResponse {
+    let mut response = axum::response::IntoResponse::into_response((
+        status,
+        Json(serde_json::json!({"error": {"code": code, "message": message}})),
+    ));
+    response.extensions_mut().insert(StructuredError);
+    response
 }
 
 #[derive(Deserialize)]
