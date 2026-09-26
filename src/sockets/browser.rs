@@ -75,6 +75,25 @@ pub(super) struct SocketQuery {
 
 type Closed = (u16, &'static str);
 
+#[async_trait]
+pub(crate) trait SocketTransport: Send {
+    async fn recv(&mut self) -> Option<Result<Message>>;
+    async fn send(&mut self, message: Message) -> Result<()>;
+}
+
+#[async_trait]
+impl SocketTransport for WebSocket {
+    async fn recv(&mut self) -> Option<Result<Message>> {
+        WebSocket::recv(self)
+            .await
+            .map(|result| result.map_err(Into::into))
+    }
+
+    async fn send(&mut self, message: Message) -> Result<()> {
+        Ok(WebSocket::send(self, message).await?)
+    }
+}
+
 pub(super) async fn connect(
     State(state): State<SocketServerState>,
     Query(query): Query<SocketQuery>,
@@ -98,7 +117,11 @@ pub(super) async fn connect(
         .on_upgrade(move |socket| run(socket, state, ticket)))
 }
 
-async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
+pub(crate) async fn run(
+    mut socket: impl SocketTransport,
+    state: SocketServerState,
+    ticket: SocketTicket,
+) {
     let connection = ActorSocketConnection {
         id: uuid::Uuid::new_v4().to_string(),
         metadata: ticket.metadata.clone(),
@@ -142,7 +165,7 @@ struct Session {
 }
 
 impl Session {
-    async fn run(&mut self, socket: &mut WebSocket) -> Result<Closed, Closed> {
+    async fn run(&mut self, socket: &mut impl SocketTransport) -> Result<Closed, Closed> {
         let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
         loop {
             let remaining = self.remaining()?;
@@ -166,8 +189,8 @@ impl Session {
 
     async fn receive(
         &mut self,
-        socket: &mut WebSocket,
-        inbound: Option<Result<Message, axum::Error>>,
+        socket: &mut impl SocketTransport,
+        inbound: Option<Result<Message>>,
     ) -> Result<(), Closed> {
         match inbound {
             Some(Ok(Message::Text(text))) => self.enqueue(ActorSocketMessage::Text {
@@ -185,15 +208,8 @@ impl Session {
         let received = Instant::now();
         if self.handler.is_none() {
             self.start_message(message, received);
-        } else if self.pending.len() < 32 {
-            self.pending.push_back((message, received));
         } else {
-            self.discard(
-                message,
-                received,
-                crate::request_traces::RequestOutcome::Rejected,
-            );
-            return Err((1013, "socket operation queue is full"));
+            self.pending.push_back((message, received));
         }
         Ok(())
     }
@@ -241,7 +257,7 @@ impl Session {
 
     async fn send_outbound(
         &self,
-        socket: &mut WebSocket,
+        socket: &mut impl SocketTransport,
         outbound: OutboundMessage,
     ) -> Result<(), Closed> {
         match outbound {
@@ -268,18 +284,31 @@ impl Session {
         }
     }
 
-    async fn send_frame(&self, socket: &mut WebSocket, frame: Message) -> Result<(), Closed> {
+    async fn send_frame(
+        &self,
+        socket: &mut impl SocketTransport,
+        frame: Message,
+    ) -> Result<(), Closed> {
         self.state
             .dispatcher
             .ensure_authority()
             .map_err(|_| (1012, "actor host lease expired"))?;
-        tokio::time::timeout(
-            self.remaining()?.min(Duration::from_secs(5)),
-            socket.send(frame),
-        )
-        .await
-        .map_err(|_| (4408, "socket delivery timed out"))?
-        .map_err(|_| (1006, "transport closed"))
+        let remaining = self.remaining()?;
+        let sending = socket.send(frame);
+        tokio::pin!(sending);
+        let expiry = tokio::time::sleep(remaining);
+        tokio::pin!(expiry);
+        let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                biased;
+                _ = self.state.stop.cancelled() => return Err((1012, "actor host stopping")),
+                _ = &mut expiry => return Err((4408, "socket authorization expired")),
+                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority()
+                    .map_err(|_| (1012, "actor host lease expired"))?,
+                result = &mut sending => return result.map_err(|_| (1006, "transport closed")),
+            }
+        }
     }
 
     fn remaining(&self) -> Result<Duration, Closed> {
@@ -328,7 +357,7 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-async fn close(socket: &mut WebSocket, (code, reason): Closed) {
+async fn close(socket: &mut impl SocketTransport, (code, reason): Closed) {
     if code == 1006 {
         return;
     }
@@ -378,3 +407,7 @@ async fn dispatch_since(
     state.dispatcher.notify(ticket, &event);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/sockets/browser.rs"]
+mod tests;

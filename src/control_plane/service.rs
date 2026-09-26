@@ -38,6 +38,7 @@ pub struct ControlPlaneService {
     pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: tokio::sync::watch::Sender<()>,
     pub(super) region: Option<String>,
+    pub(super) hosted: bool,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     placements: Arc<dyn ObjectPlacementStore>,
     auth: ActorJwtVerifier,
@@ -78,6 +79,7 @@ impl ControlPlaneService {
             changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
             region: None,
+            hosted: false,
             placements,
             auth,
             host_token_issuer: issuer,
@@ -127,7 +129,9 @@ impl ControlPlaneService {
         let previous = admin.current_deployment(&spec.project_id).await?;
         spec.validate()?;
         let replacing = previous.is_some();
-        if let Some(previous) = previous {
+        if let Some(previous) = previous
+            && !self.hosted
+        {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = admin.register_deployment(spec, contract).await?;
@@ -195,7 +199,9 @@ impl ControlPlaneService {
         let Some(previous) = admin.current_deployment(project_id).await? else {
             return Ok(false);
         };
-        self.terminate_deployment_hosts(&previous).await?;
+        if !self.hosted {
+            self.terminate_deployment_hosts(&previous).await?;
+        }
         admin.remove_deployment(project_id).await?;
         self.changes.send_replace(());
         Ok(true)
@@ -583,6 +589,13 @@ impl ControlPlaneService {
             timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
         }
         let current = self.placements.get_owner(&actor.storage_key()).await?;
+        if self.hosted
+            && current
+                .as_ref()
+                .is_some_and(|placement| placement.home_region != self.default_region())
+        {
+            return Err(RegionConflict.into());
+        }
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
@@ -1107,6 +1120,7 @@ impl SandboxHostProvisioner {
             host_token,
             jwt_public_keys: self.issuer.verifier_keys_json()?,
             control_plane_url: self.runtime.control_plane_url.clone(),
+            control_plane_identity: self.runtime.control_plane_identity.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
             socket_jwt_audience: self.issuer.socket_audience(),

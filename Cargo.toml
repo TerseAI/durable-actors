@@ -16,6 +16,7 @@ include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/referen
 anstream = "1"
 anstyle = "1"
 futures-util = "0.3"
+http-body-util = "0.1"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
@@ -34,7 +35,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 google-cloud-storage = { version = "1.17.0", features = ["unstable-stream"] }
-google-cloud-auth = "1.15.0"
+google-cloud-auth = { version = "1.15.0", features = ["idtoken"] }
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 atomic-write-file = "0.3.1"
@@ -58,3 +59,4 @@ tonic-prost-build = "0.14"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }

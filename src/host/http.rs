@@ -20,11 +20,12 @@ use crate::{
     host::{ActorHost, HostId, sockets::HostSockets},
 };
 
+#[derive(Clone)]
 pub(crate) struct ActorHostHttpService {
-    host: Arc<ActorHost>,
+    pub(crate) host: Arc<ActorHost>,
     session_id: String,
     auth: ActorJwtVerifier,
-    sockets: Arc<HostSockets>,
+    pub(crate) sockets: Arc<HostSockets>,
 }
 
 impl ActorHostHttpService {
@@ -56,7 +57,7 @@ impl ActorHostHttpService {
             .with_state(Arc::new(self))
     }
 
-    fn authenticate(&self, headers: &HeaderMap) -> Result<ActorPrincipal, HttpError> {
+    pub(crate) fn authenticate(&self, headers: &HeaderMap) -> Result<ActorPrincipal, HttpError> {
         let authorization = headers
             .get("authorization")
             .and_then(|value| value.to_str().ok())
@@ -71,7 +72,7 @@ impl ActorHostHttpService {
             })
     }
 
-    fn authorize(
+    pub(crate) fn authorize(
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
@@ -87,7 +88,11 @@ impl ActorHostHttpService {
         )
     }
 
-    async fn execute(&self, invocation: ActorInvocation, owner_epoch: u64) -> InvocationReply {
+    pub(crate) async fn execute(
+        &self,
+        invocation: ActorInvocation,
+        owner_epoch: u64,
+    ) -> InvocationReply {
         let actor = invocation.actor.clone();
         let request_id = invocation.request_id.clone();
         let result = self.host.invoke_actor(invocation, owner_epoch).await;
@@ -248,7 +253,7 @@ struct PublishRequest {
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum InvocationReply {
+pub(crate) enum InvocationReply {
     Completed { result: Value },
     Failed { code: String, message: String },
     Reroute,
@@ -264,7 +269,7 @@ impl InvocationReply {
 }
 
 #[derive(Debug)]
-struct HttpError(StatusCode, String);
+pub(crate) struct HttpError(pub(crate) StatusCode, pub(crate) String);
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         (

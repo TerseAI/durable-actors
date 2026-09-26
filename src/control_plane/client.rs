@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use tonic::{
     Request,
     metadata::MetadataValue,
-    transport::{Channel, Endpoint},
+    transport::{Channel, ClientTlsConfig, Endpoint},
 };
 
 use crate::{
@@ -26,6 +26,7 @@ const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ControlPlaneClient {
     client: ActorControlPlaneServiceClient<Channel>,
     authorization: Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>,
+    service_identity: Option<google_cloud_auth::credentials::idtoken::IDTokenCredentials>,
 }
 
 impl ControlPlaneClient {
@@ -131,18 +132,30 @@ impl ControlPlaneClient {
         }
     }
 
+    pub(crate) fn with_service_identity(
+        mut self,
+        identity: Option<google_cloud_auth::credentials::idtoken::IDTokenCredentials>,
+    ) -> Self {
+        self.service_identity = identity;
+        self
+    }
+
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
         let endpoint = endpoint.into();
-        let channel = Endpoint::new(endpoint.clone())
+        let mut channel = Endpoint::new(endpoint.clone())
             .context("parse actor control-plane endpoint")?
             .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
-            .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
-            .connect_lazy();
+            .timeout(CONTROL_PLANE_REQUEST_TIMEOUT);
+        if endpoint.starts_with("https:") {
+            channel = channel.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+        }
+        let channel = channel.connect_lazy();
         Ok(Self {
             client: ActorControlPlaneServiceClient::new(channel)
                 .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
             authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
+            service_identity: None,
         })
     }
 }
@@ -203,6 +216,14 @@ impl ControlPlaneClient {
                 .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
                 .clone(),
         );
+        if let Some(identity) = &self.service_identity {
+            request.metadata_mut().insert(
+                "x-serverless-authorization",
+                crate::service_identity::authorization(identity)
+                    .await?
+                    .parse()?,
+            );
+        }
         let reply = self
             .client
             .clone()

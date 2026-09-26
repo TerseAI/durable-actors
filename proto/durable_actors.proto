@@ -49,3 +49,37 @@ message ReplicaSessionHead {
   bool sealed = 3;
   repeated ReplicaStreamHead streams = 4;
 }
+
+service ActorService {
+  rpc Invoke(ActorCall) returns (ActorReply);
+  rpc Publish(SocketEffects) returns (Empty);
+  rpc SocketSession(stream SocketFrame) returns (stream SocketFrame);
+}
+message ActorCall {
+  string project_id = 1;
+  string actor_name = 2;
+  string actor_id = 3;
+  string request_id = 4;
+  uint64 owner_epoch = 5;
+  string method = 6;
+  bytes args_json = 7;
+}
+message ActorReply { bytes reply_json = 1; }
+message SocketFrame {
+  oneof payload {
+    string text = 1;
+    bytes binary = 2;
+    bytes ping = 3;
+    bytes pong = 4;
+    SocketClose close = 5;
+  }
+}
+message SocketClose {
+  uint32 code = 1;
+  string reason = 2;
+}
+
+message SocketEffects {
+  ActorCall target = 1;
+  bytes effects_json = 2;
+}

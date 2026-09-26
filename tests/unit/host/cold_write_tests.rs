@@ -126,6 +126,23 @@ impl Fixture {
         blocked: bool,
         unpublished: bool,
     ) -> Result<Self> {
+        Self::with_policy(
+            assignment_ms,
+            snapshot_ms,
+            blocked,
+            unpublished,
+            crate::replication::DurabilityPolicy::default(),
+        )
+        .await
+    }
+
+    async fn with_policy(
+        assignment_ms: u64,
+        snapshot_ms: u64,
+        blocked: bool,
+        unpublished: bool,
+        durability: crate::replication::DurabilityPolicy,
+    ) -> Result<Self> {
         let directory = tempfile::tempdir()?;
         let stop = CancellationToken::new();
         let scope = ReplicaScope {
@@ -200,6 +217,7 @@ impl Fixture {
             runtime.clone(),
         )?);
         let storage = Arc::new(HostStorage {
+            durability,
             observer: Arc::new(
                 ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?,
             ),
@@ -348,6 +366,31 @@ async fn stalled_registration_does_not_delay_gcs() -> Result<()> {
 }
 
 #[tokio::test]
+async fn writes_wait_for_configured_replicas_before_acknowledging() -> Result<()> {
+    let f = Fixture::with_policy(
+        0,
+        0,
+        false,
+        true,
+        crate::replication::DurabilityPolicy::AllReplicas,
+    )
+    .await?;
+    let mut write = Box::pin(f.write());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut write)
+            .await
+            .is_err()
+    );
+    assert!(f.storage.runtime.local_replica_members(&f.scope).is_empty());
+    f.bucket.membership.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), write).await??,
+        StateWrite::Replicated
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn initial_replicas_accept_a_later_full_snapshot_and_recover_a_replica_only_commit()
 -> Result<()> {
     let f = Fixture::with_membership(0, 0, false, true).await?;
@@ -396,5 +439,27 @@ async fn benchmark_cold_write() -> Result<()> {
             elapsed[10], elapsed[18]
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_policy_writes_during_cold_start_and_replica_repair() -> Result<()> {
+    let f = Fixture::with_policy(0, 0, false, true, Default::default()).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), f.write()).await??,
+        StateWrite::Written
+    );
+    f.bucket.membership.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.storage.runtime.local_replica_members(&f.scope).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    f.storage.runtime.suspend_replication(&f.scope);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), f.write_version(2)).await??,
+        StateWrite::Written
+    );
     Ok(())
 }

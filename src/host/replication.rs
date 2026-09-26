@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -41,6 +41,7 @@ impl ActorReplication {
                 storage.runtime.clone(),
                 Arc::new(storage.transport.clone()),
             )
+            .with_policy(storage.durability)
             .with_failure_reports(failures),
             storage,
             writing: Mutex::new(()),
@@ -190,13 +191,18 @@ impl SnapshotWriter for ActorReplication {
         self.storage.ensure_authority()?;
         let initializing = !*self.initial_ready.borrow();
         let plan = self.storage.runtime.current_write_plan(plan).await?;
-        let proof = if plan.replication.is_none()
-            && self.storage.runtime.replication_enabled()
-            && initializing
-        {
-            self.writer
-                .write_when_ready(&plan, bytes.clone(), self.initial_write_plan(&plan))
-                .await?
+        let proof = if self.storage.runtime.replication_enabled() && plan.replication.is_none() {
+            if initializing {
+                self.writer
+                    .write_when_ready(&plan, bytes.clone(), self.initial_write_plan(&plan))
+                    .await?
+            } else {
+                ensure!(
+                    self.storage.durability != crate::replication::DurabilityPolicy::AllReplicas,
+                    "replicas are being repaired; retry the write"
+                );
+                self.writer.write_snapshot(&plan, bytes.clone()).await?
+            }
         } else {
             self.writer.write_snapshot(&plan, bytes.clone()).await?
         };

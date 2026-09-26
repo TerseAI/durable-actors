@@ -61,6 +61,12 @@ func executeCommand(ctx context.Context, input io.Reader, factory apiFactory, no
 func (r *commandRunner) execute(ctx context.Context, cmd command, started time.Time, parsed int64) (any, error) {
 	p := &provider{assigner: r.assigner, api: r.api, handles: r.handles, now: r.now, started: started, inputParsed: parsed, sdkLoaded: elapsed(started, r.now())}
 	switch cmd.Operation {
+	case "ensure_proxy":
+		var request proxyRequest
+		if err := json.Unmarshal(cmd.Request, &request); err != nil {
+			return nil, err
+		}
+		return p.ensureProxy(ctx, request)
 	case "create_spare":
 		var request spareRequest
 		if err := json.Unmarshal(cmd.Request, &request); err != nil {
@@ -125,7 +131,7 @@ func readCommand(input io.Reader) (command, error) {
 		return cmd, err
 	}
 	switch cmd.Operation {
-	case "ensure_host", "socket_credentials", "create_spare", "retire_spare", "build_code":
+	case "ensure_proxy", "ensure_host", "socket_credentials", "create_spare", "retire_spare", "build_code":
 		return cmd, nil
 	default:
 		return cmd, fmt.Errorf("unsupported sandbox operation")

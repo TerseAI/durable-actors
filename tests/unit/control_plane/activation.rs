@@ -44,7 +44,10 @@ struct HostProvider {
 
 #[async_trait]
 impl SandboxProvider for HostProvider {
-    async fn build_code(&self, _: &crate::sandbox::BuildCodeRequest) -> Result<crate::sandbox::BuiltActorCode> {
+    async fn build_code(
+        &self,
+        _: &crate::sandbox::BuildCodeRequest,
+    ) -> Result<crate::sandbox::BuiltActorCode> {
         anyhow::bail!("fixture does not build deployment images")
     }
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -128,6 +131,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         provider.clone(),
         HostSandboxRuntimeConfig {
             control_plane_url: "http://control".into(),
+            control_plane_identity: None,
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
             host_idle_timeout_ms: 60_000,

@@ -30,6 +30,7 @@ use crate::{
 mod cold_write_tests;
 
 pub(crate) struct HostStorage {
+    pub(super) durability: crate::replication::DurabilityPolicy,
     pub runtime: Arc<RuntimeStorage>,
     pub transport: crate::state_transport::GrpcStateTransport,
     pub(super) stop: CancellationToken,
@@ -81,6 +82,7 @@ impl HostStorage {
             std::sync::Arc::new(crate::clock::SystemClock),
         )?);
         Ok(Self {
+            durability: config.durability,
             observer: client,
             stop,
             runtime,

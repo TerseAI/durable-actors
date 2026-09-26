@@ -54,28 +54,27 @@ async fn inventory_notifies_on_activation_metadata_and_disconnect() -> anyhow::R
 }
 
 #[tokio::test]
-async fn slow_consumers_close_without_blocking_actor_output() {
+async fn slow_consumers_retain_bursts_in_order_until_they_catch_up() {
     let (sender, mut receiver) = socket_channel();
-    for _ in 0..32 {
+    for index in 0..2048 {
         sender
-            .send(OutboundMessage::Close {
-                code: 1000,
-                reason: String::new(),
-            })
+            .send(OutboundMessage::Control(json!({"index": index})))
             .unwrap();
     }
-    assert!(
-        sender
-            .send(OutboundMessage::Close {
-                code: 1000,
-                reason: String::new()
-            })
-            .is_err()
-    );
-    assert!(matches!(
-        receiver.recv().await,
-        Some(OutboundMessage::Close { code: 1013, .. })
-    ));
+    drop(sender);
+    for index in 0..2048 {
+        assert!(
+            matches!(receiver.recv().await, Some(OutboundMessage::Control(value)) if value["index"] == index)
+        );
+    }
+    assert!(receiver.recv().await.is_none());
+}
+
+#[test]
+fn closed_receivers_report_send_failure() {
+    let (sender, receiver) = socket_channel();
+    drop(receiver);
+    assert!(sender.send(OutboundMessage::Control(json!({}))).is_err());
 }
 
 #[tokio::test]

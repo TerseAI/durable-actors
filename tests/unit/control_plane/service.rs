@@ -1668,3 +1668,91 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
     }
     Ok(())
 }
+
+struct CountedRegistry {
+    spec: HostLaunchSpec,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl AdminRegistry for CountedRegistry {
+    async fn launch_spec(&self, _: &str) -> Result<Option<HostLaunchSpec>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some(self.spec.clone()))
+    }
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
+        Ok(vec![self.spec.clone()])
+    }
+    async fn register_deployment(
+        &self,
+        _: &HostLaunchSpec,
+        _: Option<&super::super::contracts::PublicActorContract>,
+    ) -> Result<bool> {
+        anyhow::bail!("unused")
+    }
+    async fn deployment_contract(
+        &self,
+        _: &str,
+    ) -> Result<Option<super::super::contracts::PublishedContract>> {
+        anyhow::bail!("unused")
+    }
+    async fn remove_deployment(&self, _: &str) -> Result<()> {
+        anyhow::bail!("unused")
+    }
+}
+
+#[tokio::test]
+async fn hosted_routes_load_once_and_host_callbacks_use_ownership() -> Result<()> {
+    let issuer = test_issuer()?;
+    let registry = Arc::new(CountedRegistry {
+        spec: HostLaunchSpec {
+            project_id: "default".into(),
+            source: None,
+            code_snapshot: None,
+            image_ref: "image".into(),
+            working_directory: "/app".into(),
+            actor_entrypoint: None,
+            secret_refs: vec![],
+        },
+        reads: Default::default(),
+    });
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let host = HostId::new(format!("host.v3.{}.one", registry.spec.host_config_key()));
+    let placements = Arc::new(LocalObjectPlacementStore::default());
+    placements.set_owner(&actor.storage_key(), test_lease(&host), FALLBACK_REGION)?;
+    let mut service = ControlPlaneService::new(
+        placements,
+        ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?,
+        registry.clone(),
+        issuer.clone(),
+        Arc::new(UnavailableProvisioner),
+    );
+    service.hosted = true;
+    service.resolve_actor_route(&actor, None, None).await?;
+    assert_eq!(registry.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let grant = issuer.issue_host(
+        &host,
+        &test_lease(&host).session_id,
+        &registry.spec.host_config_key(),
+        FALLBACK_REGION,
+        &actor,
+    )?;
+    let mut request = Request::new(());
+    request
+        .metadata_mut()
+        .insert("authorization", format!("Bearer {}", grant.token).parse()?);
+    let principal = service.auth.authenticate(&request).await?;
+    service.require_active_host(&principal).await?;
+    assert_eq!(registry.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    Ok(())
+}

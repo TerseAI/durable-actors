@@ -1,6 +1,6 @@
 # OpenAPI
 
-The [OpenAPI specification](openapi.yaml) describes the HTTP endpoints, authentication, request bodies, and responses.
+The [OpenAPI specification](openapi.yaml) describes the supported customer HTTP endpoints, authentication, request bodies, and responses. Hosted clients use the gateway origin. Only these documented customer operations are available through that gateway.
 
 Download the specification from a running server:
 
@@ -10,7 +10,7 @@ curl --fail http://127.0.0.1:7100/openapi.yaml -o openapi.yaml
 
 Replace the origin with your hosted server's URL when needed. Import the file into an OpenAPI-compatible API client or documentation viewer.
 
-The specification is public. When the server has `DURABLE_ACTORS_SECRET` set, API requests require `Authorization: Bearer <api-key>` with the same secret; keep it out of browser code. When the secret is unset, API requests need no authentication. A server listening beyond localhost warns when authentication is disabled but still starts.
+The specification is public. Hosted gateways require `Authorization: Bearer <api-key>` using the customer API key; keep it out of browser code. Local development permits unauthenticated requests when `DURABLE_ACTORS_SECRET` is unset.
 
 ## Local development
 

@@ -18,6 +18,8 @@ pub(crate) struct HostStorageConfig {
     pub region: String,
     pub replica_secret: String,
     pub replica_regions: Vec<String>,
+    #[serde(default)]
+    pub durability: crate::replication::DurabilityPolicy,
     pub token: Option<StorageToken>,
 }
 
@@ -44,6 +46,7 @@ impl std::fmt::Debug for StorageToken {
 }
 
 pub(crate) struct RuntimeAccess {
+    durability: crate::replication::DurabilityPolicy,
     credentials: Option<StorageCredentials>,
     http: reqwest::Client,
     location: BucketLocation,
@@ -63,6 +66,7 @@ impl RuntimeAccess {
         storage: Arc<super::RuntimeStorage>,
     ) -> Result<Self> {
         Ok(Self {
+            durability: Default::default(),
             credentials: match &location {
                 BucketLocation::Gcs { .. } => Some(StorageCredentials::new()?),
                 BucketLocation::File { .. } => None,
@@ -89,8 +93,14 @@ impl RuntimeAccess {
         })
     }
 
+    pub fn with_durability(mut self, policy: crate::replication::DurabilityPolicy) -> Self {
+        self.durability = policy;
+        self
+    }
+
     pub async fn bootstrap(&self, region: &str) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
+            durability: self.durability,
             bucket: self.location.clone(),
             region: region.into(),
             replica_secret: self.replicas.secret().to_owned(),

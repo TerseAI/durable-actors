@@ -142,3 +142,98 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
     );
     Ok(())
 }
+
+#[test]
+fn proxy_grants_are_bound_to_one_actor_session_and_transport() -> Result<()> {
+    use crate::regional::proxy::{ProxyConfig, ProxyDestination, ProxyTicket, ProxyVerifier};
+    let issuer = socket_issuer()?;
+    let config = ProxyConfig {
+        actor: ActorKey {
+            project_id: "project".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
+        session: uuid::Uuid::new_v4().to_string(),
+        region: crate::regional::Region::East,
+        keys: issuer.verifier_keys_json()?,
+        issuer: "issuer".into(),
+    };
+    let grant = ProxyTicket::new(
+        &config,
+        ProxyDestination {
+            route: "https://primary.test".into(),
+            token: "primary-invocation".into(),
+            owner_epoch: 3,
+            expires_at_ms: unix_millis()? + 30_000,
+            authorized_until_ms: None,
+            kind: crate::regional::proxy::ProxyTransport::Invocation,
+        },
+    )?;
+    let token = issuer.issue_proxy(&grant)?;
+    let verifier = ProxyVerifier::new(config.clone())?;
+    assert!(
+        verifier
+            .verify(&token, crate::regional::proxy::ProxyTransport::Invocation)
+            .is_ok()
+    );
+    assert!(
+        verifier
+            .verify(&token, crate::regional::proxy::ProxyTransport::Socket)
+            .is_err()
+    );
+    let mut other = config;
+    other.session = uuid::Uuid::new_v4().to_string();
+    assert!(
+        ProxyVerifier::new(other)?
+            .verify(&token, crate::regional::proxy::ProxyTransport::Invocation)
+            .is_err()
+    );
+    let authority = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    assert!(
+        authority
+            .authenticate_authorization(&format!("Bearer {token}"))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn proxy_expiry_matches_the_signed_capability_and_is_capped_by_upstream() -> Result<()> {
+    use crate::regional::proxy::{ProxyConfig, ProxyDestination, ProxyTicket, ProxyTransport};
+    let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64;
+    let config = ProxyConfig {
+        actor: crate::actor::ActorKey {
+            project_id: "project".into(),
+            actor_name: "Counter".into(),
+            actor_id: "one".into(),
+        },
+        session: uuid::Uuid::new_v4().to_string(),
+        region: crate::regional::Region::West,
+        keys: "{}".into(),
+        issuer: "issuer".into(),
+    };
+    for lifetime in [20_000, 3_600_000] {
+        let grant = ProxyTicket::new(
+            &config,
+            ProxyDestination {
+                route: "https://host.test".into(),
+                token: "grant".into(),
+                owner_epoch: 1,
+                expires_at_ms: now + lifetime,
+                authorized_until_ms: None,
+                kind: ProxyTransport::Invocation,
+            },
+        )?;
+        let json = serde_json::to_value(&grant)?;
+        assert_eq!(grant.expires_at_ms(), json["exp"].as_i64().unwrap() * 1000);
+        assert!(grant.expires_at_ms() <= now + lifetime);
+        assert!(grant.expires_at_ms() <= json["iat"].as_i64().unwrap() * 1000 + 60_000);
+    }
+    Ok(())
+}

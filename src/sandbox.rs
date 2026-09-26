@@ -107,6 +107,7 @@ pub struct EnsureHostRequest {
     pub host_token: String,
     pub jwt_public_keys: String,
     pub control_plane_url: String,
+    pub control_plane_identity: Option<String>,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub socket_jwt_audience: String,
@@ -207,6 +208,7 @@ pub trait SandboxProvider: Send + Sync {
 #[derive(Clone)]
 pub struct HostSandboxRuntimeConfig {
     pub control_plane_url: String,
+    pub control_plane_identity: Option<String>,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub host_idle_timeout_ms: u64,
@@ -295,7 +297,7 @@ impl SandboxProvider for CommandSandboxProvider {
 }
 
 impl CommandSandboxProvider {
-    async fn execute<Request: Serialize, Reply: for<'de> Deserialize<'de>>(
+    pub(crate) async fn execute<Request: Serialize, Reply: for<'de> Deserialize<'de>>(
         &self,
         operation: &str,
         request: &Request,

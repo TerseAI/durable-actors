@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use durable_actors::{
-    replication::{FileReplicaStore, ReplicaStore, ReplicatedStateTransport},
+    replication::{DurabilityPolicy, FileReplicaStore, ReplicaStore, ReplicatedStateTransport},
     state_transport::{SnapshotWriter, StateTransport, StateWrite},
     storage::WritePlan,
 };
@@ -13,7 +13,6 @@ use tokio::sync::Semaphore;
 struct Storage {
     bucket: Semaphore,
     second: Semaphore,
-    second_finished: Semaphore,
 }
 
 #[async_trait]
@@ -29,7 +28,6 @@ impl StateTransport for Storage {
             }
             "second" => {
                 self.second.acquire().await?.forget();
-                self.second_finished.add_permits(1);
             }
             _ => {}
         }
@@ -48,7 +46,6 @@ impl SnapshotWriter for Storage {
 async fn all_remote_replicas_can_commit_without_actor_disk_or_bucket() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
-        second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
     let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone());
@@ -68,39 +65,57 @@ async fn all_remote_replicas_can_commit_without_actor_disk_or_bucket() -> Result
 }
 
 #[tokio::test]
-async fn bucket_can_commit_while_a_replica_is_unavailable() -> Result<()> {
+async fn configured_replicas_must_all_acknowledge_even_when_object_storage_succeeds() -> Result<()>
+{
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(1),
-        second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone())
+        .with_policy(DurabilityPolicy::AllReplicas);
+    let mut plan = ticket();
+    plan.replication.as_mut().unwrap().replicas = (0..5)
+        .map(|index| durable_actors::replication::ReplicaTarget {
+            host_id: format!("replica-{index}"),
+            url: if index == 4 {
+                "second".into()
+            } else {
+                format!("replica-{index}")
+            },
+            region: "us-east".into(),
+        })
+        .collect();
+    let mut write = Box::pin(transport.write_snapshot(&plan, b"snapshot".to_vec()));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut write)
+            .await
+            .is_err()
+    );
+    storage.second.add_permits(1);
     assert_eq!(
-        transport
-            .write_snapshot(&ticket(), b"snapshot".to_vec())
-            .await?,
-        StateWrite::Written
+        tokio::time::timeout(Duration::from_secs(1), write).await??,
+        StateWrite::Replicated
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn failed_replica_is_reported_for_repair_even_when_gcs_commits_first() -> Result<()> {
+async fn failed_replica_blocks_acknowledgement_and_is_reported_for_repair() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(1),
-        second_finished: Semaphore::new(0),
         second: Semaphore::new(0),
     });
     let (failures, mut reports) = tokio::sync::mpsc::unbounded_channel();
     let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone())
+        .with_policy(DurabilityPolicy::AllReplicas)
         .with_failure_reports(failures);
-    assert_eq!(
+    storage.second.close();
+    assert!(
         transport
             .write_snapshot(&ticket(), b"snapshot".to_vec())
-            .await?,
-        StateWrite::Written
+            .await
+            .is_err()
     );
-    storage.second.close();
     let failed = tokio::time::timeout(Duration::from_millis(100), reports.recv()).await?;
     assert_eq!(
         failed.as_deref(),
@@ -199,7 +214,6 @@ async fn replica_restart_ignores_unpublished_writes_and_rejects_truncated_blobs(
 async fn a_duplicate_host_cannot_satisfy_two_replica_acknowledgments() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
-        second_finished: Semaphore::new(0),
         second: Semaphore::new(1),
     });
     let transport = ReplicatedStateTransport::new(storage.clone(), storage);
@@ -219,7 +233,6 @@ async fn a_partial_replica_set_cannot_commit_when_the_bucket_fails() -> Result<(
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(0),
         second: Semaphore::new(0),
-        second_finished: Semaphore::new(0),
     });
     storage.bucket.close();
     storage.second.close();
@@ -415,22 +428,38 @@ async fn replica_grpc_ack_is_readable_after_restart_and_bound_to_one_node() -> R
 }
 
 #[tokio::test]
-async fn replica_uploads_continue_after_object_storage_wins() -> Result<()> {
+async fn zero_replicas_use_object_storage_for_durability() -> Result<()> {
     let storage = Arc::new(Storage {
         bucket: Semaphore::new(1),
         second: Semaphore::new(0),
-        second_finished: Semaphore::new(0),
     });
-    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone());
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
+    let mut plan = ticket();
+    plan.replication = None;
     assert_eq!(
         transport
-            .write_snapshot(&ticket(), b"snapshot".to_vec())
+            .write_snapshot(&plan, b"snapshot".to_vec())
             .await?,
         StateWrite::Written
     );
-    storage.second.add_permits(1);
-    tokio::time::timeout(Duration::from_secs(1), storage.second_finished.acquire())
-        .await??
-        .forget();
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_policy_accepts_object_storage_while_replicas_are_unavailable() -> Result<()> {
+    let storage = Arc::new(Storage {
+        bucket: Semaphore::new(1),
+        second: Semaphore::new(0),
+    });
+    storage.second.close();
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage);
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            transport.write_snapshot(&ticket(), b"snapshot".to_vec())
+        )
+        .await??,
+        StateWrite::Written
+    );
     Ok(())
 }

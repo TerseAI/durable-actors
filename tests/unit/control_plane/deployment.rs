@@ -229,6 +229,7 @@ fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<BuildProvider>)> 
         provider.clone(),
         HostSandboxRuntimeConfig {
             control_plane_url: "http://control".into(),
+            control_plane_identity: None,
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
             host_idle_timeout_ms: 60_000,

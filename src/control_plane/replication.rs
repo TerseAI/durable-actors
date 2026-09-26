@@ -50,7 +50,7 @@ pub(super) fn fleet(
         )?),
         pool_config,
     );
-    pool.start(registry.clone(), stop);
+    pool.start(registry.clone(), stop, false);
     let fleet = Arc::new(ActorReplicaFleet {
         provider: Arc::new(PooledReplicaProvider {
             pool,

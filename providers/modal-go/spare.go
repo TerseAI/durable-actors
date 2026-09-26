@@ -182,6 +182,8 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	case "actor":
 	case "replica":
 		role = "replica"
+	case "proxy":
+		role = "proxy"
 	default:
 		return nil, fmt.Errorf("invalid spare kind")
 	}
@@ -201,11 +203,16 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	if _, err := rand.Read(token); err != nil {
 		return nil, err
 	}
+	environment := map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)}
+	if request.CanonicalRegion == "north-america-west" || request.CanonicalRegion == "north-america-central" || request.CanonicalRegion == "north-america-east" {
+		environment["DURABLE_ACTORS_GCP_REGION"] = request.CanonicalRegion
+	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
-		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
-		Env:     map[string]string{"DURABLE_ACTORS_PROCESS_ROLE": role, "DURABLE_ACTORS_SPARE_TOKEN": hex.EncodeToString(token)},
-		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
+		IncludeOidcIdentityToken: request.Kind == "actor",
+		Command:                  []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
+		Env:                      environment,
+		H2Ports:                  []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,
 		MemoryMiB: limits.MemoryMiB, MemoryLimitMiB: limits.MemoryMiB,
 	}, nil

@@ -141,11 +141,21 @@ impl SparePool {
         Ok(ids)
     }
 
-    pub fn start(self: &Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
-        tokio::spawn(self.clone().run(registry, stop));
+    pub fn start(
+        self: &Arc<Self>,
+        registry: Arc<dyn AdminRegistry>,
+        stop: CancellationToken,
+        shared_deployments: bool,
+    ) {
+        tokio::spawn(self.clone().run(registry, stop, shared_deployments));
     }
 
-    async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
+    async fn run(
+        self: Arc<Self>,
+        registry: Arc<dyn AdminRegistry>,
+        stop: CancellationToken,
+        shared_deployments: bool,
+    ) {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -173,7 +183,7 @@ impl SparePool {
             }
             let plans = tokio::select! {
                 () = stop.cancelled() => break,
-                result = self.reconcile(registry.as_ref()) => result,
+                result = self.reconcile(registry.as_ref(), shared_deployments) => result,
             };
             match plans {
                 Ok(plans) => {
@@ -197,8 +207,22 @@ impl SparePool {
         }
     }
 
-    async fn reconcile(&self, registry: &dyn AdminRegistry) -> Result<Vec<Build>> {
+    async fn reconcile(
+        &self,
+        registry: &dyn AdminRegistry,
+        shared_deployments: bool,
+    ) -> Result<Vec<Build>> {
+        let candidates = if shared_deployments && self.config.kind == SpareKind::Actor {
+            self.store.retirement_candidates().await?
+        } else {
+            Vec::new()
+        };
         let deployments = registry.launch_specs().await?;
+        let active = deployments
+            .iter()
+            .map(HostLaunchSpec::host_config_key)
+            .collect::<Vec<_>>();
+        self.store.retire_superseded(&candidates, &active).await?;
         let images: std::collections::BTreeSet<_> = deployments
             .iter()
             .filter(|spec| {
@@ -344,6 +368,29 @@ fn report(result: Result<()>) {
 struct PoolStore(PostgresDatabase, SpareKind);
 
 impl PoolStore {
+    async fn retirement_candidates(&self) -> Result<Vec<(String, String)>> {
+        Ok(self.0.connection().await?.query(
+            "SELECT name, host_config_key FROM durable_actors_spares WHERE kind = 'actor' AND status IN ('active', 'claimed') AND host_config_key IS NOT NULL", &[]).await?
+            .into_iter().map(|row| (row.get(0), row.get(1))).collect())
+    }
+
+    async fn retire_superseded(
+        &self,
+        candidates: &[(String, String)],
+        active: &[String],
+    ) -> Result<()> {
+        let (names, configs): (Vec<_>, Vec<_>) = candidates
+            .iter()
+            .filter(|(_, key)| !active.contains(key))
+            .cloned()
+            .unzip();
+        if names.is_empty() {
+            return Ok(());
+        }
+        self.0.execute("UPDATE durable_actors_spares s SET status = 'retiring' FROM unnest($1::text[], $2::text[]) AS candidate(name, config) WHERE s.name = candidate.name AND s.host_config_key = candidate.config AND s.status IN ('active', 'claimed')", &[&names, &configs]).await?;
+        Ok(())
+    }
+
     async fn publish(&self, key: &str, handle: &SpareHandle, ttl: u32) -> Result<bool> {
         let published = self.0.execute(
             "UPDATE durable_actors_spares SET status = 'ready', handle = $3, expires_at = clock_timestamp() + make_interval(secs => $4) \

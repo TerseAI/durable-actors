@@ -36,6 +36,7 @@ pub struct ActorHostConfig {
     new_actor: bool,
     ready_file: Option<PathBuf>,
     pub control_plane_url: String,
+    control_plane_identity: Option<crate::service_identity::FederatedIdentity>,
     pub host_token: String,
     pub jwt_public_keys: String,
 
@@ -123,8 +124,7 @@ pub(super) async fn serve_assigned_host(
         config.session_id.clone(),
         invocation_auth,
         sockets.clone(),
-    )
-    .router();
+    );
     let initialized = async {
         let (verifier, owner_epoch) =
             initialize_executor(&config, &executor_connection, &host, &sockets).await?;
@@ -166,21 +166,26 @@ pub(super) async fn serve_assigned_host(
     let stop = CancellationToken::new();
     let server_stop = stop.clone();
     let socket_stop = CancellationToken::new();
-    let socket_routes =
-        crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
-            registry: sockets.registry.clone(),
-            verifier: socket_verifier,
-            dispatcher: Arc::new(
-                super::sockets::HostSocketDispatcher::new(
-                    host.clone(),
-                    sockets,
-                    config.session_id.clone(),
-                )
-                .with_events(control_plane, socket_stop.clone()),
-            ),
-            stop: socket_stop.clone(),
-        });
-    let routes = socket_routes.merge(service);
+    let socket_state = crate::sockets::browser::SocketServerState {
+        registry: sockets.registry.clone(),
+        verifier: socket_verifier,
+        dispatcher: Arc::new(
+            super::sockets::HostSocketDispatcher::new(
+                host.clone(),
+                sockets,
+                config.session_id.clone(),
+            )
+            .with_events(control_plane, socket_stop.clone()),
+        ),
+        stop: socket_stop.clone(),
+    };
+    let grpc =
+        crate::grpc::actor::PrimaryService::new(service.clone(), socket_state.clone()).service();
+    let routes = tonic::service::Routes::from(
+        crate::sockets::browser::router(socket_state).merge(service.router()),
+    )
+    .add_service(grpc)
+    .into_axum_router();
     let mut server = Box::pin(async move {
         axum::serve(listener, routes)
             .with_graceful_shutdown(async move { server_stop.cancelled().await })
@@ -306,6 +311,9 @@ impl ActorHostConfig {
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
             runtime_config,
             control_plane_url,
+            control_plane_identity: get("DURABLE_ACTORS_CONTROL_PLANE_IDENTITY")
+                .map(|value| crate::service_identity::FederatedIdentity::parse(&value))
+                .transpose()?,
             host_token,
             jwt_public_keys,
             host_id,
@@ -380,7 +388,17 @@ async fn prepare_actor_host(
         ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
         bind_host_listener(config, warm_listener),
     )?;
-    let control_plane = Arc::new(control_plane);
+    let identity = config
+        .control_plane_identity
+        .as_ref()
+        .map(|identity| {
+            identity.credentials(
+                &config.control_plane_url,
+                env::var("MODAL_IDENTITY_TOKEN").context("Modal OIDC identity missing")?,
+            )
+        })
+        .transpose()?;
+    let control_plane = Arc::new(control_plane.with_service_identity(identity));
     let scope = crate::replication::ReplicaScope {
         actor: config.actor.clone().context("actor identity missing")?,
         host: config.host_id.clone(),
@@ -705,6 +723,7 @@ pub(super) fn spawn_javascript_process(
         .env("DURABLE_ACTORS_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
+        .env_remove("MODAL_IDENTITY_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

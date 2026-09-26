@@ -197,7 +197,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         config.regions = vec!["slow".into(), "fast".into()];
         let pool = SparePool::new(database.clone(), Arc::new(RegionalProvider), config);
         let stop = CancellationToken::new();
-        let task = tokio::spawn(pool.clone().run(registry, stop.clone()));
+        let task = tokio::spawn(pool.clone().run(registry, stop.clone(), false));
         let guard = stop.clone().drop_guard();
         let key = pool.key("im-runtime", "fast");
         wait_for_ready(&database, &key).await?;

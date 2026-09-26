@@ -38,6 +38,15 @@ pub(crate) struct IssuedActorToken {
 }
 
 impl ActorJwtIssuer {
+    pub(crate) fn issue_proxy(
+        &self,
+        ticket: &crate::regional::proxy::ProxyTicket,
+    ) -> Result<String> {
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.key_id.clone());
+        Ok(encode(&header, ticket, &self.encoding_key)?)
+    }
+
     pub(crate) fn from_base64_pkcs8(
         encoded_key: &str,
         key_id: impl Into<String>,

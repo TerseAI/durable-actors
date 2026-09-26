@@ -36,3 +36,6 @@ export function createActorTransport(options: DurableActorsClientOptions): Actor
 export type { DurableActorsClientOptions }
 
 export type { ActorRpcMethod, ActorRpcTransport }
+
+export { ActorDirectoryClient } from "./client-runtime/directory.js"
+export type { ActorObject, ActorHomeRegion } from "./client-runtime/directory.js"

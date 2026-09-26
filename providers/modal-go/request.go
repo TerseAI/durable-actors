@@ -21,6 +21,7 @@ type ensureRequest struct {
 	HostToken             string          `json:"hostToken"`
 	JWTPublicKeys         string          `json:"jwtPublicKeys"`
 	ControlPlaneURL       string          `json:"controlPlaneUrl"`
+	ControlPlaneIdentity  string          `json:"controlPlaneIdentity"`
 	JWTIssuer             string          `json:"jwtIssuer"`
 	InvocationJWTAudience string          `json:"invocationJwtAudience"`
 	ImageRef              string          `json:"imageRef"`
@@ -91,6 +92,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 	}
 	env["DURABLE_ACTORS_ACTOR"] = string(r.Actor)
 	env["DURABLE_ACTORS_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)
+	if r.ControlPlaneIdentity != "" {
+		env["DURABLE_ACTORS_CONTROL_PLANE_IDENTITY"] = r.ControlPlaneIdentity
+	}
 	if r.RuntimeConfig != "" {
 		env["DURABLE_ACTORS_RUNTIME_CONFIG"] = r.RuntimeConfig
 	}

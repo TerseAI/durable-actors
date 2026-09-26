@@ -5,7 +5,6 @@ use crate::actor::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{RwLock, mpsc, watch};
-use tokio_util::sync::CancellationToken;
 
 pub(crate) mod browser;
 const MAX_CONNECTIONS_PER_ACTOR: usize = 128;
@@ -339,42 +338,27 @@ impl SocketRegistry {
 
 #[derive(Clone)]
 pub(crate) struct SocketSender {
-    sender: mpsc::Sender<OutboundMessage>,
-    overflow: CancellationToken,
+    sender: mpsc::UnboundedSender<OutboundMessage>,
 }
 
 pub(crate) struct SocketReceiver {
-    receiver: mpsc::Receiver<OutboundMessage>,
-    overflow: CancellationToken,
+    receiver: mpsc::UnboundedReceiver<OutboundMessage>,
 }
 
 pub(crate) fn socket_channel() -> (SocketSender, SocketReceiver) {
-    let (sender, receiver) = mpsc::channel(32);
-    let overflow = CancellationToken::new();
-    (
-        SocketSender {
-            sender,
-            overflow: overflow.clone(),
-        },
-        SocketReceiver { receiver, overflow },
-    )
+    let (sender, receiver) = mpsc::unbounded_channel();
+    (SocketSender { sender }, SocketReceiver { receiver })
 }
 
 impl SocketSender {
     pub(crate) fn send(&self, message: OutboundMessage) -> Result<(), ()> {
-        self.sender
-            .try_send(message)
-            .map_err(|_| self.overflow.cancel())
+        self.sender.send(message).map_err(|_| ())
     }
 }
 
 impl SocketReceiver {
     pub(crate) async fn recv(&mut self) -> Option<OutboundMessage> {
-        tokio::select! {
-            biased;
-            _ = self.overflow.cancelled() => Some(OutboundMessage::Close { code: 1013, reason: "socket output queue is full".into() }),
-            message = self.receiver.recv() => message,
-        }
+        self.receiver.recv().await
     }
 
     #[cfg(test)]

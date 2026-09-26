@@ -16,6 +16,83 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
+async fn direct_and_grpc_sockets_share_inventory_broadcasts_and_primary_fencing() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let mut direct = stack.connect().await?;
+    receive(&mut direct).await?;
+    let (first_sender, mut first) = stack.grpc_socket().await?;
+    let (second_sender, mut second) = stack.grpc_socket().await?;
+    assert_eq!(
+        receive_grpc(&mut first).await?["state"],
+        serde_json::json!({"count": 0})
+    );
+    assert_eq!(
+        receive_grpc(&mut second).await?["state"],
+        serde_json::json!({"count": 0})
+    );
+    let clients = stack.invoke("clients", vec![]).await?;
+    assert_eq!(clients.as_array().unwrap().len(), 3);
+    let ids: std::collections::HashSet<_> = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|client| client["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3);
+
+    stack.invoke("change", vec![]).await?;
+    for update in [
+        receive(&mut direct).await?,
+        receive_grpc(&mut first).await?,
+        receive_grpc(&mut second).await?,
+    ] {
+        assert_eq!(update["type"], "state_update");
+        assert_eq!(update["changes"], serde_json::json!({"count": 2}));
+    }
+    stack
+        .invoke("notifyFiles", vec![serde_json::json!("all")])
+        .await?;
+    for message in [
+        receive(&mut direct).await?,
+        receive_grpc(&mut first).await?,
+        receive_grpc(&mut second).await?,
+    ] {
+        assert_eq!(message, serde_json::json!({"text": "done"}));
+    }
+
+    stack
+        .storage
+        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
+        .await?;
+    for stream in [&mut first, &mut second] {
+        let frame = tokio::time::timeout(Duration::from_secs(3), stream.message())
+            .await??
+            .context("fence close")?;
+        assert!(
+            matches!(frame.payload, Some(crate::grpc::proto::socket_frame::Payload::Close(close)) if close.code == 1012)
+        );
+    }
+    drop((first_sender, second_sender));
+    stack.child.kill().await?;
+    Ok(())
+}
+
+async fn receive_grpc(
+    stream: &mut tonic::Streaming<crate::grpc::proto::SocketFrame>,
+) -> Result<serde_json::Value> {
+    let frame = tokio::time::timeout(Duration::from_secs(5), stream.message())
+        .await??
+        .context("socket frame")?;
+    match frame.payload {
+        Some(crate::grpc::proto::socket_frame::Payload::Text(text)) => {
+            Ok(serde_json::from_str(&text)?)
+        }
+        other => anyhow::bail!("expected JSON socket message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn browser_receives_only_emittable_state_after_commit_and_on_reconnect() -> Result<()> {
     let mut stack = Stack::start().await?;
     let grant = stack
@@ -602,6 +679,7 @@ impl Stack {
         let storage = Arc::new(
             crate::host::storage::HostStorage::new(
                 crate::bucket::access::HostStorageConfig {
+                    durability: Default::default(),
                     bucket: crate::bucket::access::BucketLocation::File {
                         directory: runtime.directory.path().into(),
                     },
@@ -662,28 +740,31 @@ impl Stack {
             Duration::from_secs(60),
         )?;
         let serving_host = host.clone();
-        let socket_routes =
-            crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
-                registry: local_sockets.registry.clone(),
-                verifier: issuer.socket_verifier()?,
-                dispatcher: Arc::new(crate::host::sockets::HostSocketDispatcher::new(
-                    host.clone(),
-                    local_sockets.clone(),
-                    "00000000-0000-4000-8000-000000000001".into(),
-                )),
-                stop: tokio_util::sync::CancellationToken::new(),
-            });
+        let socket_state = crate::sockets::browser::SocketServerState {
+            registry: local_sockets.registry.clone(),
+            verifier: issuer.socket_verifier()?,
+            dispatcher: Arc::new(crate::host::sockets::HostSocketDispatcher::new(
+                host.clone(),
+                local_sockets.clone(),
+                "00000000-0000-4000-8000-000000000001".into(),
+            )),
+            stop: tokio_util::sync::CancellationToken::new(),
+        };
         let http_sockets = local_sockets.clone();
         tasks.spawn(async move {
-            let routes = socket_routes.merge(
-                crate::host::http::ActorHostHttpService::new(
-                    serving_host,
-                    "00000000-0000-4000-8000-000000000001".into(),
-                    auth,
-                    http_sockets,
-                )
-                .router(),
+            let http = crate::host::http::ActorHostHttpService::new(
+                serving_host,
+                "00000000-0000-4000-8000-000000000001".into(),
+                auth,
+                http_sockets,
             );
+            let grpc = crate::grpc::actor::PrimaryService::new(http.clone(), socket_state.clone())
+                .service();
+            let routes = tonic::service::Routes::from(
+                crate::sockets::browser::router(socket_state).merge(http.router()),
+            )
+            .add_service(grpc)
+            .into_axum_router();
             let _ = axum::serve(host_listener, routes).await;
         });
         Ok(Self {
@@ -731,6 +812,34 @@ impl Stack {
             tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().context("socket URL")?)
                 .await?;
         Ok(socket)
+    }
+
+    async fn grpc_socket(
+        &self,
+    ) -> Result<(
+        tokio::sync::mpsc::Sender<crate::grpc::proto::SocketFrame>,
+        tonic::Streaming<crate::grpc::proto::SocketFrame>,
+    )> {
+        let grant = self.grant(serde_json::json!({}), 60_000).await?;
+        let mut origin =
+            reqwest::Url::parse(grant["websocketUrl"].as_str().context("socket URL")?)?;
+        origin
+            .set_scheme("http")
+            .map_err(|_| anyhow::anyhow!("socket scheme"))?;
+        origin.set_path("/");
+        origin.set_query(None);
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let mut request =
+            tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(receiver));
+        request.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {}", socket_key(&grant)?).parse()?,
+        );
+        let stream = crate::grpc::forward::client(origin.as_str())?
+            .socket_session(request)
+            .await?
+            .into_inner();
+        Ok((sender, stream))
     }
 }
 

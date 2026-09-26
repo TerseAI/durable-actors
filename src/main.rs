@@ -55,6 +55,7 @@ async fn run(cli: Cli) -> Result<()> {
     if let Some(Commands::Dev(options)) = cli.command {
         return serve_local(options, shutdown_signal()).await;
     }
+    durable_actors::regional::attest_modal_environment()?;
     let shutdown = shutdown_signal();
     match std::env::var("DURABLE_ACTORS_PROCESS_ROLE")
         .as_deref()
@@ -63,6 +64,7 @@ async fn run(cli: Cli) -> Result<()> {
         "control_plane" => {
             serve_control_plane(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
+        "proxy" => durable_actors::regional::serve_proxy(shutdown).await,
         "spare" => durable_actors::host::serve_spare(shutdown).await,
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
         "replica" => durable_actors::replication::serve_replica_host(shutdown).await,

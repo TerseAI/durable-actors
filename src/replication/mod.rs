@@ -18,7 +18,7 @@ pub use process::serve_replica_host;
 pub use server::replica_routes;
 pub use store::{FileReplicaStore, ReplicaStore};
 pub use stream::{ReplicaStream, SessionHead, SnapshotRef, StreamHead};
-pub use transport::ReplicatedStateTransport;
+pub use transport::{DurabilityPolicy, ReplicatedStateTransport};
 
 pub const MAX_REPLICAS: usize = 8;
 pub const DEFAULT_REPLICA_BYTES: u64 = 1024 * 1024 * 1024;

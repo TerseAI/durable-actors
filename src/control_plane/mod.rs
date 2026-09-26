@@ -1,5 +1,6 @@
 pub(crate) mod admin;
 mod auth;
+mod catalog;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;
@@ -14,6 +15,7 @@ mod local;
 mod local_build;
 mod process;
 mod protocol;
+mod proxy_api;
 mod public_api;
 mod regions;
 mod replication;
@@ -26,6 +28,7 @@ pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = 16 * 1024 * 1024
 pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub use catalog::DeploymentCatalog;
 pub use local::{DevOptions, serve_local};
 
 #[cfg(test)]

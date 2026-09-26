@@ -123,6 +123,47 @@ paths:
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/resolve:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { $ref: "#/components/parameters/ActorName" }
+            - { $ref: "#/components/parameters/ActorId" }
+        post:
+            operationId: resolveActorIdentity
+            tags: [Discovery]
+            summary: Resolve a stable object identity
+            description: Hosted gateway operation. Assigns an identity and home region on first resolution.
+            responses:
+                "200": { $ref: "#/components/responses/ObjectIdentity" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "503": { $ref: "#/components/responses/Unavailable" }
+    /v1/projects/{project_id}/objects/{object_id}:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { name: object_id, in: path, required: true, schema: { type: string, format: uuid } }
+        get:
+            operationId: getActorIdentity
+            tags: [Discovery]
+            summary: Look up an existing object identity
+            description: Hosted gateway operation. Does not create an object or change its home region.
+            responses:
+                "200": { $ref: "#/components/responses/ObjectIdentity" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
+    /v1/projects/{project_id}/objects/{object_id}/find-actor:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+            - { name: object_id, in: path, required: true, schema: { type: string, format: uuid } }
+        post:
+            operationId: findActorByIdentity
+            tags: [Actors]
+            summary: Find an actor using its stable object identity
+            description: Hosted gateway operation. Returns a current route and short-lived credentials.
+            responses:
+                "200": { $ref: "#/components/responses/ActorTarget" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
+                "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor:
         parameters:
             - { $ref: "#/components/parameters/ProjectId" }
@@ -625,6 +666,17 @@ components:
                     examples:
                         socket: { value: { metadata: { userId: alice }, authorizationLifetimeMs: 900000 } }
     responses:
+        ObjectIdentity:
+            description: Stable identity assigned by the hosted gateway.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        required: [objectId, homeRegion, firstIngressRegion]
+                        properties:
+                            objectId: { type: string, format: uuid }
+                            homeRegion: { type: string }
+                            firstIngressRegion: { type: string }
         Changed:
             description: Whether the deployment changed.
             content:

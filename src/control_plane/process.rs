@@ -30,6 +30,8 @@ pub struct ControlPlaneProcessConfig {
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
     pub region: Option<String>,
+    deployment_registry: Option<Arc<dyn super::admin::AdminRegistry>>,
+    regional_routing: bool,
 }
 
 pub struct ControlPlaneStorageConfig {
@@ -37,6 +39,7 @@ pub struct ControlPlaneStorageConfig {
     pub trace_retention: Duration,
     pub bucket: String,
     pub replica_regions: Vec<String>,
+    pub durability: crate::replication::DurabilityPolicy,
 }
 
 pub struct SandboxProviderConfig {
@@ -55,6 +58,28 @@ pub struct SocketEventSinkConfig {
 impl ControlPlaneProcessConfig {
     pub fn from_env() -> Result<Self> {
         Self::from_lookup(|name| env::var(name).ok())
+    }
+
+    pub fn with_deployment_catalog(
+        mut self,
+        catalog: Arc<dyn super::DeploymentCatalog>,
+    ) -> Result<Self> {
+        ensure!(
+            self.api_key.is_some(),
+            "shared deployments require API authentication"
+        );
+        self.deployment_registry = Some(Arc::new(super::catalog::CatalogRegistry(catalog)));
+        Ok(self)
+    }
+
+    pub fn with_regional_routing(mut self) -> Result<Self> {
+        ensure!(
+            self.api_key.is_some(),
+            "regional routing requires API authentication"
+        );
+        self.normalize_hosted_placement()?;
+        self.regional_routing = true;
+        Ok(self)
     }
 }
 
@@ -98,6 +123,13 @@ async fn control_plane_routes(
     config: ControlPlaneProcessConfig,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<tonic::service::Routes> {
+    let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
+    let registry = config.deployment_registry.clone().unwrap_or_else(|| {
+        Arc::new(super::PostgresAdminRegistry::from_database(
+            database.clone(),
+        ))
+    });
+    let proxy_pool = regional_proxy_pool(&config, database.clone())?;
     let issuer = super::ActorJwtIssuer::from_base64_pkcs8(
         &config.jwt_signing_key,
         config.jwt_key_id,
@@ -113,7 +145,6 @@ async fn control_plane_routes(
         super::ActorTokenPurpose::ControlPlane,
         config.jwt_max_lifetime,
     )?;
-    let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
     let trace_persistence = Arc::new(PostgresTracePersistence::new(
         database.clone(),
         config.storage.trace_retention,
@@ -121,9 +152,7 @@ async fn control_plane_routes(
     let traces = TraceStore::open(trace_persistence.clone()).await?;
     trace_persistence.start_retention(stop.clone());
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
-    let registry = Arc::new(super::PostgresAdminRegistry::from_database(
-        database.clone(),
-    ));
+    let proxy_jwt_issuer = config.sandbox_provider.runtime.jwt_issuer.clone();
     let (fleet, access) = super::replication::fleet(
         registry.clone(),
         &config.sandbox_provider,
@@ -140,14 +169,17 @@ async fn control_plane_routes(
         config.sandbox_provider.runtime.control_plane_url.clone(),
         std::sync::Arc::new(crate::clock::SystemClock),
     )?);
-    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        crate::bucket::access::BucketLocation::Gcs {
-            bucket: config.storage.bucket.clone(),
-        },
-        fleet.clone(),
-        access,
-        storage.clone(),
-    )?);
+    let runtime_access = Arc::new(
+        crate::bucket::access::RuntimeAccess::new(
+            crate::bucket::access::BucketLocation::Gcs {
+                bucket: config.storage.bucket.clone(),
+            },
+            fleet.clone(),
+            access,
+            storage.clone(),
+        )?
+        .with_durability(config.storage.durability),
+    );
     let placements = storage.clone();
     fleet.start(storage.clone(), stop.clone());
     let provisioner = sandbox_provisioner(
@@ -157,6 +189,7 @@ async fn control_plane_routes(
         database,
         registry.clone(),
         stop,
+        config.deployment_registry.is_some(),
     )?;
     let socket_events = config
         .socket_event_sink
@@ -176,7 +209,18 @@ async fn control_plane_routes(
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.region = config.region;
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
+    service.hosted = config.deployment_registry.is_some();
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer.clone())?;
+    let proxy_routes = match proxy_pool {
+        Some(pool) => super::proxy_api::router(
+            pool,
+            issuer,
+            admin.clone(),
+            service.default_region().parse()?,
+            proxy_jwt_issuer,
+        ),
+        None => axum::Router::new(),
+    };
     let inspector = super::inspection::ActorInspector::new(
         storage.clone(),
         storage.clone(),
@@ -185,9 +229,32 @@ async fn control_plane_routes(
     .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::router(inspector, admin))
-        .merge(storage.router());
+        .merge(storage.router())
+        .merge(proxy_routes);
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
+}
+
+fn regional_proxy_pool(
+    config: &ControlPlaneProcessConfig,
+    database: PostgresDatabase,
+) -> Result<Option<Arc<crate::regional::proxy::pool::ProxyPool>>> {
+    if !config.regional_routing {
+        return Ok(None);
+    }
+    let provider = &config.sandbox_provider;
+    let provider = CommandSandboxProvider::new(
+        provider.provider_name.clone(),
+        provider.command.clone(),
+        provider.environment.clone(),
+    )?;
+    Ok(Some(Arc::new(
+        crate::regional::proxy::pool::ProxyPool::new(
+            database,
+            Arc::new(provider),
+            config.sandbox_provider.runtime_image.clone(),
+        )?,
+    )))
 }
 
 fn sandbox_provisioner(
@@ -197,6 +264,7 @@ fn sandbox_provisioner(
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
+    shared_deployments: bool,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(CommandSandboxProvider::new(
         config.provider_name,
@@ -204,7 +272,7 @@ fn sandbox_provisioner(
         config.environment,
     )?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
-    pool.start(registry, stop);
+    pool.start(registry, stop, shared_deployments);
     Ok(Arc::new(
         super::service::SandboxHostProvisioner::new(
             provider,
@@ -261,6 +329,10 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
+            durability: get("DURABLE_ACTORS_DURABILITY_POLICY")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or_default(),
             replica_regions,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             trace_retention: trace_retention(&mut get)?,
@@ -282,7 +354,20 @@ impl ControlPlaneProcessConfig {
             sandbox_provider,
             socket_event_sink,
             region,
+            deployment_registry: None,
+            regional_routing: false,
         })
+    }
+
+    fn normalize_hosted_placement(&mut self) -> Result<()> {
+        let home: crate::regional::Region = self
+            .region
+            .as_deref()
+            .context("hosted control plane requires a region")?
+            .parse()?;
+        self.region = Some(home.as_str().into());
+        self.sandbox_provider.pool.regions = vec![home.as_str().into()];
+        Ok(())
     }
 }
 
@@ -344,6 +429,10 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
+    let control_plane_identity = get("DURABLE_ACTORS_CONTROL_PLANE_IDENTITY");
+    if let Some(value) = &control_plane_identity {
+        crate::service_identity::FederatedIdentity::parse(value)?;
+    }
     let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 5, 0, 32)?;
     let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 64, 0, 4096)?;
     ensure!(
@@ -385,6 +474,7 @@ fn sandbox_provider_config(
         environment,
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
+            control_plane_identity,
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,

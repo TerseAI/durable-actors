@@ -270,3 +270,151 @@ fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn shared_registry_accepts_single_region_with_any_replica_topology() -> Result<()> {
+    for replicas in [
+        "[]",
+        r#"["us-east","us-east","us-east","us-east","us-east"]"#,
+    ] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_REGION", "europe-west1");
+        values.insert("DURABLE_ACTORS_REPLICA_REGIONS", replicas);
+        let config = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })?
+        .with_deployment_catalog(Arc::new(TestCatalog))?;
+        assert!(!config.regional_routing);
+        assert_eq!(config.region.as_deref(), Some("europe-west1"));
+        assert_eq!(
+            config.storage.replica_regions,
+            serde_json::from_str::<Vec<String>>(replicas)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn regional_routing_preserves_the_configured_replica_topology() {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+            .and_then(|config| config.with_deployment_catalog(Arc::new(TestCatalog)))
+            .and_then(ControlPlaneProcessConfig::with_regional_routing)
+    };
+    assert!(parse(&values).is_err());
+    values.insert("DURABLE_ACTORS_REGION", "north-america-west");
+    values.insert(
+        "DURABLE_ACTORS_REPLICA_REGIONS",
+        r#"["north-america-central","north-america-east"]"#,
+    );
+    let configured = parse(&values).unwrap();
+    assert!(configured.deployment_registry.is_some());
+    assert_eq!(
+        configured.sandbox_provider.pool.regions,
+        ["north-america-west"]
+    );
+    values.insert("DURABLE_ACTORS_REGION", "us-west");
+    values.insert(
+        "DURABLE_ACTORS_REPLICA_REGIONS",
+        r#"["us-central","us-east"]"#,
+    );
+    let configured = parse(&values).unwrap();
+    assert_eq!(configured.region.as_deref(), Some("north-america-west"));
+    assert_eq!(
+        configured.storage.replica_regions,
+        ["us-central", "us-east"]
+    );
+    values.insert(
+        "DURABLE_ACTORS_REPLICA_REGIONS",
+        r#"["north-america-west","north-america-east"]"#,
+    );
+    assert!(parse(&values).is_ok());
+    values.insert("DURABLE_ACTORS_REPLICA_REGIONS", "[]");
+    assert!(parse(&values).is_ok());
+    values.insert(
+        "DURABLE_ACTORS_REPLICA_REGIONS",
+        r#"["us-west","us-west","us-west","us-west","us-west"]"#,
+    );
+    assert_eq!(parse(&values).unwrap().storage.replica_regions.len(), 5);
+    values.insert(
+        "DURABLE_ACTORS_REPLICA_REGIONS",
+        r#"["us-central","us-east"]"#,
+    );
+    values.remove("DURABLE_ACTORS_SECRET");
+    assert!(parse(&values).is_err());
+}
+
+struct TestCatalog;
+#[async_trait::async_trait]
+impl super::super::DeploymentCatalog for TestCatalog {
+    async fn get(&self, _: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+    async fn list(&self) -> Result<Vec<serde_json::Value>> {
+        Ok(vec![])
+    }
+    async fn publish(&self, _: &str, _: serde_json::Value) -> Result<bool> {
+        anyhow::bail!("unused")
+    }
+    async fn remove(&self, _: &str) -> Result<()> {
+        anyhow::bail!("unused")
+    }
+}
+
+#[test]
+fn durability_policy_defaults_to_storage_or_replicas_and_can_require_all_replicas() -> Result<()> {
+    use crate::replication::DurabilityPolicy;
+    for (value, expected) in [
+        (None, DurabilityPolicy::ObjectStorageOrReplicas),
+        (Some("all_replicas"), DurabilityPolicy::AllReplicas),
+        (
+            Some("object_storage_or_replicas"),
+            DurabilityPolicy::ObjectStorageOrReplicas,
+        ),
+    ] {
+        let mut values = process_environment();
+        if let Some(value) = value {
+            values.insert("DURABLE_ACTORS_DURABILITY_POLICY", value);
+        }
+        let config = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })?;
+        assert_eq!(config.storage.durability, expected);
+    }
+    let mut values = process_environment();
+    values.insert("DURABLE_ACTORS_DURABILITY_POLICY", "any_replica");
+    assert!(
+        ControlPlaneProcessConfig::from_lookup(|name| values
+            .get(name)
+            .map(|value| (*value).into()))
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn forwards_valid_federation_configuration_to_host_assignments() -> Result<()> {
+    let identity = r#"{"provider":"projects/123/locations/global/workloadIdentityPools/actors/providers/modal","serviceAccount":"actor-host@test-project.iam.gserviceaccount.com"}"#;
+    let mut values = process_environment();
+    values.insert("DURABLE_ACTORS_CONTROL_PLANE_IDENTITY", identity);
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert_eq!(
+        config
+            .sandbox_provider
+            .runtime
+            .control_plane_identity
+            .as_deref(),
+        Some(identity)
+    );
+    values.insert("DURABLE_ACTORS_CONTROL_PLANE_IDENTITY", "{}");
+    assert!(
+        ControlPlaneProcessConfig::from_lookup(|name| values
+            .get(name)
+            .map(|value| (*value).into()))
+        .is_err()
+    );
+    Ok(())
+}

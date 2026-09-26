@@ -161,3 +161,61 @@ func TestAssignmentRequiresProjectAndActorName(t *testing.T) {
 		}
 	}
 }
+
+func TestRegionalSparesAlwaysRequestGCP(t *testing.T) {
+	for _, region := range []string{"north-america-west", "north-america-central", "north-america-east"} {
+		for _, kind := range []string{"actor", "replica"} {
+			params, err := spareParams(spareRequest{Kind: kind, Name: "regional-test", ImageRef: "im-runtime", CanonicalRegion: region, Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.Cloud != "gcp" {
+				t.Fatalf("%s %s requested cloud %q", region, kind, params.Cloud)
+			}
+		}
+	}
+}
+
+func TestProxyUsesGenericImageWithoutCustomerCodeOrSecrets(t *testing.T) {
+	sb := &fakeSandbox{}
+	api := &fakeAPI{created: sb}
+	request := proxyRequest{
+		spareRequest: spareRequest{Name: "proxy-test", ImageRef: "im-runtime", CanonicalRegion: "north-america-west", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}},
+		Config:       json.RawMessage(`{"actor":{"project_id":"project","actor_name":"Counter","actor_id":"one"},"session":"00000000-0000-4000-8000-000000000001","region":"north-america-west","keys":"{}","issuer":"issuer"}`),
+	}
+	if _, err := newTestProvider(api).ensureProxy(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if api.params.Env["DURABLE_ACTORS_PROCESS_ROLE"] != "proxy" || api.params.Cloud != "gcp" {
+		t.Fatal("incorrect proxy placement")
+	}
+	if len(api.params.Secrets) != 0 || api.params.Env["DURABLE_ACTORS_HOST_TOKEN"] != "" || api.params.Env["DURABLE_ACTORS_RUNTIME_CONFIG"] != "" {
+		t.Fatal("proxy received primary credentials")
+	}
+}
+
+func TestActorSandboxCarriesFederatedServiceIdentity(t *testing.T) {
+	params, err := spareParams(spareRequest{Kind: "actor", Name: "actor", ImageRef: "im-runtime", CanonicalRegion: "north-america-west", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !params.IncludeOidcIdentityToken {
+		t.Fatal("actor callbacks require the sandbox OIDC identity")
+	}
+}
+
+func TestHostAssignmentPreservesFederationConfiguration(t *testing.T) {
+	config := `{"provider":"projects/123/locations/global/workloadIdentityPools/actors/providers/modal","serviceAccount":"actor-host@test-project.iam.gserviceaccount.com"}`
+	quoted, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request ensureRequest
+	if err := json.Unmarshal([]byte(`{"controlPlaneIdentity":`+string(quoted)+`}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	environment := hostEnvironment(request)
+	if environment["DURABLE_ACTORS_CONTROL_PLANE_IDENTITY"] != config {
+		t.Fatal("host assignment lost federation configuration")
+	}
+}

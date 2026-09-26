@@ -11,10 +11,33 @@ use crate::{
 
 use super::ReplicationTicket;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurabilityPolicy {
+    #[default]
+    ObjectStorageOrReplicas,
+    AllReplicas,
+}
+
+impl std::str::FromStr for DurabilityPolicy {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "object_storage_or_replicas" => Ok(Self::ObjectStorageOrReplicas),
+            "all_replicas" => Ok(Self::AllReplicas),
+            _ => anyhow::bail!(
+                "durability policy must be object_storage_or_replicas or all_replicas"
+            ),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ReplicatedStateTransport {
     bucket: Arc<dyn SnapshotWriter>,
     transport: Arc<dyn StateTransport>,
+    policy: DurabilityPolicy,
     failures: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
@@ -24,7 +47,13 @@ impl ReplicatedStateTransport {
             bucket,
             transport,
             failures: None,
+            policy: DurabilityPolicy::default(),
         }
+    }
+
+    pub fn with_policy(mut self, policy: DurabilityPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub fn with_failure_reports(
@@ -107,15 +136,19 @@ impl ReplicatedStateTransport {
                 .context("object storage upload task failed")?
         };
         tokio::pin!(bucket, replicas);
-        let outcome = tokio::select! {
-            result = &mut bucket => match result {
-                Ok(proof) => Ok(proof),
-                Err(bucket_error) => replicas.await.with_context(|| format!("bucket and replication failed: {bucket_error:#}")),
-            },
-            result = &mut replicas => match result {
-                Ok(proof) => Ok(proof),
-                Err(replica_error) => bucket.await.with_context(|| format!("replication and bucket failed: {replica_error:#}")),
-            },
+        let outcome = if self.policy == DurabilityPolicy::AllReplicas {
+            replicas.await
+        } else {
+            tokio::select! {
+                result = &mut bucket => match result {
+                    Ok(proof) => Ok(proof),
+                    Err(bucket_error) => replicas.await.with_context(|| format!("bucket and replication failed: {bucket_error:#}")),
+                },
+                result = &mut replicas => match result {
+                    Ok(proof) => Ok(proof),
+                    Err(replica_error) => bucket.await.with_context(|| format!("replication and bucket failed: {replica_error:#}")),
+                },
+            }
         };
         tracing::info!(event = "actor_durability", object = %ticket.object_name,
             durability = "replication",

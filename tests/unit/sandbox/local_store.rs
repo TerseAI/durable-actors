@@ -73,6 +73,7 @@ fn request(id: &str) -> EnsureHostRequest {
         host_token: "unused".into(),
         jwt_public_keys: "unused".into(),
         control_plane_url: "http://127.0.0.1:7100".into(),
+        control_plane_identity: None,
         jwt_issuer: "local".into(),
         invocation_jwt_audience: "local".into(),
         socket_jwt_audience: "local:websocket".into(),

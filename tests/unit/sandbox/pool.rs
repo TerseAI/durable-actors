@@ -188,7 +188,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
                 .await?;
             names.push(name);
         }
-        pool.reconcile(&registry).await?;
+        pool.reconcile(&registry, false).await?;
         for name in names {
             let row = pool
                 .store
@@ -228,3 +228,41 @@ pub(super) async fn reserve(store: &PoolStore, key: &str, target: u32) -> Result
 
 #[path = "pool_replenishment.rs"]
 mod replenishment;
+
+#[tokio::test]
+async fn retirement_only_considers_hosts_observed_before_the_catalog_read() -> Result<()> {
+    with_postgres(async |fixture| {
+        let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
+        pool.reserve_host("old", "old-host", "old-release").await?;
+        let candidates = pool.store.retirement_candidates().await?;
+        pool.reserve_host("new", "new-host", "new-release").await?;
+        pool.store.retire_superseded(&candidates, &[]).await?;
+        let names: Vec<_> = pool
+            .store
+            .retiring()
+            .await?
+            .into_iter()
+            .map(|handle| handle.name)
+            .collect();
+        assert_eq!(names, ["do-actor-old"]);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn standalone_reconciliation_preserves_assigned_hosts() -> Result<()> {
+    with_postgres(async |fixture| {
+        let pool = pool(PostgresDatabase::connect(&fixture.url).await?);
+        pool.reserve_host("live", "live-host", "release").await?;
+        pool.reconcile(
+            &crate::control_plane::admin::LocalAdminRegistry::default(),
+            false,
+        )
+        .await?;
+        assert!(pool.store.retiring().await?.is_empty());
+        assert_eq!(pool.store.retirement_candidates().await?.len(), 1);
+        Ok(())
+    })
+    .await
+}

@@ -8,6 +8,7 @@ pub mod host;
 pub mod host_leases;
 pub mod placement;
 mod postgres;
+pub mod regional;
 pub mod replication;
 pub mod sandbox;
 pub mod state_log;
@@ -18,3 +19,5 @@ pub mod storage_paths;
 
 mod request_traces;
 mod sockets;
+
+mod service_identity;

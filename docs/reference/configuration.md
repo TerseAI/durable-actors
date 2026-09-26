@@ -63,8 +63,24 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `1000`               | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
 | `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `1024`               | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
+| `DURABLE_ACTORS_DURABILITY_POLICY` | `object_storage_or_replicas` | Accept object storage or every replica. `all_replicas` requires every configured replica, waits for cold provisioning, and rejects writes during repairs. With no replicas, either policy requires object storage. |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
+
+### Replica placement and durability
+
+`DURABLE_ACTORS_REPLICA_REGIONS` is a JSON list with one entry per replica. The list length is the replica count, up to eight. Repeated regions create separate replicas; replicas may also share the primary's region.
+
+| Configuration | Behavior |
+| --- | --- |
+| `[]` | No replicas. A successful object-storage write establishes durability. |
+| `["north-america-east"]` | One replica. |
+| `["north-america-east","north-america-east","north-america-east"]` | Three replicas in the same region. |
+| `["north-america-west","north-america-central"]` | Two replicas in different regions. |
+
+By default, a successful object-storage write or acknowledgements from every configured replica establish durability. Object storage can satisfy writes while replicas are starting or being repaired. Set `DURABLE_ACTORS_DURABILITY_POLICY=all_replicas` to require every configured replica; this policy waits for initial replica provisioning and rejects writes during repairs. Object storage remains a background copy under that policy. With no replicas, both policies require object storage. Replicas in one region share that region's outage risk.
+
+Applications embedding the Rust control plane can inject a `DeploymentCatalog` with `with_deployment_catalog(...)` independently of replica placement. `with_regional_routing()` separately enables gateway proxy routes and confines primary placement to the configured home region. Local development uses its existing local storage path.
 
 ### Authentication and callbacks
 
@@ -87,3 +103,13 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 | `DURABLE_ACTORS_SANDBOX_COMMAND` | `durable-actors-modal-go` | Provider executable for a custom runtime distribution.                                         |
+
+Hosted gateways require `DURABLE_ACTORS_CONTROL_PLANE_SECRET`, distinct from their client-facing `DURABLE_ACTORS_SECRET`. Regional control planes use that internal secret as their `DURABLE_ACTORS_SECRET`; host callbacks continue to use scoped tokens.
+
+### Cloud Run service identities
+
+Hosted gateways set `DURABLE_ACTORS_CLOUD_RUN_AUTH=true` to authenticate control-plane requests with their attached Google service account. The ID token audience is the target control-plane HTTPS origin. Local development leaves this unset.
+
+For Modal callbacks to an IAM-protected control plane, set `DURABLE_ACTORS_CONTROL_PLANE_IDENTITY` on the control plane to JSON containing `provider` (the Google workload identity provider resource, `projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER`) and `serviceAccount` (the regional host service account email). This non-secret configuration is carried into actor assignments. The provider enables Modal OIDC for actor sandboxes; the host exchanges its sandbox identity using Google's authentication library. The JavaScript executor does not inherit `MODAL_IDENTITY_TOKEN`.
+
+Cloud Run checks the Google ID token separately from the application's internal secret or scoped host token. Missing or rejected identity credentials fail the request; there is no anonymous retry. The hosting repository provisions the IAM grants and federation trust policy.
