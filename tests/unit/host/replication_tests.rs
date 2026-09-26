@@ -336,27 +336,32 @@ async fn writes_require_repaired_replicas_through_provisioning_seeding_and_publi
         seeding: Gate::default(),
     });
     replica.initialize_session(&scope.identity()).await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let target = ReplicaTarget {
-        host_id: "replica".into(),
-        region: "us-east".into(),
-        url: format!("http://{}", listener.local_addr()?),
-    };
     let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
-    let routes = replica_routes(
-        replica.clone(),
-        access.clone(),
-        target.host_id.clone(),
-        scope.clone(),
-    );
-    let shutdown = stop.clone();
-    tokio::spawn(async move {
-        axum::serve(listener, routes)
-            .with_graceful_shutdown(shutdown.cancelled_owned())
-            .await
-    });
+    let mut targets = Vec::new();
+    for host_id in ["replica", "replacement"] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let target = ReplicaTarget {
+            host_id: host_id.into(),
+            region: "us-east".into(),
+            url: format!("http://{}", listener.local_addr()?),
+        };
+        let routes = replica_routes(
+            replica.clone(),
+            access.clone(),
+            target.host_id.clone(),
+            scope.clone(),
+        );
+        let shutdown = stop.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, routes)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        targets.push(target);
+    }
+    let initial_target = targets.remove(0);
     let fleet = Arc::new(Fleet {
-        targets: vec![target],
+        targets,
         first: AtomicBool::new(true),
         provisioning: Gate::default(),
     });
@@ -401,7 +406,7 @@ async fn writes_require_repaired_replicas_through_provisioning_seeding_and_publi
         crate::bucket::access::BucketLocation::File {
             directory: directory.path().join("bucket"),
         },
-        Arc::new(crate::replication::ReplicaSet(fleet.targets.clone())),
+        Arc::new(crate::replication::ReplicaSet(vec![initial_target])),
         access,
         runtime.clone(),
     )?);
