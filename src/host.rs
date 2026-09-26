@@ -10,6 +10,7 @@ mod replication;
 pub(crate) mod sockets;
 mod spare;
 pub(crate) mod storage;
+mod timing_report;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

@@ -726,27 +726,30 @@ impl ActorRuntime {
         outcome: &Result<ActorExecutionResult>,
     ) {
         match outcome {
-            Ok(_) => info!(
-                event = "actor_state_write",
-                request_id = %invocation.request_id,
+            Ok(_) => {
+                record_state_write(&invocation.request_id, timings);
+                info!(
+                    event = "actor_state_write",
+                    request_id = %invocation.request_id,
 
-                actor_name = %invocation.actor.actor_name,
-                actor_id = %invocation.actor.actor_id,
-                host_id = %self.endpoint.id,
-                owner_epoch,
-                state_version,
-                started_at_ms = 0,
-                write_ticket_ready_at_ms = timings.write_ticket_ready_at_ms,
-                snapshot_created_at_ms = timings.snapshot_created_at_ms,
-                snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
-                snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
-                snapshot_persisted_at_ms = timings.snapshot_persisted_at_ms,
-                durability_proof = timings.durability_proof,
-                state_finalized_at_ms = timings.state_finalized_at_ms,
-                completed_at_ms = timings.elapsed_ms(),
-                outcome = "committed",
-                "immutable actor state committed"
-            ),
+                    actor_name = %invocation.actor.actor_name,
+                    actor_id = %invocation.actor.actor_id,
+                    host_id = %self.endpoint.id,
+                    owner_epoch,
+                    state_version,
+                    started_at_ms = 0,
+                    write_ticket_ready_at_ms = timings.write_ticket_ready_at_ms,
+                    snapshot_created_at_ms = timings.snapshot_created_at_ms,
+                    snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
+                    snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
+                    snapshot_persisted_at_ms = timings.snapshot_persisted_at_ms,
+                    durability_proof = timings.durability_proof,
+                    state_finalized_at_ms = timings.state_finalized_at_ms,
+                    completed_at_ms = timings.elapsed_ms(),
+                    outcome = "committed",
+                    "immutable actor state committed"
+                )
+            }
             Err(error) => warn!(
                 event = "actor_state_write",
                 request_id = %invocation.request_id,
@@ -854,6 +857,28 @@ impl ActorRuntime {
         failure_code: &str,
         error: Option<String>,
     ) {
+        super::timing_report::REPORTS.record(
+            &invocation.request_id,
+            [
+                ("queue_admitted", timings.queue_admitted_at_ms),
+                ("state_cache_checked", timings.state_cache_checked_at_ms),
+                ("state_downloaded", timings.state_downloaded_at_ms),
+                ("state_decoded", timings.state_decoded_at_ms),
+                (
+                    "pending_commit_resolved",
+                    timings.pending_commit_resolved_at_ms,
+                ),
+                (
+                    "actor_execution_completed",
+                    timings.actor_execution_completed_at_ms,
+                ),
+                (
+                    "state_publication_completed",
+                    timings.state_publication_completed_at_ms,
+                ),
+                ("host_invocation_completed", Some(timings.elapsed_ms())),
+            ],
+        );
         info!(
                 event = "actor_host_invocation",
                 request_id = %invocation.request_id,
@@ -1062,5 +1087,22 @@ fn failed(code: impl Into<String>, message: impl Into<String>) -> ActorExecution
             code: code.into(),
             message: message.into(),
         },
+    }
+}
+
+fn record_state_write(request_id: &str, timings: &StateWriteTimings) {
+    let reports = &super::timing_report::REPORTS;
+    reports.record(
+        request_id,
+        [
+            ("write_ticket_ready", timings.write_ticket_ready_at_ms),
+            ("snapshot_encoded", timings.snapshot_encoded_at_ms),
+            ("snapshot_uploaded", timings.snapshot_uploaded_at_ms),
+            ("snapshot_persisted", timings.snapshot_persisted_at_ms),
+            ("state_write_completed", Some(timings.elapsed_ms())),
+        ],
+    );
+    if let Some(proof) = timings.durability_proof {
+        reports.describe(request_id, "durability_proof", proof);
     }
 }

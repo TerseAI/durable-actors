@@ -180,7 +180,29 @@ async fn run_activation(
         ("increment", before + 1),
         ("read", before + 1),
     ] {
-        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
+        let timed = method == "increment";
+        let mut request = client
+            .post(format!("{actor_url}/invoke"))
+            .bearer_auth(&token);
+        if timed {
+            request = request.header("x-durable-actors-timing", "1");
+        }
+        let response = request.json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?;
+        let timing = response
+            .headers()
+            .get("server-timing")
+            .map(|value| value.to_str().unwrap().to_owned());
+        if timed {
+            let timing = timing.expect("requested host timing");
+            assert!(
+                timing.contains("host_invocation_completed;dur="),
+                "{timing}"
+            );
+            assert!(timing.contains("state_write_completed;dur="), "{timing}");
+        } else {
+            assert!(timing.is_none(), "timing must be opt-in");
+        }
+        let result: serde_json::Value = response.json().await?;
         assert_eq!(
             result,
             serde_json::json!({"type":"completed", "result":expected})

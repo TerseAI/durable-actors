@@ -92,3 +92,38 @@ test("servers without gateway invocation fall back to discovery", async () => {
     assert.equal(urls.filter(url => url.endsWith("/invoke")).length, 1)
     assert.equal(urls.filter(url => url.endsWith("/find-actor")).length, 2)
 })
+
+test("the gateway returns a direct target so warm calls skip the gateway", async () => {
+    const gatewayCalls: string[] = []
+    const direct: string[] = []
+    const client = new RemoteActorClient(options, {
+        telemetry: () => {},
+        fetch: async url => {
+            gatewayCalls.push(String(url))
+            return Response.json({
+                type: "completed",
+                result: 1,
+                target: {
+                    route: "https://host.example.com",
+                    token: "direct-ticket",
+                    ownerEpoch: 3,
+                    expiresAtMs: 4_000_000_000_000
+                }
+            })
+        },
+        actorHost: {
+            async invoke(target, invocation) {
+                assert.equal(target.token, "direct-ticket")
+                assert.equal(target.ownerEpoch, 3)
+                direct.push(invocation.actorId)
+                return { type: "completed", result: 2 }
+            },
+            async publish() {}
+        }
+    })
+    assert.equal(await client.invoke("Counter", "one", "increment", []), 1)
+    assert.equal(await client.invoke("Counter", "one", "increment", []), 2)
+    assert.equal(await client.invoke("Counter", "two", "increment", []), 1)
+    assert.deepEqual(direct, ["one"])
+    assert.equal(gatewayCalls.length, 2)
+})

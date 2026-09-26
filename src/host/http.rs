@@ -157,10 +157,11 @@ async fn invoke(
     Path(actor): Path<ActorKey>,
     headers: HeaderMap,
     body: Result<Json<InvokeRequest>, JsonRejection>,
-) -> Result<Json<InvocationReply>, HttpError> {
+) -> Result<axum::response::Response, HttpError> {
     let principal = service.authenticate(&headers)?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
+    let request_id = request.request_id.clone();
     let invocation = ActorInvocation {
         actor,
         request_id: request.request_id,
@@ -168,8 +169,21 @@ async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(bad_request)?;
-    Ok(Json(service.execute(invocation, request.owner_epoch).await))
+    let mut response = axum::response::IntoResponse::into_response(Json(
+        service.execute(invocation, request.owner_epoch).await,
+    ));
+    let timing = super::timing_report::REPORTS.take(&request_id);
+    if headers
+        .get(TIMING_REQUEST)
+        .is_some_and(|value| value == "1")
+        && let Some(timing) = timing.and_then(|value| value.parse().ok())
+    {
+        response.headers_mut().insert("server-timing", timing);
+    }
+    Ok(response)
 }
+
+pub(crate) const TIMING_REQUEST: &str = "x-durable-actors-timing";
 
 async fn publish(
     State(service): State<Arc<ActorHostHttpService>>,

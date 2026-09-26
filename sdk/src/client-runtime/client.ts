@@ -52,7 +52,9 @@ export class HttpActorClient {
             this.beforeInvoke(requestId)
             const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
-            if (this.settings.invokeThroughGateway && this.gatewayInvocationAvailable) {
+            const cached = this.cachedTarget(invocation)
+            if (cached !== undefined) timeline.mark("target_cache_checked")
+            if (cached === undefined && this.settings.invokeThroughGateway && this.gatewayInvocationAvailable) {
                 const reply = await this.invokeThroughGateway(invocation)
                 timeline.mark("gateway_invocation_completed")
                 if (reply.handled) {
@@ -60,7 +62,7 @@ export class HttpActorClient {
                     return reply.result
                 }
             }
-            const target = await this.target(invocation, timeline)
+            const target = cached ?? (await this.target(invocation, timeline))
             timeline.mark("target_resolved")
             const result = await this.direct(target, invocation, true, timeline)
             outcome = "completed"
@@ -159,6 +161,7 @@ export class HttpActorClient {
         }
         const document = await responseDocument(response)
         if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
+        if (isRecord(document) && isRecord(document.target)) this.rememberTarget(invocation, document.target)
         if (isRecord(document) && document.type === "completed" && Object.hasOwn(document, "result"))
             return { handled: true, result: document.result }
         if (
@@ -170,6 +173,19 @@ export class HttpActorClient {
         )
             throw new ActorInvocationError(document.code, invocation.requestId, document.message)
         throw new ActorProtocolError("gateway response did not contain a valid outcome")
+    }
+
+    private cachedTarget(invocation: ActorAddress): ActorHostTarget | undefined {
+        const target = this.targets.get(actorKey(invocation.actorName, invocation.actorId))?.target
+        return target && target.expiresAtMs > this.now() + TARGET_EXPIRATION_SAFETY_MS ? target : undefined
+    }
+
+    private rememberTarget(invocation: ActorAddress, document: Record<string, unknown>): void {
+        const target = parseTarget(document)
+        this.targets.set(actorKey(invocation.actorName, invocation.actorId), {
+            promise: Promise.resolve(target),
+            target
+        })
     }
 
     private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
@@ -227,22 +243,7 @@ export class HttpActorClient {
         }
         const document = await responseDocument(response)
         if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
-        if (
-            !isRecord(document) ||
-            typeof document.route !== "string" ||
-            typeof document.token !== "string" ||
-            !document.token.trim() ||
-            !positiveInteger(document.ownerEpoch) ||
-            !positiveInteger(document.expiresAtMs)
-        )
-            throw new ActorProtocolError("control-plane response did not contain a valid actor host target")
-        validateOrigin(document.route)
-        return {
-            route: document.route,
-            token: document.token,
-            ownerEpoch: document.ownerEpoch,
-            expiresAtMs: document.expiresAtMs
-        }
+        return parseTarget(document)
     }
 
     private throwResponseFailure(response: Response, document: unknown, requestId: string): never {
@@ -301,6 +302,25 @@ function targetUrl(settings: RemoteActorSettings, actorName: string, actorId: st
     const actor = validateActorComponent("actor name", actorName)
     const id = validateActorComponent("actor ID", actorId)
     return `${settings.controlPlaneUrl}${projectActorPath(settings.projectId, actor, id)}/find-actor`
+}
+
+function parseTarget(document: unknown): ActorHostTarget {
+    if (
+        !isRecord(document) ||
+        typeof document.route !== "string" ||
+        typeof document.token !== "string" ||
+        !document.token.trim() ||
+        !positiveInteger(document.ownerEpoch) ||
+        !positiveInteger(document.expiresAtMs)
+    )
+        throw new ActorProtocolError("control-plane response did not contain a valid actor host target")
+    validateOrigin(document.route)
+    return {
+        route: document.route,
+        token: document.token,
+        ownerEpoch: document.ownerEpoch,
+        expiresAtMs: document.expiresAtMs
+    }
 }
 
 function actorKey(actorName: string, actorId: string): string {

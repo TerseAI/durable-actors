@@ -39,6 +39,14 @@ enum Dispatch {
     RefreshTarget,
 }
 
+#[derive(Default)]
+struct DispatchTiming {
+    resolved_ms: f64,
+    ping_ms: Option<f64>,
+    invoke_ms: Option<f64>,
+    host: Option<String>,
+}
+
 impl Gateway {
     pub(crate) fn new(
         directory: Arc<ActorDirectory>,
@@ -59,18 +67,46 @@ impl Gateway {
 
     /// Resolves and invokes in one client request. Only rejections that precede dispatch are retried.
     pub(crate) async fn invoke(&self, actor: &ActorKey, call: &Value) -> InvocationOutcome {
-        for attempt in 0..2 {
+        let started = std::time::Instant::now();
+        let mut timing = DispatchTiming::default();
+        let mut attempts = 0;
+        let outcome = loop {
+            attempts += 1;
             let Ok(target) = self.resolve(actor, None).await else {
-                return InvocationOutcome::Unavailable;
+                break InvocationOutcome::Unavailable;
             };
-            match self.dispatch(actor, &target, call).await {
-                Ok(Dispatch::Reply(reply)) => return InvocationOutcome::Reply(reply),
-                Ok(Dispatch::RefreshTarget) if attempt == 0 => continue,
-                Ok(Dispatch::RefreshTarget) => return InvocationOutcome::Unavailable,
-                Err(()) => return InvocationOutcome::OutcomeUnknown,
+            timing.resolved_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            match self
+                .dispatch(actor, &target, call, &mut timing, started)
+                .await
+            {
+                Ok(Dispatch::Reply(mut reply)) => {
+                    reply["target"] = direct_target(&target);
+                    break InvocationOutcome::Reply(reply);
+                }
+                Ok(Dispatch::RefreshTarget) if attempts == 1 => continue,
+                Ok(Dispatch::RefreshTarget) => break InvocationOutcome::Unavailable,
+                Err(()) => break InvocationOutcome::OutcomeUnknown,
             }
-        }
-        InvocationOutcome::Unavailable
+        };
+        tracing::info!(
+            event = "gateway_invocation",
+            actor = %actor.storage_key(),
+            request_id = call["requestId"].as_str().unwrap_or_default(),
+            attempts,
+            resolved_ms = timing.resolved_ms,
+            ping_completed_ms = timing.ping_ms,
+            invoke_completed_ms = timing.invoke_ms,
+            host_timing = timing.host.as_deref().unwrap_or_default(),
+            completed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            outcome = match outcome {
+                InvocationOutcome::Reply(_) => "replied",
+                InvocationOutcome::Unavailable => "unavailable",
+                InvocationOutcome::OutcomeUnknown => "outcome_unknown",
+            },
+            "gateway invocation completed"
+        );
+        outcome
     }
 
     async fn dispatch(
@@ -78,7 +114,10 @@ impl Gateway {
         actor: &ActorKey,
         target: &Value,
         call: &Value,
+        timing: &mut DispatchTiming,
+        started: std::time::Instant,
     ) -> Result<Dispatch, ()> {
+        let elapsed = || started.elapsed().as_secs_f64() * 1_000.0;
         let (Some(route), Some(token), Some(owner_epoch)) = (
             target["route"].as_str(),
             target["token"].as_str(),
@@ -100,19 +139,22 @@ impl Gateway {
             .timeout(Duration::from_secs(5))
             .send()
             .await;
+        timing.ping_ms = Some(elapsed());
         if !ready.is_ok_and(|response| response.status() == reqwest::StatusCode::NO_CONTENT) {
             return Ok(Dispatch::RefreshTarget);
         }
         let mut body = call.clone();
         body["ownerEpoch"] = owner_epoch.into();
-        let response = match self
+        let sent = self
             .hosts
             .post(&url)
             .bearer_auth(token)
+            .header(crate::host::http::TIMING_REQUEST, "1")
             .json(&body)
             .send()
-            .await
-        {
+            .await;
+        timing.invoke_ms = Some(elapsed());
+        let response = match sent {
             Ok(response) => response,
             Err(error) if error.is_connect() => return Ok(Dispatch::RefreshTarget),
             Err(_) => return Err(()),
@@ -123,6 +165,11 @@ impl Gateway {
         if !response.status().is_success() {
             return Err(());
         }
+        timing.host = response
+            .headers()
+            .get("server-timing")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let reply: Value = response.json().await.map_err(|_| ())?;
         match reply["type"].as_str() {
             Some("reroute") => Ok(Dispatch::RefreshTarget),
@@ -372,3 +419,10 @@ impl RegionalEndpoints for HttpRegionalEndpoints {
 #[cfg(test)]
 #[path = "../../tests/unit/regional/gateway.rs"]
 mod tests;
+
+fn direct_target(target: &Value) -> Value {
+    json!({
+        "route": target["route"], "token": target["token"],
+        "ownerEpoch": target["ownerEpoch"], "expiresAtMs": target["expiresAtMs"],
+    })
+}

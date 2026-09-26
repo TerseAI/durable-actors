@@ -315,6 +315,7 @@ async fn fake_host(post_status: StatusCode) -> Result<String> {
     .post(
         move |headers: axum::http::HeaderMap, body: axum::Json<Value>| async move {
             assert_eq!(headers["authorization"], "Bearer ticket-2");
+            assert_eq!(headers["x-durable-actors-timing"], "1");
             assert_eq!(body["ownerEpoch"], 7);
             assert_eq!(body["method"], "increment");
             if post_status != StatusCode::OK {
@@ -379,7 +380,17 @@ async fn gateway_invokes_in_one_request_and_refreshes_a_rejected_ticket_once() -
     let (app, endpoints) = invoke_fixture(fake_host(StatusCode::OK).await?)?;
     let (status, reply) = invoke(app).await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(reply, serde_json::json!({"type": "completed", "result": 5}));
+    assert_eq!(reply["type"], "completed");
+    assert_eq!(reply["result"], 5);
+    assert_eq!(reply["target"]["token"], "ticket-2");
+    assert_eq!(reply["target"]["ownerEpoch"], 7);
+    assert!(
+        reply["target"]["route"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://127.0.0.1:")
+    );
+    assert!(reply["target"]["expiresAtMs"].as_u64().unwrap() > 0);
     assert_eq!(endpoints.resolutions.load(Ordering::SeqCst), 2);
     Ok(())
 }
