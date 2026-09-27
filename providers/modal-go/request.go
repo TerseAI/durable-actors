@@ -46,21 +46,17 @@ type activationLease struct {
 }
 
 type provisioning struct {
-	Provider                string `json:"provider"`
-	ResourceID              string `json:"resourceId"`
-	Reused                  bool   `json:"reused"`
-	StartedAtMS             int64  `json:"startedAtMs"`
-	InputParsedAtMS         int64  `json:"inputParsedAtMs"`
-	SDKLoadedAtMS           int64  `json:"sdkLoadedAtMs"`
-	ResourcesResolvedAtMS   int64  `json:"resourcesResolvedAtMs"`
-	SandboxScheduledAtMS    int64  `json:"sandboxScheduledAtMs"`
-	CodeMountStartedAtMS    int64  `json:"codeMountStartedAtMs"`
-	CodeMountedAtMS         int64  `json:"codeMountedAtMs"`
-	AssignmentStartedAtMS   int64  `json:"assignmentStartedAtMs"`
-	AssignmentCompletedAtMS int64  `json:"assignmentCompletedAtMs"`
-	HostReadyObservedAtMS   int64  `json:"hostReadyObservedAtMs"`
-	RouteReadAtMS           int64  `json:"routeReadAtMs"`
-	CompletedAtMS           int64  `json:"completedAtMs"`
+	Provider              string `json:"provider"`
+	ResourceID            string `json:"resourceId"`
+	Reused                bool   `json:"reused"`
+	StartedAtMS           int64  `json:"startedAtMs"`
+	InputParsedAtMS       int64  `json:"inputParsedAtMs"`
+	SDKLoadedAtMS         int64  `json:"sdkLoadedAtMs"`
+	ResourcesResolvedAtMS int64  `json:"resourcesResolvedAtMs"`
+	SandboxScheduledAtMS  int64  `json:"sandboxScheduledAtMs"`
+	HostReadyObservedAtMS int64  `json:"hostReadyObservedAtMs"`
+	RouteReadAtMS         int64  `json:"routeReadAtMs"`
+	CompletedAtMS         int64  `json:"completedAtMs"`
 }
 
 func validateEnsure(request ensureRequest) error {

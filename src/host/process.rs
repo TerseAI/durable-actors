@@ -421,22 +421,18 @@ async fn prepare_actor_host(
         result
     };
     let executor_ready = async {
-        let result = async {
-            if let Some((executor, javascript, entrypoint)) = warm_executor {
-                let connection =
-                    tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint))
-                        .await??;
-                Ok((connection, javascript))
-            } else {
-                connect_executor(
-                    &config.executor_socket,
-                    timings.started_at,
-                    &mut timings.javascript_spawned_at_ms,
-                )
-                .await
-            }
-        }
-        .await;
+        let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
+            let connection =
+                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
+            Ok((connection, javascript))
+        } else {
+            connect_executor(
+                &config.executor_socket,
+                timings.started_at,
+                &mut timings.javascript_spawned_at_ms,
+            )
+            .await
+        };
         timings.executor_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };

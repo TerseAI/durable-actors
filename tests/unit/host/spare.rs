@@ -10,7 +10,6 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{collections::HashMap, path::PathBuf, process::Stdio};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-use tracing::instrument::WithSubscriber;
 
 #[tokio::test]
 #[ignore = "requires Bun and pnpm --dir sdk build"]
@@ -113,16 +112,11 @@ async fn run_activation(
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
-    let output = tempfile::NamedTempFile::new()?;
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(output.reopen()?)
-        .finish();
-    let task = tokio::spawn(
-        serve_assigned_host(config, Some(warm), stop.clone().cancelled_owned())
-            .with_subscriber(subscriber),
-    );
+    let task = tokio::spawn(serve_assigned_host(
+        config,
+        Some(warm),
+        stop.clone().cancelled_owned(),
+    ));
     let bucket = FileBucket::new(data.to_path_buf())?;
     let owner = crate::storage_paths::owner(&actor.storage_key())?;
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -159,7 +153,6 @@ async fn run_activation(
             record["lease"]["expires_at_ms"], 0,
             "failed startup must release its lease"
         );
-        assert_startup_phases(&output, "failed")?;
         return Ok(());
     }
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -196,34 +189,10 @@ async fn run_activation(
     assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(10), task).await???;
-    assert_startup_phases(&output, "ready")?;
     assert!(
         !actor_spool.exists(),
         "actor host created a local snapshot spool"
     );
-    Ok(())
-}
-
-fn assert_startup_phases(output: &tempfile::NamedTempFile, outcome: &str) -> Result<()> {
-    let events = std::fs::read_to_string(output.path())?
-        .lines()
-        .map(serde_json::from_str::<serde_json::Value>)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let startup = events
-        .iter()
-        .find(|event| event["event"] == "actor_host_startup")
-        .expect("startup event");
-    assert_eq!(startup["outcome"], outcome);
-    for field in [
-        "control_plane_ready_at_ms",
-        "storage_ready_at_ms",
-        "executor_ready_at_ms",
-    ] {
-        let elapsed = startup[field]
-            .as_f64()
-            .unwrap_or_else(|| panic!("missing {field}: {startup}"));
-        assert!(elapsed <= startup["lease_registered_at_ms"].as_f64().unwrap());
-    }
     Ok(())
 }
 

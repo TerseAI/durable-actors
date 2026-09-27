@@ -64,17 +64,9 @@ impl RuntimeStorage {
         let Some(session) = self.start_recovery(&owner.scope()).await? else {
             return Ok(None);
         };
-        let snapshots = phase("recovery_replicas_seal", self.seal_replicas(&session)).await?;
-        let recovered = phase(
-            "recovery_snapshots_restore",
-            self.restore_session(owner, &session, snapshots),
-        )
-        .await?;
-        phase(
-            "recovery_finish",
-            self.finish_recovery(&owner.scope(), session),
-        )
-        .await?;
+        let snapshots = self.seal_replicas(&session).await?;
+        let recovered = self.restore_session(owner, &session, snapshots).await?;
+        self.finish_recovery(&owner.scope(), session).await?;
         Ok(recovered)
     }
 
@@ -82,7 +74,7 @@ impl RuntimeStorage {
         let key = key(&scope.host, &scope.session);
         let id = scope.identity();
         loop {
-            let object = phase("recovery_session_read", self.authority.get(&key)).await?;
+            let object = self.authority.get(&key).await?;
             let Some(object) = object else {
                 // A tombstone also fences initialization delayed past lease expiry.
                 let sealed = Session {
@@ -91,12 +83,7 @@ impl RuntimeStorage {
                     replicas: Vec::new(),
                     state: RecoveryState::Sealed,
                 };
-                if phase(
-                    "recovery_session_claim",
-                    self.save_session(&key, None, &sealed),
-                )
-                .await?
-                {
+                if self.save_session(&key, None, &sealed).await? {
                     return Ok(None);
                 }
                 continue;
@@ -111,11 +98,9 @@ impl RuntimeStorage {
                 RecoveryState::Recovering => return Ok(Some(session)),
                 RecoveryState::Open => {
                     session.state = RecoveryState::Recovering;
-                    if phase(
-                        "recovery_session_claim",
-                        self.save_session(&key, Some(object.generation), &session),
-                    )
-                    .await?
+                    if self
+                        .save_session(&key, Some(object.generation), &session)
+                        .await?
                     {
                         return Ok(Some(session));
                     }
@@ -128,16 +113,16 @@ impl RuntimeStorage {
         let key = key(&scope.host, &scope.session);
         session.state = RecoveryState::Sealed;
         loop {
-            let current = phase("recovery_finish_read", self.authority.get(&key))
+            let current = self
+                .authority
+                .get(&key)
                 .await?
                 .context("recovery record disappeared")?;
             let record: Session = serde_json::from_slice(&current.bytes)?;
             if record.state == RecoveryState::Sealed
-                || phase(
-                    "recovery_finish_write",
-                    self.save_session(&key, Some(current.generation), &session),
-                )
-                .await?
+                || self
+                    .save_session(&key, Some(current.generation), &session)
+                    .await?
             {
                 return Ok(());
             }
