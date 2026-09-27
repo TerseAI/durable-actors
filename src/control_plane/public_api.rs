@@ -75,12 +75,7 @@ async fn issue_session(
     let Json(request) = request.map_err(ApiError::json)?;
     let issued = state
         .admin
-        .issue_session(
-            project.clone(),
-            request.subject,
-            request.permissions,
-            request.expires_at_ms,
-        )
+        .issue_session(project.clone(), request.subject, request.expires_at_ms)
         .map_err(ApiError::bad_request)?;
     if state
         .admin
@@ -106,7 +101,6 @@ async fn issue_session(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IssueSessionRequest {
     subject: String,
-    permissions: Vec<super::session::SessionPermission>,
     expires_at_ms: i64,
 }
 
@@ -270,13 +264,6 @@ async fn find_actor(
         timings.client_authenticated_at_ms = Some(timings.elapsed_ms());
         let grant = match grant {
             Some(grant) => {
-                if !grant.contains(&actor) {
-                    return Err(ApiError::new(
-                        StatusCode::FORBIDDEN,
-                        "forbidden",
-                        "actor is outside the session scope",
-                    ));
-                }
                 let contract = state
                     .admin
                     .deployment_contract(&actor.project_id)
@@ -301,7 +288,7 @@ async fn find_actor(
                             ApiError::new(
                                 StatusCode::FORBIDDEN,
                                 "forbidden",
-                                "session has no permitted RPC methods",
+                                "actor has no published RPC methods",
                             )
                         })?,
                 )

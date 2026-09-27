@@ -132,7 +132,7 @@ paths:
             tags: [Sessions]
             summary: Issue a scoped RPC session
             security: [{ ApiKey: [] }]
-            description: Requires the configured administrative secret and an active deployment. The trusted backend must authenticate its caller and check project ACLs first. Expiry is capped by the requested absolute deadline, 60 seconds, and the runtime maximum JWT lifetime. Session credentials cannot issue sessions or access administrative APIs.
+            description: Requires the configured administrative secret and an active deployment. The trusted backend must authenticate its caller and check project ACLs first. Sessions authorize all actor types, actor IDs, and published RPC methods in exactly one project. Expiry is capped by the requested absolute deadline, 60 seconds, and the runtime maximum JWT lifetime. Session credentials cannot issue sessions or access administrative APIs or WebSockets.
             requestBody:
                 required: true
                 content:
@@ -166,13 +166,13 @@ paths:
             tags: [Actors]
             summary: Find an actor host
             security: [{ ApiKey: [] }, { ActorSession: [] }, {}]
-            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret or a runtime-issued actor:session credential. Session permissions are intersected with published RPC methods and produce restricted tickets that cannot outlive the session.
+            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret or a runtime-issued actor:session credential for this project. Sessions produce actor-specific tickets containing all of the actor's published RPC methods. These tickets cannot outlive the session.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
-                "403": { description: Actor or published method set is outside the session permissions. }
+                "403": { description: Actor has no published RPC methods. }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -944,26 +944,15 @@ components:
         IssueActorSession:
             type: object
             additionalProperties: false
-            required: [subject, expiresAtMs, permissions]
+            required: [subject, expiresAtMs]
             properties:
                 subject: { type: string, minLength: 1, maxLength: 128, description: "Stable opaque credential fingerprint, not a secret." }
-                expiresAtMs: { type: integer, format: int64, description: "Absolute authorization deadline in Unix milliseconds. Set this from the start of application authentication, not after it completes." }
-                permissions:
-                    type: array
-                    minItems: 1
-                    maxItems: 32
-                    description: Union of permission rules. Omitted fields are unrestricted; a single empty object allows all published RPCs in the project.
-                    items:
-                        type: object
-                        additionalProperties: false
-                        properties:
-                            actorName: { type: string, pattern: "^[A-Za-z0-9._-]{1,48}$" }
-                            actorId: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
-                            methods:
-                                type: array
-                                minItems: 1
-                                maxItems: 256
-                                items: { type: string, pattern: "^[A-Za-z0-9._-]{1,128}$" }
+                expiresAtMs:
+                    {
+                        type: integer,
+                        format: int64,
+                        description: "Absolute authorization deadline in Unix milliseconds. Set this from the start of application authentication, not after it completes."
+                    }
         FindActorRequest:
             type: object
             additionalProperties: false

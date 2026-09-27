@@ -109,7 +109,6 @@ impl ActorJwtIssuer {
         &self,
         project_id: String,
         subject: String,
-        permissions: Vec<super::session::SessionPermission>,
         deadline_ms: i64,
     ) -> Result<IssuedActorToken> {
         let now = unix_millis()? / 1000;
@@ -122,7 +121,6 @@ impl ActorJwtIssuer {
             jti: uuid::Uuid::new_v4().to_string(),
             project_id,
             scope: "actor:session".into(),
-            permissions,
             iat: now,
             nbf: now,
             expires_at,

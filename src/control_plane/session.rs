@@ -17,6 +17,7 @@ pub(crate) struct SessionVerifier {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ActorSession {
     pub iss: String,
     pub aud: String,
@@ -26,22 +27,10 @@ pub(crate) struct ActorSession {
     #[serde(rename = "projectId")]
     pub project_id: String,
     pub scope: String,
-    pub permissions: Vec<SessionPermission>,
     pub iat: i64,
     pub nbf: i64,
     #[serde(rename = "exp")]
     pub expires_at: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct SessionPermission {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub methods: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,22 +108,7 @@ impl ActorSession {
                 && self.expires_at.saturating_sub(self.iat) <= 60,
             "invalid actor session lifetime"
         );
-        ensure!(
-            !self.permissions.is_empty() && self.permissions.len() <= 32,
-            "actor session requires 1-32 permission rules"
-        );
-        for permission in &self.permissions {
-            permission.validate()?;
-        }
         Ok(())
-    }
-
-    pub(crate) fn contains(&self, actor: &ActorKey) -> bool {
-        self.project_id == actor.project_id
-            && self
-                .permissions
-                .iter()
-                .any(|permission| permission.matches(actor))
     }
 
     pub(crate) fn invocation(
@@ -142,60 +116,20 @@ impl ActorSession {
         actor: &ActorKey,
         published_methods: Vec<String>,
     ) -> Result<InvocationGrant> {
-        ensure!(self.contains(actor), "actor is outside the session scope");
-        let methods: Vec<_> = published_methods
-            .into_iter()
-            .filter(|method| {
-                self.permissions.iter().any(|permission| {
-                    permission.matches(actor)
-                        && permission
-                            .methods
-                            .as_ref()
-                            .is_none_or(|methods| methods.contains(method))
-                })
-            })
-            .collect();
         ensure!(
-            !methods.is_empty(),
-            "session has no published RPC methods for this actor"
+            self.project_id == actor.project_id,
+            "actor session project mismatch"
+        );
+        ensure!(
+            !published_methods.is_empty(),
+            "actor has no published RPC methods"
         );
         Ok(InvocationGrant {
             subject: self.subject,
             grant_id: self.jti,
             expires_at: self.expires_at,
-            methods,
+            methods: published_methods,
         })
-    }
-}
-
-impl SessionPermission {
-    fn validate(&self) -> Result<()> {
-        if let Some(name) = &self.actor_name {
-            validate_component("actor name", name, 48)?;
-        }
-        if let Some(id) = &self.actor_id {
-            validate_component("actor ID", id, 128)?;
-        }
-        if let Some(methods) = &self.methods {
-            ensure!(
-                !methods.is_empty() && methods.len() <= 256,
-                "session method list requires 1-256 methods"
-            );
-            for method in methods {
-                validate_component("method", method, 128)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn matches(&self, actor: &ActorKey) -> bool {
-        self.actor_name
-            .as_ref()
-            .is_none_or(|name| name == &actor.actor_name)
-            && self
-                .actor_id
-                .as_ref()
-                .is_none_or(|id| id == &actor.actor_id)
     }
 }
 

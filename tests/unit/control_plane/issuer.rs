@@ -198,25 +198,15 @@ fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() ->
 fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> Result<()> {
     let issuer = socket_issuer()?;
     let now = unix_millis()?;
-    let permissions = || {
-        serde_json::from_value(serde_json::json!([{
-            "actorName": "Counter", "actorId": "one", "methods": ["read"]
-        }]))
-    };
     for deadline in [now + 25_000, now + 300_000] {
-        let issued = issuer.issue_session(
-            "project".into(),
-            "credential".into(),
-            permissions()?,
-            deadline,
-        )?;
+        let issued = issuer.issue_session("project".into(), "credential".into(), deadline)?;
         assert!(issued.expires_at_ms <= deadline.min(unix_millis()? + 60_000));
         let authorization = format!("Bearer {}", issued.token);
         let verifier = issuer.session_verifier()?;
         let session = verifier.authenticate(&authorization, "project")?;
         assert_eq!(session.subject, "credential");
         assert_eq!(session.expires_at * 1000, issued.expires_at_ms);
-        assert_eq!(session.permissions[0].methods, Some(vec!["read".into()]));
+        assert_eq!(session.project_id, "project");
         assert!(verifier.authenticate(&authorization, "other").is_err());
         assert!(
             socket_issuer()?
@@ -244,7 +234,7 @@ fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> 
     }
     assert!(
         issuer
-            .issue_session("project".into(), "credential".into(), permissions()?, now)
+            .issue_session("project".into(), "credential".into(), now)
             .is_err()
     );
     Ok(())
@@ -256,7 +246,6 @@ fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
     let issued = issuer.issue_session(
         "project".into(),
         "credential".into(),
-        serde_json::from_value(serde_json::json!([{}]))?,
         unix_millis()? + 60_000,
     )?;
     let verifier = issuer.session_verifier()?;
@@ -272,18 +261,9 @@ fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
         ("iat", serde_json::json!(session.iat + 60)),
         ("exp", serde_json::json!(session.iat)),
         ("exp", serde_json::json!(session.iat + 61)),
-        ("permissions", serde_json::json!([])),
-        ("permissions", serde_json::json!([{"methods": []}])),
-        (
-            "permissions",
-            serde_json::json!([{"actorName": "../private"}]),
-        ),
-        ("permissions", serde_json::json!([{"actorId": ""}])),
-        (
-            "permissions",
-            serde_json::json!([{"methods": ["invalid/method"]}]),
-        ),
-        ("permissions", serde_json::json!([{"unexpected": true}])),
+        ("projectId", serde_json::json!("")),
+        ("projectId", serde_json::json!("../other")),
+        ("unexpected", serde_json::json!(true)),
     ] {
         let mut claims = original.clone();
         claims[field] = value;

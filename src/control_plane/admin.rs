@@ -164,11 +164,10 @@ impl AdminService {
         &self,
         project_id: String,
         subject: String,
-        permissions: Vec<super::session::SessionPermission>,
         expires_at_ms: i64,
     ) -> Result<super::issuer::IssuedActorToken> {
         self.issuer
-            .issue_session(project_id, subject, permissions, expires_at_ms)
+            .issue_session(project_id, subject, expires_at_ms)
     }
 
     pub(super) fn authorize_discovery(

@@ -3,15 +3,15 @@ use crate::control_plane::auth::unix_seconds;
 use serde_json::{Value, json};
 
 #[tokio::test]
-async fn delegated_discovery_returns_a_scoped_ticket_but_never_admin_access() -> Result<()> {
+async fn project_sessions_discover_all_published_actors_but_never_grant_admin_access() -> Result<()>
+{
     let (service, admin, expiry, verifier) = fixture(Some("admin-secret")).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let router = super::super::super::public_api::router(service, admin);
     let server = tokio::spawn(async { axum::serve(listener, router).await });
     let client = reqwest::Client::new();
-    let session_request = json!({"subject":"terse-credential", "expiresAtMs":expiry * 1000,
-        "permissions":[{"actorName":"ChatRoom", "actorId":"room", "methods":["sendMessage"]}]});
+    let session_request = json!({"subject":"terse-credential", "expiresAtMs":expiry * 1000});
     let response = client
         .post(format!("{origin}/v1/projects/default/sessions"))
         .bearer_auth("admin-secret")
@@ -32,39 +32,46 @@ async fn delegated_discovery_returns_a_scoped_ticket_but_never_admin_access() ->
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
     }
-    let reply: Value = client
-        .post(format!(
-            "{origin}/v1/projects/default/actors/ChatRoom/room/find-actor"
-        ))
-        .bearer_auth(&token)
-        .json(&json!({}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert!(reply["expiresAtMs"].as_i64().unwrap() <= expiry * 1000);
-    let principal = verifier
-        .authenticate_authorization(&format!("Bearer {}", reply["token"].as_str().unwrap()))?;
-    let capability = principal.invocation.unwrap();
-    assert_eq!(capability.actor.project_id, "default");
-    assert_eq!(capability.actor.actor_id, "room");
-    let grant = capability.grant.unwrap();
-    assert_eq!(grant.subject, "terse-credential");
-    assert_eq!(grant.expires_at, expiry);
-    assert_eq!(grant.methods, vec!["sendMessage"]);
-
-    for (actor_name, actor_id) in [("ChatRoom", "another-room"), ("PrivateActor", "room")] {
-        let response = client
+    for (actor_name, actor_id) in [
+        ("ChatRoom", "room"),
+        ("ChatRoom", "another-room"),
+        ("ArchivedRoom", "room"),
+    ] {
+        let reply: Value = client
             .post(format!(
                 "{origin}/v1/projects/default/actors/{actor_name}/{actor_id}/find-actor"
             ))
             .bearer_auth(token)
             .json(&json!({}))
             .send()
+            .await?
+            .error_for_status()?
+            .json()
             .await?;
-        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        assert!(reply["expiresAtMs"].as_i64().unwrap() <= expiry * 1000);
+        let principal = verifier
+            .authenticate_authorization(&format!("Bearer {}", reply["token"].as_str().unwrap()))?;
+        let capability = principal.invocation.unwrap();
+        assert_eq!(capability.actor.project_id, "default");
+        assert_eq!(capability.actor.actor_name, actor_name);
+        assert_eq!(capability.actor.actor_id, actor_id);
+        let grant = capability.grant.unwrap();
+        assert_eq!(grant.subject, "terse-credential");
+        assert_eq!(grant.expires_at, expiry);
+        assert_eq!(grant.methods, vec!["clear", "sendMessage"]);
     }
+    assert_eq!(
+        client
+            .post(format!(
+                "{origin}/v1/projects/default/actors/PrivateActor/room/find-actor"
+            ))
+            .bearer_auth(token)
+            .json(&json!({}))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
 
     for (method, path) in [
         (
@@ -96,9 +103,8 @@ async fn delegated_discovery_returns_a_scoped_ticket_but_never_admin_access() ->
         );
     }
     for invalid in [
-        json!({"subject":"terse-credential","expiresAtMs":expiry * 1000,"permissions":[]}),
-        json!({"subject":"","expiresAtMs":expiry * 1000,"permissions":[{}]}),
-        json!({"subject":"terse-credential","expiresAtMs":0,"permissions":[{}]}),
+        json!({"subject":"","expiresAtMs":expiry * 1000}),
+        json!({"subject":"terse-credential","expiresAtMs":0}),
     ] {
         let response = client
             .post(format!("{origin}/v1/projects/default/sessions"))
@@ -161,10 +167,21 @@ async fn fixture(
         actor_entrypoint: None,
         secret_refs: vec![],
     };
-    let contract =
-        crate::control_plane::contracts::PublicActorContract::new(serde_json::from_str(
-            include_str!("../../../sdk/tests/fixtures/public-contract.json"),
-        )?)?;
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    let mut archived_room = document["actors"][0].clone();
+    archived_room["actorName"] = json!("ArchivedRoom");
+    archived_room["socket"]["actorName"] = json!("ArchivedRoom");
+    document["actors"]
+        .as_array_mut()
+        .unwrap()
+        .push(archived_room);
+    document["typescript"]["declarations"] = json!(format!(
+        "{}\nexport interface ActorTypes {{ ArchivedRoom: ActorTypes[\"ChatRoom\"] }}\n",
+        document["typescript"]["declarations"].as_str().unwrap()
+    ));
+    let contract = crate::control_plane::contracts::PublicActorContract::new(document)?;
     admin.register_deployment(&spec, Some(&contract)).await?;
     let service = ControlPlaneService::new(
         Arc::new(LocalObjectPlacementStore::default()),
