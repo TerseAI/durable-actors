@@ -848,7 +848,8 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
         "actor build failed: {}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let socket = directory.join("executor.sock");
+    let socket_directory = tempfile::tempdir()?;
+    let socket = socket_directory.path().join("executor.sock");
     let listener = ActorExecutorListener::bind(&socket).await?;
     let bootstrap = directory.join("host.mjs");
     std::fs::write(
