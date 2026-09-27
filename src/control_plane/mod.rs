@@ -13,12 +13,12 @@ mod issuer;
 mod local;
 mod local_build;
 mod process;
-pub(crate) mod project_grant;
 mod protocol;
 mod public_api;
 mod regions;
 mod replication;
 mod service;
+pub(crate) mod session;
 pub(crate) mod socket_ticket;
 
 use std::time::Duration;

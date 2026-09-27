@@ -237,7 +237,7 @@ impl ControlPlaneService {
         actor: &ActorKey,
         home_region: Option<&str>,
         timings: &mut TargetResolutionTimings,
-        grant: Option<super::project_grant::InvocationGrant>,
+        grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         self.resolve_actor_route(actor, home_region, Some(timings), grant)
             .await
@@ -325,7 +325,7 @@ impl ControlPlaneService {
         actor: &ActorKey,
         home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
-        grant: Option<super::project_grant::InvocationGrant>,
+        grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
         let target = self

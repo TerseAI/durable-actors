@@ -97,6 +97,45 @@ impl ActorJwtIssuer {
         Ok(String::from_utf8(self.jwks_json()?)?)
     }
 
+    pub(super) fn session_verifier(&self) -> Result<super::session::SessionVerifier> {
+        super::session::SessionVerifier::new(
+            &self.verifier_keys_json()?,
+            &self.issuer,
+            &self.session_audience(),
+        )
+    }
+
+    pub(super) fn issue_session(
+        &self,
+        project_id: String,
+        subject: String,
+        permissions: Vec<super::session::SessionPermission>,
+        deadline_ms: i64,
+    ) -> Result<IssuedActorToken> {
+        let now = unix_millis()? / 1000;
+        let expires_at = (deadline_ms / 1000)
+            .min(now.saturating_add(i64::try_from(self.max_lifetime.as_secs().min(60))?));
+        let session = super::session::ActorSession {
+            iss: self.issuer.clone(),
+            aud: self.session_audience(),
+            subject,
+            jti: uuid::Uuid::new_v4().to_string(),
+            project_id,
+            scope: "actor:session".into(),
+            permissions,
+            iat: now,
+            nbf: now,
+            expires_at,
+        };
+        session.validate(now)?;
+        let token = self.sign(&session)?;
+        ensure!(token.len() <= 8192, "actor session is too large");
+        Ok(IssuedActorToken {
+            token,
+            expires_at_ms: expires_at * 1000,
+        })
+    }
+
     pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<(String, i64, i64)> {
         self.issue_socket_at(grant, unix_millis()?)
     }
@@ -207,7 +246,7 @@ impl ActorJwtIssuer {
         host_config_key: &str,
         region: &str,
         owner_epoch: u64,
-        grant: Option<super::project_grant::InvocationGrant>,
+        grant: Option<super::session::InvocationGrant>,
     ) -> Result<IssuedActorToken> {
         actor.validate()?;
         validate_region(region)?;
@@ -247,17 +286,25 @@ impl ActorJwtIssuer {
         })
     }
 
+    fn session_audience(&self) -> String {
+        format!("{}:session", self.invocation_audience)
+    }
+
     fn issue(&self, claims: ActorJwtClaims) -> Result<IssuedActorToken> {
         let expires_at_ms = claims
             .exp
             .checked_mul(1_000)
             .context("issued actor token expiration overflow")?;
-        let mut header = Header::new(Algorithm::EdDSA);
-        header.kid = Some(self.key_id.clone());
         Ok(IssuedActorToken {
-            token: encode(&header, &claims, &self.encoding_key).context("sign actor JWT")?,
+            token: self.sign(&claims)?,
             expires_at_ms,
         })
+    }
+
+    fn sign(&self, claims: &impl Serialize) -> Result<String> {
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.key_id.clone());
+        encode(&header, claims, &self.encoding_key).context("sign actor JWT")
     }
 }
 

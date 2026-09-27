@@ -68,18 +68,6 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 
 ### Authentication and callbacks
 
-Trusted application backends can authorize direct RPC clients with short-lived
-project grants. Configure all three settings below together and set
-`DURABLE_ACTORS_SECRET`; partial configuration or grants with administrative
-authentication disabled fails startup. See [project grants](project-grants.md)
-for the signing contract and security boundaries.
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DURABLE_ACTORS_PROJECT_GRANT_PUBLIC_KEYS` | Disabled | JSON Ed25519 JWK set from the application authorization service. |
-| `DURABLE_ACTORS_PROJECT_GRANT_ISSUER` | Disabled | Required exact project-grant issuer. |
-| `DURABLE_ACTORS_PROJECT_GRANT_AUDIENCE` | Disabled | Required exact project-grant audience, distinct from host authority. |
-
 | Variable                                | Default                              | Meaning                                                                                |
 | --------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_JWT_KEY_ID`             | `primary`                            | Signing key identifier.                                                                |

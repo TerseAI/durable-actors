@@ -153,7 +153,7 @@ fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() ->
         actor_id: "one".into(),
     };
     let now = unix_millis()? / 1000;
-    let grant = super::super::project_grant::InvocationGrant {
+    let grant = super::super::session::InvocationGrant {
         subject: "credential-fingerprint".into(),
         grant_id: "grant-id".into(),
         expires_at: now + 20,
@@ -185,11 +185,123 @@ fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() ->
     let principal = verifier.authenticate_authorization(&format!("Bearer {}", issued.token))?;
     assert_eq!(principal.invocation.unwrap().grant, Some(grant.clone()));
     assert!(
-        issue(super::super::project_grant::InvocationGrant {
+        issue(super::super::session::InvocationGrant {
             expires_at: now,
             ..grant
         })
         .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn sessions_are_runtime_signed_and_never_extend_the_authorization_deadline() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let now = unix_millis()?;
+    let permissions = || {
+        serde_json::from_value(serde_json::json!([{
+            "actorName": "Counter", "actorId": "one", "methods": ["read"]
+        }]))
+    };
+    for deadline in [now + 25_000, now + 300_000] {
+        let issued = issuer.issue_session(
+            "project".into(),
+            "credential".into(),
+            permissions()?,
+            deadline,
+        )?;
+        assert!(issued.expires_at_ms <= deadline.min(unix_millis()? + 60_000));
+        let authorization = format!("Bearer {}", issued.token);
+        let verifier = issuer.session_verifier()?;
+        let session = verifier.authenticate(&authorization, "project")?;
+        assert_eq!(session.subject, "credential");
+        assert_eq!(session.expires_at * 1000, issued.expires_at_ms);
+        assert_eq!(session.permissions[0].methods, Some(vec!["read".into()]));
+        assert!(verifier.authenticate(&authorization, "other").is_err());
+        assert!(
+            socket_issuer()?
+                .session_verifier()?
+                .authenticate(&authorization, "project")
+                .is_err()
+        );
+        for (audience, purpose) in [
+            ("authority", ActorTokenPurpose::ControlPlane),
+            ("invocation", ActorTokenPurpose::Invocation),
+        ] {
+            let host_verifier = ActorJwtVerifier::for_scope(
+                issuer.verifier_keys_json()?,
+                "issuer",
+                audience,
+                purpose,
+                Duration::from_secs(60),
+            )?;
+            assert!(
+                host_verifier
+                    .authenticate_authorization(&authorization)
+                    .is_err()
+            );
+        }
+    }
+    assert!(
+        issuer
+            .issue_session("project".into(), "credential".into(), permissions()?, now)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn session_verification_rejects_invalid_claims_and_tampering() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let issued = issuer.issue_session(
+        "project".into(),
+        "credential".into(),
+        serde_json::from_value(serde_json::json!([{}]))?,
+        unix_millis()? + 60_000,
+    )?;
+    let verifier = issuer.session_verifier()?;
+    let session = verifier.authenticate(&format!("Bearer {}", issued.token), "project")?;
+    let original = serde_json::to_value(&session)?;
+    for (field, value) in [
+        ("iss", serde_json::json!("other")),
+        ("aud", serde_json::json!("invocation")),
+        ("scope", serde_json::json!("actor:invoke")),
+        ("sub", serde_json::json!("")),
+        ("jti", serde_json::json!("")),
+        ("nbf", serde_json::json!(session.iat + 60)),
+        ("iat", serde_json::json!(session.iat + 60)),
+        ("exp", serde_json::json!(session.iat)),
+        ("exp", serde_json::json!(session.iat + 61)),
+        ("permissions", serde_json::json!([])),
+        ("permissions", serde_json::json!([{"methods": []}])),
+        (
+            "permissions",
+            serde_json::json!([{"actorName": "../private"}]),
+        ),
+        ("permissions", serde_json::json!([{"actorId": ""}])),
+        (
+            "permissions",
+            serde_json::json!([{"methods": ["invalid/method"]}]),
+        ),
+        ("permissions", serde_json::json!([{"unexpected": true}])),
+    ] {
+        let mut claims = original.clone();
+        claims[field] = value;
+        assert!(
+            verifier
+                .authenticate(&format!("Bearer {}", issuer.sign(&claims)?), "project")
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut parts: Vec<String> = issued.token.split('.').map(str::to_owned).collect();
+    let mut altered = original;
+    altered["projectId"] = serde_json::json!("other");
+    parts[1] = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&altered)?);
+    assert!(
+        verifier
+            .authenticate(&format!("Bearer {}", parts.join(".")), "other")
+            .is_err()
     );
     Ok(())
 }

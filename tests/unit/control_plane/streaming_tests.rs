@@ -1101,7 +1101,7 @@ async fn delegated_http_invocations_enforce_methods_budget_and_socket_boundaries
             "revision",
             "us-east",
             epoch,
-            Some(crate::control_plane::project_grant::InvocationGrant {
+            Some(crate::control_plane::session::InvocationGrant {
                 subject: "credential-a".into(),
                 grant_id: "grant-a".into(),
                 expires_at: expiry,

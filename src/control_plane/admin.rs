@@ -128,7 +128,7 @@ pub(crate) struct AdminService {
     api_key: Option<String>,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
-    project_grants: Option<super::project_grant::ProjectGrantVerifier>,
+    sessions: super::session::SessionVerifier,
 }
 
 impl AdminService {
@@ -143,40 +143,43 @@ impl AdminService {
                 "API key is invalid"
             );
         }
+        let sessions = issuer.session_verifier()?;
         Ok(Self {
             api_key,
             registry,
             issuer,
-            project_grants: None,
+            sessions,
         })
     }
 
-    pub(super) fn with_project_grants(
-        mut self,
-        verifier: Option<super::project_grant::ProjectGrantVerifier>,
-    ) -> Result<Self> {
+    pub(super) fn authorize_session_issuance(&self, authorization: &str) -> Result<()> {
         ensure!(
-            verifier.is_none() || self.api_key.is_some(),
-            "project grants require administrative authentication"
+            self.api_key.is_some(),
+            "session issuance requires administrative authentication"
         );
-        self.project_grants = verifier;
-        Ok(self)
+        self.authenticate(authorization)
+    }
+
+    pub(super) fn issue_session(
+        &self,
+        project_id: String,
+        subject: String,
+        permissions: Vec<super::session::SessionPermission>,
+        expires_at_ms: i64,
+    ) -> Result<super::issuer::IssuedActorToken> {
+        self.issuer
+            .issue_session(project_id, subject, permissions, expires_at_ms)
     }
 
     pub(super) fn authorize_discovery(
         &self,
         authorization: &str,
         project_id: &str,
-    ) -> Result<Option<super::project_grant::ProjectGrant>> {
+    ) -> Result<Option<super::session::ActorSession>> {
         if self.authenticate(authorization).is_ok() {
             return Ok(None);
         }
-        Ok(Some(
-            self.project_grants
-                .as_ref()
-                .context("project grants are not configured")?
-                .authenticate(authorization, project_id)?,
-        ))
+        Ok(Some(self.sessions.authenticate(authorization, project_id)?))
     }
 
     pub(super) fn issue_direct_socket(

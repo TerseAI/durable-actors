@@ -59,7 +59,7 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
 
 #[test]
 fn delegated_tickets_only_allow_published_rpc_methods() {
-    let grant = crate::control_plane::project_grant::InvocationGrant {
+    let grant = crate::control_plane::session::InvocationGrant {
         subject: "credential-1".into(),
         grant_id: "grant-1".into(),
         expires_at: i64::MAX,

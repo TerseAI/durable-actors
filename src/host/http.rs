@@ -248,7 +248,7 @@ async fn consume_delegated_budget(
 }
 
 fn authorize_grant(
-    grant: Option<&crate::control_plane::project_grant::InvocationGrant>,
+    grant: Option<&crate::control_plane::session::InvocationGrant>,
     method: Option<&str>,
 ) -> Result<(), HttpError> {
     if let Some(grant) = grant {

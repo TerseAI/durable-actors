@@ -45,7 +45,7 @@ pub(crate) struct ActorInvocationCapability {
     pub host_id: HostId,
     pub owner_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant: Option<super::project_grant::InvocationGrant>,
+    pub grant: Option<super::session::InvocationGrant>,
 }
 
 #[derive(Clone)]
