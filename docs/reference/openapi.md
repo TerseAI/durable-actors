@@ -23,19 +23,3 @@ curl --fail http://127.0.0.1:7100/v1/projects/local/actors/Room/lobby/find-webso
   --header 'Content-Type: application/json' \
   --data '{"metadata": null}'
 ```
-
-## Resolve and invoke
-
-The SDK sends method calls to POST `/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke` at the control-plane origin. Each request includes `requestId`, `method`, `args`, and an optional `homeRegion`. Authenticate with your configured secret or a project session. The control plane resolves the owning host, forwards the call with a scoped invocation ticket, and returns the actor's result in the same response.
-
-For example, invoke `Room/lobby.sendMessage` locally:
-
-```sh
-curl --fail http://127.0.0.1:7100/v1/projects/local/actors/Room/lobby/invoke \
-  --header 'Content-Type: application/json' \
-  --data '{"requestId":"request-1","method":"sendMessage","args":[{"text":"hello"}]}'
-```
-
-The control plane retries once only when the host explicitly rejects the call before execution or the connection cannot be established. The SDK does not replay failed requests. An `outcome_unknown` response means execution may have occurred; do not automatically retry it. `requestId` identifies an attempt and does not deduplicate execution.
-
-The host's internal endpoint uses the same path but requires a scoped invocation ticket and `ownerEpoch`.

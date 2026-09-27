@@ -26,7 +26,7 @@ export interface ActorSessionTransportDependencies {
 export { ActorSessionRejectedError } from "./errors.js"
 
 /**
- * Renews runtime-issued sessions through a trusted backend.
+ * Reuses actor targets and renews runtime-issued sessions through a trusted backend.
  * Sessions require an HTTPS origin (except localhost) and at most 60 seconds of validity.
  * Renewal stops after a minute without invocations; dispose cancels it immediately.
  */

@@ -8,6 +8,13 @@ import type { ActorConnection } from "../../src/actor/socket.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
 import { ActorInvocationError, ActorProtocolError } from "../../src/errors.js"
 
+const target = {
+    route: "https://host.example.com",
+    token: "invocation-ticket",
+    ownerEpoch: 1,
+    expiresAtMs: 4_000_000_000_000
+}
+
 test("invalid discovery epochs and deadlines fail before broadcast", async () => {
     for (const field of ["ownerEpoch", "expiresAtMs"]) {
         for (const value of [0, -1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1]) {
@@ -23,6 +30,9 @@ test("invalid discovery epochs and deadlines fail before broadcast", async () =>
                         [field]: value
                     }),
                 actorHost: {
+                    async invoke() {
+                        return assert.fail("unexpected direct invocation")
+                    },
                     async publish() {
                         assert.fail("invalid target reached actor host")
                     }
@@ -55,7 +65,7 @@ for (const local of [false, true]) {
                         method: "increment",
                         args: []
                     })
-                    return Response.json({ type: "completed", result: 7 })
+                    return Response.json({ target, outcome: { type: "completed", result: 7 } })
                 }
                 const socket = String(url).endsWith("/find-websocket")
                 assert.deepEqual(JSON.parse(String(options?.body)), socket ? { metadata: {} } : {})
@@ -73,6 +83,9 @@ for (const local of [false, true]) {
                 })
             },
             actorHost: {
+                async invoke() {
+                    return assert.fail("unexpected direct invocation")
+                },
                 async publish(target, actor) {
                     assert.equal(target.token, "invocation-ticket")
                     assert.equal(actor.actorId, "one")
@@ -90,8 +103,7 @@ for (const local of [false, true]) {
         const project = local ? "local" : "default"
         assert.deepEqual(requests, [
             `${origin}/v1/projects/${project}/actors/Counter/one/invoke`,
-            `${origin}/v1/projects/${project}/actors/Counter/one/find-websocket`,
-            `${origin}/v1/projects/${project}/actors/Counter/one/find-actor`
+            `${origin}/v1/projects/${project}/actors/Counter/one/find-websocket`
         ])
     })
 }
@@ -115,6 +127,9 @@ test("broadcast target expiry uses real time even when workflow Date.now is froz
                         expiresAtMs: Math.floor(performance.timeOrigin + performance.now()) + 1_000
                     }),
                 actorHost: {
+                    async invoke() {
+                        return assert.fail("unexpected direct invocation")
+                    },
                     async publish(target) {
                         usedTokens.push(target.token)
                     }
@@ -145,6 +160,9 @@ test("concurrent broadcasts share discovery and refresh an expired target once",
                 expiresAtMs: now + 60_000
             }),
         actorHost: {
+            async invoke() {
+                return assert.fail("unexpected direct invocation")
+            },
             async publish(target) {
                 tokens.push(target.token)
             }
@@ -162,8 +180,14 @@ test("concurrent broadcasts share discovery and refresh an expired target once",
 test("does not retry failed or ambiguous invocations", async () => {
     for (const [response, code] of [
         [null, "outcome_unknown"],
-        [Response.json({ type: "failed", code: "unauthenticated", message: "actor method failed" }), "unauthenticated"],
-        [Response.json({ type: "failed", code: "actor_error", message: "boom" }), "actor_error"],
+        [
+            Response.json({
+                target,
+                outcome: { type: "failed", code: "unauthenticated", message: "actor method failed" }
+            }),
+            "unauthenticated"
+        ],
+        [Response.json({ target, outcome: { type: "failed", code: "actor_error", message: "boom" } }), "actor_error"],
         [Response.json({ error: { code: "outcome_unknown", message: "lost" } }, { status: 502 }), "outcome_unknown"],
         [Response.json({}, { status: 401 }), "unauthenticated"]
     ] as const) {
@@ -187,16 +211,21 @@ test("does not retry failed or ambiguous invocations", async () => {
     }
 })
 
-test("remote actor calls resolve and invoke through HTTP and report timings", async () => {
-    const requests: unknown[] = []
+test("cold and warm HTTP invocations report their respective timings", async () => {
+    const authorizations: (string | undefined)[] = []
     const telemetry: unknown[] = []
     const server = createServer(async (request, response) => {
         assert.equal(request.method, "POST")
         assert.equal(request.url, "/v1/projects/default/actors/Counter/counter-1/invoke")
-        assert.equal(request.headers.authorization, "Bearer backend-key")
-        assert.equal(request.headers["x-request-id"], "request-1")
-        requests.push(await requestBody(request))
-        json(response, 200, { type: "completed", result: 7 })
+        authorizations.push(request.headers.authorization)
+        const body = (await requestBody(request)) as Record<string, unknown>
+        const outcome = { type: "completed", result: 7 }
+        if (body.ownerEpoch) {
+            assert.equal(body.ownerEpoch, target.ownerEpoch)
+            json(response, 200, outcome)
+        } else {
+            json(response, 200, { target: { ...target, route: `http://127.0.0.1:${port}` }, outcome })
+        }
     })
     const port = await listen(server)
     const client = new RemoteActorClient(
@@ -209,13 +238,10 @@ test("remote actor calls resolve and invoke through HTTP and report timings", as
     )
     try {
         for (const amount of [2, 3]) assert.equal(await client.invoke("Counter", "counter-1", "increment", [amount]), 7)
-        assert.deepEqual(
-            requests,
-            [2, 3].map(amount => ({ requestId: "request-1", method: "increment", args: [amount] }))
-        )
+        assert.deepEqual(authorizations, ["Bearer backend-key", "Bearer invocation-ticket"])
         assert.deepEqual(
             telemetry,
-            Array.from({ length: 2 }, () => ({
+            ["control_plane_invocation_completed_at_ms", "host_rpc_completed_at_ms"].map(completed => ({
                 event: "actor_client_invocation",
                 request_id: "request-1",
                 actor_name: "Counter",
@@ -223,8 +249,9 @@ test("remote actor calls resolve and invoke through HTTP and report timings", as
                 method: "increment",
                 started_at_ms: 0,
                 invocation_built_at_ms: 1,
-                control_plane_invocation_completed_at_ms: 2,
-                completed_at_ms: 3,
+                target_cache_checked_at_ms: 2,
+                [completed]: 3,
+                completed_at_ms: 4,
                 outcome: "completed"
             }))
         )
@@ -383,6 +410,9 @@ test("broadcasts use the owning host HTTP transport", async () => {
                 })
             },
             actorHost: {
+                async invoke() {
+                    return assert.fail("unexpected direct invocation")
+                },
                 ...{
                     async publish(
                         target: { ownerEpoch: number },
@@ -419,7 +449,8 @@ test("project clients retain project identity across resolution, RPC, and broadc
                 telemetry: () => {},
                 fetch: async url => {
                     requests.push(String(url))
-                    if (String(url).endsWith("/invoke")) return Response.json({ type: "completed", result: projectId })
+                    if (String(url).endsWith("/invoke"))
+                        return Response.json({ target, outcome: { type: "completed", result: projectId } })
                     return Response.json({
                         route: "https://host.example",
                         token: "ticket",
@@ -428,6 +459,9 @@ test("project clients retain project identity across resolution, RPC, and broadc
                     })
                 },
                 actorHost: {
+                    async invoke() {
+                        return assert.fail("unexpected direct invocation")
+                    },
                     async publish(_target, actor) {
                         published.push(actor.projectId!)
                     }
@@ -439,11 +473,7 @@ test("project clients retain project identity across resolution, RPC, and broadc
     }
     assert.deepEqual(
         requests,
-        ["team-a", "team-b"].flatMap(project =>
-            ["invoke", "find-actor"].map(
-                endpoint => `https://control.example/v1/projects/${project}/actors/Counter/same/${endpoint}`
-            )
-        )
+        ["team-a", "team-b"].map(project => `https://control.example/v1/projects/${project}/actors/Counter/same/invoke`)
     )
     assert.deepEqual(published, ["team-a", "team-b"])
 })

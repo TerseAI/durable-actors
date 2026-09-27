@@ -86,31 +86,45 @@ async function checkServerCalls(t, directory) {
         assert.deepEqual(calls, ["sendMessage", "clear", "sendMessage"])
         assert.deepEqual(
             requests.map(request => request.url),
-            [...Array(3).fill("/v1/projects/team-a/actors/ChatRoom/lobby/invoke"), "/v1/projects/team-a/actors/ChatRoom/lobby/find-websocket"]
+            ["/v1/projects/team-a/actors/ChatRoom/lobby/invoke", "/v1/projects/team-a/actors/ChatRoom/lobby/find-websocket"]
         )
-        assert.deepEqual(requests[3].body, { metadata: { userId: "alice" }, authorizationLifetimeMs: 900000 })
+        assert.deepEqual(requests[1].body, { metadata: { userId: "alice" }, authorizationLifetimeMs: 900000 })
     }
 }
 
 async function controlPlaneServer(t, calls, requests) {
+    const host = createServer(async (request, response) => {
+        assert.equal(request.method, "POST")
+        assert.equal(request.headers.authorization, "Bearer host-ticket")
+        const body = await requestBody(request)
+        assert.equal(body.ownerEpoch, 3)
+        calls.push(body.method)
+        response.setHeader("content-type", "application/json")
+        response.end(
+            JSON.stringify(
+                body.args[0]?.text === "fail" ? { type: "failed", code: "actor_error", message: "failed" } : { type: "completed", result: body.method === "clear" ? null : { id: "1", text: "hello" } }
+            )
+        )
+    })
+    t.after(() => host.close())
+    host.listen(0, "127.0.0.1")
+    await once(host, "listening")
+    const target = { route: `http://127.0.0.1:${host.address().port}`, token: "host-ticket", ownerEpoch: 3, expiresAtMs: Date.now() + 60_000 }
     const controlPlane = createServer(async (request, response) => {
         assert.equal(request.method, "POST")
         assert.equal(request.headers.authorization, "Bearer app-key")
-        const chunks = []
-        for await (const chunk of request) chunks.push(chunk)
-        const body = JSON.parse(Buffer.concat(chunks).toString())
+        const body = await requestBody(request)
         requests.push({ url: request.url, body })
         response.setHeader("content-type", "application/json")
         if (request.url.endsWith("/invoke")) {
             assert.ok(body.requestId)
-            calls.push(body.method)
-            response.end(
-                JSON.stringify(
-                    body.args[0]?.text === "fail"
-                        ? { type: "failed", code: "actor_error", message: "failed" }
-                        : { type: "completed", result: body.method === "clear" ? null : { id: "1", text: "hello" } }
-                )
-            )
+            assert.equal(body.ownerEpoch, undefined)
+            const invoked = await fetch(`${target.route}${request.url}`, {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: "Bearer host-ticket" },
+                body: JSON.stringify({ ...body, ownerEpoch: target.ownerEpoch })
+            })
+            response.end(JSON.stringify({ target, outcome: await invoked.json() }))
         } else {
             response.end(JSON.stringify({ websocketUrl: "wss://example.com/socket?key=ticket", homeRegion: "us-east", connectByMs: 1000, authorizedUntilMs: 900000 }))
         }
@@ -119,6 +133,12 @@ async function controlPlaneServer(t, calls, requests) {
     controlPlane.listen(0, "127.0.0.1")
     await once(controlPlane, "listening")
     return `http://127.0.0.1:${controlPlane.address().port}`
+}
+
+async function requestBody(request) {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    return JSON.parse(Buffer.concat(chunks).toString())
 }
 
 async function invokeClient(directory, origin, format) {

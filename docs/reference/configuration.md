@@ -12,8 +12,6 @@ Used by backend clients, `generate --remote`, and `observe`. Local startup also 
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | `http://127.0.0.1:7100`                             | HTTP(S) server origin. Paths, query strings, fragments, and embedded credentials are not allowed.                           |
 | `DURABLE_ACTORS_SECRET`            | Unset                                               | Optional shared secret. Set the same value on the server and backend to enable authentication. Keep it out of browser code. |
 
-SDK method calls resolve and invoke through the control plane in one HTTP request. This is the standard invocation path and requires no additional configuration.
-
 Local CLI commands and backend clients need no connection settings with the defaults. Connections to localhost (`localhost`, `127.0.0.1`, and `[::1]`) default to project `local`. Remote connections require an explicit project ID. If you override the project or port, use matching settings in your backend.
 
 Authentication is disabled when `DURABLE_ACTORS_SECRET` is unset on the server, locally or remotely. Set it on both the server and your backend to test or enable authentication. Clients omit the authorization header when no secret is configured. Leave the variable unset to disable authentication; empty values and surrounding whitespace are invalid on the server.
@@ -67,8 +65,6 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
-
-Idle actor spares preconnect to the control plane, and the Modal provider warms each spare's assignment tunnel. Assignment reuses these connections. Warming failures leave normal assignment available.
 
 ### Authentication and callbacks
 

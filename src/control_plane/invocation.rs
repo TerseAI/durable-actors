@@ -37,30 +37,28 @@ pub(super) async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(ApiError::bad_request)?;
-    for _ in 0..2 {
-        let target = resolve_actor_target(
-            &state,
-            &invocation.actor,
-            &headers,
-            Ok(Json(FindActorRequest {
-                home_region: request.home_region.clone(),
-            })),
-        )
-        .await?;
-        if let Some(reply) = dispatch(&state.hosts, &target, &invocation).await? {
-            return Ok(([(header::CACHE_CONTROL, "no-store")], Json(reply)).into_response());
-        }
-    }
-    Err(ApiError::unavailable(
-        "actor host could not accept the invocation before execution",
-    ))
+    let target = resolve_actor_target(
+        &state,
+        &invocation.actor,
+        &headers,
+        Ok(Json(FindActorRequest {
+            home_region: request.home_region,
+        })),
+    )
+    .await?;
+    let outcome = dispatch(&state.hosts, &target, &invocation).await?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"target": target, "outcome": outcome})),
+    )
+        .into_response())
 }
 
 async fn dispatch(
     client: &reqwest::Client,
     target: &ActorTargetReply,
     invocation: &ActorInvocation,
-) -> Result<Option<Value>, ApiError> {
+) -> Result<Value, ApiError> {
     let actor = &invocation.actor;
     let url = format!(
         "{}/v1/projects/{}/actors/{}/{}/invoke",
@@ -80,11 +78,13 @@ async fn dispatch(
         .await;
     let response = match response {
         Ok(response) => response,
-        Err(error) if error.is_connect() => return Ok(None),
+        Err(error) if error.is_connect() => {
+            return Ok(json!({"type":"not_executed", "reason":"upstream_not_reached"}));
+        }
         Err(_) => return Err(outcome_unknown()),
     };
     if response.status() == StatusCode::UNAUTHORIZED {
-        return Ok(None);
+        return Ok(json!({"type":"unauthenticated"}));
     }
     if !response.status().is_success() {
         return Err(outcome_unknown());
@@ -97,14 +97,14 @@ async fn dispatch(
                 Some("stale_owner" | "host_unavailable" | "upstream_not_reached")
             ) =>
         {
-            Ok(None)
+            Ok(reply)
         }
-        Some("completed") if reply.get("result").is_some() => Ok(Some(reply)),
+        Some("completed") if reply.get("result").is_some() => Ok(reply),
         Some("failed")
             if reply["code"].as_str().is_some_and(|code| !code.is_empty())
                 && reply["message"].is_string() =>
         {
-            Ok(Some(reply))
+            Ok(reply)
         }
         _ => Err(outcome_unknown()),
     }

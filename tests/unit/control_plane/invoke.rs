@@ -23,8 +23,16 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-store");
     let reply: Value = response.json().await?;
-    assert_eq!(reply["type"], "completed");
-    assert!(reply["result"].is_null());
+    assert_eq!(reply["outcome"]["type"], "completed");
+    assert!(reply["outcome"]["result"].is_null());
+    assert_eq!(reply["target"]["ownerEpoch"], 1);
+    assert!(reply["target"]["expiresAtMs"].as_i64().unwrap() > 0);
+    assert!(
+        reply["target"]["route"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://127.0.0.1:")
+    );
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     let requests = fixture.host.requests.lock().unwrap();
     assert_eq!(
@@ -35,6 +43,10 @@ async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() 
         .verifier
         .authenticate_authorization(&requests[0].0)?;
     assert_eq!(principal.actor.actor_id, "one");
+    assert_eq!(
+        requests[0].0,
+        format!("Bearer {}", reply["target"]["token"].as_str().unwrap())
+    );
     Ok(())
 }
 
@@ -77,27 +89,11 @@ async fn combined_invocation_authenticates_and_validates_requests() -> Result<()
 }
 
 #[tokio::test]
-async fn combined_invocation_retries_only_explicit_pre_dispatch_rejections() -> Result<()> {
-    for rejection in [
-        (
-            StatusCode::OK,
-            json!({"type":"not_executed", "reason":"stale_owner"}),
-        ),
-        (
-            StatusCode::OK,
-            json!({"type":"not_executed", "reason":"host_unavailable"}),
-        ),
-        (
-            StatusCode::OK,
-            json!({"type":"not_executed", "reason":"upstream_not_reached"}),
-        ),
-        (StatusCode::UNAUTHORIZED, json!({})),
-    ] {
-        let fixture = Fixture::start(vec![
-            rejection,
-            (StatusCode::OK, json!({"type":"completed", "result":9})),
-        ])
-        .await?;
+async fn combined_invocation_returns_pre_dispatch_rejections_for_the_client_retry_budget()
+-> Result<()> {
+    for reason in ["stale_owner", "host_unavailable", "upstream_not_reached"] {
+        let outcome = json!({"type":"not_executed", "reason":reason});
+        let fixture = Fixture::start(vec![(StatusCode::OK, outcome.clone())]).await?;
         let reply: Value = fixture
             .call(
                 "api-key",
@@ -106,36 +102,39 @@ async fn combined_invocation_retries_only_explicit_pre_dispatch_rejections() -> 
             .await?
             .json()
             .await?;
-        assert_eq!(reply["result"], 9);
-        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
-        assert!(
-            fixture
-                .host
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(_, body)| body["requestId"] == "same-id")
-        );
+        assert_eq!(reply["outcome"], outcome);
+        assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     }
-    let fixture = Fixture::start(vec![
-        (
-            StatusCode::OK,
-            json!({"type":"not_executed", "reason":"stale_owner"})
-        );
-        3
-    ])
-    .await?;
+    let fixture = Fixture::start(vec![(StatusCode::UNAUTHORIZED, json!({}))]).await?;
     let reply: Value = fixture
         .call(
             "api-key",
-            json!({"requestId":"r", "method":"clear", "args":[]}),
+            json!({"requestId":"same-id", "method":"clear", "args":[]}),
         )
         .await?
         .json()
         .await?;
-    assert_eq!(reply["error"]["code"], "unavailable");
-    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(reply["outcome"], json!({"type":"unauthenticated"}));
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
+
+    let mut fixture = Fixture::start(vec![]).await?;
+    let host = fixture.servers.pop().unwrap();
+    host.abort();
+    assert!(host.await.unwrap_err().is_cancelled());
+    let reply: Value = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"refused", "method":"clear", "args":[]}),
+        )
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        reply["outcome"],
+        json!({"type":"not_executed", "reason":"upstream_not_reached"})
+    );
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -177,7 +176,12 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
             .await?
             .json()
             .await?;
-        assert_eq!(reply.get("code").unwrap_or(&reply["error"]["code"]), code);
+        assert_eq!(
+            reply["outcome"]
+                .get("code")
+                .unwrap_or(&reply["error"]["code"]),
+            code
+        );
         assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
     }
     Ok(())

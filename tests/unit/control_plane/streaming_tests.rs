@@ -1137,10 +1137,28 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
         .json()
         .await?;
     assert_eq!(
-        reply,
+        reply["outcome"],
         serde_json::json!({"type":"completed", "result":"saved"})
     );
-    assert_eq!(stack.invoke("readHistory", vec![]).await?, "saved");
+    let warm: serde_json::Value = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/invoke",
+            reply["target"]["route"].as_str().unwrap()
+        ))
+        .bearer_auth(reply["target"]["token"].as_str().unwrap())
+        .json(&serde_json::json!({
+            "requestId":"warm-call", "ownerEpoch":reply["target"]["ownerEpoch"],
+            "method":"readHistory", "args":[]
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        warm,
+        serde_json::json!({"type":"completed", "result":"saved"})
+    );
     stack.child.kill().await?;
     Ok(())
 }

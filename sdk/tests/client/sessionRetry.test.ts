@@ -6,12 +6,10 @@ import { ActorInvocationError } from "../../src/client-runtime/errors.js"
 import { ActorSessionTransport } from "../../src/client-runtime/session.js"
 
 test("session transport cannot add another retry after host recovery is exhausted", async t => {
-    const f = fixture(async () =>
-        Response.json({ error: { code: "unavailable", message: "host recovery exhausted" } }, { status: 503 })
-    )
+    const f = fixture(async () => Response.json({ type: "not_executed", reason: "host_unavailable" }))
     t.after(() => f.client.dispose())
     await assert.rejects(f.client.invoke("Counter", "one", "increment", []), invocationError("unavailable"))
-    assert.deepEqual(f.stats(), { exchanges: 1, attempts: 1 })
+    assert.deepEqual(f.stats(), { exchanges: 1, attempts: 2 })
 })
 
 test("session invocations never replay permission denials or unknown outcomes", async () => {
@@ -69,7 +67,17 @@ function fixture(invoke: (attempt: number) => Promise<Response>) {
                         )
                         assert.equal(authorization, `Bearer session-${exchanges}`)
                         authorizations.push(authorization)
-                        return invoke(++attempts)
+                        const response = await invoke(++attempts)
+                        if (!response.ok) return response
+                        return Response.json({
+                            target: {
+                                route: "https://host.example",
+                                token: "ticket",
+                                ownerEpoch: 1,
+                                expiresAtMs: now + 60_000
+                            },
+                            outcome: await response.json()
+                        })
                     }
                 })
         }
