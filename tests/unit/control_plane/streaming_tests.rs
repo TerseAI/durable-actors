@@ -1071,7 +1071,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build"]
-async fn delegated_http_invocations_enforce_methods_budget_and_socket_boundaries() -> Result<()> {
+async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> Result<()> {
     let mut stack = Stack::start().await?;
     let http = reqwest::Client::new();
     let target: serde_json::Value = http
@@ -1132,16 +1132,10 @@ async fn delegated_http_invocations_enforce_methods_budget_and_socket_boundaries
             .status(),
         reqwest::StatusCode::FORBIDDEN
     );
-    for index in 0..121 {
-        let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
-            .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":"readHistory", "args":[]}))
-            .send().await?.error_for_status()?.json().await?;
-        if index < 120 {
-            assert_eq!(reply["type"], "completed");
-        } else {
-            assert_eq!(reply["code"], "rate_limited");
-        }
-    }
+    let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
+        .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":"readHistory", "args":[]}))
+        .send().await?.error_for_status()?.json().await?;
+    assert_eq!(reply["type"], "completed");
     stack.child.kill().await?;
     Ok(())
 }

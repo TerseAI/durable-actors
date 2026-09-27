@@ -7,10 +7,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::{
@@ -27,7 +25,6 @@ pub(crate) struct ActorHostHttpService {
     session_id: String,
     auth: ActorJwtVerifier,
     sockets: Arc<HostSockets>,
-    delegated_budgets: Cache<String, Arc<Semaphore>>,
 }
 
 impl ActorHostHttpService {
@@ -42,7 +39,6 @@ impl ActorHostHttpService {
             session_id,
             auth,
             sockets,
-            delegated_budgets: delegated_budgets(),
         }
     }
 
@@ -168,11 +164,6 @@ async fn invoke(
         return Ok(Json(InvocationReply::failed("forbidden", &error.1)));
     }
     if let Some(grant) = grant {
-        if let Err(error) =
-            consume_delegated_budget(&service.delegated_budgets, &grant.subject).await
-        {
-            return Ok(Json(InvocationReply::failed("rate_limited", &error.1)));
-        }
         info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
     }
     let invocation = ActorInvocation {
@@ -219,32 +210,6 @@ async fn publish(
             )
         })?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn delegated_budgets() -> Cache<String, Arc<Semaphore>> {
-    Cache::builder()
-        .max_capacity(4096)
-        .time_to_live(std::time::Duration::from_secs(60))
-        .build()
-}
-
-async fn consume_delegated_budget(
-    budgets: &Cache<String, Arc<Semaphore>>,
-    subject: &str,
-) -> Result<(), HttpError> {
-    let budget = budgets
-        .get_with(subject.to_owned(), async { Arc::new(Semaphore::new(120)) })
-        .await;
-    budget
-        .try_acquire()
-        .map_err(|_| {
-            HttpError(
-                StatusCode::TOO_MANY_REQUESTS,
-                "actor invocation rate exceeded".into(),
-            )
-        })?
-        .forget();
-    Ok(())
 }
 
 fn authorize_grant(

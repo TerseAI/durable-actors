@@ -71,23 +71,3 @@ fn delegated_tickets_only_allow_published_rpc_methods() {
     assert!(authorize_grant(Some(&grant), None).is_err());
     assert!(authorize_grant(None, None).is_ok());
 }
-
-#[tokio::test]
-async fn delegated_invocation_budgets_are_shared_across_renewals_but_isolate_credentials() {
-    let budgets = delegated_budgets();
-    for _ in 0..120 {
-        consume_delegated_budget(&budgets, "credential-a")
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        consume_delegated_budget(&budgets, "credential-a")
-            .await
-            .unwrap_err()
-            .0,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    consume_delegated_budget(&budgets, "credential-b")
-        .await
-        .unwrap();
-}
