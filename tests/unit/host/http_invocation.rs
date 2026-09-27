@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    control_plane::{ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose},
+    control_plane::{
+        ActorJwtIssuer, ActorJwtVerifier, ActorTokenPurpose, session::InvocationGrant,
+    },
     host::{http::ActorHostHttpService, sockets::HostSockets},
 };
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
@@ -8,7 +10,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[tokio::test]
 async fn draining_host_rejects_http_invocations_without_executing_them() -> Result<()> {
-    let mut fixture = HttpHost::start().await?;
+    let mut fixture = HttpHost::start(None).await?;
     assert_eq!(
         fixture.invoke("warm", "counter-1").await?,
         json!({"type":"completed", "result":1})
@@ -27,7 +29,7 @@ async fn draining_host_rejects_http_invocations_without_executing_them() -> Resu
 
 #[tokio::test]
 async fn host_assigned_to_another_actor_rejects_before_execution() -> Result<()> {
-    let mut fixture = HttpHost::start().await?;
+    let mut fixture = HttpHost::start(None).await?;
     fixture.invoke("warm", "counter-1").await?;
     assert_eq!(fixture.started.recv().await.as_deref(), Some("warm"));
     assert_eq!(
@@ -44,7 +46,7 @@ async fn host_assigned_to_another_actor_rejects_before_execution() -> Result<()>
 
 #[tokio::test]
 async fn interrupted_execution_is_an_unknown_outcome_over_http() -> Result<()> {
-    let mut fixture = HttpHost::start().await?;
+    let mut fixture = HttpHost::start(None).await?;
     let reply = fixture.invoke("panic", "counter-1").await?;
     assert_eq!(fixture.started.recv().await.as_deref(), Some("panic"));
     assert_eq!(reply["type"], "failed");
@@ -52,17 +54,48 @@ async fn interrupted_execution_is_an_unknown_outcome_over_http() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn delegated_permissions_are_enforced_before_retryable_admission() -> Result<()> {
+    for allowed in [true, false] {
+        let grant = InvocationGrant {
+            subject: "caller".into(),
+            grant_id: "session".into(),
+            expires_at: i64::MAX,
+            methods: if allowed {
+                vec!["increment".into()]
+            } else {
+                vec!["read".into()]
+            },
+        };
+        let mut fixture = HttpHost::start(Some(grant)).await?;
+        fixture.host.drain(Duration::from_secs(1)).await?;
+        let reply = fixture.invoke("delegated", "counter-1").await?;
+        if allowed {
+            assert_eq!(
+                reply,
+                json!({"type":"not_executed", "reason":"host_unavailable"})
+            );
+        } else {
+            assert_eq!(reply["type"], "failed");
+            assert_eq!(reply["code"], "forbidden");
+        }
+        assert!(fixture.started.try_recv().is_err());
+    }
+    Ok(())
+}
+
 struct HttpHost {
     host: Arc<ActorHost>,
     started: mpsc::UnboundedReceiver<String>,
     issuer: ActorJwtIssuer,
+    grant: Option<InvocationGrant>,
     origin: String,
     client: reqwest::Client,
     _tasks: JoinSet<()>,
 }
 
 impl HttpHost {
-    async fn start() -> Result<Self> {
+    async fn start(grant: Option<InvocationGrant>) -> Result<Self> {
         let (started_tx, started) = mpsc::unbounded_channel();
         let storage = Arc::new(FakeAuthority::default());
         let sockets = Arc::new(HostSockets::new(storage.clone()));
@@ -111,6 +144,7 @@ impl HttpHost {
             host,
             started,
             issuer,
+            grant,
             origin,
             client: reqwest::Client::new(),
             _tasks: tasks,
@@ -130,6 +164,7 @@ impl HttpHost {
             "revision-1",
             "us-east",
             1,
+            self.grant.clone(),
         )?;
         Ok(self.client.post(format!("{}/v1/projects/default/actors/Counter/{actor_id}/invoke", self.origin))
             .bearer_auth(token.token)
