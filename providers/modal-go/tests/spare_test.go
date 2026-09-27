@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -99,6 +100,44 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if sb.assignment["DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"] != "75000" {
 		t.Fatal("host idle timeout was not passed to the assigned sandbox")
+	}
+}
+
+func TestAssignmentReportsIndependentMountAndAssignmentTimings(t *testing.T) {
+	sb := &fakeSandbox{mountStarted: make(chan struct{}), assignmentStarted: make(chan struct{})}
+	request := testRequest()
+	request.Spare = &spareHandle{ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	p := newTestProvider(&fakeAPI{found: sb})
+	var ticks atomic.Int64
+	p.now = func() time.Time { return p.started.Add(time.Duration(ticks.Add(1)) * time.Millisecond) }
+	handle, err := p.ensureHost(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := json.Marshal(handle.Provisioning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		t.Fatal(err)
+	}
+	phases := make(map[string]float64)
+	for _, name := range []string{"codeMountStartedAtMs", "codeMountedAtMs", "assignmentStartedAtMs", "assignmentCompletedAtMs", "completedAtMs"} {
+		value, ok := fields[name]
+		if !ok {
+			t.Fatalf("missing %s: %s", name, document)
+		}
+		var phasesValue float64
+		if err := json.Unmarshal(value, &phasesValue); err != nil {
+			t.Fatal(err)
+		}
+		phases[name] = phasesValue
+	}
+	if phases["codeMountedAtMs"] <= phases["codeMountStartedAtMs"] || phases["assignmentCompletedAtMs"] <= phases["assignmentStartedAtMs"] || phases["completedAtMs"] < phases["codeMountedAtMs"] || phases["completedAtMs"] < phases["assignmentCompletedAtMs"] || phases["codeMountStartedAtMs"] > phases["assignmentCompletedAtMs"] || phases["assignmentStartedAtMs"] > phases["codeMountedAtMs"] {
+		t.Fatal(phases)
 	}
 }
 

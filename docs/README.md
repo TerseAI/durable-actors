@@ -5,3 +5,4 @@
 | TypeScript    | [SDK documentation](reference/typescript.md).                    |
 | HTTP          | [OpenAPI instructions](reference/openapi.md).                    |
 | Configuration | [Environment variables](reference/configuration.md).             |
+| Cold starts   | [Activation timing logs](reference/activation-timings.md).       |

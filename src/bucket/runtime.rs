@@ -40,7 +40,9 @@ pub(crate) use history::ActorStateReader;
 mod repair;
 mod session;
 mod startup;
+mod timing;
 pub use repair::ReplicaMembership;
+use timing::phase;
 
 #[cfg(test)]
 #[path = "../../tests/unit/bucket/activation.rs"]
@@ -309,8 +311,7 @@ impl RuntimeStorage {
     ) -> Result<Option<LoadedSnapshot>> {
         let bucket = &self.authority;
         let stream = record.stream()?;
-        let newest = bucket
-            .list(&stream.prefix)
+        let newest = phase("snapshot_list", bucket.list(&stream.prefix))
             .await?
             .into_iter()
             .filter_map(|key| {
@@ -322,8 +323,7 @@ impl RuntimeStorage {
         let mut loaded = match newest {
             Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => known,
             Some((_, key)) => {
-                let object = bucket
-                    .get(&key)
+                let object = phase("snapshot_read", bucket.get(&key))
                     .await?
                     .context("listed snapshot disappeared")?;
                 Some(decode_snapshot(key, object.bytes)?)
@@ -332,28 +332,40 @@ impl RuntimeStorage {
         };
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
-        let replicas = self.replica_members(&record.scope()).await?;
+        let replicas = phase(
+            "replica_members_read",
+            self.replica_members(&record.scope()),
+        )
+        .await?;
         let mut pending = JoinSet::new();
         for target in &replicas {
             let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
             pending.spawn(async move { peers.head(&target, &stream).await });
         }
-        let mut witnesses = 0;
-        while let Some(result) = pending.join_next().await {
-            if let Ok(Ok(head)) = result {
-                ensure!(head.stream == stream, "replica returned another stream");
-                witnesses += 1;
-                advance(&mut candidate, head.latest)?;
+        let heads = async {
+            let mut witnesses = 0;
+            while let Some(result) = pending.join_next().await {
+                if let Ok(Ok(head)) = result {
+                    ensure!(head.stream == stream, "replica returned another stream");
+                    witnesses += 1;
+                    advance(&mut candidate, head.latest)?;
+                }
             }
-        }
-        ensure!(
-            replicas.is_empty() || witnesses > 0,
-            "no complete replica witness; refusing to lose acknowledged state"
-        );
+            ensure!(
+                replicas.is_empty() || witnesses > 0,
+                "no complete replica witness; refusing to lose acknowledged state"
+            );
+            anyhow::Ok(())
+        };
+        phase("replica_heads", heads).await?;
         if let Some(snapshot) = candidate
             && loaded.as_ref().is_none_or(|s| s.reference != snapshot)
         {
-            let bytes = self.recover_snapshot(&replicas, &snapshot).await?;
+            let bytes = phase(
+                "snapshot_recover",
+                self.recover_snapshot(&replicas, &snapshot),
+            )
+            .await?;
             loaded = Some(LoadedSnapshot {
                 reference: snapshot,
                 bytes: bytes.into(),
@@ -367,14 +379,28 @@ impl RuntimeStorage {
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        if let Some(object) = self.authority.get(&snapshot.object).await? {
+        if let Some(object) = phase(
+            "recovery_snapshot_read",
+            self.authority.get(&snapshot.object),
+        )
+        .await?
+        {
             snapshot.verify(&object.bytes)?;
             return Ok(object.bytes);
         }
         for peer in replicas {
-            if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
+            if let Ok(bytes) = phase(
+                "recovery_replica_read",
+                self.peers.read(peer, &snapshot.object),
+            )
+            .await
+            {
                 snapshot.verify(&bytes)?;
-                self.persist(&snapshot.object, bytes.clone()).await?;
+                phase(
+                    "recovery_snapshot_write",
+                    self.persist(&snapshot.object, bytes.clone()),
+                )
+                .await?;
                 return Ok(bytes);
             }
         }

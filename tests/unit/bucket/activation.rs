@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "activation_timing.rs"]
+mod timing_tests;
+
 #[tokio::test]
 async fn first_write_commits_without_waiting_for_replica_provisioning() -> Result<()> {
     use crate::{

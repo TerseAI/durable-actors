@@ -16,6 +16,10 @@ fn decodes_provider_provisioning_timings() {
             "resourcesResolvedAtMs": 12,
             "existingHostCheckedAtMs": 34,
             "sandboxScheduledAtMs": 56,
+            "codeMountStartedAtMs": 57,
+            "codeMountedAtMs": 100,
+            "assignmentStartedAtMs": 58,
+            "assignmentCompletedAtMs": 122,
             "hostReadyObservedAtMs": 123,
             "routeReadAtMs": 125,
             "metadataWrittenAtMs": 129,
@@ -27,6 +31,10 @@ fn decodes_provider_provisioning_timings() {
     let provisioning = handle.provisioning.expect("provisioning timings");
     assert_eq!(provisioning.resource_id, "sb-actor");
     assert_eq!(provisioning.sandbox_scheduled_at_ms, Some(56));
+    assert_eq!(provisioning.code_mount_started_at_ms, Some(57));
+    assert_eq!(provisioning.code_mounted_at_ms, Some(100));
+    assert_eq!(provisioning.assignment_started_at_ms, Some(58));
+    assert_eq!(provisioning.assignment_completed_at_ms, Some(122));
     assert_eq!(provisioning.completed_at_ms, 130);
 }
 
