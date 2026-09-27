@@ -14,18 +14,12 @@ const invocation = {
     args: [2]
 }
 
-test("HTTP invocation sends the actor ticket, epoch, method and JSON arguments", async () => {
+test("HTTP invocation sends one POST with the actor ticket, epoch, method and JSON arguments", async () => {
     const methods: string[] = []
     const transport = new HttpActorHostTransport(async (url, init) => {
         assert.equal(url, "https://host.example/v1/projects/team/actors/Counter/one/invoke")
         assert.ok(init?.method)
         methods.push(init.method)
-        if (init?.method === "HEAD") {
-            assert.equal(init.body, undefined)
-            assert.equal(new Headers(init.headers).get("authorization"), "Bearer ticket")
-            assert.ok(init.signal instanceof AbortSignal)
-            return new Response(null, { status: 204 })
-        }
         assert.equal(init?.method, "POST")
         assert.equal(new Headers(init?.headers).get("authorization"), "Bearer ticket")
         assert.equal(init?.redirect, "error")
@@ -38,7 +32,7 @@ test("HTTP invocation sends the actor ticket, epoch, method and JSON arguments",
         return Response.json({ type: "completed", result: 7 })
     })
     assert.deepEqual(await transport.invoke(target, invocation), { type: "completed", result: 7 })
-    assert.deepEqual(methods, ["HEAD", "POST"])
+    assert.deepEqual(methods, ["POST"])
 })
 
 test("only a pre-dispatch HTTP 401 is an authentication refresh signal", async () => {
@@ -114,25 +108,6 @@ test("socket broadcasts use actor-scoped HTTP with the same ownership ticket", a
     await transport.publish(target, invocation, effects)
 })
 
-test("a failed ping never sends an actor invocation", async () => {
-    for (const status of [0, 200, 401, 404, 503]) {
-        const methods: string[] = []
-        const transport = new HttpActorHostTransport(async (_url, init) => {
-            assert.ok(init?.method)
-            methods.push(init.method)
-            assert.equal(init?.body, undefined)
-            if (status === 0) throw new TypeError("fetch failed", { cause: new Error("other side closed") })
-            return new Response(null, { status })
-        })
-        assert.deepEqual(await transport.invoke(target, invocation), {
-            type: status === 401 ? "unauthenticated" : "not_dispatched"
-        })
-        assert.deepEqual(methods, ["HEAD"])
-    }
-})
-
 function invocationTransport(fetchRequest: typeof globalThis.fetch): HttpActorHostTransport {
-    return new HttpActorHostTransport(async (url, init) =>
-        init?.method === "HEAD" ? new Response(null, { status: 204 }) : fetchRequest(url, init)
-    )
+    return new HttpActorHostTransport(fetchRequest)
 }

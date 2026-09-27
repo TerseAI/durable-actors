@@ -191,9 +191,9 @@ paths:
         head:
             operationId: pingActorHost
             tags: [Actors]
-            summary: Check the host before sending an invocation
+            summary: Check host readiness
             security: [{ ActorTicket: [] }]
-            description: Authenticates the actor ticket and resets the host idle timer without invoking actor code. The SDK pings before each invocation and refreshes discovery once if the ping fails. A successful ping does not guarantee that a subsequent invocation will complete.
+            description: Authenticates the actor ticket and resets the host idle timer without invoking actor code. This is an explicit readiness probe, not part of the SDK invocation path. A successful probe does not guarantee that a subsequent invocation will complete.
             responses:
                 "204": { description: Host accepts the actor ticket and its idle timer has been reset. No response body. }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
