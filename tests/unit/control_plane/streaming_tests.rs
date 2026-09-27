@@ -1117,3 +1117,30 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
     stack.child.kill().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build"]
+async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    let reply: serde_json::Value = reqwest::Client::new()
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/invoke",
+            stack.gateway
+        ))
+        .bearer_auth("test-api-key")
+        .json(
+            &serde_json::json!({"requestId":"combined-call", "method":"appendHistory", "args":[]}),
+        )
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        reply,
+        serde_json::json!({"type":"completed", "result":"saved"})
+    );
+    assert_eq!(stack.invoke("readHistory", vec![]).await?, "saved");
+    stack.child.kill().await?;
+    Ok(())
+}

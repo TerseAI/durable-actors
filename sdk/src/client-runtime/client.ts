@@ -1,6 +1,6 @@
 import { ActorInvocationError, ActorProtocolError } from "./errors.js"
 import { HttpActorHostTransport, isRecord, responseDocument } from "./http.js"
-import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./http.js"
+import type { ActorHostTarget, ActorHostTransport, ActorInvocation } from "./http.js"
 import { cloneJson } from "./json.js"
 import type { JsonValue } from "./json.js"
 import {
@@ -51,9 +51,8 @@ export class HttpActorClient {
             this.beforeInvoke(requestId)
             const invocation = this.invocation(requestId, actorName, actorId, method, args)
             timeline.mark("invocation_built")
-            const target = await this.target(invocation, timeline)
-            timeline.mark("target_resolved")
-            const result = await this.direct(target, invocation, true, timeline)
+            const result = await this.dispatch(invocation)
+            timeline.mark("control_plane_invocation_completed")
             outcome = "completed"
             return result
         } finally {
@@ -69,47 +68,49 @@ export class HttpActorClient {
         }
     }
 
-    private async direct(
-        target: ActorHostTarget,
-        invocation: DirectActorInvocation,
-        retryAvailable: boolean,
-        timeline: LatencyTimeline
-    ): Promise<unknown> {
+    private async dispatch(invocation: ActorInvocation): Promise<unknown> {
+        let response: Response
         try {
-            const reply = await this.actorHost.invoke(target, invocation)
-            timeline.mark("host_rpc_completed")
-            if (reply.type === "completed") {
-                timeline.mark("socket_effects_completed")
-                return reply.result
-            }
-            if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
-            this.invalidateTarget(invocation, target)
-            if (!retryAvailable)
-                throw new ActorInvocationError(
-                    reply.type === "unauthenticated" ? "unauthenticated" : "unavailable",
-                    invocation.requestId,
-                    reply.type === "unauthenticated"
-                        ? "actor host rejected the refreshed invocation ticket"
-                        : `actor invocation was rejected before execution: ${reply.reason}`
-                )
-            const rerouted = await this.target(invocation, timeline)
-            return this.direct(rerouted, invocation, false, timeline)
+            response = await this.fetchRequest(
+                `${this.settings.controlPlaneUrl}${projectActorPath(this.settings.projectId, invocation.actorName, invocation.actorId)}/invoke`,
+                {
+                    method: "POST",
+                    redirect: "error",
+                    headers: {
+                        accept: "application/json",
+                        ...authorizationHeaders(this.settings.credential),
+                        "x-request-id": invocation.requestId,
+                        "content-type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        requestId: invocation.requestId,
+                        method: invocation.method,
+                        args: invocation.args,
+                        homeRegion: this.settings.homeRegion
+                    })
+                }
+            )
         } catch (error) {
-            if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
-            this.invalidateTarget(invocation, target)
             const message = error instanceof Error ? error.message : String(error)
             throw new ActorInvocationError(
                 "outcome_unknown",
                 invocation.requestId,
-                `actor-host HTTP request failed after dispatch: ${message}`
+                `control-plane invocation failed after it may have been dispatched: ${message}`
             )
         }
-    }
-
-    private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
-        const key = actorKey(invocation.actorName, invocation.actorId)
-        const current = this.targets.get(key)
-        if (current?.target === target) this.targets.delete(key)
+        const document = await responseDocument(response)
+        if (!response.ok) this.throwResponseFailure(response, document, invocation.requestId)
+        if (isRecord(document) && document.type === "completed" && Object.hasOwn(document, "result"))
+            return document.result
+        if (
+            isRecord(document) &&
+            document.type === "failed" &&
+            typeof document.code === "string" &&
+            document.code.length > 0 &&
+            typeof document.message === "string"
+        )
+            throw new ActorInvocationError(document.code, invocation.requestId, document.message)
+        throw new ActorProtocolError("control-plane response did not contain a valid outcome")
     }
 
     protected async target(invocation: ActorAddress, timeline: LatencyTimeline): Promise<ActorHostTarget> {
@@ -123,15 +124,10 @@ export class HttpActorClient {
             this.targets.delete(key)
         }
         const resolving: TargetResolution = {
-            promise: this.resolveTarget(invocation)
-                .then(target => {
-                    resolving.target = target
-                    return target
-                })
-                .catch(error => {
-                    if (this.targets.get(key) === resolving) this.targets.delete(key)
-                    throw error
-                })
+            promise: this.resolveTarget(invocation).catch(error => {
+                if (this.targets.get(key) === resolving) this.targets.delete(key)
+                throw error
+            })
         }
         this.targets.set(key, resolving)
         return resolving.promise
@@ -207,7 +203,7 @@ export class HttpActorClient {
         actorId: string,
         method: string,
         args: readonly unknown[]
-    ): DirectActorInvocation {
+    ): ActorInvocation {
         return {
             requestId,
             projectId: this.settings.projectId,
@@ -243,10 +239,9 @@ function actorKey(actorName: string, actorId: string): string {
 function positiveInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0
 }
-type ActorAddress = Pick<DirectActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
+type ActorAddress = Pick<ActorInvocation, "requestId" | "projectId" | "actorName" | "actorId">
 interface TargetResolution {
     readonly promise: Promise<ActorHostTarget>
-    target?: ActorHostTarget
 }
 type RemoteActorSettings = ReturnType<typeof configuredSettings>
 export interface HttpActorClientDependencies {
