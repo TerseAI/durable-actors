@@ -1,5 +1,6 @@
 import { HttpActorClient } from "./client.js"
 import { ActorSessionRejectedError } from "./errors.js"
+import type { ActorInvocationOptions } from "./invocation.js"
 import { validateActorComponent, validateOrigin } from "./settings.js"
 import type { DurableActorsClientOptions } from "./settings.js"
 import type { ActorRpcTransport } from "./stub.js"
@@ -51,12 +52,18 @@ export class ActorSessionTransport implements ActorRpcTransport {
         this.schedule = dependencies.schedule ?? scheduleRefresh
     }
 
-    async invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
+    async invoke(
+        actorName: string,
+        actorId: string,
+        method: string,
+        args: readonly unknown[],
+        options?: ActorInvocationOptions
+    ): Promise<unknown> {
         if (this.closed) throw new Error("Actor session transport is disposed")
         this.lastUsedAt = this.now()
         const transport =
             this.transport && this.expiresAtMs > this.now() + 5_000 ? this.transport : await this.refresh()
-        return transport.invoke(actorName, actorId, method, args)
+        return transport.invoke(actorName, actorId, method, args, options)
     }
 
     dispose(): void {

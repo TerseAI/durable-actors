@@ -10,6 +10,7 @@ const invocation = {
     actorName: "Counter",
     actorId: "one",
     requestId: "request-1",
+    idempotencyKey: "0.request-1",
     method: "increment",
     args: [2]
 }
@@ -25,6 +26,7 @@ test("HTTP invocation sends one POST with the actor ticket, epoch, method and JS
         assert.equal(init?.redirect, "error")
         assert.deepEqual(JSON.parse(String(init?.body)), {
             requestId: "request-1",
+            idempotencyKey: "0.request-1",
             ownerEpoch: 3,
             method: "increment",
             args: [2]

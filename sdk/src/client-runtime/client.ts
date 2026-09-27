@@ -1,6 +1,8 @@
 import { ActorInvocationError, ActorProtocolError } from "./errors.js"
 import { HttpActorHostTransport, isRecord, responseDocument } from "./http.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./http.js"
+import { createActorInvocationKey, validateInvocationKey } from "./invocation.js"
+import type { ActorInvocationOptions } from "./invocation.js"
 import { cloneJson } from "./json.js"
 import type { JsonValue } from "./json.js"
 import {
@@ -24,6 +26,7 @@ export class HttpActorClient {
     protected readonly environment: Environment
     protected readonly fetchRequest: typeof globalThis.fetch
     protected readonly requestId: () => string
+    private readonly invocationKey: () => string
     protected readonly actorHost: ActorHostTransport
     protected readonly now: () => number
     protected readonly monotonicNow: () => number
@@ -35,6 +38,7 @@ export class HttpActorClient {
         this.environment = dependencies.environment ?? runtimeEnvironment()
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
+        this.invocationKey = dependencies.invocationKey ?? createActorInvocationKey
         this.actorHost = dependencies.actorHost ?? new HttpActorHostTransport(this.fetchRequest)
         // Workflow runtimes can replace Date.now with replayable logical time.
         this.now = dependencies.now ?? (() => performance.timeOrigin + performance.now())
@@ -43,17 +47,23 @@ export class HttpActorClient {
         this.settingsValue = options === undefined ? undefined : configuredSettings(options)
     }
 
-    async invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
+    async invoke(
+        actorName: string,
+        actorId: string,
+        method: string,
+        args: readonly unknown[],
+        options: ActorInvocationOptions = {}
+    ): Promise<unknown> {
         const requestId = validateActorComponent("request ID", this.requestId())
         const timeline = new LatencyTimeline(this.monotonicNow)
         let outcome = "failed"
         try {
             this.beforeInvoke(requestId)
-            const invocation = this.invocation(requestId, actorName, actorId, method, args)
+            const invocation = this.invocation(requestId, actorName, actorId, method, args, options)
             timeline.mark("invocation_built")
             const target = await this.target(invocation, timeline)
             timeline.mark("target_resolved")
-            const result = await this.direct(target, invocation, true, timeline)
+            const result = await this.direct(target, invocation, timeline)
             outcome = "completed"
             return result
         } finally {
@@ -72,45 +82,48 @@ export class HttpActorClient {
     private async direct(
         target: ActorHostTarget,
         invocation: DirectActorInvocation,
-        retryAvailable: boolean,
         timeline: LatencyTimeline
     ): Promise<unknown> {
-        try {
-            const reply = await this.actorHost.invoke(target, invocation)
+        let uncertain = false
+        for (let attempt = 0; attempt < 2; attempt++) {
+            let reply
+            try {
+                reply = await this.actorHost.invoke(target, invocation)
+            } catch {
+                uncertain = true
+            }
             timeline.mark("host_rpc_completed")
-            if (reply.type === "completed") {
+            if (reply?.type === "completed") {
                 timeline.mark("socket_effects_completed")
                 return reply.result
             }
-            if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
+            if (reply?.type === "failed")
+                throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
             this.invalidateTarget(invocation, target)
-            if (reply.type === "unauthenticated" && !retryAvailable) {
+            if (attempt === 1) {
+                if (uncertain) throw this.unknownOutcome(invocation)
                 throw new ActorInvocationError(
-                    "unauthenticated",
+                    reply?.type === "unauthenticated" ? "unauthenticated" : "unavailable",
                     invocation.requestId,
-                    "actor host rejected the refreshed invocation ticket"
+                    "actor host could not accept the invocation after rediscovery"
                 )
             }
-            if (!retryAvailable)
-                throw new ActorInvocationError(
-                    "unavailable",
-                    invocation.requestId,
-                    reply.type === "not_dispatched"
-                        ? "actor host could not be reached before execution"
-                        : "actor ownership changed repeatedly before execution"
-                )
-            const rerouted = await this.target(invocation, timeline)
-            return this.direct(rerouted, invocation, false, timeline)
-        } catch (error) {
-            if (error instanceof ActorInvocationError || error instanceof ActorProtocolError) throw error
-            this.invalidateTarget(invocation, target)
-            const message = error instanceof Error ? error.message : String(error)
-            throw new ActorInvocationError(
-                "outcome_unknown",
-                invocation.requestId,
-                `actor-host HTTP request failed after dispatch: ${message}`
-            )
+            try {
+                target = await this.target(invocation, timeline)
+            } catch (error) {
+                if (uncertain) throw this.unknownOutcome(invocation)
+                throw error
+            }
         }
+        throw this.unknownOutcome(invocation)
+    }
+
+    private unknownOutcome(invocation: DirectActorInvocation): ActorInvocationError {
+        return new ActorInvocationError(
+            "outcome_unknown",
+            invocation.requestId,
+            "actor outcome could not be recovered; do not repeat this operation with a new idempotency key"
+        )
     }
 
     private invalidateTarget(invocation: ActorAddress, target: ActorHostTarget): void {
@@ -213,10 +226,12 @@ export class HttpActorClient {
         actorName: string,
         actorId: string,
         method: string,
-        args: readonly unknown[]
+        args: readonly unknown[],
+        options: ActorInvocationOptions
     ): DirectActorInvocation {
         return {
             requestId,
+            idempotencyKey: validateInvocationKey(options.idempotencyKey ?? this.invocationKey()),
             projectId: this.settings.projectId,
             actorName: validateActorComponent("actor name", actorName),
             actorId: validateActorComponent("actor ID", actorId),
@@ -260,6 +275,7 @@ export interface HttpActorClientDependencies {
     readonly environment?: Environment
     readonly fetch?: typeof globalThis.fetch
     readonly requestId?: () => string
+    readonly invocationKey?: () => string
     readonly actorHost?: ActorHostTransport
     readonly now?: () => number
     readonly monotonicNow?: () => number

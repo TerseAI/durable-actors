@@ -1,10 +1,17 @@
 import { HttpActorClient } from "./client.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
+import type { ActorInvocationOptions } from "./invocation.js"
 import { validateActorComponent } from "./settings.js"
 import type { DurableActorsClientOptions } from "./settings.js"
 
 interface ActorRpcTransport {
-    invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    invoke(
+        actorName: string,
+        actorId: string,
+        method: string,
+        args: readonly unknown[],
+        options?: ActorInvocationOptions
+    ): Promise<unknown>
 }
 
 interface ActorRpcMethod {

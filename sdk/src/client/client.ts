@@ -2,9 +2,16 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
+import type { ActorInvocationOptions } from "../client-runtime/invocation.js"
 
 interface ActorClientTransport {
-    invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    invoke(
+        actorName: string,
+        actorId: string,
+        method: string,
+        args: readonly unknown[],
+        options?: ActorInvocationOptions
+    ): Promise<unknown>
     connect(actorName: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
     broadcast(actorName: string, actorId: string, message: ActorSocketMessage): Promise<void>
 }

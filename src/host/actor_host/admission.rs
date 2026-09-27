@@ -122,6 +122,7 @@ impl Mailbox {
         let valid = result.is_ok();
         let _ = reply.send(result);
         request.operation = ActorOperation::Method(ActorInvocation {
+            idempotency: None,
             actor,
             request_id: "activate".into(),
             method: "activate".into(),
@@ -171,16 +172,21 @@ impl Mailbox {
             let Ok(ActorMethodOutcome::Failed(failure)) = result else {
                 unreachable!()
             };
-            self.finish(
-                request,
-                Ok(ActorExecutionResult::Failed {
-                    failure: ActorInvocationFailure {
-                        code: "actor_error".into(),
-                        message: failure.message,
+            let result = self
+                .runtime
+                .finish_failure(
+                    &request.operation.invocation(),
+                    request.owner_epoch,
+                    ActorExecutionResult::Failed {
+                        failure: ActorInvocationFailure {
+                            code: "actor_error".into(),
+                            message: failure.message,
+                        },
                     },
-                }),
-            )
-            .await;
+                    request.operation.commit_origin(),
+                )
+                .await;
+            self.finish(request, result).await;
         } else {
             let invocation = request.operation.invocation().into_owned();
             let result = self
@@ -262,6 +268,7 @@ impl Mailbox {
         let _ = self
             .completed
             .send(ActorCompletion {
+                identity: request.operation.invocation().idempotency.clone(),
                 resets_idle_timer: request.operation.resets_idle_timer(),
                 object: self.object.clone(),
                 reply: request.reply,

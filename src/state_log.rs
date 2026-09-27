@@ -18,6 +18,11 @@ pub struct StateSnapshot {
     pub request_id: String,
     pub state: Box<RawValue>,
     pub result: Value,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::idempotency::InvocationReceipts::is_empty"
+    )]
+    pub receipts: crate::idempotency::InvocationReceipts,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +49,7 @@ impl StateSnapshot {
             request_id,
             state: to_raw_value(state.borrow())?,
             result,
+            receipts: Default::default(),
         };
         snapshot.validate()?;
         Ok(snapshot)
@@ -62,6 +68,7 @@ impl StateSnapshot {
     }
 
     fn validate(&self) -> Result<()> {
+        self.receipts.validate()?;
         ensure!(
             self.state_version > 0,
             "actor state version must be positive"

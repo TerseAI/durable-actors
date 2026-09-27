@@ -10,6 +10,7 @@ export class HttpActorHostTransport implements ActorHostTransport {
         try {
             response = await this.post(target, invocation, "invoke", {
                 requestId: invocation.requestId,
+                idempotencyKey: invocation.idempotencyKey,
                 ownerEpoch: target.ownerEpoch,
                 method: invocation.method,
                 args: invocation.args
@@ -98,6 +99,7 @@ export interface ActorHostTarget {
 }
 export interface DirectActorInvocation extends ActorAddress {
     readonly requestId: string
+    readonly idempotencyKey: string
     readonly method: string
     readonly args: readonly JsonValue[]
 }

@@ -20,7 +20,8 @@ import { createActorStub as $createActorStub, SocketProxy as $SocketProxy } from
 import type { ActorTypes as $ActorTypes } from "./types.js"
 export { createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError } from "./runtime/index.js"
 export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./runtime/index.js"
-export type { ActorRpcTransport, DurableActorsClientOptions, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "./runtime/index.js"
+export { createActorInvocationKey } from "./runtime/index.js"
+export type { ActorInvocationOptions, ActorRpcTransport, DurableActorsClientOptions, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "./runtime/index.js"
 
 ${usageComment("Types for actor state and socket messages.", exampleActor && `type State = actors.${exampleActor}.State`)}
 export declare namespace actors {

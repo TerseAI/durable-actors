@@ -166,7 +166,7 @@ test("refreshes a rejected actor ticket once using the same invocation ID", asyn
     assert.equal(resolutions, 3)
 })
 
-test("does not retry ambiguous host failures or actor-method authentication errors", async () => {
+test("retries ambiguous host failures once but never retries actor-method authentication errors", async () => {
     for (const ambiguous of [true, false]) {
         let calls = 0
         const client = new RemoteActorClient(
@@ -197,7 +197,7 @@ test("does not retry ambiguous host failures or actor-method authentication erro
                 error instanceof ActorInvocationError &&
                 error.code === (ambiguous ? "outcome_unknown" : "unauthenticated")
         )
-        assert.equal(calls, 1)
+        assert.equal(calls, ambiguous ? 2 : 1)
     }
 })
 
@@ -240,7 +240,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
         }
     )
     try {
-        assert.equal(await client.invoke("Counter", "counter-1", "increment", [2]), 7)
+        assert.equal(await client.invoke("Counter", "counter-1", "increment", [2], { idempotencyKey: "0.explicit" }), 7)
         assert.equal(await client.invoke("Counter", "counter-1", "increment", [3]), 7)
         assert.equal(resolutions, 1)
         assert.equal(hostInvocations.length, 2)
@@ -287,6 +287,7 @@ test("remote actor client resolves once and invokes the actor host directly", as
             invocation: {
                 projectId: "default",
                 requestId: "00000000-0000-4000-8000-000000000000",
+                idempotencyKey: "0.explicit",
                 actorName: "Counter",
                 actorId: "counter-1",
                 method: "increment",

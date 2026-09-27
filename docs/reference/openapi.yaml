@@ -207,12 +207,22 @@ paths:
             security: [{ ActorTicket: [] }]
             description: |
                 Send the discovery token and ownerEpoch to the discovered host origin.
-                The host validates the actor, host session and ownership epoch before dispatch.
-                Socket effects are delivered by the host before a completed response.
-                HTTP 401, an explicit reroute, or a confirmed connection refusal before dispatch permits rediscovery and one shared retry.
-                Ambiguous network errors, other HTTP failures and failed outcomes must not be retried automatically.
-                Exhausted connection refusals and discovery transport failures are unavailable; ambiguous invocation transport failures are outcome_unknown.
-                requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
+                The host validates authorization, permitted methods, host session and ownership epoch before execution or receipt replay.
+                Send one idempotencyKey per logical operation and retain it unchanged for retries, including after credential renewal.
+                Keys are scoped to the authenticated subject and project/actor. Reusing a key with another method or arguments returns idempotency_conflict.
+                Concurrent duplicates join the original execution. Results are stored atomically with actor state and survive ownership changes.
+                A recovered pending receipt returns outcome_unknown: a reentrant method may have partially committed and must not be executed again.
+                Keys use <UnixMilliseconds>.<nonce>, with at most five minutes of validity and five seconds of future clock skew.
+                Each actor retains at most 256 receipts and 1 MiB of receipt data. Capacity eviction can shorten the retry window;
+                evicted timestamps are durably fenced and old keys return idempotency_expired instead of executing again.
+                Results larger than 64 KiB (including receipt envelope) return idempotency_result_unavailable on replay.
+                The SDK sends one POST on the warm path and shares one rediscovery/retry budget across network errors, invalid responses, HTTP errors and reroutes.
+                An uncertain POST followed by failed recovery returns outcome_unknown. Explicit failed outcomes are terminal.
+                Never automatically replace the key after an unknown, expired or unavailable result.
+                Receipts cover committed actor state/results, not arbitrary external effects or exactly-once execution before a commit.
+                Actor calls that leave state unchanged still commit a receipt. Failures before the first actor state exists are only cached in memory until a later state commit.
+                External services require their own idempotency keys or an outbox. Socket effects are delivered before the original response but are not durably redelivered on receipt replay.
+                requestId is for correlation, not deduplication. Maximum body size is 32 MiB.
             requestBody:
                 required: true
                 content:
@@ -220,7 +230,7 @@ paths:
                         schema: { $ref: "#/components/schemas/ActorInvocation" }
                         examples:
                             increment:
-                                value: { requestId: request-1, ownerEpoch: 3, method: increment, args: [2] }
+                                value: { requestId: request-1, idempotencyKey: "1790452800000.operation-1", ownerEpoch: 3, method: increment, args: [2] }
             responses:
                 "200":
                     description: Explicit execution outcome, including actor failures. A completed result includes null for void methods.
@@ -895,9 +905,14 @@ components:
         ActorInvocation:
             type: object
             additionalProperties: false
-            required: [requestId, ownerEpoch, method, args]
+            required: [requestId, idempotencyKey, ownerEpoch, method, args]
             properties:
                 requestId: { type: string, minLength: 1, maxLength: 255 }
+                idempotencyKey:
+                    type: string
+                    maxLength: 255
+                    pattern: '^(0|[1-9][0-9]*)\.[A-Za-z0-9_-]+$'
+                    description: Timestamped key for one logical operation. Reuse only with identical method/args and authenticated subject; never rotate it automatically after an uncertain result.
                 ownerEpoch: { type: integer, minimum: 1, maximum: 9007199254740991 }
                 method: { type: string, minLength: 1, maxLength: 128 }
                 args: { type: array, items: {} }
@@ -912,7 +927,7 @@ components:
                   required: [type, code, message]
                   properties:
                       type: { const: failed }
-                      code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
+                      code: { type: string, minLength: 1, description: "Includes actor_error, unavailable, outcome_unknown, idempotency_conflict, idempotency_expired and idempotency_result_unavailable." }
                       message: { type: string }
                 - type: object
                   required: [type]

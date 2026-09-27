@@ -21,4 +21,6 @@ const SocketProxy = class {
 
 export { createActorStub, createActorTransport, createActorSessionTransport, SocketProxy }
 export { ActorInvocationError, ActorSessionRejectedError } from "./errors.js"
+export { createActorInvocationKey } from "./invocation.js"
+export type { ActorInvocationOptions } from "./invocation.js"
 export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./session.js"

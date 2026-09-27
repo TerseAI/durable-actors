@@ -14,6 +14,7 @@ use crate::{
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
         ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
     },
+    idempotency::{InvocationReceipts, ReceiptOutcome},
     state_log::StateSnapshot,
     state_transport::StateWrite,
     storage::WritePlan,
@@ -142,17 +143,22 @@ impl ActorRuntime {
         }
         timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
         let result = if replay {
-            cached.replay(&invocation.request_id)
+            match &invocation.idempotency {
+                Some(identity) => cached.receipts.admit(identity, unix_millis()?),
+                None => cached.replay(&invocation.request_id).map(|result| {
+                    ActorExecutionResult::Completed {
+                        result,
+                        effects: vec![],
+                    }
+                }),
+            }
         } else {
             None
         };
         let state = cached.state();
         self.cached_state = Some(cached);
         Ok(match result {
-            Some(result) => PreparedInvocation::Completed(ActorExecutionResult::Completed {
-                result,
-                effects: vec![],
-            }),
+            Some(result) => PreparedInvocation::Completed(result),
             None => PreparedInvocation::Execute(state),
         })
     }
@@ -190,7 +196,9 @@ impl ActorRuntime {
             cached.owner_epoch == owner_epoch,
             "interleaved ownership changed"
         );
-        let publication = if cached.state.as_deref() != Some(&outcome.state) {
+        let publication = if invocation.idempotency.is_some()
+            || cached.state.as_deref() != Some(&outcome.state)
+        {
             self.publish_result(
                 invocation,
                 owner_epoch,
@@ -198,6 +206,7 @@ impl ActorRuntime {
                 outcome.result.clone(),
                 outcome.state,
                 origin,
+                None,
             )
             .await
         } else {
@@ -273,6 +282,7 @@ impl ActorRuntime {
     ) -> Result<ActorExecutionResult> {
         self.storage.ensure_authority()?;
         let persistence = ActorInvocation {
+            idempotency: None,
             request_id: invocation.request_id.clone(),
             actor: invocation.actor.clone(),
             method: socket_event_name(&invocation.event).into(),
@@ -333,6 +343,7 @@ impl ActorRuntime {
                 Value::Null,
                 next_state,
                 origin,
+                None,
             )
             .await;
         timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
@@ -388,13 +399,17 @@ impl ActorRuntime {
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (result, next_state, effects) = match executed {
             Ok(outcome) => outcome,
-            Err(failure) => return Ok(failure),
+            Err(failure) => {
+                return self
+                    .finish_failure(invocation, owner_epoch, failure, origin)
+                    .await;
+            }
         };
         let mut cached = self
             .cached_state
             .take()
             .context("actor invocation has no state")?;
-        if cached.state.as_deref() == Some(&next_state) {
+        if invocation.idempotency.is_none() && cached.state.as_deref() == Some(&next_state) {
             let version = cached.state_version;
             self.cached_state = Some(cached);
             return self
@@ -410,6 +425,7 @@ impl ActorRuntime {
                 result,
                 next_state,
                 origin,
+                None,
             )
             .await;
         timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
@@ -434,6 +450,52 @@ impl ActorRuntime {
                     failure: ActorInvocationFailure::outcome_unknown_after_execution(),
                 })
             }
+        }
+    }
+
+    pub(super) async fn finish_failure(
+        &mut self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        result: ActorExecutionResult,
+        origin: CommitOrigin,
+    ) -> Result<ActorExecutionResult> {
+        let ActorExecutionResult::Failed { ref failure } = result else {
+            return Ok(result);
+        };
+        if invocation.idempotency.is_none() || failure.code == "outcome_unknown" {
+            return Ok(result);
+        }
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("actor invocation has no state")?;
+        let Some(state) = cached.state.as_deref().cloned() else {
+            cached.receipts.complete(
+                invocation.idempotency.as_ref().unwrap(),
+                ReceiptOutcome::Failed(failure.clone()),
+                unix_millis()?,
+            );
+            self.cached_state = Some(cached);
+            return Ok(result);
+        };
+        let publication = self
+            .publish_result(
+                invocation,
+                owner_epoch,
+                &mut cached,
+                Value::Null,
+                state,
+                origin,
+                Some(failure),
+            )
+            .await;
+        self.cached_state = Some(cached);
+        match publication {
+            Ok(_) => Ok(result),
+            Err(_) => Ok(ActorExecutionResult::Failed {
+                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+            }),
         }
     }
 
@@ -606,6 +668,7 @@ impl ActorRuntime {
         result: Value,
         next_state: Value,
         origin: CommitOrigin,
+        failure: Option<&ActorInvocationFailure>,
     ) -> Result<ActorExecutionResult> {
         let mut timings = StateWriteTimings::new();
         let next_version = cached.state_version.checked_add(1);
@@ -617,6 +680,7 @@ impl ActorRuntime {
                 result,
                 next_state,
                 origin,
+                failure,
                 &mut timings,
             )
             .await;
@@ -632,6 +696,7 @@ impl ActorRuntime {
         result: Value,
         next_state: Value,
         origin: CommitOrigin,
+        failure: Option<&ActorInvocationFailure>,
         timings: &mut StateWriteTimings,
     ) -> Result<ActorExecutionResult> {
         let next_version = cached
@@ -675,6 +740,16 @@ impl ActorRuntime {
             &next_state,
             result.clone(),
         )?;
+        snapshot.receipts = cached.receipts.clone();
+        if let Some(identity) = &invocation.idempotency {
+            let outcome = failure.map_or_else(
+                || ReceiptOutcome::Completed(result.clone()),
+                |failure| ReceiptOutcome::Failed(failure.clone()),
+            );
+            snapshot
+                .receipts
+                .complete(identity, outcome, unix_millis()?);
+        }
         snapshot.attribution = Some(crate::state_log::StateAttribution {
             operation: invocation.method.clone(),
             connection_id: origin.connection_id,
@@ -816,6 +891,7 @@ impl ActorRuntime {
         cached.state = Some(Arc::new(pending.state));
         cached.last_request_id = Some(pending.snapshot.request_id);
         cached.last_result = Some(pending.snapshot.result);
+        cached.receipts = pending.snapshot.receipts;
         cached.next_write = Some(next_write);
         Ok(())
     }
@@ -905,6 +981,7 @@ pub(super) enum PreparedInvocation {
 }
 
 struct CachedActorState {
+    receipts: InvocationReceipts,
     owner_epoch: u64,
     state_version: u64,
     state: Option<Arc<Value>>,
@@ -924,6 +1001,7 @@ struct PendingStateCommit {
 impl CachedActorState {
     fn new(owner_epoch: u64) -> Self {
         Self {
+            receipts: Default::default(),
             owner_epoch,
             state_version: 0,
             state: None,
@@ -945,6 +1023,7 @@ impl CachedActorState {
             "actor snapshot belongs to a newer owner epoch"
         );
         Ok(Self {
+            receipts: snapshot.receipts,
             owner_epoch,
             state_version,
             state: Some(Arc::new(serde_json::from_str(snapshot.state.get())?)),

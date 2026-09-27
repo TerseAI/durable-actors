@@ -23,7 +23,7 @@ test("generated clients typecheck and run with or without bundling in an applica
     await checkBrowser(directory)
 })
 
-test("a generated client preserves a lost mutation outcome and rediscovers for the next call", { timeout: 30_000 }, async t => {
+test("a generated client recovers a dropped request by rediscovering and keeping its invocation key", { timeout: 30_000 }, async t => {
     const directory = await standaloneProject(t)
     const calls = []
     const oldHost = actorHost(calls)
@@ -43,15 +43,17 @@ test("a generated client preserves a lost mutation outcome and rediscovers for t
     assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
     const retiredRequests = []
     oldHost.removeAllListeners("request")
-    oldHost.on("request", request => {
-        retiredRequests.push(request.method)
+    oldHost.on("request", async request => {
+        const chunks = []
+        for await (const chunk of request) chunks.push(chunk)
+        retiredRequests.push(JSON.parse(Buffer.concat(chunks).toString()).idempotencyKey)
         request.socket.destroy()
     })
     port = newHost.address().port
-    await assert.rejects(room.sendMessage({ text: "hello" }), error => error.code === "outcome_unknown")
     assert.deepEqual(await room.sendMessage({ text: "hello" }), { id: "1", text: "hello" })
     assert.deepEqual(calls, ["sendMessage", "sendMessage"])
-    assert.deepEqual(retiredRequests, ["POST"])
+    assert.equal(retiredRequests.length, 1)
+    assert.match(retiredRequests[0], /^[0-9]+\.[A-Za-z0-9_-]+$/u)
     assert.equal(requests.length, 2)
 })
 
@@ -79,9 +81,11 @@ async function checkTypes(directory) {
     await writeFile(
         consumer,
         `
-        import { actors, createActorTransport, createActorSessionTransport, ActorSessionRejectedError, ActorInvocationError, type ActorSession, type SocketGrant } from "./generated/index.js"
+        import { actors, createActorTransport, createActorSessionTransport, createActorInvocationKey, ActorSessionRejectedError, ActorInvocationError, type ActorInvocationOptions, type ActorSession, type SocketGrant } from "./generated/index.js"
         const transport = createActorTransport({ controlPlaneUrl: "http://localhost:7100" })
         const room = actors.ChatRoom.get("lobby", transport)
+        const options: ActorInvocationOptions = { idempotencyKey: createActorInvocationKey() }
+        const explicit: Promise<unknown> = transport.invoke("ChatRoom", "lobby", "sendMessage", [{ text: "hello" }], options)
         const message: Promise<{ id: string; text: string }> = room.sendMessage({ text: "hello" })
         const grant: Promise<SocketGrant> = actors.ChatRoom.prepareWebsocket({ actorId: "lobby", metadata: {} })
         // @ts-expect-error the generated stub preserves argument types

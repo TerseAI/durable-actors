@@ -41,5 +41,7 @@ export function createActorSessionTransport(options: ActorSessionTransportOption
 export { ActorSessionRejectedError } from "./client-runtime/session.js"
 export type { ActorSession, ActorSessionTransportOptions, ActorSessionTransport } from "./client-runtime/session.js"
 export type { DurableActorsClientOptions }
+export { createActorInvocationKey } from "./client-runtime/invocation.js"
+export type { ActorInvocationOptions } from "./client-runtime/invocation.js"
 
 export type { ActorRpcMethod, ActorRpcTransport }

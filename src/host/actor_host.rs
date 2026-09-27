@@ -1,6 +1,7 @@
 use crate::request_traces::{RequestKind, RequestOutcome, RequestSpan, TraceSender};
 use std::{
     borrow::Cow,
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -251,6 +252,7 @@ impl ActorHost {
 }
 
 struct HostDispatcher {
+    inflight: HashMap<String, InflightInvocation>,
     last_active: tokio::time::Instant,
     endpoint: HostEndpoint,
 
@@ -282,6 +284,7 @@ impl HostDispatcher {
     ) -> Self {
         let last_active = status.0.borrow().last_active;
         Self {
+            inflight: HashMap::new(),
             last_active,
             endpoint,
             executor,
@@ -350,6 +353,27 @@ impl HostDispatcher {
             return;
         }
         self.identity.get_or_insert_with(|| object.clone());
+        let identity = request.operation.invocation().idempotency.clone();
+        if let Some(identity) = &identity
+            && let Some(inflight) = self.inflight.get_mut(identity.key())
+        {
+            if inflight.owner_epoch != request.owner_epoch {
+                request.finish(&self.endpoint, Ok(ActorExecutionResult::Reroute));
+            } else if !inflight.identity.same_input(identity) {
+                request.finish(
+                    &self.endpoint,
+                    Ok(crate::idempotency::failed(
+                        "idempotency_conflict",
+                        "idempotency key was already used with different input",
+                    )),
+                );
+            } else if inflight.waiters.len() >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
+                request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
+            } else {
+                inflight.waiters.push(request);
+            }
+            return;
+        }
         if self.mailbox.is_none() {
             self.start_actor(request.operation.actor().clone(), completed.clone());
         }
@@ -364,8 +388,19 @@ impl HostDispatcher {
                 request.operation.invocation().method.clone(),
             ));
         }
+        let owner_epoch = request.owner_epoch;
         match mailbox.sender.try_send(request) {
             Ok(()) => {
+                if let Some(identity) = identity {
+                    self.inflight.insert(
+                        identity.key().to_owned(),
+                        InflightInvocation {
+                            owner_epoch,
+                            identity,
+                            waiters: vec![],
+                        },
+                    );
+                }
                 mailbox.resident = true;
                 mailbox.admitted += 1;
                 self.active += 1;
@@ -426,6 +461,25 @@ impl HostDispatcher {
     }
 
     fn complete(&mut self, completion: ActorCompletion) {
+        if let Some(identity) = &completion.identity
+            && let Some(inflight) = self.inflight.remove(identity.key())
+        {
+            for waiter in inflight.waiters {
+                let replay = match &completion.result {
+                    Ok(ActorExecutionResult::Completed { result, .. }) => {
+                        ActorExecutionResult::Completed {
+                            result: result.clone(),
+                            effects: vec![],
+                        }
+                    }
+                    Ok(result) => result.clone(),
+                    Err(_) => ActorExecutionResult::Failed {
+                        failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                    },
+                };
+                waiter.finish(&self.endpoint, Ok(replay));
+            }
+        }
         debug_assert_eq!(self.identity.as_ref(), Some(&completion.object));
         let mailbox = self.mailbox.as_mut().expect("completed actor mailbox");
         // A stopped task's remaining admissions may already have been released.
@@ -458,6 +512,7 @@ impl HostDispatcher {
     }
 
     fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
+        self.inflight.clear();
         let id = match result {
             Ok((id, ())) => id,
             Err(error) => {
@@ -506,6 +561,7 @@ async fn run_actor(
         return;
     }
     while let Some(mut request) = requests.recv().await {
+        let identity = request.operation.invocation().idempotency.clone();
         let resets_idle_timer = request.operation.resets_idle_timer();
         drop(request.waiting.take());
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
@@ -548,6 +604,7 @@ async fn run_actor(
         }
         if completed
             .send(ActorCompletion {
+                identity,
                 resets_idle_timer,
                 object: object.clone(),
                 reply: request.reply,
@@ -590,10 +647,17 @@ struct ActorRequest {
 }
 
 struct ActorCompletion {
+    identity: Option<crate::idempotency::InvocationIdentity>,
     resets_idle_timer: bool,
     object: ActorStorageKey,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
     result: Result<ActorExecutionResult>,
+}
+
+struct InflightInvocation {
+    owner_epoch: u64,
+    identity: crate::idempotency::InvocationIdentity,
+    waiters: Vec<ActorRequest>,
 }
 
 impl ActorRequest {
@@ -667,6 +731,7 @@ impl ActorOperation {
     fn invocation(&self) -> Cow<'_, ActorInvocation> {
         match self {
             Self::Activate { actor, .. } => Cow::Owned(ActorInvocation {
+                idempotency: None,
                 request_id: "activate".into(),
                 actor: actor.clone(),
                 method: "activate".into(),
@@ -674,6 +739,7 @@ impl ActorOperation {
             }),
             Self::Method(invocation) => Cow::Borrowed(invocation),
             Self::Socket(invocation) => Cow::Owned(ActorInvocation {
+                idempotency: None,
                 request_id: invocation.request_id.clone(),
                 actor: invocation.actor.clone(),
                 method: socket_event_name(&invocation.event).into(),

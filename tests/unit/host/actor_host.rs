@@ -690,6 +690,7 @@ async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Resul
     );
     let other = host.invoke_actor(
         ActorInvocation {
+            idempotency: None,
             request_id: "other".into(),
             actor: ActorKey {
                 project_id: "default".into(),
@@ -834,6 +835,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
     assert_eq!(activation.owner_epoch, 7);
     assert!(authority.preparations.lock().unwrap().is_empty());
     let invoke = |request_id: &str| ActorInvocation {
+        idempotency: None,
         request_id: request_id.into(),
         actor: actor.clone(),
         method: "increment".into(),
@@ -882,6 +884,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
     let result = host
         .invoke_actor(
             ActorInvocation {
+                idempotency: None,
                 actor,
                 request_id: "next".into(),
                 method: "increment".into(),
@@ -1432,6 +1435,7 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
 async fn invoke(host: &ActorHost, request_id: &str) -> Result<ActorExecutionResult> {
     host.invoke_actor(
         ActorInvocation {
+            idempotency: None,
             request_id: request_id.into(),
             actor: ActorKey {
                 project_id: "default".into(),
@@ -1452,6 +1456,9 @@ fn completed(count: u64) -> ActorExecutionResult {
         effects: Vec::new(),
     }
 }
+
+#[path = "idempotency.rs"]
+mod idempotency;
 
 fn ticket(state_version: u64) -> WritePlan {
     WritePlan {

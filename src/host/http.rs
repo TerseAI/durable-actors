@@ -18,6 +18,7 @@ use crate::{
         ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect,
         MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
     },
+    clock::{Clock, SystemClock},
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
 };
@@ -175,7 +176,26 @@ async fn invoke(
         }
         info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
     }
+    let subject = grant
+        .map(|grant| format!("session:{}", grant.subject))
+        .unwrap_or_else(|| "administrative".into());
+    let identity = crate::idempotency::InvocationIdentity::new(
+        &request.idempotency_key,
+        &subject,
+        &request.method,
+        &request.args,
+    )
+    .map_err(bad_request)?;
+    let now = i64::try_from(SystemClock.now_ms().map_err(bad_request)?)
+        .map_err(|error| bad_request(error.into()))?;
+    if !identity.live(now) {
+        return Ok(Json(InvocationReply::failed(
+            "idempotency_expired",
+            "idempotency key is outside its retry window",
+        )));
+    }
     let invocation = ActorInvocation {
+        idempotency: Some(identity),
         actor,
         request_id: request.request_id,
         method: request.method,
@@ -306,6 +326,7 @@ fn validate_host_request(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InvokeRequest {
+    idempotency_key: String,
     request_id: String,
     owner_epoch: u64,
     method: String,

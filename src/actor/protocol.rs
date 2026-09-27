@@ -36,6 +36,7 @@ impl ActorKey {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActorInvocation {
+    pub idempotency: Option<crate::idempotency::InvocationIdentity>,
     /// Correlation ID for this caller attempt. It is not an idempotency key.
     pub request_id: String,
     pub actor: ActorKey,

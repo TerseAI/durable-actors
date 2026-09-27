@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import { once } from "node:events"
 import { createServer } from "node:http"
 import { test } from "node:test"
-import { setTimeout } from "node:timers/promises"
 
 import type { DirectActorInvocation } from "../../src/client-runtime/http.js"
 import { RemoteActorClient } from "../../src/client/remoteClient.js"
@@ -117,7 +116,7 @@ test("concurrent callers share refresh of an expired target", async () => {
     assert.equal(discoveries.length, 2)
 })
 
-test("an ambiguous stale failure does not wait for another caller's rediscovery", async () => {
+test("an ambiguous stale failure shares another caller's rediscovery", async () => {
     const rediscovery = deferred<Response>()
     const resolving = deferred<void>()
     const ambiguous = deferred<Response>()
@@ -144,59 +143,90 @@ test("an ambiguous stale failure does not wait for another caller's rediscovery"
         }
     })
     await client.invoke("Counter", "one", "read", [])
-    const unknown = assert.rejects(
-        client.invoke("Counter", "one", "increment", [1]),
-        invocationError("outcome_unknown")
-    )
+    const recovered = client.invoke("Counter", "one", "increment", [1])
     await dispatched.promise
     const retry = client.invoke("Counter", "one", "read", [])
     await resolving.promise
     ambiguous.reject(new Error("response lost"))
-    const deadline = new AbortController()
-    try {
-        assert.equal(
-            await Promise.race([
-                unknown.then(() => "rejected"),
-                setTimeout(1_000, "waiting", { signal: deadline.signal })
-            ]),
-            "rejected"
-        )
-    } finally {
-        deadline.abort()
-        rediscovery.resolve(target(2))
-        await Promise.all([unknown, retry])
-    }
+    rediscovery.resolve(target(2))
+    assert.deepEqual(await Promise.all([recovered, retry]), [1, 1])
+    assert.equal(discoveries, 2)
 })
 
-test("a mutation with a lost HTTP response is executed once and reports outcome_unknown", async t => {
-    let executions = 0
-    const host = createServer(async (request, response) => {
-        assert.equal(request.method, "POST")
-        request.resume()
-        await once(request, "end")
-        executions++
-        request.socket.destroy()
+for (const loseEveryResponse of [false, true])
+    test(`durable retry executes once when ${loseEveryResponse ? "both responses are" : "the first response is"} lost`, async t => {
+        let executions = 0
+        let requests = 0
+        const receipts = new Map<string, number>()
+        const host = createServer(async (request, response) => {
+            assert.equal(request.method, "POST")
+            const chunks: Buffer[] = []
+            for await (const chunk of request) chunks.push(chunk)
+            const body = JSON.parse(Buffer.concat(chunks).toString())
+            assert.match(body.idempotencyKey, /^[0-9]+\.[A-Za-z0-9_-]+$/u)
+            if (!receipts.has(body.idempotencyKey)) receipts.set(body.idempotencyKey, ++executions)
+            if (++requests === 1 || loseEveryResponse) request.socket.destroy()
+            else {
+                response.setHeader("content-type", "application/json")
+                response.end(JSON.stringify({ type: "completed", result: receipts.get(body.idempotencyKey) }))
+            }
+        })
+        t.after(() => host.close())
+        host.listen(0, "127.0.0.1")
+        await once(host, "listening")
+        const address = host.address()
+        assert.ok(address && typeof address !== "string")
+        const client = new RemoteActorClient(undefined, {
+            environment: {},
+            telemetry: () => {},
+            fetch: async (url, init) =>
+                String(url).endsWith("/find-actor")
+                    ? Response.json({
+                          route: `http://127.0.0.1:${address.port}`,
+                          token: "ticket",
+                          ownerEpoch: 1,
+                          expiresAtMs: Date.now() + 60_000
+                      })
+                    : fetch(url, init)
+        })
+        if (loseEveryResponse)
+            await assert.rejects(client.invoke("Counter", "one", "increment", [1]), invocationError("outcome_unknown"))
+        else assert.equal(await client.invoke("Counter", "one", "increment", [1]), 1)
+        assert.equal(executions, 1)
+        assert.equal(requests, 2)
     })
-    t.after(() => host.close())
-    host.listen(0, "127.0.0.1")
-    await once(host, "listening")
-    const address = host.address()
-    assert.ok(address && typeof address !== "string")
+
+test("explicit keys survive transport retry and typed failures are terminal", async () => {
+    let calls = 0
+    const { client, requests } = retryClient(async () => {
+        if (++calls === 1) throw new Error("response lost")
+        return Response.json({ type: "failed", code: "outcome_unknown", message: "partial commit" })
+    })
+    await assert.rejects(
+        client.invoke("Counter", "one", "increment", [1], { idempotencyKey: "0.operation" }),
+        invocationError("outcome_unknown")
+    )
+    assert.deepEqual(
+        requests.map(r => r.body.idempotencyKey),
+        ["0.operation", "0.operation"]
+    )
+})
+
+test("failed rediscovery after an ambiguous POST remains outcome_unknown", async () => {
+    let discoveries = 0
     const client = new RemoteActorClient(undefined, {
         environment: {},
         telemetry: () => {},
-        fetch: async (url, init) =>
-            String(url).endsWith("/find-actor")
-                ? Response.json({
-                      route: `http://127.0.0.1:${address.port}`,
-                      token: "ticket",
-                      ownerEpoch: 1,
-                      expiresAtMs: Date.now() + 60_000
-                  })
-                : fetch(url, init)
+        fetch: async url => {
+            if (String(url).endsWith("/find-actor")) {
+                if (++discoveries === 2) throw new Error("discovery failed")
+                return target(1, Date.now())
+            }
+            throw new Error("response lost")
+        }
     })
-    await assert.rejects(client.invoke("Counter", "one", "increment", [1]), invocationError("outcome_unknown"))
-    assert.equal(executions, 1)
+    await assert.rejects(client.invoke("Counter", "one", "increment", []), invocationError("outcome_unknown"))
+    assert.equal(discoveries, 2)
 })
 
 function retryClient(invoke: (request: HostRequest) => Promise<Response>, now = () => 0) {
@@ -260,6 +290,8 @@ function deferred<T>() {
 
 interface HostRequest {
     readonly url: string
-    readonly body: Pick<DirectActorInvocation, "requestId" | "method" | "args"> & { ownerEpoch: number }
+    readonly body: Pick<DirectActorInvocation, "requestId" | "idempotencyKey" | "method" | "args"> & {
+        ownerEpoch: number
+    }
     readonly authorization: string | null
 }

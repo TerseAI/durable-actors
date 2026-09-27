@@ -179,13 +179,18 @@ async fn run_activation(
         ("increment", before + 1),
         ("read", before + 1),
     ] {
-        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
+        let key = format!(
+            "{}.{}",
+            crate::clock::Clock::now_ms(&crate::clock::SystemClock)?,
+            uuid::Uuid::new_v4()
+        );
+        let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "idempotencyKey":key, "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
         assert_eq!(
             result,
             serde_json::json!({"type":"completed", "result":expected})
         );
     }
-    assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "idempotencyKey":"0.wrong", "ownerEpoch":epoch, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(10), task).await???;
     assert!(

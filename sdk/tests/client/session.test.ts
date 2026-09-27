@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
+import type { ActorInvocationOptions } from "../../src/client-runtime/invocation.js"
 import { ActorSessionRejectedError, ActorSessionTransport } from "../../src/client-runtime/session.js"
 
 function fixture() {
@@ -9,6 +10,7 @@ function fixture() {
     let transports = 0
     let calls = 0
     let failure: Error | undefined
+    const invocationOptions: (ActorInvocationOptions | undefined)[] = []
     const scheduled: (() => void)[] = []
     const client = new ActorSessionTransport(
         {
@@ -34,7 +36,8 @@ function fixture() {
                 transports++
                 assert.equal(options.apiKey, `session-${exchanges}`)
                 return {
-                    async invoke() {
+                    async invoke(_actor, _id, _method, _args, options) {
+                        invocationOptions.push(options)
                         calls++
                         return 42
                     }
@@ -45,6 +48,7 @@ function fixture() {
     return {
         client,
         scheduled,
+        invocationOptions,
         stats: () => ({ exchanges, transports, calls }),
         advance: (ms: number) => {
             now += ms
@@ -76,6 +80,17 @@ test("active sessions renew in the background and an explicit denial clears auth
     await new Promise(resolve => setImmediate(resolve))
     await assert.rejects(f.client.invoke("Counter", "one", "read", []), /membership removed/)
     assert.equal(f.stats().calls, 1)
+    f.client.dispose()
+})
+
+test("explicit invocation keys are preserved across session renewal", async () => {
+    const f = fixture()
+    const options = { idempotencyKey: "1000000.operation" }
+    await f.client.invoke("Counter", "one", "increment", [], options)
+    f.advance(61_000)
+    await f.client.invoke("Counter", "one", "increment", [], options)
+    assert.equal(f.stats().exchanges, 2)
+    assert.deepEqual(f.invocationOptions, [options, options])
     f.client.dispose()
 })
 

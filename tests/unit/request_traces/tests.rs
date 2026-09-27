@@ -645,6 +645,7 @@ fn backpressure_drops_telemetry_without_blocking_requests() {
 fn connect_spans_keep_bounded_metadata_and_validation_rejects_oversized_metadata() {
     let (sender, mut receiver) = TraceSender::channel(4);
     let invocation = crate::actor::ActorInvocation {
+        idempotency: None,
         request_id: "request".into(),
         actor: crate::actor::ActorKey {
             project_id: "project".into(),
