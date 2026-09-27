@@ -194,15 +194,10 @@ paths:
             summary: Invoke a method on the owning host
             security: [{ ActorTicket: [] }]
             description: |
-                Send one POST with the discovery token and ownerEpoch to the discovered host origin; no preflight is needed.
+                Send the discovery token and ownerEpoch to the discovered host origin.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
-                HTTP 401, an explicit not_executed reply, or a confirmed connection refusal before dispatch permits rediscovery and one shared retry.
-                A not_executed reply guarantees that this invocation did not execute and cannot execute later, including from a queue.
-                Ambiguous network errors, other HTTP failures and failed outcomes must not be retried automatically.
-                Exhausted pre-execution retries and discovery transport failures are unavailable; ambiguous invocation transport failures are outcome_unknown.
-                A generic HTTP 502, 503 or 504 is not proof that execution did not happen. Actor-method failures never authorize replay, regardless of their code.
-                requestId identifies an attempt; it does not deduplicate execution. Maximum body size is 32 MiB.
+                Maximum body size is 32 MiB.
             requestBody:
                 required: true
                 content:
@@ -222,7 +217,7 @@ paths:
                                 failed: { value: { type: failed, code: actor_error, message: Method failed } }
                                 notExecuted: { value: { type: not_executed, reason: host_unavailable } }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { description: Ticket rejected before dispatch. Refresh discovery once. }
+                "401": { description: Ticket rejected before dispatch. }
                 "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
@@ -905,14 +900,12 @@ components:
                       code: { type: string, minLength: 1, description: "Includes actor_error, unavailable and outcome_unknown." }
                       message: { type: string }
                 - type: object
-                  description: Infrastructure guarantees this invocation did not execute and is no longer queued. Refresh discovery and retry within the shared recovery budget.
                   required: [type, reason]
                   properties:
                       type: { const: not_executed }
                       reason:
                           type: string
                           enum: [stale_owner, host_unavailable, upstream_not_reached]
-                          description: A stale owner, a host rejecting admission (including draining or capacity limits), or an upstream connection failure known to precede dispatch.
         ActorSocketEffect:
             type: object
             description: Host-validated socket effect. Broadcasts require message, except_connection_ids and tags; connection-specific effects require connection_id.
