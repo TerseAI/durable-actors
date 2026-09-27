@@ -7,9 +7,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
+use tokio::sync::Semaphore;
+use tracing::{info, warn};
 
 use crate::{
     actor::{
@@ -25,6 +27,7 @@ pub(crate) struct ActorHostHttpService {
     session_id: String,
     auth: ActorJwtVerifier,
     sockets: Arc<HostSockets>,
+    delegated_budgets: Cache<String, Arc<Semaphore>>,
 }
 
 impl ActorHostHttpService {
@@ -39,6 +42,7 @@ impl ActorHostHttpService {
             session_id,
             auth,
             sockets,
+            delegated_budgets: delegated_budgets(),
         }
     }
 
@@ -156,6 +160,21 @@ async fn invoke(
     let principal = service.authenticate(&headers)?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
+    let grant = principal
+        .invocation
+        .as_ref()
+        .and_then(|capability| capability.grant.as_ref());
+    if let Err(error) = authorize_grant(grant, Some(&request.method)) {
+        return Ok(Json(InvocationReply::failed("forbidden", &error.1)));
+    }
+    if let Some(grant) = grant {
+        if let Err(error) =
+            consume_delegated_budget(&service.delegated_budgets, &grant.subject).await
+        {
+            return Ok(Json(InvocationReply::failed("rate_limited", &error.1)));
+        }
+        info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %actor.project_id, actor_name = %actor.actor_name, actor_id = %actor.actor_id, request_id = %request.request_id, method = %request.method);
+    }
     let invocation = ActorInvocation {
         actor,
         request_id: request.request_id,
@@ -173,6 +192,13 @@ async fn publish(
     body: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<StatusCode, HttpError> {
     let principal = service.authenticate(&headers)?;
+    authorize_grant(
+        principal
+            .invocation
+            .as_ref()
+            .and_then(|capability| capability.grant.as_ref()),
+        None,
+    )?;
     let Json(request) = body.map_err(json_error)?;
     service.authorize(&principal, &actor, request.owner_epoch)?;
     crate::actor::validate_socket_effects(&request.effects).map_err(bad_request)?;
@@ -193,6 +219,53 @@ async fn publish(
             )
         })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn delegated_budgets() -> Cache<String, Arc<Semaphore>> {
+    Cache::builder()
+        .max_capacity(4096)
+        .time_to_live(std::time::Duration::from_secs(60))
+        .build()
+}
+
+async fn consume_delegated_budget(
+    budgets: &Cache<String, Arc<Semaphore>>,
+    subject: &str,
+) -> Result<(), HttpError> {
+    let budget = budgets
+        .get_with(subject.to_owned(), async { Arc::new(Semaphore::new(120)) })
+        .await;
+    budget
+        .try_acquire()
+        .map_err(|_| {
+            HttpError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "actor invocation rate exceeded".into(),
+            )
+        })?
+        .forget();
+    Ok(())
+}
+
+fn authorize_grant(
+    grant: Option<&crate::control_plane::project_grant::InvocationGrant>,
+    method: Option<&str>,
+) -> Result<(), HttpError> {
+    if let Some(grant) = grant {
+        let allowed = method.is_some_and(|method| {
+            !matches!(
+                method,
+                "onConnect" | "onMessage" | "onDisconnect" | "connect" | "broadcast" | "then"
+            ) && grant.methods.iter().any(|allowed| allowed == method)
+        });
+        if !allowed {
+            return Err(HttpError(
+                StatusCode::FORBIDDEN,
+                "operation is outside the actor grant".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_host_request(

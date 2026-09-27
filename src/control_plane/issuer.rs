@@ -207,6 +207,7 @@ impl ActorJwtIssuer {
         host_config_key: &str,
         region: &str,
         owner_epoch: u64,
+        grant: Option<super::project_grant::InvocationGrant>,
     ) -> Result<IssuedActorToken> {
         actor.validate()?;
         validate_region(region)?;
@@ -215,7 +216,9 @@ impl ActorJwtIssuer {
         let now = now_ms / 1_000;
         let target_expires_at = now.saturating_add(i64::try_from(INVOCATION_TARGET_TTL.as_secs())?);
         let issuer_expires_at = now.saturating_add(i64::try_from(self.max_lifetime.as_secs())?);
-        let expires_at = target_expires_at.min(issuer_expires_at);
+        let expires_at = target_expires_at
+            .min(issuer_expires_at)
+            .min(grant.as_ref().map_or(i64::MAX, |grant| grant.expires_at));
         ensure!(expires_at > now, "invocation credential expires too soon");
         self.issue(ActorJwtClaims {
             iss: self.issuer.clone(),
@@ -225,7 +228,12 @@ impl ActorJwtIssuer {
             session_id: session_id.to_owned(),
             region: region.to_owned(),
             host_config_key: Some(host_config_key.to_owned()),
-            scope: "actor:invoke".into(),
+            scope: if grant.is_some() {
+                "actor:delegated-invoke"
+            } else {
+                "actor:invoke"
+            }
+            .into(),
             iat: now,
             nbf: now,
             exp: expires_at,
@@ -234,6 +242,7 @@ impl ActorJwtIssuer {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch,
+                grant,
             }),
         })
     }

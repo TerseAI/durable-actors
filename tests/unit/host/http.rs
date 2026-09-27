@@ -22,6 +22,7 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
             actor: actor.clone(),
             host_id: host_id.clone(),
             owner_epoch: 3,
+            grant: None,
         }),
     };
 
@@ -54,4 +55,39 @@ fn direct_capability_is_bound_to_the_actor_host_session_and_epoch() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn delegated_tickets_only_allow_published_rpc_methods() {
+    let grant = crate::control_plane::project_grant::InvocationGrant {
+        subject: "credential-1".into(),
+        grant_id: "grant-1".into(),
+        expires_at: i64::MAX,
+        methods: vec!["increment".into()],
+    };
+    assert!(authorize_grant(Some(&grant), Some("increment")).is_ok());
+    assert!(authorize_grant(Some(&grant), Some("privateMethod")).is_err());
+    assert!(authorize_grant(Some(&grant), Some("onConnect")).is_err());
+    assert!(authorize_grant(Some(&grant), None).is_err());
+    assert!(authorize_grant(None, None).is_ok());
+}
+
+#[tokio::test]
+async fn delegated_invocation_budgets_are_shared_across_renewals_but_isolate_credentials() {
+    let budgets = delegated_budgets();
+    for _ in 0..120 {
+        consume_delegated_budget(&budgets, "credential-a")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        consume_delegated_budget(&budgets, "credential-a")
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    consume_delegated_budget(&budgets, "credential-b")
+        .await
+        .unwrap();
 }

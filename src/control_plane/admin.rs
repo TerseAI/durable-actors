@@ -128,6 +128,7 @@ pub(crate) struct AdminService {
     api_key: Option<String>,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
+    project_grants: Option<super::project_grant::ProjectGrantVerifier>,
 }
 
 impl AdminService {
@@ -146,7 +147,36 @@ impl AdminService {
             api_key,
             registry,
             issuer,
+            project_grants: None,
         })
+    }
+
+    pub(super) fn with_project_grants(
+        mut self,
+        verifier: Option<super::project_grant::ProjectGrantVerifier>,
+    ) -> Result<Self> {
+        ensure!(
+            verifier.is_none() || self.api_key.is_some(),
+            "project grants require administrative authentication"
+        );
+        self.project_grants = verifier;
+        Ok(self)
+    }
+
+    pub(super) fn authorize_discovery(
+        &self,
+        authorization: &str,
+        project_id: &str,
+    ) -> Result<Option<super::project_grant::ProjectGrant>> {
+        if self.authenticate(authorization).is_ok() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.project_grants
+                .as_ref()
+                .context("project grants are not configured")?
+                .authenticate(authorization, project_id)?,
+        ))
     }
 
     pub(super) fn issue_direct_socket(

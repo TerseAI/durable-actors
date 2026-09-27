@@ -110,6 +110,7 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         "revision-1",
         "north-america-east",
         3,
+        None,
     )?;
     let invocation_verifier = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -139,6 +140,56 @@ fn direct_invocation_tokens_are_bound_to_one_actor_target_without_host_authority
         authority_verifier
             .authenticate_authorization(&format!("Bearer {}", issued.token))
             .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn delegated_tickets_have_restricted_scope_and_cannot_outlive_authorization() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let now = unix_millis()? / 1000;
+    let grant = super::super::project_grant::InvocationGrant {
+        subject: "credential-fingerprint".into(),
+        grant_id: "grant-id".into(),
+        expires_at: now + 20,
+        methods: vec!["increment".into()],
+    };
+    let issue = |grant| {
+        issuer.issue_invocation_target(
+            &actor,
+            &HostId::new("host.v3.revision.one"),
+            "00000000-0000-4000-8000-000000000001",
+            "revision",
+            "us-west",
+            1,
+            Some(grant),
+        )
+    };
+    let issued = issue(grant.clone())?;
+    assert_eq!(issued.expires_at_ms, grant.expires_at * 1000);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(issued.token.split('.').nth(1).unwrap())?)?;
+    assert_eq!(payload["scope"], "actor:delegated-invoke");
+    let verifier = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "invocation",
+        ActorTokenPurpose::Invocation,
+        Duration::from_secs(60),
+    )?;
+    let principal = verifier.authenticate_authorization(&format!("Bearer {}", issued.token))?;
+    assert_eq!(principal.invocation.unwrap().grant, Some(grant.clone()));
+    assert!(
+        issue(super::super::project_grant::InvocationGrant {
+            expires_at: now,
+            ..grant
+        })
+        .is_err()
     );
     Ok(())
 }

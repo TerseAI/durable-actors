@@ -192,9 +192,18 @@ async fn find_actor(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    authorized_admin(&state.admin, &headers)?;
-    let Json(request) = request.map_err(ApiError::json)?;
     let actor = path.into_actor();
+    let grant = state
+        .admin
+        .authorize_discovery(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or(""),
+            &actor.project_id,
+        )
+        .map_err(|_| ApiError::unauthorized("actor discovery credential was rejected"))?;
+    let Json(request) = request.map_err(ApiError::json)?;
     actor.validate().map_err(ApiError::bad_request)?;
     state
         .invocations
@@ -204,9 +213,31 @@ async fn find_actor(
         actor.validate().map_err(ApiError::bad_request)?;
         timings.request_validated_at_ms = Some(timings.elapsed_ms());
         timings.client_authenticated_at_ms = Some(timings.elapsed_ms());
+        let grant = match grant {
+            Some(grant) => {
+                let contract = state
+                    .admin
+                    .deployment_contract(&actor.project_id)
+                    .await
+                    .map_err(ApiError::internal)?
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            StatusCode::NOT_FOUND,
+                            "not_found",
+                            "actor contract not found",
+                        )
+                    })?;
+                Some(
+                    grant.invocation(contract.rpc_methods(&actor.actor_name).map_err(|_| {
+                        ApiError::new(StatusCode::NOT_FOUND, "not_found", "actor not found")
+                    })?),
+                )
+            }
+            None => None,
+        };
         let target = state
             .invocations
-            .resolve_actor_target_timed(&actor, request.home_region.as_deref(), &mut timings)
+            .resolve_actor_target_timed(&actor, request.home_region.as_deref(), &mut timings, grant)
             .await
             .map_err(ApiError::routing)?;
         Ok(Json(ActorTargetReply {

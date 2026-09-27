@@ -13,6 +13,7 @@ mod issuer;
 mod local;
 mod local_build;
 mod process;
+pub(crate) mod project_grant;
 mod protocol;
 mod public_api;
 mod regions;

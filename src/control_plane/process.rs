@@ -30,6 +30,9 @@ pub struct ControlPlaneProcessConfig {
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
     pub region: Option<String>,
+    pub project_grant_public_keys: Option<String>,
+    pub project_grant_issuer: Option<String>,
+    pub project_grant_audience: Option<String>,
 }
 
 pub struct ControlPlaneStorageConfig {
@@ -176,7 +179,21 @@ async fn control_plane_routes(
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.region = config.region;
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
+    let grants = match (
+        &config.project_grant_public_keys,
+        &config.project_grant_issuer,
+        &config.project_grant_audience,
+    ) {
+        (None, None, None) => None,
+        (Some(keys), Some(issuer), Some(audience)) => Some(
+            super::project_grant::ProjectGrantVerifier::new(keys, issuer, audience)?,
+        ),
+        _ => anyhow::bail!(
+            "project grant public keys, issuer and audience must be configured together"
+        ),
+    };
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
+        .with_project_grants(grants)?;
     let inspector = super::inspection::ActorInspector::new(
         storage.clone(),
         storage.clone(),
@@ -282,6 +299,9 @@ impl ControlPlaneProcessConfig {
             sandbox_provider,
             socket_event_sink,
             region,
+            project_grant_public_keys: get("DURABLE_ACTORS_PROJECT_GRANT_PUBLIC_KEYS"),
+            project_grant_issuer: get("DURABLE_ACTORS_PROJECT_GRANT_ISSUER"),
+            project_grant_audience: get("DURABLE_ACTORS_PROJECT_GRANT_AUDIENCE"),
         })
     }
 }

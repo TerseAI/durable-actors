@@ -132,12 +132,13 @@ paths:
             operationId: findActor
             tags: [Actors]
             summary: Find an actor host
-            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment.
+            description: Resolves placement, starts a host if needed, and issues credentials for direct HTTP calls. Requires an active deployment. Accepts the administrative secret or a configured project-scoped actor:resolve grant. Project grants are restricted to published actor types and produce method-restricted tickets that cannot outlive the grant.
             requestBody: { $ref: "#/components/requestBodies/FindActor" }
             responses:
                 "200": { $ref: "#/components/responses/ActorTarget" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
+                "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
                 "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
