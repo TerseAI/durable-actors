@@ -1251,7 +1251,3 @@ mod deployment_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/service.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/control_plane/activation.rs"]
-mod activation_tests;

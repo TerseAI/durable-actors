@@ -74,6 +74,7 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
 	request.HostIdleTimeoutMS = 75000
 	request.ActorIsNew = true
+	request.OwnerHint = `{"generation":17,"record":{"epoch":3}}`
 	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
@@ -87,6 +88,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_ACTORS_ACTOR_IS_NEW"] != "true" {
 		t.Fatal("ownership epoch missing")
+	}
+	if sb.assignment["DURABLE_ACTORS_OWNER_HINT"] != request.OwnerHint {
+		t.Fatal("owner hint missing from assignment")
 	}
 	if api.creates != 0 {
 		t.Fatal("claimed spare was replaced by a new sandbox")
@@ -175,20 +179,5 @@ func TestOnlyActorSparesReceiveTheControlPlaneForPreconnection(t *testing.T) {
 		if actual := params.Env["DURABLE_ACTORS_CONTROL_PLANE_URL"]; actual != expected {
 			t.Fatalf("%s control plane = %q, want %q", kind, actual, expected)
 		}
-	}
-}
-
-func TestAssignmentPassesOwnerHintToReturningActor(t *testing.T) {
-	request := testRequest()
-	if err := json.Unmarshal([]byte(`{"ownerHint":"{\"generation\":17,\"record\":{\"epoch\":3}}"}`), &request); err != nil {
-		t.Fatal(err)
-	}
-	request.Spare = &spareHandle{ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
-	sb := &fakeSandbox{}
-	if _, err := newTestProvider(&fakeAPI{found: sb}).ensureHost(context.Background(), request); err != nil {
-		t.Fatal(err)
-	}
-	if sb.assignment["DURABLE_ACTORS_OWNER_HINT"] != `{"generation":17,"record":{"epoch":3}}` {
-		t.Fatal("owner record and generation missing from assignment")
 	}
 }

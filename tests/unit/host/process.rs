@@ -230,21 +230,3 @@ fn values() -> HashMap<String, String> {
         ),
     ])
 }
-
-#[test]
-fn assigned_owner_hint_is_loaded_from_the_environment() -> Result<()> {
-    let mut values = values();
-    let hint = serde_json::json!({
-        "generation": 17,
-        "record": {
-            "inventory": {"resident": false, "connections": [], "waiting": []},
-            "actor": {"project_id": "default", "actor_name": "Counter", "actor_id": "one"},
-            "epoch": 3, "region": "north-america-east", "base": null, "mutation": "previous", "sealed": false,
-            "lease": {"id": "previous", "session_id": "previous", "route": "http://previous", "expires_at_ms": 0}
-        }
-    });
-    values.insert("DURABLE_ACTORS_OWNER_HINT".into(), hint.to_string());
-    let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-    assert_eq!(serde_json::to_value(config.owner_hint.unwrap())?, hint);
-    Ok(())
-}

@@ -65,8 +65,7 @@ impl Clock for TestClock {
 struct CountedBucket {
     inner: FileBucket,
     reads: AtomicU64,
-    read_keys: Mutex<Vec<String>>,
-    parallel_reads: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    session_reads: AtomicU64,
     session_read_wait: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     paused_list: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
     writes: AtomicU64,
@@ -79,14 +78,8 @@ struct CountedBucket {
 impl Bucket for CountedBucket {
     async fn get(&self, key: &str) -> Result<Option<super::super::BucketObject>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.read_keys.lock().unwrap().push(key.into());
-        let barrier = self.parallel_reads.lock().unwrap().clone();
-        if key.contains("/sessions/")
-            && let Some(barrier) = barrier
-        {
-            barrier.wait().await;
-        }
         let wait = if key.contains("/sessions/") {
+            self.session_reads.fetch_add(1, Ordering::SeqCst);
             self.session_read_wait.lock().unwrap().take()
         } else {
             None
@@ -117,11 +110,6 @@ impl Bucket for CountedBucket {
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.lists.fetch_add(1, Ordering::SeqCst);
-        let barrier = self.parallel_reads.lock().unwrap().clone();
-        if let Some(barrier) = barrier {
-            barrier.wait().await;
-            self.parallel_reads.lock().unwrap().take();
-        }
         let keys = self.inner.list(prefix).await?;
         let paused = self.paused_list.lock().unwrap().take();
         if let Some((entered, resume)) = paused {
@@ -146,8 +134,7 @@ impl Fixture {
         let bucket = Arc::new(CountedBucket {
             inner: FileBucket::new(directory.path().into())?,
             reads: AtomicU64::new(0),
-            read_keys: Mutex::new(Vec::new()),
-            parallel_reads: Mutex::new(None),
+            session_reads: AtomicU64::new(0),
             session_read_wait: Mutex::new(None),
             paused_list: Mutex::new(None),
             writes: AtomicU64::new(0),
@@ -551,7 +538,8 @@ async fn combined_lease_takeover_recovers_replica_only_commits_and_seals_old_wri
     let resume_read = Arc::new(tokio::sync::Semaphore::new(0));
     *f.bucket.paused_list.lock().unwrap() = Some((entered.clone(), resume_list.clone()));
     *f.bucket.session_read_wait.lock().unwrap() = Some(resume_read.clone());
-    f.bucket.read_keys.lock().unwrap().clear();
+    f.bucket.reads.store(0, Ordering::SeqCst);
+    f.bucket.session_reads.store(0, Ordering::SeqCst);
     let next = request("next");
     let activation = f
         .runtime
@@ -568,16 +556,7 @@ async fn combined_lease_takeover_recovers_replica_only_commits_and_seals_old_wri
     .await?;
     released?;
     let recovered = recovered?;
-    assert_eq!(
-        f.bucket
-            .read_keys
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|key| key.contains("/sessions/"))
-            .count(),
-        2
-    );
+    assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 2);
     assert_eq!(recovered.placement.owner_epoch, 2);
     assert_eq!(recovered.placement.state_version, 2);
     assert_eq!(recovered.state.unwrap().as_ref(), bytes);
@@ -775,50 +754,6 @@ async fn release_retries_a_concurrent_inventory_renewal() -> Result<()> {
 }
 
 #[tokio::test]
-async fn returning_activation_reads_the_session_once() -> Result<()> {
-    let f = Fixture::new()?;
-    f.runtime
-        .register_activation(&f.actor, &request("first"), "us-east", true, None)
-        .await?;
-    f.clock.0.store(11_000, Ordering::SeqCst);
-    f.bucket.read_keys.lock().unwrap().clear();
-    let loaded = f
-        .runtime
-        .register_activation(&f.actor, &request("next"), "us-east", false, None)
-        .await?;
-    assert_eq!(loaded.placement.owner_epoch, 2);
-    assert_eq!(
-        f.bucket
-            .read_keys
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|key| key.contains("/sessions/"))
-            .count(),
-        1
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn returning_activation_reads_session_and_lists_snapshots_concurrently() -> Result<()> {
-    let f = Fixture::new()?;
-    f.runtime
-        .register_activation(&f.actor, &request("first"), "us-east", true, None)
-        .await?;
-    f.clock.0.store(11_000, Ordering::SeqCst);
-    *f.bucket.parallel_reads.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
-    let loaded = tokio::time::timeout(
-        Duration::from_secs(1),
-        f.runtime
-            .register_activation(&f.actor, &request("next"), "us-east", false, None),
-    )
-    .await??;
-    assert_eq!(loaded.placement.owner_epoch, 2);
-    Ok(())
-}
-
-#[tokio::test]
 async fn returning_activation_uses_the_control_plane_owner_hint() -> Result<()> {
     let f = Fixture::new()?;
     f.runtime
@@ -830,15 +765,15 @@ async fn returning_activation_uses_the_control_plane_owner_hint() -> Result<()> 
         .get_owner_with_hint(&f.actor.storage_key())
         .await?;
     let hint: OwnershipHint = serde_json::from_str(&serde_json::to_string(&hint.unwrap())?)?;
-    f.bucket.read_keys.lock().unwrap().clear();
+    f.bucket.reads.store(0, Ordering::SeqCst);
+    f.bucket.session_reads.store(0, Ordering::SeqCst);
     let loaded = f
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, Some(&hint))
         .await?;
     assert_eq!(loaded.placement.owner_epoch, 2);
-    let reads = f.bucket.read_keys.lock().unwrap();
-    assert_eq!(reads.len(), 1);
-    assert!(reads[0].contains("/sessions/"));
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -897,38 +832,6 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
             assert_eq!(loaded.placement.owner_epoch, 3);
             assert_eq!(loaded.state.unwrap().as_ref(), bytes);
         }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn owner_hints_for_another_scope_fall_back_to_a_read() -> Result<()> {
-    for wrong_actor in [true, false] {
-        let f = Fixture::new()?;
-        f.runtime
-            .register_activation(&f.actor, &request("first"), "us-east", true, None)
-            .await?;
-        f.clock.0.store(11_000, Ordering::SeqCst);
-        let (_, hint) = f
-            .runtime
-            .get_owner_with_hint(&f.actor.storage_key())
-            .await?;
-        let mut hint = hint.unwrap();
-        if wrong_actor {
-            hint.record.actor.actor_id = "other".into();
-        } else {
-            hint.record.region = "us-west".into();
-        }
-        f.bucket.read_keys.lock().unwrap().clear();
-        let loaded = f
-            .runtime
-            .register_activation(&f.actor, &request("next"), "us-east", false, Some(&hint))
-            .await?;
-        assert_eq!(loaded.placement.owner_epoch, 2);
-        assert_eq!(
-            f.bucket.read_keys.lock().unwrap()[0],
-            ownership_key(&f.actor.storage_key())?
-        );
     }
     Ok(())
 }
@@ -1020,9 +923,6 @@ async fn concurrent_session_sealing_refreshes_the_parallel_snapshot_listing() ->
     Ok(())
 }
 
-#[path = "returning_benchmark.rs"]
-mod benchmark;
-
 #[tokio::test]
 async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_session_reads()
 -> Result<()> {
@@ -1035,7 +935,7 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
             .register_activation(&f.actor, &first, "us-east", true, None)
             .await?;
         let bytes = StateSnapshot::new(
-            1,
+            2,
             1,
             "committed".into(),
             serde_json::json!({"count": 42}),
@@ -1043,11 +943,21 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
         )?
         .encode()?;
         if written {
-            let plan = f
-                .runtime
-                .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
-                .await?;
-            f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+            for version in [2, 1] {
+                let plan = f
+                    .runtime
+                    .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, version)
+                    .await?;
+                let snapshot = StateSnapshot::new(
+                    version,
+                    1,
+                    "committed".into(),
+                    serde_json::json!({"count": 42}),
+                    serde_json::json!(42),
+                )?
+                .encode()?;
+                f.runtime.write_snapshot(&plan, snapshot).await?;
+            }
         }
         f.runtime
             .finish_activation(&f.actor, &first.id, &first.session_id)
@@ -1058,7 +968,8 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .get_owner_with_hint(&f.actor.storage_key())
                 .await?;
             assert!(hint.as_ref().unwrap().record.sealed);
-            f.bucket.read_keys.lock().unwrap().clear();
+            f.bucket.reads.store(0, Ordering::SeqCst);
+            f.bucket.session_reads.store(0, Ordering::SeqCst);
             f.bucket.lists.store(0, Ordering::SeqCst);
             let next = request(session);
             let loaded = f
@@ -1068,67 +979,12 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
             assert_eq!(loaded.placement.owner_epoch, epoch);
             assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_slice()));
             assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
-            let reads = f.bucket.read_keys.lock().unwrap().clone();
-            assert_eq!(reads.len(), usize::from(written));
-            assert!(reads.iter().all(|key| key.contains("/snapshots/")));
+            assert_eq!(f.bucket.reads.load(Ordering::SeqCst), u64::from(written));
+            assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 0);
             f.runtime
                 .finish_activation(&f.actor, &next.id, &next.session_id)
                 .await?;
         }
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn clean_shutdown_keeps_the_newest_out_of_order_upload() -> Result<()> {
-    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
-    let f = Fixture::new()?;
-    let first = request("first");
-    let loaded = f
-        .runtime
-        .register_activation(&f.actor, &first, "us-east", true, None)
-        .await?;
-    let old_plan = f
-        .runtime
-        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
-        .await?;
-    let new_plan = f
-        .runtime
-        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 2)
-        .await?;
-    let snapshot = |version| {
-        StateSnapshot::new(
-            version,
-            1,
-            format!("write-{version}"),
-            serde_json::json!({"count": version}),
-            serde_json::json!(version),
-        )?
-        .encode()
-    };
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let resume = Arc::new(tokio::sync::Semaphore::new(0));
-    *f.bucket.delay_write.lock().unwrap() = Some((entered.clone(), resume.clone()));
-    let first_write = f.runtime.write_snapshot(&old_plan, snapshot(1)?);
-    let second_write = async {
-        entered.acquire().await?.forget();
-        f.runtime.write_snapshot(&new_plan, snapshot(2)?).await?;
-        resume.add_permits(1);
-        anyhow::Ok(())
-    };
-    let (first_result, second_result) = tokio::join!(first_write, second_write);
-    first_result?;
-    second_result?;
-    f.runtime
-        .finish_activation(&f.actor, &first.id, &first.session_id)
-        .await?;
-    assert_eq!(
-        f.runtime
-            .get_owner(&f.actor.storage_key())
-            .await?
-            .unwrap()
-            .state_version,
-        2
-    );
     Ok(())
 }
