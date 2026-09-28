@@ -91,6 +91,15 @@ pub struct BuiltActorCode {
     pub contract: serde_json::Value,
 }
 
+#[derive(Debug)]
+pub(crate) struct InitialInvocationNotExecuted;
+impl std::fmt::Display for InitialInvocationNotExecuted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("initial invocation was not executed")
+    }
+}
+impl std::error::Error for InitialInvocationNotExecuted {}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitialInvocation {

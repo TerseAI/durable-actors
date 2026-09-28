@@ -8,7 +8,7 @@ use crate::actor::{ActorExecutorListener, WarmExecutor};
 use crate::bucket::WarmGcs;
 
 pub(super) struct WarmHost {
-    pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
+    pub readiness: Option<tokio::sync::oneshot::Sender<super::assignment::Readiness>>,
     pub listener: TcpListener,
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
@@ -33,9 +33,10 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     let (send, receive) = tokio::sync::oneshot::channel();
     let stop = tokio_util::sync::CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
+    let server_stop = stop.clone();
     let mut server = tokio::spawn(async move {
         axum::serve(control, super::assignment::router(token, send))
-            .with_graceful_shutdown(stop.cancelled_owned())
+            .with_graceful_shutdown(server_stop.cancelled_owned())
             .await
     });
     let ready = std::env::var("DURABLE_ACTORS_SPARE_READY_FILE")
@@ -95,7 +96,10 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         storage,
         control_plane,
     };
-    serve_assigned_host(config, Some(warm), shutdown).await
+    let result = serve_assigned_host(config, Some(warm), shutdown).await;
+    stop.cancel();
+    server.await??;
+    result
 }
 
 async fn prewarm_control_plane(url: Option<String>) -> Option<WarmControlPlane> {

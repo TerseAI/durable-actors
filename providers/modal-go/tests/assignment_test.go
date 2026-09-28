@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -30,12 +31,34 @@ func TestDirectAssignmentAuthenticatesAndReturnsReadiness(t *testing.T) {
 	}
 }
 
-func TestDirectAssignmentRejectsFailedReadiness(t *testing.T) {
-	assigner := httpSpareAssigner{client: &http.Client{Transport: assignmentTransport(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody}, nil
-	})}}
-	if _, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: "https://spare.r5.modal.host", ControlToken: "secret"}, nil); err == nil {
-		t.Fatal("failed initialization reported ready")
+func TestDirectAssignmentPreservesWhetherExecutionWasRejected(t *testing.T) {
+	for _, tc := range []struct {
+		status      int
+		body        string
+		notExecuted bool
+	}{
+		{http.StatusServiceUnavailable, "", false},
+		{http.StatusPreconditionFailed, `{"type":"not_executed"}`, true},
+		{http.StatusPreconditionFailed, `{"type":"unknown"}`, false},
+	} {
+		assigner := httpSpareAssigner{client: &http.Client{Transport: assignmentTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+		})}}
+		_, failure := assigner.Assign(context.Background(), spareHandle{ControlRoute: "https://spare.r5.modal.host", ControlToken: "secret"}, nil)
+		if failure == nil {
+			t.Fatal("failed initialization reported ready")
+		}
+		var output bytes.Buffer
+		if err := writeReply(&output, nil, failure); err != nil {
+			t.Fatal(err)
+		}
+		var reply struct{ NotExecuted bool }
+		if err := json.Unmarshal(output.Bytes(), &reply); err != nil {
+			t.Fatal(err)
+		}
+		if reply.NotExecuted != tc.notExecuted {
+			t.Fatalf("incorrect execution certainty: %s", output.String())
+		}
 	}
 }
 

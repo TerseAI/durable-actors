@@ -39,7 +39,7 @@ async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> any
     assert!(
         assigned
             .ready
-            .send(super::super::process::HostReadiness {
+            .send(Ok(super::super::process::HostReadiness {
                 initial_outcome: None,
                 host_id: HostId::new("host.v3.test.one"),
                 session_id: "session".into(),
@@ -52,7 +52,7 @@ async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> any
                     route: "https://host.test".into(),
                     expires_at_ms: 60_000,
                 },
-            })
+            }))
             .is_ok()
     );
     let reply = call.await??;
@@ -64,21 +64,35 @@ async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> any
 
 #[tokio::test]
 async fn failed_initialization_never_reports_ready() -> anyhow::Result<()> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let url = format!("http://{}/assign", listener.local_addr()?);
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router("secret".into(), send))
-            .await
-            .unwrap();
-    });
-    let request = reqwest::Client::new()
-        .post(url)
-        .bearer_auth("secret")
-        .json(&serde_json::json!({}));
-    let call = tokio::spawn(async move { request.send().await });
-    drop(receive.await?);
-    assert_eq!(call.await??.status(), 503);
-    server.abort();
+    for rejected in [false, true] {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}/assign", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router("secret".into(), send))
+                .await
+                .unwrap();
+        });
+        let request = reqwest::Client::new()
+            .post(url)
+            .bearer_auth("secret")
+            .json(&serde_json::json!({}));
+        let call = tokio::spawn(async move { request.send().await });
+        let assigned = receive.await?;
+        if rejected {
+            assert!(assigned.ready.send(Err(())).is_ok());
+        } else {
+            drop(assigned);
+        }
+        let response = call.await??;
+        assert_eq!(response.status(), if rejected { 412 } else { 503 });
+        if rejected {
+            assert_eq!(
+                response.json::<serde_json::Value>().await?,
+                serde_json::json!({"type":"not_executed"})
+            );
+        }
+        server.abort();
+    }
     Ok(())
 }

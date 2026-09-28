@@ -38,8 +38,16 @@ impl Process {
         timings.response_decoded_at_ms = Some(elapsed_ms(started_at));
         match response {
             ProviderResponse::Success { result } => Ok(result),
-            ProviderResponse::Failure { error } => {
-                anyhow::bail!("sandbox provider failed: {error}")
+            ProviderResponse::Failure {
+                error,
+                not_executed,
+            } => {
+                let error = anyhow::anyhow!("sandbox provider failed: {error}");
+                Err(if not_executed {
+                    error.context(super::InitialInvocationNotExecuted)
+                } else {
+                    error
+                })
             }
         }
     }
@@ -166,6 +174,12 @@ struct Readiness {
 #[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ProviderResponse<T> {
-    Success { result: T },
-    Failure { error: String },
+    Success {
+        result: T,
+    },
+    Failure {
+        error: String,
+        #[serde(default, rename = "notExecuted")]
+        not_executed: bool,
+    },
 }

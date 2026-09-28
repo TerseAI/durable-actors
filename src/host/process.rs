@@ -97,6 +97,9 @@ pub(super) async fn serve_assigned_host(
     let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
         Ok(prepared) => prepared,
         Err(error) => {
+            if let Some(readiness) = readiness {
+                let _ = readiness.send(Err(()));
+            }
             log_startup(&config, &timings, "failed", Some(&error));
             return Err(error);
         }
@@ -133,6 +136,9 @@ pub(super) async fn serve_assigned_host(
             log_startup(&config, &timings, "failed", Some(&error));
             let _ = renewal.shutdown().await;
             let _ = lease.unregister().await;
+            if let Some(readiness) = readiness {
+                let _ = readiness.send(Err(()));
+            }
             return Err(error);
         }
     };
@@ -161,7 +167,7 @@ pub(super) async fn serve_assigned_host(
         }
     };
     if let Some(readiness) = readiness {
-        let _ = readiness.send(ready);
+        let _ = readiness.send(Ok(ready));
     }
     timings.executor_notified_at_ms = Some(timings.elapsed_ms());
     log_startup(&config, &timings, "ready", None);

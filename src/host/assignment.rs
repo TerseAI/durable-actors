@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::post,
 };
 use subtle::ConstantTimeEq;
@@ -11,9 +12,11 @@ use tokio::sync::{Mutex, oneshot};
 
 use super::process::HostReadiness;
 
+pub(super) type Readiness = Result<HostReadiness, ()>;
+
 pub(super) struct Assignment {
     pub environment: HashMap<String, String>,
-    pub ready: oneshot::Sender<HostReadiness>,
+    pub ready: oneshot::Sender<Readiness>,
 }
 
 struct AssignmentState {
@@ -35,7 +38,7 @@ async fn assign(
     State(state): State<Arc<AssignmentState>>,
     headers: HeaderMap,
     Json(environment): Json<HashMap<String, String>>,
-) -> Result<Json<HostReadiness>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let supplied = headers
         .get("authorization")
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -52,10 +55,14 @@ async fn assign(
     pending
         .send(Assignment { environment, ready })
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    receive
-        .await
-        .map(Json)
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    match receive.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)? {
+        Ok(ready) => Ok(Json(ready).into_response()),
+        Err(()) => Ok((
+            StatusCode::PRECONDITION_FAILED,
+            Json(serde_json::json!({"type":"not_executed"})),
+        )
+            .into_response()),
+    }
 }
 
 #[cfg(test)]

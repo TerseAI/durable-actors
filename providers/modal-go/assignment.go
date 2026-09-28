@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,8 @@ type spareAssigner interface {
 }
 
 type httpSpareAssigner struct{ client *http.Client }
+
+var errAssignmentNotExecuted = errors.New("initial invocation was not executed")
 
 var modalTunnelRoute = regexp.MustCompile(`^https://[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.modal\.host/?$`)
 
@@ -69,6 +72,14 @@ func (a httpSpareAssigner) Assign(ctx context.Context, spare spareHandle, enviro
 		return hostHandle{}, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusPreconditionFailed {
+		var rejected struct {
+			Type string `json:"type"`
+		}
+		if json.NewDecoder(response.Body).Decode(&rejected) == nil && rejected.Type == "not_executed" {
+			return hostHandle{}, errAssignmentNotExecuted
+		}
+	}
 	if response.StatusCode != http.StatusOK {
 		return hostHandle{}, fmt.Errorf("spare assignment returned HTTP %d", response.StatusCode)
 	}

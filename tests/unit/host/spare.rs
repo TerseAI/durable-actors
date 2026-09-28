@@ -174,7 +174,9 @@ async fn run_activation(
         "{route}/v1/projects/{}/actors/{}/{}",
         actor.project_id, actor.actor_name, actor.actor_id
     );
-    let response = tokio::time::timeout(Duration::from_secs(1), ready_response).await??;
+    let response = tokio::time::timeout(Duration::from_secs(1), ready_response)
+        .await??
+        .expect("assignment rejected");
     assert_eq!(response.host_id, host_id);
     assert_eq!(response.session_id, session);
     let outcome = response

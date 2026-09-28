@@ -1047,7 +1047,9 @@ impl SandboxHostProvisioner {
             request.resources = pool.config.resources.clone();
         }
         let unknown = |error: anyhow::Error| {
-            if request.initial_invocation.is_some() {
+            if request.initial_invocation.is_some()
+                && !error.is::<crate::sandbox::InitialInvocationNotExecuted>()
+            {
                 error.context(InitialInvocationUnknown)
             } else {
                 error

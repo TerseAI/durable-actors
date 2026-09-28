@@ -64,6 +64,22 @@ impl SandboxProvider for HostProvider {
             route: "https://host.test".into(),
             duration_ms: 60_000,
         };
+        if actor.actor_id == "losing-claim" {
+            let mut winner = request_lease.clone();
+            winner.id = HostId::new(format!(
+                "{}.winner",
+                request.host_id.as_str().rsplit_once('.').unwrap().0
+            ));
+            winner.session_id = uuid::Uuid::new_v4().to_string();
+            self.runtime
+                .register_activation(
+                    actor,
+                    &winner,
+                    &request.canonical_region,
+                    request.actor_is_new,
+                )
+                .await?;
+        }
         let activated = self
             .runtime
             .register_activation(
@@ -72,7 +88,8 @@ impl SandboxProvider for HostProvider {
                 &request.canonical_region,
                 request.actor_is_new,
             )
-            .await?;
+            .await
+            .map_err(|error| error.context(crate::sandbox::InitialInvocationNotExecuted))?;
         Ok(ActorHostHandle {
             initial_outcome: None,
             host_id: request.host_id.clone(),
@@ -245,6 +262,22 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         initial
     );
 
+    drop(assigned);
+    let initial = crate::actor::ActorInvocation {
+        actor: ActorKey {
+            actor_id: "losing-claim".into(),
+            ..initial.actor
+        },
+        ..initial
+    };
+    let winner = service
+        .resolve_actor_route(&initial.actor, None, None, None, Some(initial.clone()))
+        .await?;
+    assert!(
+        winner.initial_outcome.is_none(),
+        "rejected request must be dispatched to the winning owner"
+    );
+    assert_eq!(winner.route, "https://host.test");
     Ok(())
 }
 

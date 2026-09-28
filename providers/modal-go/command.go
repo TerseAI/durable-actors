@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -14,9 +15,10 @@ type command struct {
 	Request   json.RawMessage `json:"request"`
 }
 type response struct {
-	Status string `json:"status"`
-	Result any    `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
+	NotExecuted bool   `json:"notExecuted,omitempty"`
+	Status      string `json:"status"`
+	Result      any    `json:"result,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type commandRunner struct {
@@ -93,7 +95,7 @@ func (r *commandRunner) execute(ctx context.Context, cmd command, started time.T
 func writeReply(output io.Writer, result any, failure error) error {
 	reply := response{Status: "success", Result: result}
 	if failure != nil {
-		reply = response{Status: "failure", Error: failure.Error()}
+		reply = response{Status: "failure", Error: failure.Error(), NotExecuted: errors.Is(failure, errAssignmentNotExecuted)}
 	}
 	document, err := json.Marshal(reply)
 	if err != nil {
