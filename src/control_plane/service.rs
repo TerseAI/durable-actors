@@ -174,6 +174,7 @@ impl ControlPlaneService {
                 "supplied actor contract differs from compiled actor code"
             );
         }
+        prepared.log_export.clone_from(&source.log_export);
         let contract = compiled_contract.as_ref().or(supplied_contract);
         prepared.sandboxes = contract
             .map(|contract| contract.sandboxes())
@@ -938,6 +939,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
         let prepared = HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: source.project_id.clone(),
             source: Some(input),
@@ -1196,6 +1198,7 @@ impl SandboxHostProvisioner {
             .issue_host(&host_id, &session_id, &config_key, region, actor)?
             .token;
         Ok(EnsureHostRequest {
+            log_export: spec.log_export.clone(),
             actor_is_new: false,
             owner_hint: None,
             actor: Some(actor.clone()),

@@ -195,6 +195,7 @@ async fn get_deployment(
         working_directory: source.working_directory,
         actor_entrypoint: source.actor_entrypoint,
         secret_refs: spec.secret_refs,
+        log_export: spec.log_export,
     }))
 }
 
@@ -227,6 +228,7 @@ async fn register_deployment(
         .transpose()
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
+        log_export: request.log_export,
         sandboxes: Default::default(),
         project_id: project_id(path)?,
         source: None,
@@ -432,6 +434,8 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    log_export: Option<crate::logging::LogExportConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     image_ref: String,

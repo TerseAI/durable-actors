@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +71,14 @@ func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 	if api.params.Env["DURABLE_ACTORS_PROCESS_ROLE"] != "spare" {
 		t.Fatal("runtime is not initialized")
 	}
+	if api.params.Env["DURABLE_ACTORS_LOG_MODE"] != "export" {
+		t.Fatal("actor host does not use private log export")
+	}
+	script := strings.Replace(api.params.Command[2], "exec /usr/local/bin/durable-actors", "(printf customer-stdout; printf customer-stderr >&2)", 1)
+	output, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil || len(output) != 0 {
+		t.Fatalf("provider output: %q, error: %v", output, err)
+	}
 }
 
 func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
@@ -80,6 +90,7 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
 	request.ActorEntrypoint = "actors.mjs"
+	request.LogExport = json.RawMessage(`{"endpoint":"https://collector.example/v1/logs","headersEnv":"LOG_HEADERS"}`)
 	request.Spare = &spareHandle{Name: "do-spare-test", ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
 	sb := &fakeSandbox{}
 	api := &fakeAPI{found: sb}
@@ -104,6 +115,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if sb.assignment["DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS"] != "75000" {
 		t.Fatal("host idle timeout was not passed to the assigned sandbox")
+	}
+	if sb.assignment["DURABLE_ACTORS_LOG_EXPORT"] != string(request.LogExport) {
+		t.Fatal("log export configuration missing from assignment")
 	}
 }
 

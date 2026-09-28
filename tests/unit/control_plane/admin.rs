@@ -78,6 +78,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -123,6 +124,11 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
         ))?)?;
         let mut first = spec("first-image");
         first.project_id = "team-a".into();
+        let original_key = first.host_config_key();
+        first.log_export = Some(serde_json::from_value(serde_json::json!({
+            "endpoint":"https://collector.example/v1/logs", "headersEnv":"LOG_HEADERS"
+        }))?);
+        assert_ne!(original_key, first.host_config_key());
         let mut second = spec("second-image");
         second.project_id = "team-b".into();
         registry

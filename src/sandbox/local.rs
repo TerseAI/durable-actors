@@ -297,6 +297,18 @@ impl LocalRuntime {
     fn spawn_host(&self, request: &EnsureHostRequest) -> Result<LocalHost> {
         let directory = tempfile::Builder::new().prefix("ldo-").tempdir_in("/tmp")?;
         let mut environment = host_environment(request, &directory);
+        if let Some(export) = &request.log_export {
+            environment.insert(
+                "DURABLE_ACTORS_LOG_EXPORT".into(),
+                serde_json::to_string(export)?,
+            );
+            environment.insert("DURABLE_ACTORS_LOG_MODE".into(), "export".into());
+            if let Some(name) = &export.headers_env {
+                if let Ok(value) = std::env::var(name) {
+                    environment.insert(name.clone(), value);
+                }
+            }
+        }
         if let Some(module) = &self.sdk_host {
             environment.insert(
                 "DURABLE_ACTORS_SDK_HOST".into(),

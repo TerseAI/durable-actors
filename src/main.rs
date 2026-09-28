@@ -8,7 +8,7 @@ use durable_actors::{
 };
 use tokio::sync::oneshot;
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +34,12 @@ fn init_logging(development: bool) {
             "info"
         })
     });
-    if development {
+    if std::env::var("DURABLE_ACTORS_LOG_MODE").as_deref() == Ok("export") {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(durable_actors::logging::ActorLogRouter::global().clone())
+            .init();
+    } else if development {
         tracing_subscriber::fmt()
             .compact()
             .without_time()

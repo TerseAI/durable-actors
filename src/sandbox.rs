@@ -95,6 +95,8 @@ pub struct BuiltActorCode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_export: Option<crate::logging::LogExportConfig>,
     pub actor_is_new: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_hint: Option<String>,

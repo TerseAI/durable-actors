@@ -89,6 +89,34 @@ export class CustomerAgent extends Actor {}
 
 Supported regions: `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, `asia-southeast`.
 
+### Actor log exports
+
+Set `logExport` per project through `PUT /v1/projects/{project_id}/deployment`:
+
+```json
+{
+    "imageRef": "im-customer",
+    "workingDirectory": "/project",
+    "actorEntrypoint": "src/actors.ts",
+    "secretRefs": ["customer-log-credentials"],
+    "logExport": {
+        "endpoint": "https://collector.example/v1/logs",
+        "headersEnv": "ACTOR_LOG_HEADERS"
+    }
+}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `endpoint` | Full OTLP/HTTP protobuf logs URL, including its path. HTTP(S) only; no credentials, query, or fragment. Redirects are disabled. |
+| `headersEnv` | Optional actor environment variable containing a JSON object of authentication headers. |
+
+Set `ACTOR_LOG_HEADERS` to `{"Authorization":"Bearer <token>"}` in the referenced Modal secret, or in your local environment.
+
+Compatible destinations: [Datadog](https://docs.datadoghq.com/opentelemetry/setup/otlp_ingest/logs/), [Sentry](https://docs.sentry.io/concepts/otlp/direct/logs/) (open beta), [PostHog](https://posthog.com/docs/logs/installation/rust), OpenTelemetry Collectors.
+
+Include `logExport` on every deployment; omission or `null` disables exports. Modal actor logs are discarded unless exported. Delivery is best effort. Control-plane, replica, and build logs are excluded.
+
 ### Authentication and callbacks
 
 | Variable                                | Default                              | Meaning                                                                                |

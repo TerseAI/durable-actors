@@ -817,6 +817,12 @@ components:
                     default: []
                     items: { type: string, pattern: "^[A-Za-z0-9._-]{1,255}$" }
                     description: Secret names for deployed actors.
+                logExport:
+                    oneOf:
+                        - { $ref: "#/components/schemas/ActorLogExport" }
+                        - { type: "null" }
+                    default: null
+                    description: Project actor logs destination. Omit or set null to disable exports.
                 contract:
                     oneOf:
                         - { $ref: "#/components/schemas/PublicActorContract" }
@@ -832,6 +838,22 @@ components:
                 workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
                 actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
+                logExport: { $ref: "#/components/schemas/Deployment/properties/logExport" }
+        ActorLogExport:
+            type: object
+            additionalProperties: false
+            required: [endpoint]
+            properties:
+                endpoint:
+                    type: string
+                    maxLength: 2048
+                    pattern: "^https?://"
+                    description: Full OTLP/HTTP protobuf logs URL, including the path. Credentials, query strings, and fragments are forbidden; redirects are not followed.
+                headersEnv:
+                    type: [string, "null"]
+                    maxLength: 128
+                    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+                    description: Actor environment variable containing a JSON object of authentication headers. Store its value in a named secret, not the deployment payload.
         PublicActorContract:
             type: object
             additionalProperties: false
