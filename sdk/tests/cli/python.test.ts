@@ -16,9 +16,9 @@ const runtime = process.env.LITTLE_ACTORS_TEST_RUNTIME
 const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))
 )
-const source = `from little_actors import Actor
+const source = `from little_actors import Actor, emitted
 class Counter(Actor):
-    count: int = 0
+    count: int = emitted(0)
     async def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
@@ -55,6 +55,8 @@ test(
 def use() -> None:
     counter = Counter("one")
     result: int = counter.increment(2)
+    subscription = counter.subscribe(lambda state: print(state.count))
+    subscription.close()
     counter.increment("bad")
 `
         )

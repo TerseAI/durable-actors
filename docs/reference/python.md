@@ -31,7 +31,7 @@ Source annotations produce JSON Schema. Generated clients have ordinary synchron
 
 Inline annotations and a `py.typed` marker support mypy and Pyright without a custom checker plugin. Tests verify both valid calls and rejection of invalid calls, including generated model return types. Runtime validation is strict: a string is not coerced into an integer RPC argument.
 
-Classes extend `Actor` directly. Public async methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `broadcast`, `connect`, `prepare_websocket`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
+Classes extend `Actor` directly. Public async methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `broadcast`, `connect`, `prepare_websocket`, `subscribe`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
 
 Generated clients fill omitted middle arguments only when the contract provides a default. If a later argument is supplied and an earlier optional argument has no schema default (as in TypeScript contracts), the client raises `ValueError` before sending the RPC. Trailing optional arguments can always be omitted.
 
@@ -51,6 +51,27 @@ Methods run serially by default. A failed invocation restores persisted state to
 `@reentrant` permits other calls to enter while a method awaits. Reentrant actors share a live Python instance; their mutations are not rolled back on exceptions, since doing so would overwrite overlapping successful work. Completion sequences preserve commit ordering in Rust. Use reentrancy deliberately for streaming or long waits. Move blocking work off the event loop with `asyncio.to_thread`.
 
 The synchronous HTTP client caches direct actor routes, refreshes stale routes, and retries only a rejection known to precede execution. `ActorInvocationError` exposes `code` and `request_id`. A lost response raises `outcome_unknown`; automatically replaying it could repeat actor side effects.
+
+## State subscriptions
+
+Generated actors with emitted fields expose `subscribe(callback)`. The callback receives the complete current emitted state, including typed nested models:
+
+```python
+from generated import Chat
+from generated.chat_models import Message
+
+chat = Chat("lobby")
+subscription = chat.subscribe(lambda state: print(state.messages))
+chat.append(Message(text="hello"))
+```
+
+The SDK delivers the initial snapshot and applies subsequent changes and removals before calling your callback. Omitted fields are preserved, changed fields are replaced, and removed optional fields return to their omitted/default state. Each callback receives a new model; mutating it does not affect later snapshots. Only emitted fields are included.
+
+A subscription owns a WebSocket and receives events on a background thread, with callbacks executed serially on that thread. Keep the application running while listening. `subscription.close()` stops receiving, closes the socket, and waits for an active callback to finish; it can also be called from a callback. A subscription supports `with` for scoped cleanup. `subscription.closed` indicates that its receiver has finished.
+
+Connection, validation, and callback failures stop the subscription and are available as `subscription.error`. Pass `on_error=handler` to receive the exception on the subscription thread; otherwise it is logged. Connection setup failures raise directly from `subscribe`. A normal remote close ends the subscription without an error. Reconnect explicitly by creating a new subscription.
+
+Connection metadata is optional only when its declared type accepts `None`. For a typed `Member` model, use `chat.subscribe(callback, metadata=Member(name="Ada"))`; the generator and type checker enforce the metadata type. Application messages are not delivered to state callbacks; use the lower-level connection API below for those.
 
 ## Typed WebSockets
 

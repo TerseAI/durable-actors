@@ -66,4 +66,18 @@ The generated package includes method signatures, independent Pydantic models, a
 
 Typing uses inline annotations and the [PEP 561](https://peps.python.org/pep-0561/) package marker. Both mypy and Pyright check the SDK and generated clients. Pydantic validates inputs, outputs, and persisted state at runtime. Python annotations remain ordinary annotations: `chat.append(42)` is rejected by a type checker and by runtime validation.
 
+## Subscribe to state
+
+Actors with emitted fields have a typed `subscribe` method:
+
+```python
+chat = Chat("lobby")
+subscription = chat.subscribe(lambda state: print(state.messages))
+chat.append(Message(text="hello"))
+```
+
+The SDK receives the initial state and applies later patches in the background. Each callback gets a complete typed snapshot of the emitted fields, and RPC calls continue normally. Call `subscription.close()` when finished. Callbacks run serially on a background thread; the subscription does not keep an otherwise finished process alive.
+
+Pass `on_error=handler` to handle connection, validation, or callback failures. A failure stops the subscription; its exception is available as `subscription.error` and is logged if no handler is supplied. Actors with required connection metadata also require `metadata=...` when subscribing.
+
 See the [Python reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/python.md) for supported types, sockets, reentrancy, deployment, and CLI options.

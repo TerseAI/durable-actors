@@ -109,7 +109,10 @@ def expose_state(actor: Document, definitions: Document, properties: Document) -
         for name, value in definitions["SocketState"]["properties"].items()
         if name in actor["socket"]["emittable"]
     }
-    for name, required in (("SocketEmittedState", list(emitted)), ("SocketStatePatch", [])):
+    required_state = [
+        name for name in definitions["SocketState"].get("required", []) if name in emitted
+    ]
+    for name, required in (("SocketEmittedState", required_state), ("SocketStatePatch", [])):
         definitions[name] = {
             "type": "object",
             "properties": deepcopy(emitted),
@@ -170,9 +173,11 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
     lines = [
         "from __future__ import annotations",
         "import json as _json",
+        "from collections.abc import Callable as _Callable",
         "from pydantic import TypeAdapter as _TypeAdapter",
         "from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, default_client as _default_client",
         "from little_actors.connection import Connection as _Connection",
+        "from little_actors.subscription import Subscription as _Subscription",
         "from little_actors.generated import UNSET as _UNSET, Unset as _Unset, arguments as _arguments, argument as _argument",
         f"from . import {name.lower()}_models as _models",
         "",
@@ -185,11 +190,14 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
     for method in actor["rpc"]["methods"]:
         lines.extend(rpc_method(name, method, actor["rpc"]["schema"], types))
     lines.extend(socket_methods(name, types))
+    lines.extend(subscription_method(actor, types))
     return "\n".join(lines)
 
 
 def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, str]) -> list[str]:
     name = identifier(method["name"])
+    if name in {"connect", "prepare_websocket", "subscribe"}:
+        raise ValueError(f"reserved actor method: {name}")
     params, values, defaults = method_parameters(method["parameters"], schema, types)
     result = method["result"]
     returned = "None" if result["kind"] == "void" else types["Rpc" + root_key(result["type"])]
@@ -259,6 +267,23 @@ def socket_methods(actor: str, types: dict[str, str]) -> list[str]:
         f"    def connect(self, metadata: {metadata}) -> {connection}:",
         "        grant = self.prepare_websocket(metadata)",
         f"        return {connection}.open(grant, _TypeAdapter({incoming}), _TypeAdapter({outgoing}), _TypeAdapter({state}), _TypeAdapter({patch}))",
+        "",
+    ]
+
+
+def subscription_method(actor: Document, types: dict[str, str]) -> list[str]:
+    if not actor["socket"]["emittable"]:
+        return []
+    metadata, state = types["SocketMetadata"], types["SocketEmittedState"]
+    schema = actor["socket"]["schema"]
+    default = (
+        " = None"
+        if nullable({"$ref": "#/definitions/Metadata"}, schema["definitions"], set())
+        else ""
+    )
+    return [
+        f"    def subscribe(self, callback: _Callable[[{state}], None], *, metadata: {metadata}{default}, on_error: _Callable[[Exception], None] | None = None) -> _Subscription[{state}]:",
+        f"        return _Subscription(self.connect(metadata), callback, _TypeAdapter({state}), on_error=on_error)",
         "",
     ]
 

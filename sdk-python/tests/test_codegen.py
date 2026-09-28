@@ -44,6 +44,10 @@ def check(client: Client) -> None:
     chat.append(42)
     connection = chat.connect(Message(text="hello", role="user"))
     connection.send(42)
+    subscription = chat.subscribe(lambda state: print(state.messages[0].text), metadata=Message(text="hello", role="user"))
+    subscription.close()
+    chat.subscribe(lambda state: print(state.missing), metadata=Message(text="hello", role="user"))
+    chat.subscribe(lambda state: None)
 """)
     for checker in ("mypy", "pyright"):
         result = subprocess.run(
@@ -54,7 +58,7 @@ def check(client: Client) -> None:
         )
         assert result.returncode == 1, result.stdout + result.stderr
         assert "42" in result.stdout or "int" in result.stdout
-        assert "2 errors" in result.stdout, result.stdout
+        assert "4 errors" in result.stdout, result.stdout
 
 
 def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_path, monkeypatch):
@@ -277,3 +281,25 @@ def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(tmp_p
     with pytest.raises(ValueError, match="without a schema default"):
         client.unknown(suffix="?")
     assert calls == []
+
+
+def test_generated_subscription_name_is_reserved(tmp_path):
+    import pytest
+
+    contract = public_contract([Chat])
+    contract["actors"][0]["rpc"]["methods"][0]["name"] = "subscribe"
+    with pytest.raises(ValueError, match="reserved"):
+        generate_client(contract, tmp_path / "conflicting")
+
+
+def test_generated_emitted_state_preserves_optional_contract_fields(tmp_path, monkeypatch):
+    from little_actors import Unset
+
+    contract = public_contract([Chat])
+    contract["actors"][0]["socket"]["schema"]["definitions"]["State"]["required"] = []
+    generate_client(contract, tmp_path / "optional_state_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    models = importlib.import_module("optional_state_client.chat_models")
+    state = models.SocketEmittedState()
+    assert isinstance(state.messages, Unset)
+    assert state.model_dump(exclude_unset=True) == {}

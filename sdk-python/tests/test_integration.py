@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from queue import Queue
 
 import httpx
 import pytest
@@ -87,6 +88,37 @@ class Room(Actor[Payload, Payload, Payload]):
             assert update.changes.count == 3
             with pytest.raises(TimeoutError):
                 connection.receive(timeout=0.01)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+)
+def test_generated_subscription_delivers_state_while_calling_rpcs(tmp_path, monkeypatch):
+    (tmp_path / "actors.py").write_text("""from little_actors import Actor, emitted
+class Counter(Actor):
+    count: int = emitted(0)
+    label: str = emitted("ready")
+    async def increment(self) -> int:
+        self.count += 1
+        return self.count
+""")
+    with actor_server(tmp_path, "actors.py", free_port()) as (client, contract):
+        generate_client(contract, tmp_path / "subscription_client")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        remote = importlib.import_module("subscription_client")
+        counter = remote.Counter("one", client)
+        states = Queue()
+        subscription = counter.subscribe(states.put)
+        try:
+            initial = states.get(timeout=5)
+            assert (initial.count, initial.label) == (0, "ready")
+            assert counter.increment() == 1
+            updated = states.get(timeout=5)
+            assert (updated.count, updated.label) == (1, "ready")
+        finally:
+            subscription.close()
+        assert subscription.closed
+        assert subscription.error is None
 
 
 @contextmanager

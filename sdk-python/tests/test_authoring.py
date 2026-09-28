@@ -250,3 +250,12 @@ def misuse(actor: TypedActor) -> None:
             assert result.returncode == bool(expected_errors), result.stdout + result.stderr
             if expected_errors:
                 assert "4 errors" in result.stdout, result.stdout
+
+
+def test_subscription_method_name_is_reserved():
+    class Conflicting(Actor):
+        async def subscribe(self) -> None:
+            pass
+
+    with pytest.raises(ValueError, match="reserved"):
+        describe_actor(Conflicting)

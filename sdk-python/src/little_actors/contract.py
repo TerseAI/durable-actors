@@ -17,7 +17,7 @@ from .json import JsonValue
 
 Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
-RESERVED = {"get_connections", "broadcast", "get", "connect", "prepare_websocket"}
+RESERVED = {"get_connections", "broadcast", "get", "connect", "prepare_websocket", "subscribe"}
 
 
 @dataclass(frozen=True)
