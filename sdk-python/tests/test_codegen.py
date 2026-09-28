@@ -37,7 +37,9 @@ def test_generated_client_returns_typed_models_without_actor_source(tmp_path, mo
 from generated.chat_models import Message
 from little_actors.client import Client
 def check(client: Client) -> None:
-    chat = Chat("lobby", client)
+    chat = Chat("lobby")
+    configured = Chat("other", client)
+    configured.append(Message(text="hello", role="user"))
     result: list[Message] = chat.append(Message(text="hello", role="user"))
     chat.append(42)
     connection = chat.connect(Message(text="hello", role="user"))

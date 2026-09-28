@@ -171,15 +171,15 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
         "from __future__ import annotations",
         "import json as _json",
         "from pydantic import TypeAdapter as _TypeAdapter",
-        "from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant",
+        "from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant, default_client as _default_client",
         "from little_actors.connection import Connection as _Connection",
         "from little_actors.generated import UNSET as _UNSET, Unset as _Unset, arguments as _arguments, argument as _argument",
         f"from . import {name.lower()}_models as _models",
         "",
         f"class {name}:",
-        "    def __init__(self, actor_id: str, transport: _ActorTransport) -> None:",
+        "    def __init__(self, actor_id: str, transport: _ActorTransport | None = None) -> None:",
         "        self._actor_id = actor_id",
-        "        self._transport = transport",
+        "        self._transport = transport if transport is not None else _default_client()",
         "",
     ]
     for method in actor["rpc"]["methods"]:

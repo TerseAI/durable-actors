@@ -50,19 +50,17 @@ pnpm exec durable-actors generate src/actors.py --out-dir generated
 ```
 
 ```python
-from little_actors import Client
 from generated import Chat
 from generated.chat_models import Message
 
-with Client() as transport:
-    chat = Chat("lobby", transport)
-    messages: list[Message] = chat.append(Message(text="hello"))
-    print(messages[0].text)
+chat = Chat("lobby")
+messages: list[Message] = chat.append(Message(text="hello"))
+print(messages[0].text)
 ```
 
 The CLI runs strict mypy on local actor definitions before generation and on the generated package afterward. `dev` checks definitions before startup and every reload; an invalid edit leaves the previous code running.
 
-The client uses synchronous calls and context managers. Generated RPC methods return typed values directly.
+Generated RPC methods return typed values directly. The SDK creates a shared HTTP client when needed, reads configuration from the environment, and closes its connection pool at process exit. You only need the actor ID.
 
 The generated package includes method signatures, independent Pydantic models, and `py.typed`. Consumers need only `little-actors`, not the actor project or the code generator. Regenerate after changing the actor contract, and include the generated package in your application's type checks.
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
 import time
 import uuid
+from threading import Lock
 from types import TracebackType
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
@@ -245,6 +247,19 @@ class Client:
         if reply.get("type") in {"completed", "failed"}:
             self._targets[key] = target
         return reply
+
+
+_shared_client: Client | None = None
+_shared_client_lock = Lock()
+
+
+def default_client() -> Client:
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = Client()
+            atexit.register(_shared_client.close)
+        return _shared_client
 
 
 def component(value: str, maximum: int) -> str:

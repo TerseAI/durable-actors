@@ -16,7 +16,7 @@ from little_actors.codegen import generate_client
 @pytest.mark.skipif(
     not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
-def test_python_actor_generated_client_and_durable_restart(tmp_path, monkeypatch):
+def test_python_actor_generated_client_and_durable_restart(tmp_path):
     (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
 from little_actors import Actor
 class Count(BaseModel):
@@ -31,10 +31,20 @@ class Counter(Actor):
     for expected in (2, 4):
         with actor_server(tmp_path, "actors.py", port) as (client, contract):
             generate_client(contract, tmp_path / "remote")
-            monkeypatch.syspath_prepend(str(tmp_path))
-            remote = importlib.import_module("remote")
-            result = remote.Counter("one", client).increment(2)
-            assert result.value == expected
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    'from remote import Counter; print(Counter("one").increment(2).value)',
+                ],
+                cwd=tmp_path,
+                env={**os.environ, "DURABLE_ACTORS_CONTROL_PLANE_URL": client.origin},
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert int(result.stdout) == expected
 
 
 @pytest.mark.skipif(

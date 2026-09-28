@@ -76,22 +76,21 @@ Import `ActorSocket` from `little_actors`. `await self.get_connections()` return
 ```python
 from generated import Room
 from generated.room_models import Member, Message
-from little_actors import Client, StateSnapshot, StateUpdate
+from little_actors import StateSnapshot, StateUpdate
 
-with Client() as transport:
-    room = Room("lobby", transport)
-    with room.connect(Member(name="Ada")) as connection:
-        connection.send(Message(role="user", text="hello"))
-        for event in connection:
-            if isinstance(event, StateSnapshot):
-                print(event.state)
-            elif isinstance(event, StateUpdate):
-                print(event.changes.model_dump(exclude_unset=True), event.removed)
-            else:
-                print(event.text)
+room = Room("lobby")
+with room.connect(Member(name="Ada")) as connection:
+    connection.send(Message(role="user", text="hello"))
+    for event in connection:
+        if isinstance(event, StateSnapshot):
+            print(event.state)
+        elif isinstance(event, StateUpdate):
+            print(event.changes.model_dump(exclude_unset=True), event.removed)
+        else:
+            print(event.text)
 ```
 
-`connection.receive()` blocks until a message arrives; pass `timeout=5` to wait up to five seconds and raise `TimeoutError` if no message arrives. Use a `with` block to close connections and clients, or call `.close()` explicitly.
+`connection.receive()` blocks until a message arrives; pass `timeout=5` to wait up to five seconds and raise `TimeoutError` if no message arrives. Use a `with` block to close the WebSocket connection, or call `connection.close()` explicitly.
 
 `StateSnapshot` contains all emittable fields; `StateUpdate.changes` contains changed fields. Optional fields without a schema default use the typed `UNSET` sentinel, exported from `little_actors`. This preserves the distinction between omission and an explicit `None`. Use `model_fields_set`, `isinstance(value, Unset)`, or `model_dump(exclude_unset=True)` when processing patches. `prepare_websocket(metadata)` returns a short-lived grant when another process will connect. Reconnect explicitly with a new grant after expiry or connection loss.
 
@@ -111,7 +110,11 @@ Use the existing Node CLI (`pnpm exec durable-actors`). The Python package has n
 
 The CLI selects `DURABLE_ACTORS_PYTHON`, then the active `VIRTUAL_ENV`, then the project's `.venv/bin/python`, then `python3`. Set `DURABLE_ACTORS_ENTRYPOINT=src/actors.py` in `.env`; the Python template creates this setting. `.env.local` and `.env` work just as they do for TypeScript projects. `DURABLE_ACTORS_PROJECT` overrides the project directory, and `DURABLE_ACTORS_DATA_DIR` the local state directory. `dev --port 0` selects a free port. `DURABLE_ACTORS_BINARY` selects a native executable instead of downloading it. Keep native runtime, TypeScript CLI, and Python SDK versions aligned.
 
-Client constructor arguments override environment variables. Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_ACTORS_SECRET`, and optionally `DURABLE_ACTORS_HOME_REGION`. Local defaults are `http://127.0.0.1:7100` and project `local`. Remote origins require a project ID. An injected `httpx.Client` lets applications supply transport and timeout policy; its lifecycle remains with the application. CLI commands load `.env.local` and `.env`, preserving exported environment overrides.
+Construct generated clients with only an actor ID, such as `Chat("lobby")`. The SDK creates one shared HTTP client when first needed and closes it at process exit. It reads environment configuration at that first construction.
+
+For custom configuration or independent client lifetimes, pass an explicit `Client` as the second argument and close it with a `with` block or `.close()`. Client constructor arguments override environment variables.
+
+Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_ACTORS_SECRET`, and optionally `DURABLE_ACTORS_HOME_REGION`. Local defaults are `http://127.0.0.1:7100` and project `local`. Remote origins require a project ID. An injected `httpx.Client` lets applications supply transport and timeout policy; its lifecycle remains with the application. CLI commands load `.env.local` and `.env`, preserving exported environment overrides.
 
 Generation from local source imports that source. Generation from a server consumes schemas and does not execute the actor implementation.
 

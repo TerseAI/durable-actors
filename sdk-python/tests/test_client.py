@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import httpx
 import pytest
 
@@ -41,3 +45,37 @@ def test_lost_response_is_not_replayed():
                 client.invoke("Counter", "one", "increment", [])
     assert failure.value.code == "outcome_unknown"
     assert len(calls) == 1
+
+
+def test_default_client_shares_its_pool_and_closes_it_at_process_exit(tmp_path):
+    closed = tmp_path / "closed"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import sys
+import httpx
+from little_actors.client import default_client
+
+class TrackedHttpClient(httpx.Client):
+    def close(self):
+        super().close()
+        assert self.is_closed
+        Path(sys.argv[1]).write_text("closed")
+
+httpx.Client = TrackedHttpClient
+with ThreadPoolExecutor(max_workers=8) as pool:
+    clients = list(pool.map(lambda _: default_client(), range(32)))
+assert all(client is clients[0] for client in clients)
+""",
+            str(closed),
+        ],
+        env={**os.environ, "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:7100"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert closed.read_text() == "closed"

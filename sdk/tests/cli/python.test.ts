@@ -52,9 +52,8 @@ test(
         await writeFile(
             path.join(directory, "usage.py"),
             `from generated import Counter
-from little_actors import Client
-def use(client: Client) -> None:
-    counter = Counter("one", client)
+def use() -> None:
+    counter = Counter("one")
     result: int = counter.increment(2)
     counter.increment("bad")
 `
