@@ -41,10 +41,10 @@ def test_socket_connection_validates_messages_and_separates_state():
     with Connection(
         wire, TypeAdapter(Message), TypeAdapter(Message), TypeAdapter(State), TypeAdapter(State)
     ) as connection:
+        connection.send(Message(text="sent"))
         snapshot, message = list(connection)
         assert isinstance(snapshot, StateSnapshot)
         assert snapshot.state.count == 1
         assert message.text == "hello"
-        connection.send(Message(text="sent"))
     assert json.loads(wire.sent[0]) == {"text": "sent"}
     assert wire.closed
