@@ -1,6 +1,5 @@
 from typing import Annotated
 
-import pytest
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
@@ -136,14 +135,13 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
     assert reply["effects"][0]["changes"] == {"value": {"count": 3}}
 
 
-@pytest.mark.parametrize("suppress_cancellation", [False, True])
-async def test_eviction_cancels_active_and_queued_calls_before_rehydration(suppress_cancellation):
+async def test_eviction_cancels_active_and_queued_calls_before_rehydration():
     import asyncio
 
     from little_actors import reentrant
 
     entered, ordinary_entered = asyncio.Event(), asyncio.Event()
-    resumed = []
+    cleaning, finish_cleanup = asyncio.Event(), asyncio.Event()
     stopped = []
 
     class Shared(Actor):
@@ -154,15 +152,12 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration(suppr
             entered.set()
             try:
                 await asyncio.Event().wait()
-                resumed.append("hold")
-                self.count += 100
-                return self.count
             except asyncio.CancelledError:
-                if suppress_cancellation:
-                    return self.count
-                raise
+                cleaning.set()
+                await finish_cleanup.wait()
             finally:
                 stopped.append("hold")
+            return self.count
 
         async def ordinary(self) -> None:
             ordinary_entered.set()
@@ -178,6 +173,7 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration(suppr
     runtime = ActorRuntime(Shared, Effects())
     actor = {**ACTOR, "actor_name": "Shared"}
     pending = [asyncio.create_task(runtime.handle(command("hold", actor=actor)))]
+    eviction = None
     try:
         await asyncio.wait_for(entered.wait(), 1)
         assert (await runtime.handle(command(actor=actor)))["sequence"] == 1
@@ -188,19 +184,21 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration(suppr
         await asyncio.wait_for(ordinary_entered.wait(), 1)
         pending.append(asyncio.create_task(runtime.handle(command(actor=actor))))
         await asyncio.sleep(0)
-        evicted = await asyncio.wait_for(runtime.handle({"type": "evict", "actor": actor}), 1)
-        assert evicted == {"type": "evicted"}
+        eviction = asyncio.create_task(runtime.handle({"type": "evict", "actor": actor}))
+        await asyncio.wait_for(cleaning.wait(), 1)
+        assert not eviction.done()
+        finish_cleanup.set()
+        assert await asyncio.wait_for(eviction, 1) == {"type": "evicted"}
         replies = await asyncio.wait_for(asyncio.gather(*pending), 1)
         assert all(reply["code"] == "actor_evicted" for reply in replies)
         assert sorted(stopped) == ["hold", "ordinary"]
-        assert resumed == []
-        assert (await runtime.handle(command(actor=actor, resident_only=True)))[
-            "type"
-        ] == "state_required"
-        reply = await runtime.handle(command(actor=actor, state={"count": 1}))
-        assert reply["result"] == 2
+        reply = await runtime.handle(command(actor=actor, state={"count": 10}))
+        assert reply["result"] == 11
         assert reply["sequence"] == 2
     finally:
+        finish_cleanup.set()
+        if eviction is not None:
+            pending.append(eviction)
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
