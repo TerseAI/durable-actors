@@ -72,7 +72,6 @@ paths:
                 "200": { $ref: "#/components/responses/Changed" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
         get:
             operationId: getDeployment
             tags: [Deployments]
@@ -154,7 +153,6 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "404": { $ref: "#/components/responses/NotFound" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-actor:
         parameters:
@@ -175,7 +173,6 @@ paths:
                 "403": { description: Actor has no published RPC methods. }
                 "404": { $ref: "#/components/responses/NotFound" }
                 "409": { $ref: "#/components/responses/Conflict" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke:
@@ -204,8 +201,8 @@ paths:
             security: [{ ApiKey: [] }, { ActorSession: [] }, { ActorTicket: [] }, {}]
             description: |
                 Without a valid cached target, the SDK sends requestId, method, args and an optional homeRegion to the control plane.
-                The control plane resolves placement, forwards one call and returns its outcome together with a scoped host target. Maximum body size is 16 MiB.
-                The SDK caches that target for subsequent invocations and broadcasts. Warm invocations go directly to the host with its ticket and ownerEpoch. Maximum body size is 32 MiB.
+                The control plane resolves placement, executes the initial call during cold assignment or forwards it to an active host, and returns its durable outcome together with a scoped host target.
+                The SDK caches that target for subsequent invocations and broadcasts. Warm invocations go directly to the host with its ticket and ownerEpoch.
                 The host validates the actor, host session and ownership epoch before dispatch.
                 Socket effects are delivered by the host before a completed response.
                 The SDK retries once across both paths only for explicit pre-execution rejection or a refused host connection.
@@ -249,7 +246,6 @@ paths:
                 "409": { $ref: "#/components/responses/Conflict" }
                 "502": { description: The invocation outcome is unknown. Do not replay automatically. }
                 "503": { $ref: "#/components/responses/Unavailable" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
                 "422": { description: Invalid invocation document. }
     /v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects:
@@ -267,7 +263,7 @@ paths:
             tags: [WebSockets]
             summary: Deliver socket effects to the owning host
             security: [{ ActorTicket: [] }]
-            description: Used by backend broadcasts. Actor method effects are already delivered by invokeActor. Do not retry an uncertain delivery. Maximum body size is 32 MiB.
+            description: Used by backend broadcasts. Actor method effects are already delivered by invokeActor. Do not retry an uncertain delivery.
             requestBody:
                 required: true
                 content:
@@ -295,7 +291,6 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { description: Ticket rejected. }
                 "403": { description: "Ticket belongs to another actor, host session or ownership epoch." }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "415": { description: Expected application/json. }
                 "422": { description: Invalid effects document. }
                 "503": { description: Delivery unavailable; some effects may already have been applied. }
@@ -315,7 +310,6 @@ paths:
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "409": { $ref: "#/components/responses/Conflict" }
-                "413": { $ref: "#/components/responses/PayloadTooLarge" }
                 "500": { $ref: "#/components/responses/Internal" }
                 "503": { $ref: "#/components/responses/Unavailable" }
     /v1/projects/{project_id}/observe/actors:
@@ -730,11 +724,6 @@ components:
             content:
                 application/json:
                     schema: { $ref: "#/components/schemas/Error" }
-        PayloadTooLarge:
-            description: Request exceeds 16 MiB (payload_too_large).
-            content:
-                application/json:
-                    schema: { $ref: "#/components/schemas/Error" }
         Internal:
             description: Server failure (internal).
             content:
@@ -822,7 +811,7 @@ components:
                         - { $ref: "#/components/schemas/PublicActorContract" }
                         - { type: "null" }
                     default: null
-                    description: Optional; generated for hosted deployments. Maximum 4 MiB.
+                    description: Optional; generated for hosted deployments.
         CurrentDeployment:
             type: object
             additionalProperties: false
