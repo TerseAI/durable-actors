@@ -35,6 +35,13 @@ async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()
 async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_failures()
 -> Result<()> {
     let (service, admin, provider) = fixture()?;
+    let mut document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    let options =
+        serde_json::json!({"cpu":2,"memoryMiB":4096,"regions":["canada"],"idleTimeoutMs":60000});
+    document["actors"][0]["sandbox"] = options.clone();
+    *provider.contract.lock().unwrap() = document.clone();
     let routes = super::super::public_api::router(service, admin.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let url = format!(
@@ -58,6 +65,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     }
     assert_eq!(provider.builds.lock().unwrap().len(), 1);
     let compiled = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(
+        serde_json::to_value(&compiled.sandboxes["ChatRoom"])?,
+        options
+    );
     assert_eq!(compiled.image_ref, "im-runtime");
     assert_eq!(compiled.code_snapshot.as_deref(), Some("im-code-1"));
     assert_eq!(compiled.actor_entrypoint.as_deref(), Some("actors.mjs"));
@@ -82,6 +93,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         .error_for_status()?;
     assert_eq!(provider.builds.lock().unwrap().len(), 1);
     let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(active.sandboxes, compiled.sandboxes);
     assert_eq!(active.code_snapshot, compiled.code_snapshot);
     assert_ne!(active.host_config_key(), compiled.host_config_key());
     assert_eq!(
@@ -90,7 +102,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
             .await?
             .unwrap()
             .contract,
-        contract()
+        document
     );
     assert_eq!(
         provider.retired.lock().unwrap().as_slice(),
@@ -113,6 +125,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     assert_eq!(provider.retired.lock().unwrap().len(), 2);
 
     provider.fail.store(false, Ordering::SeqCst);
+    *provider.contract.lock().unwrap() = contract();
     roundtrip["imageRef"] = "im-updated".into();
     client
         .put(&url)
@@ -122,6 +135,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         .await?
         .error_for_status()?;
     let updated = admin.current_deployment("default").await?.unwrap();
+    assert!(updated.sandboxes.is_empty());
     assert_ne!(updated.code_snapshot, active.code_snapshot);
     assert_eq!(provider.builds.lock().unwrap().len(), 3);
     assert_eq!(
@@ -133,48 +147,6 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         ]
     );
     server.abort();
-    Ok(())
-}
-
-#[tokio::test]
-async fn compiled_sandbox_overrides_survive_code_reuse_and_redeployment() -> Result<()> {
-    let (service, admin, provider) = fixture()?;
-    let mut document: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../sdk/tests/fixtures/public-contract.json"
-    ))?;
-    let options =
-        serde_json::json!({"cpu":2,"memoryMiB":4096,"regions":["canada"],"idleTimeoutMs":60000});
-    document["actors"][0]["sandbox"] = options.clone();
-    *provider.contract.lock().unwrap() = document;
-    let mut input = source();
-    service.deploy_source(&admin, &input, None).await?;
-    let deployed = admin.current_deployment("default").await?.unwrap();
-    assert_eq!(
-        serde_json::to_value(&deployed.sandboxes["ChatRoom"])?,
-        options
-    );
-    input.secret_refs.push("new-secrets".into());
-    service.deploy_source(&admin, &input, None).await?;
-    assert_eq!(provider.builds.lock().unwrap().len(), 1);
-    assert_eq!(
-        admin
-            .current_deployment("default")
-            .await?
-            .unwrap()
-            .sandboxes,
-        deployed.sandboxes
-    );
-    input.image_ref = "im-updated".into();
-    *provider.contract.lock().unwrap() = contract();
-    service.deploy_source(&admin, &input, None).await?;
-    assert!(
-        admin
-            .current_deployment("default")
-            .await?
-            .unwrap()
-            .sandboxes
-            .is_empty()
-    );
     Ok(())
 }
 

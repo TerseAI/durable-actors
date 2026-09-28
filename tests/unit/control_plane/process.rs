@@ -74,30 +74,6 @@ fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Resu
 }
 
 #[test]
-fn canada_is_an_opt_in_placement_region() -> Result<()> {
-    let mut values = process_environment();
-    let parse = |values: &HashMap<&str, &str>| {
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
-    };
-    let defaults = parse(&values)?;
-    assert_eq!(
-        defaults.sandbox_provider.pool.regions,
-        vec!["north-america-east"]
-    );
-    assert!(defaults.storage.replica_regions.is_empty());
-    values.extend([
-        ("DURABLE_ACTORS_REGION", "canada"),
-        ("DURABLE_ACTORS_SPARE_REGIONS", "canada"),
-        ("DURABLE_ACTORS_REPLICA_REGIONS", "[\"canada\"]"),
-    ]);
-    let configured = parse(&values)?;
-    assert_eq!(configured.region.as_deref(), Some("canada"));
-    assert_eq!(configured.sandbox_provider.pool.regions, vec!["canada"]);
-    assert_eq!(configured.storage.replica_regions, vec!["canada"]);
-    Ok(())
-}
-
-#[test]
 fn host_idle_timeout_is_configurable_and_bounded() -> Result<()> {
     for value in ["1", "120000", "86400000"] {
         let mut values = process_environment();

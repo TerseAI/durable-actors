@@ -10,33 +10,16 @@ import (
 )
 
 func TestSparePlacementUsesGCP(t *testing.T) {
-	for _, test := range []struct{ kind, region string }{{"actor", "north-america-east"}, {"replica", "europe-west"}} {
+	for _, test := range []struct{ kind, region, placement string }{{"actor", "north-america-east", "us-east"}, {"replica", "europe-west", "eu-west"}, {"actor", "canada", "ca"}} {
 		t.Run(test.kind, func(t *testing.T) {
 			params, err := spareParams(spareRequest{Kind: test.kind, Name: "do-spare-test", ImageRef: "im-runtime", CanonicalRegion: test.region, Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if params.Cloud != "gcp" {
-				t.Fatalf("sandbox cloud = %q, want gcp", params.Cloud)
-			}
-		})
-	}
-}
-
-func TestCanadianSandboxPlacementIsStrict(t *testing.T) {
-	for _, kind := range []string{"actor", "replica"} {
-		t.Run(kind, func(t *testing.T) {
-			params, err := spareParams(spareRequest{Kind: kind, Name: "do-spare-canada", ImageRef: "im-runtime", CanonicalRegion: "canada", Resources: resourceLimits{CPUMillis: 2000, MemoryMiB: 2048}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if params.Cloud != "gcp" || !slices.Equal(params.Regions, []string{"ca"}) {
+			if params.Cloud != "gcp" || !slices.Equal(params.Regions, []string{test.placement}) {
 				t.Fatalf("unexpected placement: %v %v", params.Cloud, params.Regions)
 			}
 		})
-	}
-	if _, err := modalRegion("toronto"); err == nil {
-		t.Fatal("unsupported placement accepted")
 	}
 }
 

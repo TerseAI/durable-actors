@@ -1,29 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn sandbox_overrides_survive_postgres_reconnection_and_change_host_identity() -> Result<()> {
-    crate::postgres::testing::with_postgres(async |fixture| {
-        let registry =
-            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
-        let defaults = spec("image");
-        let mut configured = serde_json::to_value(&defaults)?;
-        configured["sandboxes"] = serde_json::json!({"Counter":{"cpu":2,"regions":["canada"]}});
-        let configured: HostLaunchSpec = serde_json::from_value(configured)?;
-        assert_ne!(defaults.host_config_key(), configured.host_config_key());
-        registry.register_test_deployment(&configured).await?;
-        drop(registry);
-        let reopened =
-            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
-        assert_eq!(
-            reopened.launch_spec("default").await?,
-            Some(configured.clone())
-        );
-        assert_eq!(reopened.launch_specs().await?, vec![configured]);
-        Ok(())
-    })
-    .await
-}
-
 #[test]
 fn secret_changes_update_host_configuration() {
     let mut deployment = spec("image-1");
@@ -70,6 +46,12 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let registry = PostgresAdminRegistry::from_database(database.clone());
         let mut deployment = spec("image-1");
+        let initial_key = deployment.host_config_key();
+        deployment.sandboxes.insert(
+            "Counter".into(),
+            serde_json::from_value(serde_json::json!({"cpu":2,"regions":["canada"]}))?,
+        );
+        assert_ne!(initial_key, deployment.host_config_key());
         deployment.secret_refs = vec!["project-secrets".into()];
         deployment.source = Some(DeploymentSource {
             image_ref: "im-source".into(),

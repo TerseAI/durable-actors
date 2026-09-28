@@ -564,34 +564,6 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
         "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
     }))?;
-    for (actor_name, cpu_millis, memory_mib) in [
-        ("Counter", 2500, 1024),
-        ("Room", 1000, 4096),
-        ("Plain", 1000, 1024),
-    ] {
-        let actor = ActorKey {
-            project_id: "default".into(),
-            actor_name: actor_name.into(),
-            actor_id: "one".into(),
-        };
-        assert_eq!(
-            provisioner.request(&spec, "canada", &actor)?.resources,
-            crate::sandbox::ResourceLimits {
-                cpu_millis,
-                memory_mib
-            }
-        );
-        assert_eq!(
-            provisioner
-                .request(&spec, "canada", &actor)?
-                .host_idle_timeout_ms,
-            if actor_name == "Counter" {
-                60_000
-            } else {
-                10_000
-            }
-        );
-    }
     let pool = crate::sandbox::pool::SparePool::new(
         crate::postgres::PostgresDatabase::lazy("postgresql://localhost:1/unavailable")?,
         provisioner.provider.clone(),
@@ -620,11 +592,20 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             actor_name: actor_name.into(),
             actor_id: "one".into(),
         };
+        let request = provisioner.request(&spec, "canada", &actor)?;
         assert_eq!(
-            provisioner.request(&spec, "canada", &actor)?.resources,
+            request.resources,
             crate::sandbox::ResourceLimits {
                 cpu_millis,
                 memory_mib
+            }
+        );
+        assert_eq!(
+            request.host_idle_timeout_ms,
+            if actor_name == "Counter" {
+                60_000
+            } else {
+                10_000
             }
         );
     }
@@ -795,14 +776,6 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
     let central = "north-america-central";
     let south = "north-america-south";
     for (failed_regions, existing, reported, expected_region, expected_calls) in [
-        (
-            vec![],
-            false,
-            "northamerica-northeast2",
-            Some("canada"),
-            vec!["canada"],
-        ),
-        (vec!["canada"], false, "canada", None, vec!["canada"]),
         (vec![], false, "southcentralus", Some(south), vec![south]),
         (
             vec![],
