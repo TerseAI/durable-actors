@@ -124,6 +124,9 @@ def write_artifact(project: Path, output: Path, module: str, settings: Document)
 def source_paths(project: Path, output: Path) -> set[Path]:
     paths: set[Path] = set()
     for directory, directories, files in os.walk(project):
+        if "pyvenv.cfg" in files:
+            directories.clear()
+            continue
         directories[:] = sorted(
             name
             for name in directories

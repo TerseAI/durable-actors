@@ -30,6 +30,8 @@ Inline annotations and a `py.typed` marker support mypy and Pyright without a cu
 
 Classes extend `Actor` directly. Public async methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `broadcast`, `connect`, `prepare_websocket`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
 
+Generated clients fill omitted middle arguments only when the contract provides a default. If a later argument is supplied and an earlier optional argument has no schema default (as in TypeScript contracts), the client raises `ValueError` before sending the RPC. Trailing optional arguments can always be omitted.
+
 Each field must have a default or a `default_factory` on its `Persisted` or `Ephemeral` annotation. Defaults are copied per instance. Factories run when an actor activates, rather than during schema extraction. Actor constructors are not supported. For example:
 
 ```python
@@ -114,7 +116,7 @@ The runtime image includes Python 3.13 and this SDK. Register a hosted deploymen
 
 Build dependencies come from `requirements.txt` when present, otherwise from `[project].dependencies` in `pyproject.toml`. Pin dependencies for reproducible builds. The SDK dependency in `pyproject.toml` must match the runtime's installed SDK. The hosted Python version and platform must support any native dependencies; build them in the runtime image, rather than copying a macOS virtual environment into a Linux deployment.
 
-Python source is packaged from the project, excluding hidden directories, `node_modules`, `venv`, `__pycache__`, `dist`, `target`, and `generated`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
+Python source is packaged from the project, excluding hidden directories, `node_modules`, `venv`, `__pycache__`, `dist`, `target`, `generated`, and any directory containing `pyvenv.cfg`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
 
 ```toml
 [tool.little-actors]

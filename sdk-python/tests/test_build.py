@@ -3,6 +3,8 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 
 def test_hosted_build_installs_dependencies_before_import_and_bundles_resources(tmp_path):
     dependency = tmp_path / "build_dep-1.0-py3-none-any.whl"
@@ -95,13 +97,17 @@ class Version(Actor):
     assert schema["definitions"]["Method_read_Result"]["const"] == "two"
 
 
-def test_build_excludes_virtual_environment_sources(tmp_path):
+@pytest.mark.parametrize("directory", ["venv", "tools/python-env"])
+def test_build_excludes_virtual_environment_sources(tmp_path, directory):
     from little_actors.build import write_artifact
 
     (tmp_path / "actors.py").write_text("from helper import value\n")
     (tmp_path / "helper.py").write_text("value = 1\n")
-    environment = tmp_path / "venv/lib/python3.13/site-packages/dependency"
+    root = tmp_path / directory
+    environment = root / "lib/python3.13/site-packages/dependency"
     environment.mkdir(parents=True)
+    if directory != "venv":
+        (root / "pyvenv.cfg").write_text("include-system-site-packages = false\n")
     with (environment / "__init__.py").open("wb") as source:
         source.truncate(33 * 1024 * 1024)
     output = tmp_path / "dist"

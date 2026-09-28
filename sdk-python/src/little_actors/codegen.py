@@ -195,7 +195,7 @@ def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, 
     returned = "None" if result["kind"] == "void" else types["Rpc" + root_key(result["type"])]
     lines = [
         f"    async def {name}(_self{', ' if params else ''}{', '.join(params)}) -> {returned}:",
-        f"        _args = _arguments([{', '.join(values)}], _json.loads({json.dumps(json.dumps(defaults))}))",
+        f"        _args = _arguments([{', '.join(values)}], [{', '.join(defaults)}])",
         f"        _result = await _self._transport.invoke({actor!r}, _self._actor_id, {name!r}, _args)",
     ]
     if returned != "None":
@@ -210,10 +210,10 @@ def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, 
 
 def method_parameters(
     parameters: list[Document], schema: Document, types: dict[str, str]
-) -> tuple[list[str], list[str], list[Any]]:
+) -> tuple[list[str], list[str], list[str]]:
     params: list[str] = []
     values: list[str] = []
-    defaults: list[Any] = []
+    defaults: list[str] = []
     keyword_started = False
     for index, parameter in enumerate(parameters):
         name = identifier(parameter["name"])
@@ -231,7 +231,11 @@ def method_parameters(
             keyword_started = True
         params.append(f"{name}: {hint}" + (" | _Unset = _UNSET" if parameter["optional"] else ""))
         values.append(f"_argument({name}, _TypeAdapter({hint}))")
-        defaults.append(node.get("default"))
+        defaults.append(
+            f"_json.loads({json.dumps(json.dumps(node['default']))})"
+            if "default" in node
+            else "_UNSET"
+        )
         next_kind = (
             schema["definitions"][root_key(parameters[index + 1]["type"])].get("x-python-kind")
             if index + 1 < len(parameters)

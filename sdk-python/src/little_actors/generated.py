@@ -27,6 +27,11 @@ def argument(value: Any, adapter: TypeAdapter[Any]) -> Any:
 def arguments(values: list[Any], defaults: list[Any]) -> list[Any]:
     while values and isinstance(values[-1], Unset):
         values.pop()
-    return [
-        defaults[index] if isinstance(value, Unset) else value for index, value in enumerate(values)
-    ]
+    for index, value in enumerate(values):
+        if isinstance(value, Unset):
+            if isinstance(defaults[index], Unset):
+                raise ValueError(
+                    f"cannot omit argument {index + 1} without a schema default before a supplied argument"
+                )
+            values[index] = defaults[index]
+    return values

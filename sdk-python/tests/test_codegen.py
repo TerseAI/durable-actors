@@ -224,3 +224,53 @@ async def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, mon
         models.Options(required="present", optional=None)
     result = await remote.OptionActor("one", Calls()).echo(models.Options(required="present"))
     assert result.model_dump(exclude_unset=True) == {"required": "present"}
+
+
+async def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(
+    tmp_path, monkeypatch
+):
+    import pytest
+
+    from little_actors import Actor
+
+    class Defaults(Actor):
+        async def greet(self, name: str = "friend", suffix: str = "!") -> list[str]:
+            return [name, suffix]
+
+        async def nullable(self, name: str | None = None, suffix: str = "!") -> list[str | None]:
+            return [name, suffix]
+
+        async def unknown(self, name: str = "friend", suffix: str = "!") -> list[str]:
+            return [name, suffix]
+
+    contract = public_contract([Defaults])
+    definitions = contract["actors"][0]["rpc"]["schema"]["definitions"]
+    for index in range(2):
+        node = definitions[f"Method_unknown_Parameter_{index}"]
+        del node["default"]
+        del node["x-python-kind"]
+    generate_client(contract, tmp_path / "defaults_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("defaults_client")
+    calls = []
+
+    class Calls:
+        async def prepare_websocket(
+            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+        ):
+            raise AssertionError("not used")
+
+        async def invoke(self, actor_name, actor_id, method, args):
+            calls.append(args)
+            return args
+
+    client = generated.Defaults("one", Calls())
+    assert await client.greet(suffix="?") == ["friend", "?"]
+    assert await client.nullable(suffix="?") == [None, "?"]
+    assert await client.unknown() == []
+    assert await client.unknown("Ada") == ["Ada"]
+    assert await client.unknown("Ada", "?") == ["Ada", "?"]
+    calls.clear()
+    with pytest.raises(ValueError, match="without a schema default"):
+        await client.unknown(suffix="?")
+    assert calls == []
