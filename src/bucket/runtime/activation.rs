@@ -24,8 +24,10 @@ impl RuntimeStorage {
         request.validate_duration()?;
         let started = Instant::now();
         let now = self.clock.now_ms()?;
+        // Unsealed recovery can fence a live session if the hinted lease was renewed.
         let owner_hint = owner_hint.filter(|hint| {
-            hint.generation > 0
+            hint.record.sealed
+                && hint.generation > 0
                 && hint.record.actor == *actor
                 && hint.record.region == region
                 && hint.record.lease.expires_at_ms <= now

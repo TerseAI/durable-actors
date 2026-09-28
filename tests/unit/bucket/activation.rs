@@ -164,6 +164,47 @@ impl Fixture {
             },
         })
     }
+
+    async fn replicate(&mut self, lease: &HostLease) -> Result<Arc<DiskPeers>> {
+        use crate::replication::FileReplicaStore;
+        let mut stores = HashMap::new();
+        let mut targets = Vec::new();
+        for region in ["us-east", "us-central"] {
+            stores.insert(
+                region.into(),
+                Arc::new(FileReplicaStore::open(self._directory.path().join(region), 4096).await?),
+            );
+            targets.push(ReplicaTarget {
+                host_id: region.into(),
+                url: format!("http://{region}"),
+                region: region.into(),
+            });
+        }
+        let peers = Arc::new(DiskPeers {
+            stores,
+            available: std::sync::atomic::AtomicBool::new(true),
+        });
+        self.runtime.fleet = Arc::new(ReplicaSet(targets));
+        self.runtime.peers = peers.clone();
+        let scope = ReplicaScope {
+            actor: self.actor.clone(),
+            host: lease.id.clone(),
+            session: lease.session_id.clone(),
+            region: "us-east".into(),
+        };
+        let targets = self.runtime.fleet.ensure(&scope).await?;
+        let membership = self
+            .runtime
+            .replace_replicas(
+                &scope,
+                targets,
+                None,
+                &crate::state_transport::GrpcStateTransport::new(),
+            )
+            .await?;
+        self.runtime.enable_replication(membership)?;
+        Ok(peers)
+    }
 }
 
 fn request(session: &str) -> HostLeaseRequest {
@@ -450,52 +491,14 @@ impl ReplicaPeers for DiskPeers {
 #[tokio::test]
 async fn combined_lease_takeover_recovers_replica_only_commits_and_seals_old_writes() -> Result<()>
 {
-    use crate::{
-        replication::{FileReplicaStore, ReplicaStore},
-        state_log::StateSnapshot,
-    };
+    use crate::{replication::ReplicaStore, state_log::StateSnapshot};
     let mut f = Fixture::new()?;
-    let mut stores = HashMap::new();
-    let mut targets = Vec::new();
-    for region in ["us-east", "us-central"] {
-        stores.insert(
-            region.into(),
-            Arc::new(FileReplicaStore::open(f._directory.path().join(region), 4096).await?),
-        );
-        targets.push(ReplicaTarget {
-            host_id: region.into(),
-            url: format!("http://{region}"),
-            region: region.into(),
-        });
-    }
-    let peers = Arc::new(DiskPeers {
-        stores,
-        available: std::sync::atomic::AtomicBool::new(true),
-    });
-    f.runtime.fleet = Arc::new(ReplicaSet(targets));
-    f.runtime.peers = peers.clone();
     let first = f
         .runtime
         .register_activation(&f.actor, &request("first"), "us-east", true, None)
         .await?
         .placement;
-    let scope = ReplicaScope {
-        actor: f.actor.clone(),
-        host: first.lease.id.clone(),
-        session: first.lease.session_id.clone(),
-        region: "us-east".into(),
-    };
-    let targets = f.runtime.fleet.ensure(&scope).await?;
-    let membership = f
-        .runtime
-        .replace_replicas(
-            &scope,
-            targets,
-            None,
-            &crate::state_transport::GrpcStateTransport::new(),
-        )
-        .await?;
-    f.runtime.enable_replication(membership)?;
+    let peers = f.replicate(&first.lease).await?;
     let plan = f
         .runtime
         .prepare_actor_write(&f.actor, &first.lease, 1, 1)
@@ -754,26 +757,66 @@ async fn release_retries_a_concurrent_inventory_renewal() -> Result<()> {
 }
 
 #[tokio::test]
-async fn returning_activation_uses_the_control_plane_owner_hint() -> Result<()> {
-    let f = Fixture::new()?;
-    f.runtime
-        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+async fn expired_owner_hint_cannot_fence_a_renewed_session() -> Result<()> {
+    use crate::{replication::ReplicaStore, state_log::StateSnapshot};
+    let mut f = Fixture::new()?;
+    let first = request("first");
+    let loaded = f
+        .runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
         .await?;
-    f.clock.0.store(11_000, Ordering::SeqCst);
+    let peers = f.replicate(&loaded.placement.lease).await?;
     let (_, hint) = f
         .runtime
         .get_owner_with_hint(&f.actor.storage_key())
         .await?;
     let hint: OwnershipHint = serde_json::from_str(&serde_json::to_string(&hint.unwrap())?)?;
-    f.bucket.reads.store(0, Ordering::SeqCst);
-    f.bucket.session_reads.store(0, Ordering::SeqCst);
-    let loaded = f
+    f.clock.0.store(10_000, Ordering::SeqCst);
+    let renewed = f
+        .runtime
+        .renew_activation(&f.actor, &first, Default::default())
+        .await?;
+    f.clock.0.store(11_000, Ordering::SeqCst);
+    let error = f
         .runtime
         .register_activation(&f.actor, &request("next"), "us-east", false, Some(&hint))
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("previous owner lease is still active")
+    );
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &renewed, 1, 1)
         .await?;
-    assert_eq!(loaded.placement.owner_epoch, 2);
-    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 1);
-    assert_eq!(f.bucket.session_reads.load(Ordering::SeqCst), 1);
+    let bytes = StateSnapshot::new(
+        1,
+        1,
+        "after-renewal".into(),
+        serde_json::json!({"count": 1}),
+        serde_json::json!(1),
+    )?
+    .encode()?;
+    for store in peers.stores.values() {
+        store.append(&plan.stream, &bytes).await?;
+    }
+    let session_key = format!(
+        "{}.json",
+        crate::storage_paths::session(&first.id, &first.session_id)
+    );
+    let session = f.bucket.inner.get(&session_key).await?.unwrap();
+    assert!(serde_json::from_slice::<session::Session>(&session.bytes)?.is_open());
+    assert_eq!(
+        f.runtime
+            .get_owner(&f.actor.storage_key())
+            .await?
+            .unwrap()
+            .lease,
+        renewed
+    );
     Ok(())
 }
 
@@ -784,7 +827,9 @@ async fn stale_owner_hint_rereads_and_preserves_the_current_owner() -> Result<()
         f.runtime
             .register_activation(&f.actor, &request("first"), "us-east", true, None)
             .await?;
-        f.clock.0.store(11_000, Ordering::SeqCst);
+        f.runtime
+            .finish_activation(&f.actor, &request("first").id, "first")
+            .await?;
         let (_, hint) = f
             .runtime
             .get_owner_with_hint(&f.actor.storage_key())
