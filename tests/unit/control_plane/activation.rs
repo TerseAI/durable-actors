@@ -15,12 +15,14 @@ struct CountingBucket {
     inner: FileBucket,
     reads: AtomicUsize,
     writes: AtomicUsize,
+    read_started: tokio::sync::Semaphore,
 }
 
 #[async_trait]
 impl Bucket for CountingBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        self.read_started.add_permits(1);
         self.inner.get(key).await
     }
     async fn compare_and_swap(
@@ -44,7 +46,10 @@ struct HostProvider {
 
 #[async_trait]
 impl SandboxProvider for HostProvider {
-    async fn build_code(&self, _: &crate::sandbox::BuildCodeRequest) -> Result<crate::sandbox::BuiltActorCode> {
+    async fn build_code(
+        &self,
+        _: &crate::sandbox::BuildCodeRequest,
+    ) -> Result<crate::sandbox::BuiltActorCode> {
         anyhow::bail!("fixture does not build deployment images")
     }
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -90,6 +95,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         inner: FileBucket::new(directory.path().into())?,
         reads: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
+        read_started: tokio::sync::Semaphore::new(0),
     });
     let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
     let runtime = Arc::new(RuntimeStorage::new(
@@ -143,6 +149,10 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         access,
         runtime.clone(),
     )?);
+    let registry = Arc::new(ConcurrentRegistry {
+        inner: registry,
+        bucket: bucket.clone(),
+    });
     let service = ControlPlaneService::new(runtime, auth.clone(), registry, issuer, provisioner)
         .with_runtime_access(runtime_access);
     let actor = ActorKey {
@@ -150,7 +160,9 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
-    let target = service.resolve_actor_route(&actor, None, None, None).await?;
+    let target = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(target.owner_epoch, 1);
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 1);
     assert_eq!(bucket.writes.load(Ordering::SeqCst), 1);
@@ -161,7 +173,9 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     assert_eq!(principal.actor, actor);
     service.require_active_host(&principal).await?;
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 2);
-    let again = service.resolve_actor_route(&actor, None, None, None).await?;
+    let again = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(again.route, target.route);
     assert_eq!(
         bucket.reads.load(Ordering::SeqCst),
@@ -200,4 +214,42 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     invalid.lease.as_mut().unwrap().expires_at_ms = 1;
     assert!(ready_lease(&invalid, &assignment).is_err());
     Ok(())
+}
+
+struct ConcurrentRegistry {
+    inner: Arc<super::super::admin::LocalAdminRegistry>,
+    bucket: Arc<CountingBucket>,
+}
+
+#[async_trait]
+impl AdminRegistry for ConcurrentRegistry {
+    async fn launch_spec(&self, project: &str) -> Result<Option<HostLaunchSpec>> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            self.bucket.read_started.acquire(),
+        )
+        .await
+        .context("deployment lookup must overlap placement lookup")??
+        .forget();
+        self.inner.launch_spec(project).await
+    }
+    async fn register_deployment(
+        &self,
+        spec: &HostLaunchSpec,
+        contract: Option<&super::super::contracts::PublicActorContract>,
+    ) -> Result<bool> {
+        self.inner.register_deployment(spec, contract).await
+    }
+    async fn deployment_contract(
+        &self,
+        project: &str,
+    ) -> Result<Option<super::super::contracts::PublishedContract>> {
+        self.inner.deployment_contract(project).await
+    }
+    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
+        self.inner.launch_specs().await
+    }
+    async fn remove_deployment(&self, project: &str) -> Result<()> {
+        self.inner.remove_deployment(project).await
+    }
 }

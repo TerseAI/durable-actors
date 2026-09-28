@@ -583,21 +583,29 @@ impl ControlPlaneService {
             Some(region) => region.to_owned(),
             None => select_target_region(None, storage_region)?,
         };
-        let spec = self
-            .runtime_deployment(&actor.project_id)
-            .await?
-            .context("project has no registered actor code")?;
+        let deployment = async {
+            let spec = self
+                .runtime_deployment(&actor.project_id)
+                .await?
+                .context("project has no registered actor code")?;
+            anyhow::Ok((spec, timings.as_ref().map(|timings| timings.elapsed_ms())))
+        };
+        let placement = async {
+            let current = self.placements.get_owner(&actor.storage_key()).await?;
+            anyhow::Ok((
+                current,
+                timings.as_ref().map(|timings| timings.elapsed_ms()),
+            ))
+        };
+        let ((spec, deployed_at), (current, placed_at)) = tokio::try_join!(deployment, placement)?;
         if let Some(timings) = timings.as_deref_mut() {
-            timings.deployment_loaded_at_ms = Some(timings.elapsed_ms());
+            timings.deployment_loaded_at_ms = deployed_at;
+            timings.placement_loaded_at_ms = placed_at;
         }
-        let current = self.placements.get_owner(&actor.storage_key()).await?;
         if let (Some(assigned), Some(placement)) = (home_region, current.as_ref())
             && assigned != placement.home_region
         {
             return Err(RegionConflict.into());
-        }
-        if let Some(timings) = timings.as_deref_mut() {
-            timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
         }
         let lease_checked = current.as_ref().is_some_and(|placement| {
             host_matches_config(&placement.owner, &spec.host_config_key())
@@ -1234,3 +1242,7 @@ mod deployment_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/service.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/activation.rs"]
+mod activation_tests;

@@ -1,4 +1,6 @@
 use super::*;
+use futures_util::{StreamExt, TryStreamExt};
+use std::time::Instant;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Session {
@@ -31,13 +33,11 @@ impl RuntimeStorage {
                 "actor activation is still active"
             );
         }
-        let Some(session) = self.start_recovery(scope).await? else {
+        let Some((session, snapshots)) = self.start_recovery(scope).await? else {
             return Ok(());
         };
-        for snapshot in self.seal_replicas(&session).await? {
-            self.recover_snapshot(&session.replicas, &snapshot).await?;
-        }
-        self.finish_recovery(scope, session).await
+        self.complete_recovery(scope, session, snapshots).await?;
+        Ok(())
     }
 
     pub async fn replica_members(&self, scope: &ReplicaScope) -> Result<Vec<ReplicaTarget>> {
@@ -61,16 +61,51 @@ impl RuntimeStorage {
         &self,
         owner: &Ownership,
     ) -> Result<Option<LoadedSnapshot>> {
-        let Some(session) = self.start_recovery(&owner.scope()).await? else {
-            return Ok(None);
+        let started = Instant::now();
+        let recovery = self.start_recovery(&owner.scope()).await?;
+        let claim_and_seal_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let mut snapshot_load_ms = 0.0;
+        let load = async {
+            let started = Instant::now();
+            let snapshot = self.bucket_snapshot(owner, None).await?;
+            snapshot_load_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            anyhow::Ok(snapshot)
         };
-        let snapshots = self.seal_replicas(&session).await?;
-        let recovered = self.restore_session(owner, &session, snapshots).await?;
-        self.finish_recovery(&owner.scope(), session).await?;
-        Ok(recovered)
+        let restore = async {
+            match recovery {
+                Some((session, snapshots)) => {
+                    self.complete_recovery(&owner.scope(), session, snapshots)
+                        .await
+                }
+                None => Ok(Vec::new()),
+            }
+        };
+        let (mut loaded, restored) = tokio::try_join!(load, restore)?;
+        let prefix = snapshot_prefix(&owner.actor)?;
+        for snapshot in restored {
+            if snapshot.reference.object.starts_with(&prefix) {
+                merge_snapshot(&mut loaded, snapshot)?;
+            }
+        }
+        let loaded = self.complete_snapshot(owner, loaded, None, &[]).await?;
+        tracing::info!(
+            event = "actor_activation_recovery",
+            project_id = %owner.actor.project_id,
+            actor_name = %owner.actor.actor_name,
+            actor_id = %owner.actor.actor_id,
+            previous_host_id = %owner.lease.id,
+            previous_session_id = %owner.lease.session_id,
+            claim_and_seal_ms,
+            snapshot_load_ms,
+            duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        );
+        Ok(loaded)
     }
 
-    async fn start_recovery(&self, scope: &ReplicaScope) -> Result<Option<Session>> {
+    async fn start_recovery(
+        &self,
+        scope: &ReplicaScope,
+    ) -> Result<Option<(Session, Vec<SnapshotRef>)>> {
         let key = key(&scope.host, &scope.session);
         let id = scope.identity();
         loop {
@@ -95,37 +130,98 @@ impl RuntimeStorage {
             );
             match session.state {
                 RecoveryState::Sealed => return Ok(None),
-                RecoveryState::Recovering => return Ok(Some(session)),
+                RecoveryState::Recovering => {
+                    let snapshots = self.seal_replicas(&session).await?;
+                    return Ok(Some((session, snapshots)));
+                }
                 RecoveryState::Open => {
                     session.state = RecoveryState::Recovering;
-                    if self
-                        .save_session(&key, Some(object.generation), &session)
+                    if let Some(snapshots) = self
+                        .claim_recovery(scope, object.generation, &session)
                         .await?
                     {
-                        return Ok(Some(session));
+                        return Ok(Some((session, snapshots)));
                     }
                 }
             }
         }
     }
 
-    async fn finish_recovery(&self, scope: &ReplicaScope, mut session: Session) -> Result<()> {
+    async fn claim_recovery(
+        &self,
+        scope: &ReplicaScope,
+        generation: i64,
+        session: &Session,
+    ) -> Result<Option<Vec<SnapshotRef>>> {
         let key = key(&scope.host, &scope.session);
+        let started = Instant::now();
+        let claim = async {
+            let result = self.save_session(&key, Some(generation), session).await;
+            (result, started.elapsed().as_secs_f64() * 1_000.0)
+        };
+        let seal = async {
+            let result = self.seal_replicas(session).await;
+            (result, started.elapsed().as_secs_f64() * 1_000.0)
+        };
+        let ((claimed, claim_ms), (sealed, seal_ms)) = tokio::join!(claim, seal);
+        tracing::info!(event = "actor_recovery_fence", session_id = %scope.session,
+            host_id = %scope.host, claim_ms, seal_ms, claimed = matches!(&claimed, Ok(true)));
+        // A losing claim may have sealed an obsolete replica set.
+        if claimed? {
+            Ok(Some(sealed?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn complete_recovery(
+        &self,
+        scope: &ReplicaScope,
+        session: Session,
+        snapshots: Vec<SnapshotRef>,
+    ) -> Result<Vec<LoadedSnapshot>> {
+        let key = key(&scope.host, &scope.session);
+        let started = Instant::now();
+        let restore = async {
+            let loaded = self.restore_snapshots(&session, snapshots).await?;
+            anyhow::Ok((loaded, started.elapsed().as_secs_f64() * 1_000.0))
+        };
+        let read = async {
+            let current = self.authority.get(&key).await?;
+            anyhow::Ok((current, started.elapsed().as_secs_f64() * 1_000.0))
+        };
+        let ((loaded, restore_ms), (current, finish_read_ms)) = tokio::try_join!(restore, read)?;
+        let finish_started = Instant::now();
+        self.finish_recovery(&key, session, current).await?;
+        tracing::info!(event = "actor_recovery_storage", session_id = %scope.session,
+            host_id = %scope.host, restore_ms, finish_read_ms,
+            finish_write_ms = finish_started.elapsed().as_secs_f64() * 1_000.0,
+            duration_ms = started.elapsed().as_secs_f64() * 1_000.0);
+        Ok(loaded)
+    }
+
+    async fn finish_recovery(
+        &self,
+        key: &str,
+        mut session: Session,
+        mut current: Option<crate::bucket::BucketObject>,
+    ) -> Result<()> {
         session.state = RecoveryState::Sealed;
         loop {
-            let current = self
-                .authority
-                .get(&key)
-                .await?
-                .context("recovery record disappeared")?;
-            let record: Session = serde_json::from_slice(&current.bytes)?;
+            let object = current.context("recovery record disappeared")?;
+            let record: Session = serde_json::from_slice(&object.bytes)?;
+            ensure!(
+                record.id == session.id && record.region == session.region,
+                "session identity mismatch"
+            );
             if record.state == RecoveryState::Sealed
                 || self
-                    .save_session(&key, Some(current.generation), &session)
+                    .save_session(key, Some(object.generation), &session)
                     .await?
             {
                 return Ok(());
             }
+            current = self.authority.get(key).await?;
         }
     }
 
@@ -187,28 +283,22 @@ impl RuntimeStorage {
         Ok(snapshots.into_values().flatten().collect())
     }
 
-    async fn restore_session(
+    async fn restore_snapshots(
         &self,
-        owner: &Ownership,
         session: &Session,
         snapshots: Vec<SnapshotRef>,
-    ) -> Result<Option<LoadedSnapshot>> {
-        let prefix = snapshot_prefix(&owner.actor)?;
-        let mut loaded: Option<LoadedSnapshot> = None;
-        for snapshot in snapshots {
-            let bytes = self.recover_snapshot(&session.replicas, &snapshot).await?;
-            if snapshot.object.starts_with(&prefix)
-                && loaded.as_ref().is_none_or(|s| {
-                    snapshot_position(&snapshot.object) > snapshot_position(&s.reference.object)
-                })
-            {
-                loaded = Some(LoadedSnapshot {
+    ) -> Result<Vec<LoadedSnapshot>> {
+        futures_util::stream::iter(snapshots)
+            .map(|snapshot| async {
+                let bytes = self.recover_snapshot(&session.replicas, &snapshot).await?;
+                anyhow::Ok(LoadedSnapshot {
                     reference: snapshot,
                     bytes: bytes.into(),
-                });
-            }
-        }
-        Ok(loaded)
+                })
+            })
+            .buffer_unordered(8)
+            .try_collect()
+            .await
     }
 }
 

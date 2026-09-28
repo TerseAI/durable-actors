@@ -21,8 +21,7 @@ impl RuntimeStorage {
             self.load(&actor.storage_key()).await?
         };
         let ownership_read_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        let mut session_recovery_ms = None;
-        let mut snapshot_load_ms = None;
+        let mut recovery_and_snapshot_load_ms = None;
         let recovered = match &current {
             Some((_, record)) => {
                 ensure!(
@@ -39,11 +38,9 @@ impl RuntimeStorage {
                 );
                 let recovery_started = Instant::now();
                 let recovered = self.recover_session(record).await?;
-                session_recovery_ms = Some(recovery_started.elapsed().as_secs_f64() * 1_000.0);
-                let snapshot_started = Instant::now();
-                let snapshot = self.latest(record, recovered).await?;
-                snapshot_load_ms = Some(snapshot_started.elapsed().as_secs_f64() * 1_000.0);
-                snapshot
+                recovery_and_snapshot_load_ms =
+                    Some(recovery_started.elapsed().as_secs_f64() * 1_000.0);
+                recovered
             }
             None => None,
         };
@@ -73,8 +70,7 @@ impl RuntimeStorage {
             session_id = %request.session_id,
             new_actor,
             ownership_read_ms,
-            session_recovery_ms,
-            snapshot_load_ms,
+            recovery_and_snapshot_load_ms,
             ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
             duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
         );

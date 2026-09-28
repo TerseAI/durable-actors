@@ -12,6 +12,7 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use axum::Router;
 use bytes::Bytes;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tonic::{Request, Response, Status};
@@ -307,9 +308,22 @@ impl RuntimeStorage {
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let bucket = &self.authority;
+        let (loaded, (replicas, head)) = tokio::try_join!(
+            self.bucket_snapshot(record, known),
+            self.replica_snapshot(record),
+        )?;
+        self.complete_snapshot(record, loaded, head, &replicas)
+            .await
+    }
+
+    async fn bucket_snapshot(
+        &self,
+        record: &Ownership,
+        known: Option<LoadedSnapshot>,
+    ) -> Result<Option<LoadedSnapshot>> {
         let stream = record.stream()?;
-        let newest = bucket
+        let newest = self
+            .authority
             .list(&stream.prefix)
             .await?
             .into_iter()
@@ -319,25 +333,34 @@ impl RuntimeStorage {
                     .map(|position| (position, key))
             })
             .max_by_key(|(position, _)| *position);
-        let mut loaded = match newest {
-            Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => known,
+        match newest {
+            Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => {
+                Ok(known)
+            }
             Some((_, key)) => {
-                let object = bucket
+                let object = self
+                    .authority
                     .get(&key)
                     .await?
                     .context("listed snapshot disappeared")?;
-                Some(decode_snapshot(key, object.bytes)?)
+                Ok(Some(decode_snapshot(key, object.bytes)?))
             }
-            None => known,
-        };
-        let mut candidate = record.base.clone();
-        advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
+            None => Ok(known),
+        }
+    }
+
+    async fn replica_snapshot(
+        &self,
+        record: &Ownership,
+    ) -> Result<(Vec<ReplicaTarget>, Option<SnapshotRef>)> {
+        let stream = record.stream()?;
         let replicas = self.replica_members(&record.scope()).await?;
         let mut pending = JoinSet::new();
         for target in &replicas {
             let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
             pending.spawn(async move { peers.head(&target, &stream).await });
         }
+        let mut candidate = None;
         let mut witnesses = 0;
         while let Some(result) = pending.join_next().await {
             if let Ok(Ok(head)) = result {
@@ -350,10 +373,23 @@ impl RuntimeStorage {
             replicas.is_empty() || witnesses > 0,
             "no complete replica witness; refusing to lose acknowledged state"
         );
+        Ok((replicas, candidate))
+    }
+
+    async fn complete_snapshot(
+        &self,
+        record: &Ownership,
+        mut loaded: Option<LoadedSnapshot>,
+        head: Option<SnapshotRef>,
+        replicas: &[ReplicaTarget],
+    ) -> Result<Option<LoadedSnapshot>> {
+        let mut candidate = record.base.clone();
+        advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
+        advance(&mut candidate, head)?;
         if let Some(snapshot) = candidate
             && loaded.as_ref().is_none_or(|s| s.reference != snapshot)
         {
-            let bytes = self.recover_snapshot(&replicas, &snapshot).await?;
+            let bytes = self.recover_snapshot(replicas, &snapshot).await?;
             loaded = Some(LoadedSnapshot {
                 reference: snapshot,
                 bytes: bytes.into(),
@@ -367,14 +403,40 @@ impl RuntimeStorage {
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        if let Some(object) = self.authority.get(&snapshot.object).await? {
+        let bucket = self.authority.get(&snapshot.object);
+        let peers = self.read_replica_snapshot(replicas, snapshot);
+        tokio::pin!(bucket, peers);
+        let (object, prefetched) = tokio::select! {
+            object = &mut bucket => (object?, None),
+            bytes = &mut peers => (bucket.await?, Some(bytes)),
+        };
+        if let Some(object) = object {
             snapshot.verify(&object.bytes)?;
             return Ok(object.bytes);
         }
-        for peer in replicas {
-            if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
+        let bytes = match prefetched {
+            Some(bytes) => bytes?,
+            None => peers.await?,
+        };
+        self.persist(&snapshot.object, bytes.clone()).await?;
+        Ok(bytes)
+    }
+
+    async fn read_replica_snapshot(
+        &self,
+        replicas: &[ReplicaTarget],
+        snapshot: &SnapshotRef,
+    ) -> Result<Vec<u8>> {
+        let mut reads: futures_util::stream::FuturesUnordered<_> = replicas
+            .iter()
+            .map(|peer| async move {
+                let bytes = self.peers.read(peer, &snapshot.object).await?;
                 snapshot.verify(&bytes)?;
-                self.persist(&snapshot.object, bytes.clone()).await?;
+                anyhow::Ok(bytes)
+            })
+            .collect();
+        while let Some(result) = reads.next().await {
+            if let Ok(bytes) = result {
                 return Ok(bytes);
             }
         }
@@ -473,6 +535,15 @@ fn apply_snapshot(placement: &mut ObjectPlacement, snapshot: Option<&SnapshotRef
         placement.state_object = Some(snapshot.object.clone());
         placement.last_request_id = Some(snapshot.request_id.clone());
     }
+}
+
+fn merge_snapshot(current: &mut Option<LoadedSnapshot>, candidate: LoadedSnapshot) -> Result<()> {
+    let mut reference = current.as_ref().map(|snapshot| snapshot.reference.clone());
+    advance(&mut reference, Some(candidate.reference.clone()))?;
+    if reference.as_ref() == Some(&candidate.reference) {
+        *current = Some(candidate);
+    }
+    Ok(())
 }
 
 fn advance(current: &mut Option<SnapshotRef>, candidate: Option<SnapshotRef>) -> Result<()> {
