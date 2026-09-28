@@ -266,8 +266,12 @@ impl ControlPlaneProcessConfig {
             trace_retention: trace_retention(&mut get)?,
             bucket,
         };
-        let sandbox_provider =
-            sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
+        let sandbox_provider = sandbox_provider_config(
+            &mut get,
+            &jwt_issuer,
+            &invocation_audience,
+            region.as_deref(),
+        )?;
         let socket_event_sink = socket_event_sink_config(&mut get)?;
         Ok(Self {
             bind,
@@ -315,6 +319,7 @@ fn sandbox_provider_config(
     get: &mut impl FnMut(&str) -> Option<String>,
     jwt_issuer: &str,
     invocation_audience: &str,
+    actor_region: Option<&str>,
 ) -> Result<SandboxProviderConfig> {
     let provider_name = required(get, "DURABLE_ACTORS_SANDBOX_PROVIDER")?;
     ensure!(
@@ -351,7 +356,11 @@ fn sandbox_provider_config(
         "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
     );
     let regions = get("DURABLE_ACTORS_SPARE_REGIONS")
-        .unwrap_or_else(|| "north-america-east".into())
+        .unwrap_or_else(|| {
+            super::regions::storage_region(actor_region.unwrap_or(super::regions::DEFAULT))
+                .unwrap_or(super::regions::DEFAULT)
+                .into()
+        })
         .split(',')
         .map(|region| region.trim().to_owned())
         .collect::<Vec<_>>();

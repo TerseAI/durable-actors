@@ -41,6 +41,34 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 }
 
 #[test]
+fn spare_regions_follow_actor_defaults_and_preserve_overrides() -> Result<()> {
+    for (actor_region, spare_regions, expected) in [
+        (None, None, vec!["north-america-central"]),
+        (Some("north-america-west"), None, vec!["north-america-west"]),
+        (
+            Some("north-america-west"),
+            Some("north-america-east, europe-west"),
+            vec!["north-america-east", "europe-west"],
+        ),
+    ] {
+        let mut values = process_environment();
+        values.remove("DURABLE_ACTORS_REGION");
+        values.remove("DURABLE_ACTORS_SPARE_REGIONS");
+        if let Some(region) = actor_region {
+            values.insert("DURABLE_ACTORS_REGION", region);
+        }
+        if let Some(regions) = spare_regions {
+            values.insert("DURABLE_ACTORS_SPARE_REGIONS", regions);
+        }
+        let config = ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })?;
+        assert_eq!(config.sandbox_provider.pool.regions, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
@@ -186,6 +214,7 @@ fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()>
             &mut |name| values.get(name).map(|v| (*v).into()),
             "issuer",
             "audience",
+            None,
         )
     };
     assert!(

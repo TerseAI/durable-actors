@@ -30,7 +30,7 @@ use super::{
     protocol::{ControlPlaneCommand, ControlPlaneCommandReply, decode_command, encode_reply},
 };
 
-const FALLBACK_REGION: &str = "north-america-central";
+use super::regions::DEFAULT as FALLBACK_REGION;
 
 #[derive(Clone)]
 pub struct ControlPlaneService {

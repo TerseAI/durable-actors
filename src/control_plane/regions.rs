@@ -1,3 +1,5 @@
+pub(super) const DEFAULT: &str = "north-america-central";
+
 pub(super) const ALL: &[&str] = &[
     "north-america-east",
     "north-america-central",
