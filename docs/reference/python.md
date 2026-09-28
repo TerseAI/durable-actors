@@ -114,7 +114,7 @@ The runtime image includes Python 3.13 and this SDK. Register a hosted deploymen
 
 Build dependencies come from `requirements.txt` when present, otherwise from `[project].dependencies` in `pyproject.toml`. Pin dependencies for reproducible builds. The SDK dependency in `pyproject.toml` must match the runtime's installed SDK. The hosted Python version and platform must support any native dependencies; build them in the runtime image, rather than copying a macOS virtual environment into a Linux deployment.
 
-Python source is packaged from the project, excluding hidden directories, `node_modules`, `__pycache__`, `dist`, `target`, and `generated`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
+Python source is packaged from the project, excluding hidden directories, `node_modules`, `venv`, `__pycache__`, `dist`, `target`, and `generated`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
 
 ```toml
 [tool.little-actors]

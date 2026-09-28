@@ -67,6 +67,8 @@ class Session:
                     task.add_done_callback(self.completed)
                 elif message["type"] in {"socket_connections", "socket_effects_published"}:
                     pending = self.pending.pop((message["type"], message["message_id"]))
+                    if pending.cancelled():
+                        continue
                     if message.get("error"):
                         pending.set_exception(RuntimeError(message["error"]))
                     else:
@@ -124,7 +126,9 @@ class Session:
             await self.send({"type": kind, "message_id": key[1], **fields})
             return await future
         finally:
-            self.pending.pop(key, None)
+            # Canceled exchanges still receive acknowledgments from the host.
+            if not future.cancelled():
+                self.pending.pop(key, None)
 
     async def report_residency(self) -> None:
         while True:

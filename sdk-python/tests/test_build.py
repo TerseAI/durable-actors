@@ -93,3 +93,19 @@ class Version(Actor):
     assert result.returncode == 0, result.stderr
     schema = json.loads(result.stdout)["actors"][0]["rpc"]["schema"]
     assert schema["definitions"]["Method_read_Result"]["const"] == "two"
+
+
+def test_build_excludes_virtual_environment_sources(tmp_path):
+    from little_actors.build import write_artifact
+
+    (tmp_path / "actors.py").write_text("from helper import value\n")
+    (tmp_path / "helper.py").write_text("value = 1\n")
+    environment = tmp_path / "venv/lib/python3.13/site-packages/dependency"
+    environment.mkdir(parents=True)
+    with (environment / "__init__.py").open("wb") as source:
+        source.truncate(33 * 1024 * 1024)
+    output = tmp_path / "dist"
+    output.mkdir()
+    write_artifact(tmp_path, output, "actors", {})
+    with zipfile.ZipFile(output / "actors.pyz") as artifact:
+        assert set(artifact.namelist()) == {"little-actors.json", "actors.py", "helper.py"}

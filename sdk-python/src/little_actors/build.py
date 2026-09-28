@@ -19,7 +19,7 @@ from .actor import Actor
 from .contract import Document, public_contract
 from .guards import is_actor
 
-EXCLUDED_DIRECTORIES = {"node_modules", "__pycache__", "dist", "target", "generated"}
+EXCLUDED_DIRECTORIES = {"node_modules", "venv", "__pycache__", "dist", "target", "generated"}
 
 
 def build_actor(project: Path, entrypoint: str, output: Path, *, local: bool = True) -> Document:

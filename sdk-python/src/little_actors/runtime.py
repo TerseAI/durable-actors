@@ -18,11 +18,43 @@ class ActorRuntime:
         self.definition = describe_actor(actor)
         self.instance: Actor[Any, Any, Any] | None = None
         self.identity: Document | None = None
+        self.lifecycle = asyncio.Lock()
+        self.pending: set[asyncio.Task[Document]] = set()
         self.serial = asyncio.Lock()
         self.sequence = 0
         self.last_state: Document = {}
 
     async def handle(self, command: Document) -> Document:
+        async with self.lifecycle:
+            if self.identity is not None and command["actor"] != self.identity:
+                return failed("actor_identity_mismatch", "executor is assigned to another actor")
+            if command["actor"]["actor_name"] != self.definition.actor.__name__:
+                return failed("actor_name_not_found", "actor is not loaded")
+            self.identity = command["actor"]
+            if command["type"] == "evict":
+                return await self.evict()
+            task = asyncio.create_task(self.run(command))
+            self.pending.add(task)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                raise
+            return failed("actor_evicted", "actor was evicted by the Rust host")
+        finally:
+            self.pending.discard(task)
+
+    async def evict(self) -> Document:
+        tasks = tuple(self.pending)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.instance = None
+        self.fatal = None
+        return {"type": "evicted"}
+
+    async def run(self, command: Document) -> Document:
         await self.serial.acquire()
         name = command.get("method") or "on_" + command.get("event", {}).get("type", "")
         released = False
@@ -49,14 +81,6 @@ class ActorRuntime:
                 self.serial.release()
 
     async def execute(self, command: Document, admit: Any) -> Document:
-        if self.identity is not None and command["actor"] != self.identity:
-            return failed("actor_identity_mismatch", "executor is assigned to another actor")
-        if command["actor"]["actor_name"] != self.definition.actor.__name__:
-            return failed("actor_name_not_found", "actor is not loaded")
-        self.identity = command["actor"]
-        if command["type"] == "evict":
-            self.instance = None
-            return {"type": "evicted"}
         if self.instance is None:
             if command.get("resident_only"):
                 return {"type": "state_required"}
@@ -101,6 +125,9 @@ class ActorRuntime:
                 admit()
                 value = await getattr(instance, name)(*arguments.args, **arguments.kwargs)
                 result = encode(method.result, value)
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
             effects = await scope.finish()
             state = self.snapshot()
             previous = self.last_state if self.definition.reentrant_methods else before
@@ -126,9 +153,15 @@ class ActorRuntime:
             )
         finally:
             scope.active = False
-            if scope.output is not None:
-                await scope.output
-            scope_context.reset(token)
+            try:
+                output = scope.output
+                if output is not None:
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        output.cancel()
+                    await asyncio.gather(output, return_exceptions=True)
+            finally:
+                scope_context.reset(token)
 
     def state_updates(self, before: Document, after: Document, command: Document) -> list[Document]:
         fields = self.definition.fields
