@@ -105,6 +105,87 @@ async fn service_process_logs_remain_structured() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn project_exports_capture_actor_console_without_copying_to_runtime_output() -> Result<()> {
+    use axum::{Router, body::Bytes, http::HeaderMap, routing::post};
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use prost::Message;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}/v1/logs", listener.local_addr()?);
+    let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = records.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/logs",
+                post(move |headers: HeaderMap, body: Bytes| {
+                    let captured = captured.clone();
+                    async move {
+                        assert_eq!(headers["authorization"], "Bearer log-secret");
+                        captured
+                            .lock()
+                            .unwrap()
+                            .push(ExportLogsServiceRequest::decode(body).unwrap());
+                        (
+                            [("content-type", "application/x-protobuf")],
+                            Vec::<u8>::new(),
+                        )
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let runtime = LocalRuntime::start_with_actor(None, r#"async read(): Promise<number> { console.log("customer-stdout"); console.error("customer-stderr"); process.stdout.write("customer-partial"); return 1 }"#).await?;
+    let client = reqwest::Client::new();
+    let deployment_url = format!("{}/v1/projects/default/deployment", runtime.origin);
+    let mut deployment: serde_json::Value = client
+        .get(&deployment_url)
+        .bearer_auth("test-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    deployment["logExport"] =
+        serde_json::json!({"endpoint":endpoint,"headersEnv":"TEST_LOG_HEADERS"});
+    let registered = client
+        .put(&deployment_url)
+        .bearer_auth("test-key")
+        .json(&deployment)
+        .send()
+        .await?;
+    assert!(
+        registered.status().is_success(),
+        "{}",
+        registered.text().await?
+    );
+    let response = client
+        .post(format!(
+            "{}/v1/projects/default/actors/Counter/one/invoke",
+            runtime.origin
+        ))
+        .bearer_auth("test-key")
+        .json(&serde_json::json!({"method":"read","args":[],"requestId":"request-1"}))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    assert!(status.is_success(), "{status}: {body}");
+    let output = runtime.stop().await?;
+    let exported = format!("{:?}", records.lock().unwrap());
+    for marker in ["customer-stdout", "customer-stderr", "customer-partial"] {
+        assert!(exported.contains(marker), "missing {marker}: {exported}");
+        assert!(!output.contains(marker), "runtime output leaked {marker}");
+    }
+    assert!(!exported.contains("durable_actors::control_plane"));
+    server.abort();
+    Ok(())
+}
+
 fn request_logs(output: &str) -> Vec<&str> {
     output
         .lines()
@@ -116,13 +197,18 @@ struct LocalRuntime {
     _project: tempfile::TempDir,
     child: Child,
     output: BufReader<ChildStdout>,
+    errors: tokio::process::ChildStderr,
     origin: String,
 }
 
 impl LocalRuntime {
     async fn start(filter: Option<&str>) -> Result<Self> {
+        Self::start_with_actor(filter, "async read(): Promise<number> { return 1 }").await
+    }
+
+    async fn start_with_actor(filter: Option<&str>, body: &str) -> Result<Self> {
         let project = tempfile::tempdir()?;
-        local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
+        local_project::write_actor(project.path(), body)?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_durable-actors"));
         command
             .args([
@@ -140,17 +226,24 @@ impl LocalRuntime {
             .arg(project.path())
             .env("DURABLE_ACTORS_PARENT_LIFETIME_STDIN", "1")
             .env("DURABLE_ACTORS_SECRET", "test-key")
+            .env(
+                "TEST_LOG_HEADERS",
+                r#"{"authorization":"Bearer log-secret"}"#,
+            )
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         if let Some(filter) = filter {
             command.env("RUST_LOG", filter);
         }
         let mut child = command.spawn()?;
+        let errors = child.stderr.take().context("capture runtime errors")?;
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
         let origin = timeout(Duration::from_secs(20), wait_until_ready(&mut output)).await??;
         Ok(Self {
+            errors,
             _project: project,
             child,
             output,
@@ -161,11 +254,17 @@ impl LocalRuntime {
     async fn stop(mut self) -> Result<String> {
         drop(self.child.stdin.take());
         let mut output = String::new();
-        let (status, _) = timeout(Duration::from_secs(5), async {
-            tokio::try_join!(self.child.wait(), self.output.read_to_string(&mut output))
+        let mut errors = String::new();
+        let (status, _, _) = timeout(Duration::from_secs(10), async {
+            tokio::try_join!(
+                self.child.wait(),
+                self.output.read_to_string(&mut output),
+                self.errors.read_to_string(&mut errors)
+            )
         })
         .await??;
         ensure!(status.success(), "runtime exited with {status}: {output}");
+        output.push_str(&errors);
         Ok(output)
     }
 }

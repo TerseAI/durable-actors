@@ -50,7 +50,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let source = serde_json::json!({"imageRef":"im-customer", "workingDirectory":"/project", "actorEntrypoint":"src/actors.ts", "secretRefs":[]});
+    let source = serde_json::json!({"imageRef":"im-customer", "workingDirectory":"/project", "actorEntrypoint":"src/actors.ts", "secretRefs":[], "logExport":{"endpoint":"https://logs.example/v1/logs"}});
     for changed in [true, true] {
         let reply: serde_json::Value = client
             .put(&url)
@@ -84,6 +84,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         .await?;
     assert_eq!(roundtrip, source);
     roundtrip["secretRefs"] = serde_json::json!(["replacement-secrets"]);
+    roundtrip["logExport"]["endpoint"] = "https://replacement.example/v1/logs".into();
     client
         .put(&url)
         .bearer_auth("api-key")
@@ -93,6 +94,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         .error_for_status()?;
     assert_eq!(provider.builds.lock().unwrap().len(), 1);
     let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(
+        serde_json::to_value(&active.log_export)?,
+        roundtrip["logExport"]
+    );
     assert_eq!(active.sandboxes, compiled.sandboxes);
     assert_eq!(active.code_snapshot, compiled.code_snapshot);
     assert_ne!(active.host_config_key(), compiled.host_config_key());
@@ -135,6 +140,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
         .await?
         .error_for_status()?;
     let updated = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(updated.log_export, active.log_export);
     assert!(updated.sandboxes.is_empty());
     assert_ne!(updated.code_snapshot, active.code_snapshot);
     assert_eq!(provider.builds.lock().unwrap().len(), 3);
@@ -343,6 +349,7 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

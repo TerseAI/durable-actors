@@ -179,6 +179,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -260,6 +261,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         provisioner.clone(),
     );
     let first = HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -673,6 +675,7 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -813,6 +816,7 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
         let registry = Arc::new(LocalAdminRegistry::default());
         registry
             .register_test_deployment(&HostLaunchSpec {
+                log_export: None,
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -892,6 +896,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let registry = Arc::new(LocalAdminRegistry::default());
     registry
         .register_test_deployment(&HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -998,6 +1003,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let host_id = HostId::new(format!(
         "host.v3.{}.fixture",
         HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1150,6 +1156,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         let host = HostId::new(format!(
             "host.v3.{}.fixture",
             HostLaunchSpec {
+                log_export: None,
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
@@ -1281,6 +1288,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     admin
         .register_test_deployment(&HostLaunchSpec {
+            log_export: None,
             sandboxes: Default::default(),
             project_id: "default".into(),
             source: None,
@@ -1713,6 +1721,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
 
 fn fixture_host(suffix: &str) -> HostId {
     let spec = HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         source: None,
         code_snapshot: None,
@@ -1742,6 +1751,7 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                 let registry = Arc::new(LocalAdminRegistry::default());
                 registry
                     .register_test_deployment(&HostLaunchSpec {
+                        log_export: None,
                         sandboxes: Default::default(),
                         project_id: project.into(),
                         source: None,

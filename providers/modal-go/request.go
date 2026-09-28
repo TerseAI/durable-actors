@@ -7,6 +7,7 @@ import (
 )
 
 type ensureRequest struct {
+	LogExport             json.RawMessage `json:"logExport"`
 	OwnerHint             string          `json:"ownerHint"`
 	ActorIsNew            bool            `json:"actorIsNew"`
 	Actor                 json.RawMessage `json:"actor"`
@@ -89,6 +90,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 		"DURABLE_ACTORS_HOST_READY_FILE": readyFile, "DURABLE_ACTORS_HOST_METADATA_FILE": metadataFile,
 		"DURABLE_ACTORS_HOST_BIND":            "0.0.0.0:7101",
 		"DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+	}
+	if len(r.LogExport) > 0 && string(r.LogExport) != "null" {
+		env["DURABLE_ACTORS_LOG_EXPORT"] = string(r.LogExport)
 	}
 	env["DURABLE_ACTORS_ACTOR"] = string(r.Actor)
 	env["DURABLE_ACTORS_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)

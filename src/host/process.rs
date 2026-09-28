@@ -31,6 +31,7 @@ const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 10_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
+    log_export: Option<crate::logging::LogExportConfig>,
     runtime_config: crate::bucket::access::HostStorageConfig,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
@@ -87,6 +88,35 @@ where
 }
 
 pub(super) async fn serve_assigned_host(
+    config: ActorHostConfig,
+    warm: Option<super::spare::WarmHost>,
+    shutdown: impl Future<Output = ()> + Send,
+) -> Result<()> {
+    let logs = match (&config.log_export, &config.actor) {
+        (Some(export), Some(actor)) => Some(
+            crate::logging::ActorLogRouter::global()
+                .start(
+                    export,
+                    actor,
+                    config.host_id.as_str(),
+                    &config.runtime_config.region,
+                    |name| std::env::var(name).ok(),
+                )
+                .await?,
+        ),
+        _ => None,
+    };
+    let result = run_assigned_host(config, warm, shutdown).await;
+    if let Err(error) = &result {
+        error!(error = %format!("{error:#}"), "actor host stopped with an error");
+    }
+    if let Some(logs) = logs {
+        logs.shutdown().await;
+    }
+    result
+}
+
+async fn run_assigned_host(
     config: ActorHostConfig,
     mut warm: Option<super::spare::WarmHost>,
     shutdown: impl Future<Output = ()> + Send,
@@ -298,7 +328,15 @@ impl ActorHostConfig {
         if let Some(actor) = &actor {
             actor.validate()?;
         }
+        let log_export = get("DURABLE_ACTORS_LOG_EXPORT")
+            .map(|value| serde_json::from_str::<crate::logging::LogExportConfig>(&value))
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("invalid actor log export configuration"))?;
+        if let Some(export) = &log_export {
+            export.validate()?;
+        }
         Ok(Self {
+            log_export,
             new_actor: get("DURABLE_ACTORS_ACTOR_IS_NEW")
                 .map(|value| value.parse())
                 .transpose()?
@@ -731,7 +769,8 @@ pub(super) fn spawn_javascript_process(
     generic: bool,
     socket: &str,
 ) -> Result<tokio::process::Child> {
-    Command::new("bun")
+    let capture = std::env::var("DURABLE_ACTORS_LOG_MODE").as_deref() == Ok("export");
+    let mut child = Command::new("bun")
         .args([
             "--eval",
             "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
@@ -740,11 +779,15 @@ pub(super) fn spawn_javascript_process(
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(if capture { Stdio::piped() } else { Stdio::inherit() })
+        .stderr(if capture { Stdio::piped() } else { Stdio::inherit() })
         .kill_on_drop(true)
         .spawn()
-        .context("start JavaScript actor executor")
+        .context("start JavaScript actor executor")?;
+    if capture {
+        crate::logging::ActorLogRouter::global().capture_child(&mut child);
+    }
+    Ok(child)
 }
 
 fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

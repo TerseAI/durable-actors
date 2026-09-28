@@ -297,6 +297,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
 
 fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

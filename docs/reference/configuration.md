@@ -89,6 +89,41 @@ export class CustomerAgent extends Actor {}
 
 Supported regions: `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, `asia-southeast`.
 
+### Actor log exports
+
+Set `logExport` per project through `PUT /v1/projects/{project_id}/deployment`. Include the project's existing deployment fields:
+
+```json
+{
+    "imageRef": "im-customer",
+    "workingDirectory": "/project",
+    "actorEntrypoint": "src/actors.ts",
+    "secretRefs": ["customer-log-credentials"],
+    "logExport": {
+        "endpoint": "https://collector.example/v1/logs",
+        "headersEnv": "ACTOR_LOG_HEADERS"
+    }
+}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `endpoint` | Full OTLP/HTTP protobuf logs URL, including its path. HTTP(S) only; no credentials, query, or fragment. Redirects are disabled. |
+| `headersEnv` | Optional actor environment variable containing a JSON object of authentication headers. |
+
+Store `ACTOR_LOG_HEADERS` in the named Modal secret, for example `{"Authorization":"Bearer <token>"}`. Only the variable name is saved in deployment configuration. Local development reads the variable from its environment. Omit `logExport` or set it to `null` to disable exports; include it in subsequent deployment updates to retain it.
+
+| Provider | Endpoint and authentication |
+| --- | --- |
+| [Datadog](https://docs.datadoghq.com/opentelemetry/setup/otlp_ingest/logs/) | Your site's OTLP logs intake URL; `dd-api-key` header. |
+| [Sentry](https://docs.sentry.io/concepts/otlp/direct/logs/) | OTLP logs URL from Project Settings → Client Keys; `x-sentry-auth: sentry sentry_key=<public-key>`. Direct OTLP logs are in open beta. |
+| [PostHog](https://posthog.com/docs/logs/installation/rust) | `<project-api-host>/i/v1/logs`; `Authorization: Bearer <phc_project_token>`. |
+| OpenTelemetry Collector | Its HTTP logs endpoint, normally `/v1/logs`; authentication depends on the collector. |
+
+Exports include actor stdout/stderr and host runtime events, tagged with project, actor, host, and region. On Modal, actor process output is suppressed even when no export is configured; no stdout/stderr copy is saved in Modal logs or a host log file. Local output remains unchanged unless exporting. Delivery uses a bounded memory queue and flushes on graceful shutdown; outages, queue overflow, and abrupt termination can lose logs.
+
+Control-plane, replica, and build logs are separate and are not exported. Control-plane logs currently include actor identifiers and error text, so they may contain customer data. For residency requirements, configure a suitable collector/provider location and place those other services and logs accordingly.
+
 ### Authentication and callbacks
 
 | Variable                                | Default                              | Meaning                                                                                |

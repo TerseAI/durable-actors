@@ -235,6 +235,7 @@ impl Fixture {
         admin
             .register_deployment(
                 &HostLaunchSpec {
+                    log_export: None,
                     sandboxes: Default::default(),
                     project_id: "default".into(),
                     source: None,

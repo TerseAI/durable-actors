@@ -83,6 +83,9 @@ test("deployment schemas describe both hosted and local registration and the com
         const value = { imageRef, workingDirectory: "/customer", actorEntrypoint: null, secretRefs: [] }
         assert.ok(register({ imageRef, workingDirectory: "/customer" }), ajv.errorsText(register.errors))
         assert.ok(read(value), ajv.errorsText(read.errors))
+        const configured = { ...value, logExport: { endpoint: "https://collector.example/v1/logs", headersEnv: "LOG_HEADERS" } }
+        assert.ok(register(configured), ajv.errorsText(register.errors))
+        assert.ok(read(configured), ajv.errorsText(read.errors))
         for (const field of Object.keys(value)) {
             const incomplete = { ...value }
             delete incomplete[field]

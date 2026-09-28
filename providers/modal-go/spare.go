@@ -217,9 +217,14 @@ func spareParams(request spareRequest) (*modal.SandboxCreateParams, error) {
 	if request.Kind == "actor" && request.ControlPlaneURL != "" {
 		environment["DURABLE_ACTORS_CONTROL_PLANE_URL"] = request.ControlPlaneURL
 	}
+	command := "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"
+	if request.Kind == "actor" {
+		environment["DURABLE_ACTORS_LOG_MODE"] = "export"
+		command = "exec /usr/local/bin/durable-actors > /dev/null 2>&1"
+	}
 	return &modal.SandboxCreateParams{
 		Name: request.Name, Timeout: 24 * time.Hour, Workdir: "/opt/durable-actors",
-		Command: []string{"sh", "-c", "exec /usr/local/bin/durable-actors 2> /tmp/durable-actors-host.stderr"},
+		Command: []string{"sh", "-c", command},
 		Env:     environment,
 		H2Ports: []int{7101, 7102}, ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
 		CPU: float64(limits.CPUMillis) / 1000, CPULimit: float64(limits.CPUMillis) / 1000,

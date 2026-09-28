@@ -1,5 +1,28 @@
 use super::*;
 
+#[tokio::test]
+async fn log_exports_are_project_scoped_and_survive_postgres_reconnection() -> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let registry = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let original = spec("image");
+        let settings = serde_json::json!({"endpoint":"https://collector.example/v1/logs","headersEnv":"CUSTOMER_LOG_HEADERS"});
+        let mut document = serde_json::to_value(&original)?;
+        document["logExport"] = settings.clone();
+        let configured: HostLaunchSpec = serde_json::from_value(document)?;
+        assert_ne!(original.host_config_key(), configured.host_config_key());
+        registry.register_test_deployment(&configured).await?;
+        let mut other = original;
+        other.project_id = "other".into();
+        registry.register_test_deployment(&other).await?;
+        drop(registry);
+        let reopened = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let saved = reopened.launch_spec("default").await?.unwrap();
+        assert_eq!(serde_json::to_value(saved)?["logExport"], settings);
+        assert_eq!(reopened.launch_spec("other").await?, Some(other));
+        Ok(())
+    }).await
+}
+
 #[test]
 fn secret_changes_update_host_configuration() {
     let mut deployment = spec("image-1");
@@ -78,6 +101,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        log_export: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
