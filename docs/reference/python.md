@@ -27,7 +27,7 @@ Annotated instance fields are persisted by default. `ephemeral()` excludes tempo
 
 Every RPC parameter, return value, and persisted field needs a concrete annotation. Supported schema types include JSON primitives, typed collections with string dictionary keys, fixed tuples, optional values, literals, unions (including discriminated unions), recursive models, Pydantic models, dataclasses, `typing_extensions.TypedDict`, dates, datetimes, and UUIDs. `JsonValue` explicitly describes arbitrary nested JSON. Bare collections, `Any`, and `object` are rejected at public boundaries. Ephemeral fields can hold Python objects such as API clients and locks.
 
-Source annotations produce JSON Schema. Generated clients have ordinary synchronous methods and independent Pydantic models that describe the wire representation. Import those models from `generated.<actor_name>_models`; actor implementation classes and source-only dependencies are not needed by consumers. Schema constraints are generated into client models. When serialization changes a model shape, separate `Input` and `Output` models describe the two wire types; computed fields appear in outputs. Source-only Python validators and methods remain on the actor side, so the actor validates every call as well.
+Source annotations produce JSON Schema. Generated clients have ordinary synchronous methods and independent Pydantic models that describe the wire representation. Access those models through the actor namespace, such as `actors.Chat.Message`; actor implementation classes and source-only dependencies are not needed by consumers. Models whose names overlap namespace members such as `Stub` or `State` receive a `Model` suffix (repeated if needed to avoid another name collision). Schema constraints are generated into client models. When serialization changes a model shape, separate `Input` and `Output` models describe the two wire types; computed fields appear in outputs. Source-only Python validators and methods remain on the actor side, so the actor validates every call as well.
 
 Public SDK classes and methods include docstrings for IDE hover and `help()`. Actor class and RPC method docstrings travel with the published contract and are preserved in generated clients, including generation from a running server. Pydantic model docstrings and `Field(description=...)` descriptions also appear in generated model documentation. Generated constructors, socket helpers, subscriptions, and state models document their SDK behavior. RPCs without author-supplied documentation receive a generic invocation description.
 
@@ -59,12 +59,11 @@ The synchronous HTTP client caches direct actor routes, refreshes stale routes, 
 Generated actors with emitted fields expose `subscribe(callback)`. The callback receives the complete current emitted state, including typed nested models:
 
 ```python
-from generated import Chat
-from generated.chat_models import Message
+from generated import actors
 
-chat = Chat("lobby")
+chat = actors.Chat.get("lobby")
 subscription = chat.subscribe(lambda state: print(state.messages))
-chat.append(Message(text="hello"))
+chat.append(actors.Chat.Message(text="hello"))
 ```
 
 The SDK delivers the initial snapshot and applies subsequent changes and removals before calling your callback. Omitted fields are preserved, changed fields are replaced, and removed optional fields return to their omitted/default state. Each callback receives a new model; mutating it does not affect later snapshots. Only emitted fields are included.
@@ -73,7 +72,7 @@ A subscription owns a WebSocket and receives events on a background thread, with
 
 Connection, validation, and callback failures stop the subscription and are available as `subscription.error`. Pass `on_error=handler` to receive the exception on the subscription thread; otherwise it is logged. Connection setup failures raise directly from `subscribe`. A normal remote close ends the subscription without an error. Reconnect explicitly by creating a new subscription.
 
-Connection metadata is optional only when its declared type accepts `None`. For a typed `Member` model, use `chat.subscribe(callback, metadata=Member(name="Ada"))`; the generator and type checker enforce the metadata type. Application messages are not delivered to state callbacks; use the lower-level connection API below for those.
+Connection metadata is optional only when its declared type accepts `None`. For a typed `Member` model, use `chat.subscribe(callback, metadata=actors.Chat.Metadata(name="Ada"))`; the generator and type checker enforce the metadata type. Application messages are not delivered to state callbacks; use the lower-level connection API below for those.
 
 ## Typed WebSockets
 
@@ -97,13 +96,12 @@ class Room(Actor[Member, Message, Message]):
 Import `ActorSocket` from `little_actors`. `await self.get_connections()` returns typed sockets. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
 
 ```python
-from generated import Room
-from generated.room_models import Member, Message
+from generated import actors
 from little_actors import StateSnapshot, StateUpdate
 
-room = Room("lobby")
-with room.connect(Member(name="Ada")) as connection:
-    connection.send(Message(role="user", text="hello"))
+room = actors.Room.get("lobby")
+with room.connect(actors.Room.Metadata(name="Ada")) as connection:
+    connection.send(actors.Room.Incoming(role="user", text="hello"))
     for event in connection:
         if isinstance(event, StateSnapshot):
             print(event.state)
@@ -133,9 +131,9 @@ Use the existing Node CLI (`pnpm exec durable-actors`). The Python package has n
 
 The CLI selects `DURABLE_ACTORS_PYTHON`, then the active `VIRTUAL_ENV`, then the project's `.venv/bin/python`, then `python3`. Set `DURABLE_ACTORS_ENTRYPOINT=src/actors.py` in `.env`; the Python template creates this setting. `.env.local` and `.env` work just as they do for TypeScript projects. `DURABLE_ACTORS_PROJECT` overrides the project directory, and `DURABLE_ACTORS_DATA_DIR` the local state directory. `dev --port 0` selects a free port. `DURABLE_ACTORS_BINARY` selects a native executable instead of downloading it. Keep native runtime, TypeScript CLI, and Python SDK versions aligned.
 
-Construct generated clients with only an actor ID, such as `Chat("lobby")`. The SDK creates one shared HTTP client when first needed and closes it at process exit. It reads environment configuration at that first construction.
+Import `actors` from the generated package and obtain a typed handle with `actors.Chat.get("lobby")`. The factory makes no network request. `actors.Chat.Stub` is the handle type; `actors.Chat.Methods.append.Args` and `.Result` describe an RPC's ordered argument tuple and return value. Optional arguments use tuple unions and variadic arguments use unpacked tuple types. Supply keyword-only arguments by name when calling the method. Public persisted state is `actors.Chat.State`; subscription callbacks receive `actors.Chat.EmittedState`, containing only emitted fields. `actors.Chat.StatePatch` describes partial updates. The SDK creates one shared HTTP client when first needed and closes it at process exit. It reads environment configuration at that first construction.
 
-For custom configuration or independent client lifetimes, pass an explicit `Client` as the second argument and close it with a `with` block or `.close()`. Client constructor arguments override environment variables.
+For custom configuration or independent client lifetimes, pass an explicit `Client` as the second argument to `.get()` and close it with a `with` block or `.close()`. Client constructor arguments override environment variables.
 
 Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_ACTORS_SECRET`, and optionally `DURABLE_ACTORS_HOME_REGION`. Local defaults are `http://127.0.0.1:7100` and project `local`. Remote origins require a project ID. An injected `httpx.Client` lets applications supply transport and timeout policy; its lifecycle remains with the application. CLI commands load `.env.local` and `.env`, preserving exported environment overrides.
 

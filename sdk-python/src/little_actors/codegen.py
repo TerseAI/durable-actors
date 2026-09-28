@@ -17,26 +17,40 @@ def generate_client(contract: Document, output: Path) -> None:
     if contract.get("version") != 1 or not isinstance(contract.get("actors"), list):
         raise ValueError("unsupported actor contract")
     files: dict[str, str] = {}
-    exports: list[str] = []
-    for actor in contract["actors"]:
+    namespaces: list[str] = []
+    names: list[str] = []
+    for index, actor in enumerate(contract["actors"]):
         name = identifier(actor["actorName"])
         module = name.lower()
-        if any(path in files for path in (f"{module}.py", f"{module}_models.py")):
+        if any(path in files for path in (f"_{module}.py", f"_{module}_models.py")):
             raise ValueError("actor names collide in Python modules")
-        model_source, types = generate_models(actor)
+        model_source, types, models = generate_models(actor)
         source = actor_client(actor, types)
         ast.parse(source)
-        files[f"{module}_models.py"] = model_source
-        files[f"{module}.py"] = source
-        exports.append(f"from .{module} import {name} as {name}")
-    files["__init__.py"] = "\n".join(exports) + "\n"
+        files[f"_{module}_models.py"] = model_source
+        files[f"_{module}.py"] = source
+        namespaces.append(actor_namespace(actor, types, models, index))
+        names.append(name)
+    files["actors.py"] = (
+        '"""Typed actor namespaces; obtain an instance handle with actors.Name.get(actor_id)."""\n'
+        "from __future__ import annotations\n"
+        "import builtins as _builtins\n"
+        "from typing import TypeAlias as _TypeAlias\n"
+        "from little_actors.client import ActorTransport as _ActorTransport\n"
+        "from little_actors.generated import Unset as _Unset\n"
+        + "\n".join(namespaces)
+        + f"\n__all__ = {names!r}\n"
+    )
+    files["__init__.py"] = (
+        '"""Generated actor clients and types."""\nfrom . import actors as actors\n'
+    )
     files["py.typed"] = ""
     output.mkdir(parents=True, exist_ok=True)
     for name, source in files.items():
         (output / name).write_text(source)
 
 
-def generate_models(actor: Document) -> tuple[str, dict[str, str]]:
+def generate_models(actor: Document) -> tuple[str, dict[str, str], list[str]]:
     from datamodel_code_generator import DatetimeClassType, InputFileType, LiteralType, generate
     from datamodel_code_generator.enums import DataModelType
 
@@ -78,7 +92,12 @@ def generate_models(actor: Document) -> tuple[str, dict[str, str]]:
     if not isinstance(source, str):
         raise ValueError("expected a single generated models module")
     source = compatible_aliases(omittable_fields(source))
-    return source, root_types(source, root_name)
+    models = [
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef) and node.name != root_name
+    ]
+    return source, root_types(source, root_name), models
 
 
 def collect_schemas(actor: Document) -> tuple[Document, Document]:
@@ -176,6 +195,137 @@ def root_types(source: str, name: str) -> dict[str, str]:
     return types
 
 
+def actor_namespace(actor: Document, types: dict[str, str], models: list[str], index: int) -> str:
+    name = identifier(actor["actorName"])
+    client, model = f"_client_{index}", f"_models_{index}"
+    lines = [
+        f"from . import _{name.lower()} as {client}",
+        f"from . import _{name.lower()}_models as {model}",
+        "",
+        f"class {name}:",
+        docstring(actor.get("description") or f"Clients and types for {name} actors.", 4),
+        *namespace_aliases(types, models, client, model),
+        "",
+        *get_method(client),
+        "",
+        *method_namespace(actor, types, model),
+    ]
+    return "\n".join(lines)
+
+
+def namespace_aliases(
+    types: dict[str, str], models: list[str], client: str, model: str
+) -> list[str]:
+    aliases = {
+        "Stub": f"{client}.Stub",
+        **{
+            kind: namespace_type(types["Socket" + kind], model)
+            for kind in ("Metadata", "Incoming", "Outgoing", "State", "EmittedState", "StatePatch")
+        },
+    }
+    reserved = {*aliases, "Methods", "get"}
+    state_models = {
+        types["Socket" + kind].removeprefix("_models.")
+        for kind in ("State", "EmittedState", "StatePatch")
+    }
+    for name in models:
+        if name in state_models:
+            continue
+        alias = name
+        if alias in reserved:
+            while alias in reserved or alias in models:
+                alias += "Model"
+        aliases[alias] = f"{model}.{name}"
+        reserved.add(alias)
+    return [f"    {key}: _TypeAlias = {value}" for key, value in aliases.items()]
+
+
+def get_method(client: str) -> list[str]:
+    return [
+        "    @_builtins.staticmethod",
+        f"    def get(actor_id: _builtins.str, transport: _ActorTransport | None = None) -> {client}.Stub:",
+        docstring(
+            "Return a synchronous actor handle without sending a request.\n\n"
+            "Args:\n"
+            "    actor_id: Identity of the actor to call.\n"
+            "    transport: Optional caller-owned transport. Uses the SDK-managed\n"
+            "        transport when omitted.\n\n"
+            "The returned Stub provides the actor's typed RPC methods.",
+            8,
+        ),
+        f"        return {client}.Stub(actor_id, transport)",
+    ]
+
+
+def method_namespace(actor: Document, types: dict[str, str], model: str) -> list[str]:
+    lines = [
+        "    class Methods:",
+        docstring("Argument tuples and return types for each actor RPC.", 8),
+    ]
+    for method in actor["rpc"]["methods"]:
+        result = method["result"]
+        returned = (
+            "None"
+            if result["kind"] == "void"
+            else namespace_type(types["Rpc" + root_key(result["type"])], model)
+        )
+        lines.extend(
+            [
+                f"        class {identifier(method['name'])}:",
+                docstring(
+                    method.get("description")
+                    or f"Types for {actor['actorName']}.{method['name']}.",
+                    12,
+                ),
+                f"            Args: _TypeAlias = {argument_tuple(method, types, model)}",
+                f"            Result: _TypeAlias = {returned}",
+                "",
+            ]
+        )
+    return lines
+
+
+def namespace_type(hint: str, model: str) -> str:
+    class Qualifier(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.expr:
+            if node.id == "_models":
+                return ast.Name(id=model, ctx=ast.Load())
+            if node.id in {
+                "list",
+                "dict",
+                "tuple",
+                "str",
+                "int",
+                "float",
+                "bool",
+                "set",
+                "frozenset",
+                "bytes",
+                "object",
+                "type",
+            }:
+                return ast.Attribute(
+                    value=ast.Name(id="_builtins", ctx=ast.Load()), attr=node.id, ctx=ast.Load()
+                )
+            return node
+
+    return ast.unparse(Qualifier().visit(ast.parse(hint, mode="eval").body))
+
+
+def argument_tuple(method: Document, types: dict[str, str], model: str) -> str:
+    alternatives: list[str] = []
+    prefix: list[str] = []
+    for parameter in method["parameters"]:
+        key = "Rpc" + root_key(parameter["type"])
+        hint = namespace_type(types[key + ("Item" if parameter["rest"] else "")], model)
+        if parameter["optional"]:
+            alternatives.append("_builtins.tuple[" + (", ".join(prefix) or "()") + "]")
+            hint += " | _Unset"
+        prefix.append(f"*_builtins.tuple[{hint}, ...]" if parameter["rest"] else hint)
+    alternatives.append("_builtins.tuple[" + (", ".join(prefix) or "()") + "]")
+    return " | ".join(alternatives)
+
+
 def actor_client(actor: Document, types: dict[str, str]) -> str:
     name = identifier(actor["actorName"])
     lines = [
@@ -187,9 +337,9 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
         "from little_actors.connection import Connection as _Connection",
         "from little_actors.subscription import Subscription as _Subscription",
         "from little_actors.generated import UNSET as _UNSET, Unset as _Unset, arguments as _arguments, argument as _argument",
-        f"from . import {name.lower()}_models as _models",
+        f"from . import _{name.lower()}_models as _models",
         "",
-        f"class {name}:",
+        "class Stub:",
         docstring(actor.get("description") or f"Synchronous client for {name} actors.", 4),
         "    def __init__(self, actor_id: str, transport: _ActorTransport | None = None) -> None:",
         docstring(

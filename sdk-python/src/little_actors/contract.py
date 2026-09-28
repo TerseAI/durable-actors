@@ -157,7 +157,9 @@ def actor_contract(definition: Definition) -> Document:
     }
     socket_roots.update({f"Field_{name}": field.adapter for name, field in public.items()})
     socket_schema = schemas(
-        socket_roots, serialization={"Outgoing", *(f"Field_{name}" for name in public)}
+        socket_roots,
+        serialization={"Outgoing", *(f"Field_{name}" for name in public)},
+        reserved={"State"},
     )
     socket_schema["definitions"]["State"] = {
         "type": "object",
@@ -252,7 +254,10 @@ def adapter_for(hint: Any) -> TypeAdapter[Any]:
 
 
 def schemas(
-    roots: dict[str, TypeAdapter[Any]], *, serialization: Set[str] = frozenset()
+    roots: dict[str, TypeAdapter[Any]],
+    *,
+    serialization: Set[str] = frozenset(),
+    reserved: Set[str] = frozenset(),
 ) -> Document:
     if not roots:
         return {"$schema": "http://json-schema.org/draft-07/schema#", "definitions": {}}
@@ -264,10 +269,10 @@ def schemas(
     )
     definitions = schema.get("$defs", {})
     mapping: dict[str, str] = {}
-    occupied = set(definitions) | set(roots)
+    occupied = set(definitions) | set(roots) | reserved
     for name in definitions:
         candidate = name
-        if name in roots:
+        if name in roots or name in reserved:
             candidate += "Model"
             while candidate in occupied:
                 candidate += "Model"

@@ -38,10 +38,10 @@ class Counter(Actor):
                 [
                     sys.executable,
                     "-c",
-                    "from remote import Counter; "
-                    'assert Counter.__doc__ == "A durable counter."; '
-                    'assert Counter.increment.__doc__ == "Increment the count and return its new value."; '
-                    'print(Counter("one").increment(2).value)',
+                    "from remote import actors; "
+                    'assert actors.Counter.__doc__ == "A durable counter."; '
+                    'assert actors.Counter.Stub.increment.__doc__ == "Increment the count and return its new value."; '
+                    'print(actors.Counter.get("one").increment(2).value)',
                 ],
                 cwd=tmp_path,
                 env={**os.environ, "DURABLE_ACTORS_CONTROL_PLANE_URL": client.origin},
@@ -77,8 +77,8 @@ class Room(Actor[Payload, Payload, Payload]):
         generate_client(contract, tmp_path / "socket_client")
         monkeypatch.syspath_prepend(str(tmp_path))
         remote = importlib.import_module("socket_client")
-        models = importlib.import_module("socket_client.room_models")
-        room = remote.Room("lobby", client)
+        models = remote.actors.Room
+        room = remote.actors.Room.get("lobby", client)
         with room.connect(models.Payload(value=2)) as connection:
             initial = connection.receive(timeout=5)
             assert isinstance(initial, StateSnapshot)
@@ -111,7 +111,7 @@ class Counter(Actor):
         generate_client(contract, tmp_path / "subscription_client")
         monkeypatch.syspath_prepend(str(tmp_path))
         remote = importlib.import_module("subscription_client")
-        counter = remote.Counter("one", client)
+        counter = remote.actors.Counter.get("one", client)
         states = Queue()
         subscription = counter.subscribe(states.put)
         try:

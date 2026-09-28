@@ -16,7 +16,7 @@ node ../../sdk/dist/cli.js generate
 uv run client.py
 ```
 
-The shared TypeScript CLI finds `.venv`, runs strict mypy, and generates Python clients. `Chat("lobby")` uses the SDK-managed connection pool. The generated client accepts `generated.chat_models.Message` and returns a typed list of messages. Messages persist across runtime restarts. `Chat.connect(Member(name="Ada"))` opens a typed WebSocket; `Member` is also exported from `generated.chat_models`.
+The shared TypeScript CLI finds `.venv`, runs strict mypy, and generates Python clients. Import `actors` from `generated`, then use `actors.Chat.get("lobby")` with the SDK-managed connection pool. The handle accepts `actors.Chat.Message` and returns typed messages that persist across runtime restarts. `chat.connect(actors.Chat.Metadata(name="Ada"))` opens a typed WebSocket. Actor and method types use the same namespace paths as TypeScript, including `actors.Chat.Stub` and `actors.Chat.Methods.append.Result`.
 
 Run `uv run watch.py` to subscribe to typed state updates and make an RPC call in the same process. The SDK merges updates and calls the callback in the background. Press Enter to close the subscription.
 

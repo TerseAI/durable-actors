@@ -1,5 +1,4 @@
-from generated import Chat
-from generated.chat_models import Message
+from generated import actors
 
-messages = Chat("lobby").append(Message(text="Hello from Python"))
+messages = actors.Chat.get("lobby").append(actors.Chat.Message(text="Hello from Python"))
 print(messages)

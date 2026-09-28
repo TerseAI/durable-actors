@@ -50,11 +50,10 @@ pnpm exec durable-actors generate src/actors.py --out-dir generated
 ```
 
 ```python
-from generated import Chat
-from generated.chat_models import Message
+from generated import actors
 
-chat = Chat("lobby")
-messages: list[Message] = chat.append(Message(text="hello"))
+chat = actors.Chat.get("lobby")
+messages: actors.Chat.Methods.append.Result = chat.append(actors.Chat.Message(text="hello"))
 print(messages[0].text)
 ```
 
@@ -62,7 +61,7 @@ The CLI runs strict mypy on local actor definitions before generation and on the
 
 Generated RPC methods return typed values directly. The SDK creates a shared HTTP client when needed, reads configuration from the environment, and closes its connection pool at process exit. You only need the actor ID.
 
-The generated package includes method signatures, independent Pydantic models, and `py.typed`. Consumers need only `little-actors`, not the actor project or the code generator. Regenerate after changing the actor contract, and include the generated package in your application's type checks.
+The generated package exposes `actors`, matching the TypeScript client namespace. Use `actors.Chat.get(id)` for a handle, `actors.Chat.Stub` for its type, and `actors.Chat.Methods.append.Args` / `.Result` for method types. Socket types live at `actors.Chat.Metadata`, `.Incoming`, `.Outgoing`, and `.State`; concrete models such as `actors.Chat.Message` are also available there. The package includes docstrings, independent Pydantic models, and `py.typed`. Consumers need only `little-actors`, not the actor project or the code generator. Regenerate after changing the actor contract, and include the generated package in your application's type checks.
 
 Typing uses inline annotations and the [PEP 561](https://peps.python.org/pep-0561/) package marker. Both mypy and Pyright check the SDK and generated clients. Pydantic validates inputs, outputs, and persisted state at runtime. Python annotations remain ordinary annotations: `chat.append(42)` is rejected by a type checker and by runtime validation.
 
@@ -71,9 +70,9 @@ Typing uses inline annotations and the [PEP 561](https://peps.python.org/pep-056
 Actors with emitted fields have a typed `subscribe` method:
 
 ```python
-chat = Chat("lobby")
+chat = actors.Chat.get("lobby")
 subscription = chat.subscribe(lambda state: print(state.messages))
-chat.append(Message(text="hello"))
+chat.append(actors.Chat.Message(text="hello"))
 ```
 
 The SDK receives the initial state and applies later patches in the background. Each callback gets a complete typed snapshot of the emitted fields, and RPC calls continue normally. Call `subscription.close()` when finished. Callbacks run serially on a background thread; the subscription does not keep an otherwise finished process alive.

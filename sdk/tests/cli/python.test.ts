@@ -47,13 +47,13 @@ test(
         const env = { ...environment, VIRTUAL_ENV: undefined }
         const result = await run(process.execPath, [cli, "generate", "actors.py"], { cwd: directory, env })
         assert.match(result.stdout, /Generated 1 actor contract/u)
-        assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /def increment/u)
+        assert.match(await readFile(path.join(directory, "generated/_counter.py"), "utf8"), /def increment/u)
         await readFile(path.join(directory, "generated/py.typed"))
         await writeFile(
             path.join(directory, "usage.py"),
-            `from generated import Counter
+            `from generated import actors
 def use() -> None:
-    counter = Counter("one")
+    counter = actors.Counter.get("one")
     result: int = counter.increment(2)
     subscription = counter.subscribe(lambda state: print(state.count))
     subscription.close()
@@ -100,7 +100,7 @@ test("generate infers Python from a published contract without actor source", { 
         cwd: directory,
         env: { ...environment, DURABLE_ACTORS_PYTHON: python }
     })
-    assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /def increment/u)
+    assert.match(await readFile(path.join(directory, "generated/_counter.py"), "utf8"), /def increment/u)
 })
 
 test(
