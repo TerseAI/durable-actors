@@ -14,10 +14,9 @@ async def main() -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
         listener.close()
-        Path(directory, "actors.py").write_text("""from typing import Annotated
-from little_actors import Actor, Persisted
+        Path(directory, "actors.py").write_text("""from little_actors import Actor
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = 0
+    count: int = 0
     async def increment(self) -> int:
         self.count += 1
         return self.count

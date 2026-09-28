@@ -15,22 +15,23 @@ The shared TypeScript CLI manages development, generation, and Python type check
 ## Define actors
 
 ```python
-from typing import Annotated
 from pydantic import BaseModel
-from little_actors import Actor, Persisted
+from little_actors import Actor, emitted, ephemeral
 
 class Message(BaseModel):
     text: str
 
 class Chat(Actor):
-    messages: Annotated[list[Message], Persisted()] = []
+    count: int = 0
+    messages: list[Message] = emitted(default_factory=list)
+    busy: bool = ephemeral(False)
 
     async def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
         return self.messages
 ```
 
-Public async methods become RPCs. State fields declare `Persisted()` or `Ephemeral()`. Mutable defaults are copied for each actor; either marker also accepts `default_factory` for values that should be constructed on activation. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`.
+Public async methods become RPCs. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`.
 
 ## Generate and use a client
 

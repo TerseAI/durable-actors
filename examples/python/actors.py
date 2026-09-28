@@ -1,8 +1,6 @@
-from typing import Annotated
-
 from pydantic import BaseModel
 
-from little_actors import Actor, ActorSocket, Emittable, Persisted
+from little_actors import Actor, ActorSocket, emitted
 
 
 class Member(BaseModel):
@@ -14,7 +12,7 @@ class Message(BaseModel):
 
 
 class Chat(Actor[Member, Message, Message]):
-    messages: Annotated[list[Message], Persisted(), Emittable()] = []
+    messages: list[Message] = emitted(default_factory=list)
 
     async def append(self, message: Message) -> list[Message]:
         self.messages.append(message)

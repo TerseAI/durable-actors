@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Callable, Set
-from dataclasses import dataclass, is_dataclass
+from dataclasses import MISSING, dataclass, is_dataclass
 from types import GenericAlias
 from typing import Annotated, Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
 
@@ -11,8 +11,8 @@ from pydantic import BaseModel, TypeAdapter
 from pydantic.json_schema import JsonSchemaMode
 from typing_extensions import TypeAliasType
 
-from .actor import Actor, Emittable, Ephemeral, Persisted
-from .guards import is_document, is_list
+from .actor import Actor
+from .guards import is_document, is_field, is_list
 from .json import JsonValue
 
 Document = dict[str, Any]
@@ -170,23 +170,22 @@ def actor_contract(definition: Definition) -> Document:
 
 
 def read_field(actor: type[Actor[Any, Any, Any]], name: str, hint: Any) -> Field:
-    metadata = get_args(hint)[1:] if get_origin(hint) is Annotated else ()
-    modes = [item for item in metadata if isinstance(item, (Persisted, Ephemeral))]
-    if len(modes) != 1:
-        raise ValueError(f"{name}: declare exactly one Persisted or Ephemeral annotation")
-    persisted = isinstance(modes[0], Persisted)
-    emittable = any(isinstance(item, Emittable) for item in metadata)
-    if emittable and (not persisted or name.startswith("_")):
-        raise ValueError(f"{name}: Emittable requires public persisted state")
     if name in RESERVED | HOOKS | {"id"}:
         raise ValueError(f"reserved actor field: {name}")
-    factory = modes[0].default_factory
-    if not hasattr(actor, name) and factory is None:
+    default = getattr(actor, name, MISSING)
+    factory: Callable[[], object] | None = None
+    persisted, emittable = True, False
+    if is_field(default):
+        options = default
+        mode = options.metadata.get("little_actors")
+        persisted, emittable = mode != "ephemeral", mode == "emitted"
+        factory = options.default_factory if options.default_factory is not MISSING else None
+        default = options.default
+    if default is MISSING and factory is None:
         raise ValueError(f"{name}: actor fields require defaults")
-    if hasattr(actor, name) and factory is not None:
-        raise ValueError(f"{name}: choose a default or default_factory")
+    if emittable and name.startswith("_"):
+        raise ValueError(f"{name}: emitted fields must be public")
     adapter: TypeAdapter[Any] = adapter_for(hint) if persisted else TypeAdapter[Any](Any)
-    default = getattr(actor, name, None)
     if persisted and factory is None:
         encode(adapter, default)
     return Field(name, adapter, persisted, emittable, default, factory)

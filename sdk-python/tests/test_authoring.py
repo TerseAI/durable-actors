@@ -1,9 +1,9 @@
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 import pytest
 from pydantic import BaseModel
 
-from little_actors import Actor, Emittable, Ephemeral, Persisted, reentrant
+from little_actors import Actor, emitted, ephemeral, reentrant
 from little_actors.contract import describe_actor, public_contract
 
 
@@ -13,8 +13,8 @@ class Message(BaseModel):
 
 
 class Chat(Actor[Message, Message, Message]):
-    messages: Annotated[list[Message], Persisted(), Emittable()] = []
-    busy: Annotated[bool, Ephemeral()] = False
+    messages: list[Message] = emitted(default_factory=list)
+    busy: bool = ephemeral(False)
 
     async def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
@@ -51,12 +51,22 @@ def test_missing_public_annotations_are_rejected():
         describe_actor(Bad)
 
 
-def test_fields_require_persistence_annotations():
-    class Bad(Actor):
+def test_fields_persist_by_default_and_class_variables_are_not_state():
+    class Counter(Actor):
         count: int = 0
+        history: list[int] = []
+        _secret: str = "private"
+        version: ClassVar[int] = 1
 
-    with pytest.raises(ValueError, match="Persisted|Ephemeral"):
-        describe_actor(Bad)
+    definition = describe_actor(Counter)
+    assert set(definition.fields) == {"count", "history", "_secret"}
+    assert all(field.persisted for field in definition.fields.values())
+    assert not any(field.emittable for field in definition.fields.values())
+    state = public_contract([Counter])["actors"][0]["socket"]["schema"]["definitions"]["State"]
+    assert set(state["properties"]) == {"count", "history"}
+    left, right = Counter(), Counter()
+    left.history.append(1)
+    assert right.history == []
 
 
 def test_reentrant_preserves_method_types_and_marks_runtime_metadata():
@@ -111,13 +121,27 @@ def test_variadic_rpc_parameters_must_be_last():
         describe_actor(Bad)
 
 
-def test_field_factories_construct_fresh_ephemeral_resources():
+def test_field_factories_run_on_activation_and_create_fresh_values():
+    from dataclasses import field
     from threading import Lock
 
-    class Guarded(Actor):
-        lock: Annotated[object, Ephemeral(default_factory=Lock)]
+    resources = []
 
+    def create_lock():
+        lock = Lock()
+        resources.append(lock)
+        return lock
+
+    class Guarded(Actor):
+        values: list[int] = field(default_factory=list)
+        lock: object = ephemeral(default_factory=create_lock)
+
+    public_contract([Guarded])
+    assert resources == []
     left, right = Guarded(), Guarded()
+    left.values.append(1)
+    assert right.values == []
+    assert resources == [left.lock, right.lock]
     assert left.lock is not right.lock
     assert hasattr(left.lock, "acquire")
 
@@ -168,3 +192,61 @@ def test_contract_uses_serialized_types_for_results():
     while "$ref" in result:
         result = contract["definitions"][result["$ref"].split("/")[-1]]
     assert result["properties"]["doubled"]["type"] == "integer"
+
+
+def test_actor_fields_require_defaults():
+    class Missing(Actor):
+        count: int
+
+    with pytest.raises(ValueError, match="require defaults"):
+        describe_actor(Missing)
+
+
+def test_persisted_field_defaults_honor_annotation_constraints():
+    from pydantic import Field
+
+    class Invalid(Actor):
+        count: Annotated[int, Field(ge=0)] = -1
+
+    with pytest.raises(ValueError, match="greater than or equal"):
+        describe_actor(Invalid)
+
+
+def test_emitted_fields_must_be_public():
+    class Private(Actor):
+        _secret: str = emitted("private")
+
+    with pytest.raises(ValueError, match="must be public"):
+        describe_actor(Private)
+
+
+def test_field_helpers_preserve_static_value_types(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    source = Path(__file__).with_name("fixtures").joinpath("field_types.py").read_text()
+    actors = tmp_path / "actors.py"
+    actors.write_text(source)
+    invalid = tmp_path / "invalid.py"
+    invalid.write_text("""from actors import TypedActor
+from little_actors import emitted, ephemeral
+
+bad_default: int = emitted("bad")
+bad_factory: int = ephemeral(default_factory=list)
+
+def misuse(actor: TypedActor) -> None:
+    actor.messages.append(1)
+    actor.busy = "bad"
+""")
+    for checker, flags in (("mypy", ["--strict"]), ("pyright", [])):
+        for target, expected_errors in ((actors, 0), (invalid, 4)):
+            result = subprocess.run(
+                [sys.executable, "-m", checker, *flags, str(target)],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == bool(expected_errors), result.stdout + result.stderr
+            if expected_errors:
+                assert "4 errors" in result.stdout, result.stdout

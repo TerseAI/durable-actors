@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from typing_extensions import NotRequired, TypedDict
 
-from little_actors import Actor, Persisted
+from little_actors import Actor
 
 
 class Leaf(BaseModel):
@@ -26,7 +26,7 @@ class Node(BaseModel):
 
 
 class Trees(Actor):
-    nodes: Annotated[list[Node], Persisted()] = []
+    nodes: list[Node] = []
 
     async def append(self, node: Node) -> list[Node]:
         self.nodes.append(node)

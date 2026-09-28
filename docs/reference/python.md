@@ -7,20 +7,23 @@ The `little-actors` distribution provides actor authoring, a Python executor, an
 ```python
 from typing import Annotated, Literal
 from pydantic import BaseModel, Field
-from little_actors import Actor, Persisted, Ephemeral, Emittable
+from little_actors import Actor, emitted, ephemeral
 
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     text: Annotated[str, Field(min_length=1)]
 
 class Chat(Actor):
-    messages: Annotated[list[Message], Persisted(), Emittable()] = []
-    busy: Annotated[bool, Ephemeral()] = False
+    count: int = 0
+    messages: list[Message] = emitted(default_factory=list)
+    busy: bool = ephemeral(False)
 
     async def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
         return self.messages
 ```
+
+Annotated instance fields are persisted by default. `ephemeral()` excludes temporary values from persisted state and the public schema; use it for caches, locks, and service clients. `emitted()` persists a field and broadcasts its saved changes. `ClassVar` declarations are class constants and are not actor state.
 
 Every RPC parameter, return value, and persisted field needs a concrete annotation. Supported schema types include JSON primitives, typed collections with string dictionary keys, fixed tuples, optional values, literals, unions (including discriminated unions), recursive models, Pydantic models, dataclasses, `typing_extensions.TypedDict`, dates, datetimes, and UUIDs. `JsonValue` explicitly describes arbitrary nested JSON. Bare collections, `Any`, and `object` are rejected at public boundaries. Ephemeral fields can hold Python objects such as API clients and locks.
 
@@ -32,14 +35,14 @@ Classes extend `Actor` directly. Public async methods are RPCs; `_` methods are 
 
 Generated clients fill omitted middle arguments only when the contract provides a default. If a later argument is supplied and an earlier optional argument has no schema default (as in TypeScript contracts), the client raises `ValueError` before sending the RPC. Trailing optional arguments can always be omitted.
 
-Each field must have a default or a `default_factory` on its `Persisted` or `Ephemeral` annotation. Defaults are copied per instance. Factories run when an actor activates, rather than during schema extraction. Actor constructors are not supported. For example:
+Each field must have a default or a `default_factory`. Defaults are copied per instance. Both `emitted()` and `ephemeral()` accept a value or a factory; use the standard `dataclasses.field(default_factory=...)` for a persisted field that does not emit changes. Factories run when an actor activates, rather than during schema extraction. Actor constructors are not supported. For example:
 
 ```python
 from asyncio import Lock
-lock: Annotated[Lock, Ephemeral(default_factory=Lock)]
+lock: Lock = ephemeral(default_factory=Lock)
 ```
 
-Persisted fields beginning with `_` stay out of the public socket state schema. They still exist in persisted storage and administrative state inspection. `Emittable()` requires a public persisted field and broadcasts its saved changes to connected clients. Undeclared instance fields are rejected when saving state.
+Persisted fields beginning with `_` stay out of the public socket state schema. They still exist in persisted storage and administrative state inspection. `emitted()` requires a public field and broadcasts its saved changes to connected clients. Undeclared instance fields are rejected when saving state.
 
 ## Execution and failures
 

@@ -16,10 +16,9 @@ const runtime = process.env.LITTLE_ACTORS_TEST_RUNTIME
 const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("DURABLE_ACTORS_"))
 )
-const source = `from typing import Annotated
-from little_actors import Actor, Persisted
+const source = `from little_actors import Actor
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = 0
+    count: int = 0
     async def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count

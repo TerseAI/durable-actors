@@ -14,13 +14,12 @@ from little_actors.codegen import generate_client
     not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
 async def test_python_actor_generated_client_and_durable_restart(tmp_path, monkeypatch):
-    (tmp_path / "actors.py").write_text("""from typing import Annotated
-from pydantic import BaseModel
-from little_actors import Actor, Persisted
+    (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
+from little_actors import Actor
 class Count(BaseModel):
     value: int
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = 0
+    count: int = 0
     async def increment(self, amount: int = 1) -> Count:
         self.count += amount
         return Count(value=self.count)
@@ -77,13 +76,12 @@ async def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
 
     from little_actors import StateSnapshot, StateUpdate
 
-    (tmp_path / "socket_actors.py").write_text("""from typing import Annotated
-from pydantic import BaseModel
-from little_actors import Actor, ActorSocket, Persisted, Emittable
+    (tmp_path / "socket_actors.py").write_text("""from pydantic import BaseModel
+from little_actors import Actor, ActorSocket, emitted
 class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
-    count: Annotated[int, Persisted(), Emittable()] = 0
+    count: int = emitted(0)
     async def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
         socket.set_tags("connected")
     async def on_message(self, socket: ActorSocket[Payload, Payload], message: Payload) -> None:

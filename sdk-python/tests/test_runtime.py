@@ -1,9 +1,7 @@
-from typing import Annotated
-
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
-from little_actors import Actor, Ephemeral, Persisted
+from little_actors import Actor, ephemeral
 from little_actors.runtime import ActorRuntime
 
 
@@ -12,8 +10,8 @@ class Value(BaseModel):
 
 
 class Counter(Actor):
-    value: Annotated[Value, Persisted()] = Value(count=0)
-    calls: Annotated[int, Ephemeral()] = 0
+    value: Value = Value(count=0)
+    calls: int = ephemeral(0)
 
     async def increment(self, amount: int = 1) -> Value:
         self.value.count += amount
@@ -78,7 +76,7 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
     entered, resume = asyncio.Event(), asyncio.Event()
 
     class Shared(Actor):
-        count: Annotated[int, Persisted()] = 0
+        count: int = 0
 
         @reentrant
         async def wait_and_fail(self) -> None:
@@ -105,10 +103,10 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
 async def test_socket_messages_are_typed_and_emit_persisted_changes():
     from fixtures.effects import Effects
 
-    from little_actors import ActorSocket, Emittable
+    from little_actors import ActorSocket, emitted
 
     class Room(Actor[Value, Value, Value]):
-        value: Annotated[Value, Persisted(), Emittable()] = Value(count=0)
+        value: Value = emitted(Value(count=0))
 
         async def on_message(self, socket: ActorSocket[Value, Value], message: Value) -> None:
             self.value = message
@@ -145,7 +143,7 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration():
     stopped = []
 
     class Shared(Actor):
-        count: Annotated[int, Persisted()] = 0
+        count: int = 0
 
         @reentrant
         async def hold(self) -> int:

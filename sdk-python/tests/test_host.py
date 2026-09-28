@@ -16,10 +16,9 @@ async def test_artifact_attaches_invokes_and_rehydrates_in_a_fresh_python_proces
 ):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "actors.py").write_text("""from typing import Annotated
-from little_actors import Actor, Persisted
+    (project / "actors.py").write_text("""from little_actors import Actor
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = 0
+    count: int = 0
     async def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
@@ -115,10 +114,9 @@ async def test_eviction_cancels_socket_output_and_accepts_late_acknowledgments(t
     project = tmp_path / "project"
     project.mkdir()
     (project / "eviction_actors.py").write_text("""import asyncio
-from typing import Annotated
-from little_actors import Actor, Persisted, reentrant
+from little_actors import Actor, reentrant
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = 0
+    count: int = 0
     @reentrant
     async def hold(self) -> None:
         self.broadcast("started")

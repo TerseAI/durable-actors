@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from typing_extensions import TypeVar as DefaultTypeVar
@@ -16,21 +15,6 @@ Metadata = DefaultTypeVar("Metadata", default=JsonValue)
 Incoming = DefaultTypeVar("Incoming", default=JsonValue)
 Outgoing = DefaultTypeVar("Outgoing", default=JsonValue)
 F = TypeVar("F", bound=Callable[..., Any])
-
-
-@dataclass(frozen=True)
-class Persisted:
-    default_factory: Callable[[], object] | None = None
-
-
-@dataclass(frozen=True)
-class Ephemeral:
-    default_factory: Callable[[], object] | None = None
-
-
-@dataclass(frozen=True)
-class Emittable:
-    pass
 
 
 class Actor(Generic[Metadata, Incoming, Outgoing]):

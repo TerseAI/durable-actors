@@ -1,3 +1,4 @@
+from dataclasses import Field
 from typing import Any, TypeGuard
 
 from .actor import Actor
@@ -13,3 +14,7 @@ def is_list(value: object) -> TypeGuard[list[Any]]:
 
 def is_actor(value: object) -> TypeGuard[type[Actor[Any, Any, Any]]]:
     return isinstance(value, type) and value is not Actor and issubclass(value, Actor)
+
+
+def is_field(value: object) -> TypeGuard[Field[Any]]:
+    return isinstance(value, Field)

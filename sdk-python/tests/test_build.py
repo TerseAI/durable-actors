@@ -24,12 +24,11 @@ def test_hosted_build_installs_dependencies_before_import_and_bundles_resources(
     (project / "data").mkdir()
     (project / "data/__init__.py").write_text("")
     (project / "data/message.txt").write_text("hello")
-    (project / "actors.py").write_text("""from typing import Annotated
-from importlib.resources import files
+    (project / "actors.py").write_text("""from importlib.resources import files
 from build_dep import initial_count
-from little_actors import Actor, Persisted
+from little_actors import Actor
 class Counter(Actor):
-    count: Annotated[int, Persisted()] = initial_count
+    count: int = initial_count
     async def read(self) -> str:
         return f"{self.count}:{files('data').joinpath('message.txt').read_text()}"
 """)

@@ -1,12 +1,11 @@
 from .actor import Actor as Actor
-from .actor import Emittable as Emittable
-from .actor import Ephemeral as Ephemeral
-from .actor import Persisted as Persisted
 from .actor import reentrant as reentrant
 from .client import ActorInvocationError as ActorInvocationError
 from .client import Client as Client
 from .connection import StateSnapshot as StateSnapshot
 from .connection import StateUpdate as StateUpdate
+from .fields import emitted as emitted
+from .fields import ephemeral as ephemeral
 from .generated import UNSET as UNSET
 from .generated import Unset as Unset
 from .json import JsonValue as JsonValue
