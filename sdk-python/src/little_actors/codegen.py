@@ -48,6 +48,7 @@ def generate_models(actor: Document) -> tuple[str, dict[str, str]]:
         root_name += "Root"
     schema = {
         "type": "object",
+        "description": "Named wire types used by this generated actor client.",
         "properties": properties,
         "required": list(properties),
         "definitions": definitions,
@@ -72,6 +73,7 @@ def generate_models(actor: Document) -> tuple[str, dict[str, str]]:
         use_annotated=True,
         use_standard_collections=True,
         use_schema_description=True,
+        use_field_description=True,
     )
     if not isinstance(source, str):
         raise ValueError("expected a single generated models module")
@@ -104,6 +106,7 @@ def collect_schemas(actor: Document) -> tuple[Document, Document]:
 
 
 def expose_state(actor: Document, definitions: Document, properties: Document) -> None:
+    definitions["SocketState"].setdefault("description", "Public persisted fields of the actor.")
     emitted = {
         name: value
         for name, value in definitions["SocketState"]["properties"].items()
@@ -117,6 +120,11 @@ def expose_state(actor: Document, definitions: Document, properties: Document) -
             "type": "object",
             "properties": deepcopy(emitted),
             "required": required,
+            "description": (
+                "Complete current values of the actor's emitted fields."
+                if name == "SocketEmittedState"
+                else "Changed emitted fields; omitted fields are unchanged."
+            ),
         }
         properties[name] = {"$ref": "#/definitions/" + name}
 
@@ -182,7 +190,15 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
         f"from . import {name.lower()}_models as _models",
         "",
         f"class {name}:",
+        docstring(actor.get("description") or f"Synchronous client for {name} actors.", 4),
         "    def __init__(self, actor_id: str, transport: _ActorTransport | None = None) -> None:",
+        docstring(
+            "Address an actor using the SDK-managed transport by default.\n\n"
+            "Args:\n"
+            "    actor_id: Identity of the actor to call.\n"
+            "    transport: Optional custom transport; the caller owns its lifetime.",
+            8,
+        ),
         "        self._actor_id = actor_id",
         "        self._transport = transport if transport is not None else _default_client()",
         "",
@@ -203,6 +219,13 @@ def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, 
     returned = "None" if result["kind"] == "void" else types["Rpc" + root_key(result["type"])]
     lines = [
         f"    def {name}(_self{', ' if params else ''}{', '.join(params)}) -> {returned}:",
+        docstring(
+            method.get("description")
+            or f"Invoke {actor}.{name} synchronously.\n\n"
+            "Arguments and results are validated against the actor contract.\n"
+            "Remote failures raise ActorInvocationError.",
+            8,
+        ),
         f"        _args = _arguments([{', '.join(values)}], [{', '.join(defaults)}])",
         f"        _result = _self._transport.invoke({actor!r}, _self._actor_id, {name!r}, _args)",
     ]
@@ -214,6 +237,13 @@ def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, 
             ]
         )
     return [*lines, ""]
+
+
+def docstring(value: str, indent: int) -> str:
+    escaped = "\n".join(json.dumps(line, ensure_ascii=False)[1:-1] for line in value.split("\n"))
+    if "\n" in escaped:
+        escaped += "\n"
+    return "\n".join(" " * indent + line for line in ('"""' + escaped + '"""').split("\n"))
 
 
 def method_parameters(
@@ -262,9 +292,28 @@ def socket_methods(actor: str, types: dict[str, str]) -> list[str]:
     connection = f"_Connection[{incoming}, {outgoing}, {state}, {patch}]"
     return [
         f"    def prepare_websocket(self, metadata: {metadata}, *, authorization_lifetime_ms: int = 900000) -> _SocketGrant:",
+        docstring(
+            "Authorize a WebSocket connection without opening it.\n\n"
+            "Args:\n"
+            "    metadata: Typed metadata passed to the actor's on_connect hook.\n"
+            "    authorization_lifetime_ms: Authorization duration, from 1,000 to\n"
+            "        86,400,000 milliseconds. Defaults to 15 minutes.\n\n"
+            "Returns:\n"
+            "    A grant containing the connection URL and expiration deadlines.",
+            8,
+        ),
         f"        return self._transport.prepare_websocket({actor!r}, self._actor_id, _argument(metadata, _TypeAdapter({metadata})), authorization_lifetime_ms=authorization_lifetime_ms)",
         "",
         f"    def connect(self, metadata: {metadata}) -> {connection}:",
+        docstring(
+            "Open a typed, synchronous WebSocket connection.\n\n"
+            "Args:\n"
+            "    metadata: Typed metadata passed to the actor's on_connect hook.\n\n"
+            "Use send() for application messages and receive() or iteration for\n"
+            "messages and state events. Close the connection explicitly or use with.\n"
+            "For complete emitted-state callbacks, use subscribe() when available.",
+            8,
+        ),
         "        grant = self.prepare_websocket(metadata)",
         f"        return {connection}.open(grant, _TypeAdapter({incoming}), _TypeAdapter({outgoing}), _TypeAdapter({state}), _TypeAdapter({patch}))",
         "",
@@ -283,6 +332,20 @@ def subscription_method(actor: Document, types: dict[str, str]) -> list[str]:
     )
     return [
         f"    def subscribe(self, callback: _Callable[[{state}], None], *, metadata: {metadata}{default}, on_error: _Callable[[Exception], None] | None = None) -> _Subscription[{state}]:",
+        docstring(
+            "Subscribe to complete typed snapshots of emitted state.\n\n"
+            "Args:\n"
+            "    callback: Receives the initial state and merged updates, serially\n"
+            "        on a background thread.\n"
+            "    metadata: Connection metadata; may be omitted only when nullable.\n"
+            "    on_error: Handles receiving, validation, or callback failures on\n"
+            "        the receiver thread. Without a handler, failures are logged.\n\n"
+            "Returns:\n"
+            "    A subscription to close() when finished, also usable as a context manager.\n\n"
+            "Setup failures raise directly. Later failures stop the subscription.\n"
+            "The receiver does not keep the process alive or reconnect automatically.",
+            8,
+        ),
         f"        return _Subscription(self.connect(metadata), callback, _TypeAdapter({state}), on_error=on_error)",
         "",
     ]

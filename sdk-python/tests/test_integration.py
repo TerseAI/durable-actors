@@ -23,8 +23,10 @@ from little_actors import Actor
 class Count(BaseModel):
     value: int
 class Counter(Actor):
+    'A durable counter.'
     count: int = 0
     async def increment(self, amount: int = 1) -> Count:
+        'Increment the count and return its new value.'
         self.count += amount
         return Count(value=self.count)
 """)
@@ -36,7 +38,10 @@ class Counter(Actor):
                 [
                     sys.executable,
                     "-c",
-                    'from remote import Counter; print(Counter("one").increment(2).value)',
+                    "from remote import Counter; "
+                    'assert Counter.__doc__ == "A durable counter."; '
+                    'assert Counter.increment.__doc__ == "Increment the count and return its new value."; '
+                    'print(Counter("one").increment(2).value)',
                 ],
                 cwd=tmp_path,
                 env={**os.environ, "DURABLE_ACTORS_CONTROL_PLANE_URL": client.origin},

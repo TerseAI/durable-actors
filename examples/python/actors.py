@@ -1,23 +1,31 @@
-from pydantic import BaseModel
-
 from little_actors import Actor, ActorSocket, emitted
+from pydantic import BaseModel, Field
 
 
 class Member(BaseModel):
+    """Identity attached to a chat connection."""
+
     name: str
 
 
 class Message(BaseModel):
-    text: str
+    """A message saved in the chat history."""
+
+    text: str = Field(description="The message body.")
 
 
 class Chat(Actor[Member, Message, Message]):
+    """A durable chat room with live message history."""
+
     messages: list[Message] = emitted(default_factory=list)
 
     async def append(self, message: Message) -> list[Message]:
+        """Save and broadcast a message, returning the complete chat history."""
         self.messages.append(message)
         self.broadcast(message)
         return self.messages
 
-    async def on_message(self, socket: ActorSocket[Member, Message], message: Message) -> None:
+    async def on_message(
+        self, socket: ActorSocket[Member, Message], message: Message
+    ) -> None:
         await self.append(Message(text=f"{socket.metadata.name}: {message.text}"))

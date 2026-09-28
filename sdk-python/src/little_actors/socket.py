@@ -1,3 +1,5 @@
+"""Actor-side socket handles and invocation-scoped socket effects."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +23,13 @@ class Effects(Protocol):
 
 
 class ActorSocket(Generic[Metadata, Outgoing]):
+    """Actor-side handle to one typed WebSocket connection.
+
+    Supplied to socket hooks or returned by Actor.get_connections(). Use the
+    handle only during its current invocation. id identifies the connection;
+    metadata and tags support connection selection and application context.
+    """
+
     def __init__(self, connection: Document, scope: SocketScope, state: str = "open") -> None:
         self.id: str = connection["id"]
         self._scope = scope
@@ -30,14 +39,22 @@ class ActorSocket(Generic[Metadata, Outgoing]):
 
     @property
     def state(self) -> str:
+        """Current handle state: "connecting", "open", or "closed"."""
         return self._state
 
     @property
     def metadata(self) -> Metadata:
+        """Typed connection metadata.
+
+        Assign a replacement value to save changes. Mutating the returned value
+        in place does not publish a metadata update. Encoded metadata is limited
+        to 64 KiB.
+        """
         return self._metadata
 
     @metadata.setter
     def metadata(self, value: Metadata) -> None:
+        """Validate and publish replacement connection metadata."""
         encoded = encode(self._scope.metadata, value)
         if len(json.dumps(encoded, separators=(",", ":")).encode()) > 64 * 1024:
             raise ValueError("socket metadata exceeds 64 KiB")
@@ -52,9 +69,15 @@ class ActorSocket(Generic[Metadata, Outgoing]):
 
     @property
     def tags(self) -> tuple[str, ...]:
+        """Current connection tags; replace them with set_tags()."""
         return self._tags
 
     def send(self, message: Outgoing) -> None:
+        """Queue a value matching the actor's outgoing application-message type.
+
+        Encoded messages are limited to 16 MiB. The top-level message types
+        "state" and "state_update" are reserved for emitted state.
+        """
         if self._state == "closed":
             raise ValueError("cannot send on a closed socket")
         self._scope.push(
@@ -62,14 +85,24 @@ class ActorSocket(Generic[Metadata, Outgoing]):
         )
 
     def close(self, code: int = 1000, reason: str = "") -> None:
+        """Close this connection with code 1000 or an application code 3000-4999.
+
+        The UTF-8 reason must fit within 123 bytes.
+        """
         self._close("close", code, reason)
 
     def reject(self, code: int = 4003, reason: str = "connection rejected") -> None:
+        """Reject a connecting socket from on_connect(); defaults to code 4003."""
         if self._state != "connecting":
             raise ValueError("only a connecting socket can be rejected")
         self._close("reject", code, reason)
 
     def set_tags(self, *tags: str) -> None:
+        """Replace tags used by Actor.broadcast() selectors.
+
+        Tags are deduplicated. At most 128 nonempty tags are allowed, with up to
+        256 characters per tag and 8 KiB of UTF-8 data in total.
+        """
         checked = validate_tags(tags)
         self._scope.push({"type": "set_tags", "connection_id": self.id, "tags": checked})
         self._tags = tuple(checked)

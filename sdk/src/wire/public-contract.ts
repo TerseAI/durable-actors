@@ -15,6 +15,7 @@ interface TypeScriptContract {
 
 interface ActorApi {
     readonly actorName: string
+    readonly description?: string
     readonly socket: SocketContract
     readonly rpc: RpcContract
 }
@@ -26,6 +27,7 @@ interface RpcContract {
 
 interface RpcMethod {
     readonly name: string
+    readonly description?: string
     readonly parameters: readonly RpcParameter[]
     readonly result: { readonly kind: "void" } | { readonly kind: "value"; readonly type: TypeReference }
 }

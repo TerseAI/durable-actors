@@ -131,7 +131,14 @@ def actor_contract(definition: Definition) -> Document:
             key = f"Method_{name}_Result"
             roots[key] = method.result
             result = {"kind": "value", "type": {"$ref": f"#/definitions/{key}"}}
-        methods.append({"name": name, "parameters": parameters, "result": result})
+        methods.append(
+            {
+                "name": name,
+                **documentation(getattr(definition.actor, name)),
+                "parameters": parameters,
+                "result": result,
+            }
+        )
     rpc_schema = schemas(roots, serialization={name for name in roots if name.endswith("_Result")})
     for name, method in definition.methods.items():
         for index, parameter in enumerate(method.signature.parameters.values()):
@@ -159,6 +166,7 @@ def actor_contract(definition: Definition) -> Document:
     }
     return {
         "actorName": definition.actor.__name__,
+        **documentation(definition.actor),
         "rpc": {"schema": rpc_schema, "methods": methods},
         "socket": {
             "version": 1,
@@ -167,6 +175,11 @@ def actor_contract(definition: Definition) -> Document:
             "emittable": [name for name, field in public.items() if field.emittable],
         },
     }
+
+
+def documentation(value: object) -> Document:
+    description = getattr(value, "__doc__", None)
+    return {"description": inspect.cleandoc(description)} if description else {}
 
 
 def read_field(actor: type[Actor[Any, Any, Any]], name: str, hint: Any) -> Field:

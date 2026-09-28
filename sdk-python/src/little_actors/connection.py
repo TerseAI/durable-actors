@@ -1,3 +1,5 @@
+"""Typed synchronous WebSockets and emitted-state events."""
+
 from __future__ import annotations
 
 import json
@@ -19,12 +21,31 @@ Patch = TypeVar("Patch")
 
 
 class StateSnapshot(BaseModel, Generic[State]):
+    """Complete emitted state received when a subscription connects.
+
+    Attributes:
+        type: Wire discriminator, "state".
+        state: Typed values of emitted fields.
+        version: Nonnegative state version used to order updates.
+    """
+
     type: Literal["state"] = "state"
     state: State
     version: int
 
 
 class StateUpdate(BaseModel, Generic[Patch]):
+    """A patch to previously received emitted state.
+
+    Attributes:
+        type: Wire discriminator, "state_update".
+        changes: Typed changed fields; omitted fields are unchanged.
+        removed: Names of fields removed from the state.
+        version: Nonnegative state version used to order updates.
+
+    Use changes.model_dump(exclude_unset=True) to inspect only supplied fields.
+    """
+
     type: Literal["state_update"] = "state_update"
     changes: Patch
     removed: list[str]
@@ -38,6 +59,14 @@ class SocketWire(Protocol):
 
 
 class Connection(Generic[Send, Receive, State, Patch]):
+    """Typed synchronous WebSocket returned by a generated actor's connect().
+
+    Send application messages with send(). Read application messages and state
+    events with receive() or iteration. Normal remote closure ends iteration.
+    Close explicitly or use with. Generic parameters describe sent messages,
+    received messages, emitted state, and state patches, respectively.
+    """
+
     def __init__(
         self,
         wire: SocketWire,
@@ -61,16 +90,34 @@ class Connection(Generic[Send, Receive, State, Patch]):
         state: TypeAdapter[State],
         patch: TypeAdapter[Patch],
     ) -> Connection[Send, Receive, State, Patch]:
+        """Open an authorized socket using the supplied wire-type adapters.
+
+        Generated clients supply these adapters automatically through connect().
+        The grant must still be valid when the WebSocket handshake occurs.
+        """
         wire = connect(grant.websocket_url, max_size=16 * 1024 * 1024)
         return cls(wire, incoming, outgoing, state, patch)
 
     def send(self, message: Send) -> None:
+        """Validate and send one application message as JSON text."""
         data = encode(self._incoming, message)
         self._wire.send(json.dumps(data, separators=(",", ":"), allow_nan=False))
 
     def receive(
         self, timeout: float | None = None
     ) -> Receive | StateSnapshot[State] | StateUpdate[Patch]:
+        """Block for an application message, state snapshot, or state update.
+
+        Args:
+            timeout: Maximum wait in seconds; None waits without a deadline.
+
+        Raises:
+            TimeoutError: No message arrived within the timeout.
+            ActorProtocolError: A received message violates the actor protocol.
+
+        Values are validated against the generated types. Remote socket closure
+        raises the underlying WebSocket connection-closed exception.
+        """
         data = self._wire.recv(timeout=timeout)
         if not isinstance(data, str):
             raise ActorProtocolError("actor sockets require JSON text")
@@ -96,6 +143,7 @@ class Connection(Generic[Send, Receive, State, Patch]):
             raise StopIteration from None
 
     def close(self, code: int = 1000, reason: str = "") -> None:
+        """Close the WebSocket with a status code and optional reason."""
         self._wire.close(code, reason)
 
     def __enter__(self) -> Connection[Send, Receive, State, Patch]:

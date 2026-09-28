@@ -1,3 +1,5 @@
+"""Shared model and argument support for generated Python clients."""
+
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
@@ -6,13 +8,18 @@ from .contract import encode
 
 
 class Unset:
+    """Type of UNSET, representing an omitted argument or field rather than an explicit None."""
+
     pass
 
 
 UNSET = Unset()
+"""Sentinel for an omitted argument or field; distinct from an explicit None."""
 
 
 class ClientModel(BaseModel):
+    """Base for generated wire models, including fields that can be omitted with UNSET."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 

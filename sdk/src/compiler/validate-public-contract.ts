@@ -139,6 +139,7 @@ const documentSchema = z.strictObject({
     actors: z.array(
         z.strictObject({
             actorName: component,
+            description: z.string().optional(),
             socket: z.strictObject({
                 version: z.literal(1),
                 actorName: component,
@@ -150,6 +151,7 @@ const documentSchema = z.strictObject({
                 methods: z.array(
                     z.strictObject({
                         name: component,
+                        description: z.string().optional(),
                         parameters: z.array(
                             z.strictObject({
                                 name: z.string().min(1),

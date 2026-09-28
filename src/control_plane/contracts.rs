@@ -154,6 +154,8 @@ impl ContractDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActorApi {
     actor_name: String,
+    #[serde(rename = "description")]
+    _description: Option<String>,
     socket: SocketContract,
     rpc: RpcContract,
 }
@@ -232,6 +234,8 @@ impl RpcContract {
 #[serde(deny_unknown_fields)]
 struct RpcMethod {
     name: String,
+    #[serde(rename = "description")]
+    _description: Option<String>,
     parameters: Vec<RpcParameter>,
     result: RpcResult,
 }

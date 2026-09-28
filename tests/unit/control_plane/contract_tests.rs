@@ -18,9 +18,11 @@ fn published_declarations_and_dependencies_are_preserved_and_hashed() -> Result<
     ))?;
     let original = PublicActorContract::new(document.clone())?;
     document["typescript"]["dependencies"] = json!({"ai": "7.0.97"});
+    document["actors"][0]["description"] = json!("A documented actor.");
+    document["actors"][0]["rpc"]["methods"][0]["description"] = json!("A documented RPC.");
     let changed = PublicActorContract::new(document.clone())?;
     assert_ne!(original.hash(), changed.hash());
-    assert_eq!(changed.document()["typescript"], document["typescript"]);
+    assert_eq!(changed.document(), &document);
     document["typescript"]["declarations"] = json!("");
     assert!(PublicActorContract::new(document).is_err());
     Ok(())

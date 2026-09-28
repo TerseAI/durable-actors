@@ -1,3 +1,5 @@
+"""Background subscriptions that merge emitted-state snapshots and patches."""
+
 from __future__ import annotations
 
 import json
@@ -22,6 +24,21 @@ class StateStream(Protocol):
 
 
 class Subscription(Generic[State]):
+    """Receive complete typed emitted state on a background thread.
+
+    Create through a generated actor's subscribe(). The callback receives the
+    initial snapshot and subsequent merged updates serially on the receiver
+    thread. Each callback gets a fresh model. Application messages are ignored.
+
+    Receiving, validation, or callback failures stop the subscription, populate
+    error, and call on_error on the receiver thread, or are logged if no handler
+    was supplied. A normal remote close stops without an error. Reconnect by
+    creating a new subscription.
+
+    Call close() or use with for cleanup. The receiver is a daemon thread and
+    does not keep an otherwise finished process alive.
+    """
+
     def __init__(
         self,
         connection: StateStream,
@@ -42,13 +59,20 @@ class Subscription(Generic[State]):
 
     @property
     def closed(self) -> bool:
+        """Whether the receiver has finished, including callback and connection cleanup."""
         return self._done.is_set()
 
     @property
     def error(self) -> Exception | None:
+        """Failure that stopped the receiver, or None after normal closure."""
         return self._error
 
     def close(self) -> None:
+        """Stop receiving, close the socket, and wait for the active callback to finish.
+
+        Safe to call from the callback itself; that call does not wait on its own
+        thread. In that case closed becomes true after the callback returns.
+        """
         self._stopping.set()
         self._connection.close()
         if current_thread() is not self._thread:

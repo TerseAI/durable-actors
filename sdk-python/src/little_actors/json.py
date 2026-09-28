@@ -1,3 +1,5 @@
+"""JsonValue describes JSON primitives, lists, and string-keyed dictionaries recursively."""
+
 from typing import TYPE_CHECKING, TypeAlias
 
 from typing_extensions import TypeAliasType

@@ -855,6 +855,7 @@ components:
                         required: [actorName, socket, rpc]
                         properties:
                             actorName: { type: string }
+                            description: { type: string, description: Actor documentation for generated clients. }
                             socket:
                                 type: object
                                 additionalProperties: false
@@ -877,6 +878,7 @@ components:
             required: [name, parameters, result]
             properties:
                 name: { type: string }
+                description: { type: string, description: Method documentation for generated clients. }
                 parameters:
                     type: array
                     items:

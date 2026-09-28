@@ -1,5 +1,7 @@
+import ast
 import asyncio
 import importlib
+import inspect
 import json
 import subprocess
 import sys
@@ -303,3 +305,31 @@ def test_generated_emitted_state_preserves_optional_contract_fields(tmp_path, mo
     state = models.SocketEmittedState()
     assert isinstance(state.messages, Unset)
     assert state.model_dump(exclude_unset=True) == {}
+
+
+def test_generated_docstrings_survive_contract_transport(tmp_path, monkeypatch):
+    from fixtures.documented import Note, Notebook
+
+    contract = json.loads(json.dumps(public_contract([Notebook])))
+    generate_client(contract, tmp_path / "documented_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    remote = importlib.import_module("documented_client")
+    models = importlib.import_module("documented_client.notebook_models")
+
+    assert inspect.getdoc(remote.Notebook) == inspect.getdoc(Notebook)
+    assert inspect.getdoc(remote.Notebook.save) == inspect.getdoc(Notebook.save)
+    assert inspect.getdoc(models.Note) == inspect.getdoc(Note)
+    assert "actor_id" in inspect.getdoc(remote.Notebook.__init__)
+    assert "synchronously" in inspect.getdoc(remote.Notebook.clear)
+    assert "background thread" in inspect.getdoc(remote.Notebook.subscribe)
+    assert "metadata" in inspect.getdoc(remote.Notebook.connect)
+    assert "authorization_lifetime_ms" in inspect.getdoc(remote.Notebook.prepare_websocket)
+    assert "emitted" in inspect.getdoc(models.SocketEmittedState)
+    assert "omitted" in inspect.getdoc(models.SocketStatePatch)
+
+    source = ast.parse((tmp_path / "documented_client/notebook_models.py").read_text())
+    note = next(
+        node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "Note"
+    )
+    field_doc = next(node.value.value for node in note.body[2:] if isinstance(node, ast.Expr))
+    assert inspect.cleandoc(field_doc) == "The note text, including whitespace."

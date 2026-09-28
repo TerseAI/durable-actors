@@ -1,3 +1,5 @@
+"""Synchronous transport, connection grants, and invocation errors."""
+
 from __future__ import annotations
 
 import atexit
@@ -18,6 +20,16 @@ from .guards import is_document
 
 
 class ActorInvocationError(Exception):
+    """An RPC failure reported with its code and request identifier.
+
+    Attributes:
+        code: Failure category. "outcome_unknown" means execution may have
+            happened even though its response was lost; retrying can repeat work.
+        request_id: Identifier for correlating the invocation with runtime logs.
+
+    str(error) returns the failure message.
+    """
+
     def __init__(self, code: str, request_id: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -25,10 +37,21 @@ class ActorInvocationError(Exception):
 
 
 class ActorProtocolError(Exception):
+    """The runtime returned an invalid response or violated the actor wire protocol."""
+
     pass
 
 
 class SocketGrant(BaseModel):
+    """Authorization to open a WebSocket before its connection deadline.
+
+    Attributes:
+        websocket_url: Authorized ws:// or wss:// URL to connect to.
+        home_region: Region hosting the actor.
+        connect_by_ms: Latest connection time, as Unix epoch milliseconds.
+        authorized_until_ms: Authorization expiry, as Unix epoch milliseconds.
+    """
+
     model_config = ConfigDict(
         populate_by_name=True,
         alias_generator=lambda name: {
@@ -45,10 +68,14 @@ class SocketGrant(BaseModel):
 
 
 class RpcTransport(Protocol):
+    """Synchronous RPC boundary implemented by Client and custom transports."""
+
     def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any: ...
 
 
 class ActorTransport(RpcTransport, Protocol):
+    """Transport supporting both synchronous RPCs and WebSocket authorization."""
+
     def prepare_websocket(
         self,
         actor_name: str,
@@ -60,6 +87,13 @@ class ActorTransport(RpcTransport, Protocol):
 
 
 class Client:
+    """Synchronous HTTP transport for actor RPCs, contracts, and socket grants.
+
+    Generated clients use an SDK-managed shared instance by default. Construct
+    a Client when configuration or lifetime must differ, then pass it to the
+    generated actor client. Explicit clients support with and close().
+    """
+
     def __init__(
         self,
         control_plane_url: str | None = None,
@@ -69,6 +103,20 @@ class Client:
         home_region: str | None = None,
         http: httpx.Client | None = None,
     ) -> None:
+        """Configure a transport, using environment values for omitted options.
+
+        Args:
+            control_plane_url: Runtime origin. Defaults to
+                DURABLE_ACTORS_CONTROL_PLANE_URL or http://127.0.0.1:7100.
+            project_id: Project identity. Defaults to DURABLE_ACTORS_PROJECT_ID,
+                or "local" for localhost origins. Required for other origins.
+            api_key: Bearer credential. Defaults to DURABLE_ACTORS_SECRET,
+                falling back to DURABLE_ACTORS_API_KEY.
+            home_region: Optional placement preference, falling back to
+                DURABLE_ACTORS_HOME_REGION.
+            http: Optional caller-owned httpx.Client. When omitted, this transport
+                creates and owns its HTTP client with a 180-second timeout.
+        """
         self.origin = validate_origin(
             control_plane_url
             or os.environ.get("DURABLE_ACTORS_CONTROL_PLANE_URL", "http://127.0.0.1:7100")
@@ -104,11 +152,29 @@ class Client:
         self.close()
 
     def close(self) -> None:
+        """Close this transport and its owned HTTP client; injected HTTP clients stay open."""
         self._closed = True
         if self._owns_http:
             self._http.close()
 
     def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any:
+        """Invoke an actor method synchronously with JSON-compatible arguments.
+
+        Args:
+            actor_name: Exported actor class name.
+            actor_id: Identity of the actor instance.
+            method: Public RPC method name.
+            args: Positional wire arguments in contract order.
+
+        Returns:
+            The JSON-compatible result. Generated clients decode its concrete type.
+
+        Raises:
+            ActorInvocationError: Execution failed or its outcome is unknown.
+            ActorProtocolError: The server returned an invalid invocation outcome.
+
+        Only failures known to precede execution are automatically retried.
+        """
         if self._closed:
             raise RuntimeError("client is closed")
         path = self.actor_path(actor_name, actor_id)
@@ -165,6 +231,18 @@ class Client:
         *,
         authorization_lifetime_ms: int = 900000,
     ) -> SocketGrant:
+        """Request a short-lived WebSocket grant without opening a connection.
+
+        Args:
+            actor_name: Exported actor class name.
+            actor_id: Identity of the actor instance.
+            metadata: JSON-compatible connection metadata, limited to 64 KiB.
+            authorization_lifetime_ms: Duration from 1,000 to 86,400,000
+                milliseconds; defaults to 15 minutes.
+
+        Returns:
+            The authorized URL, home region, and connection/authorization deadlines.
+        """
         if not 1000 <= authorization_lifetime_ms <= 86400000:
             raise ValueError("authorization lifetime must be between one second and one day")
         if len(json.dumps(metadata, allow_nan=False).encode()) > 65536:
@@ -182,6 +260,7 @@ class Client:
         return grant
 
     def get_contract(self) -> dict[str, Any]:
+        """Fetch the published actor contract used to generate typed clients."""
         response = self._http.get(
             f"{self.origin}/v1/projects/{self.project_id}/deployment/contract",
             headers=self.headers,
@@ -196,6 +275,7 @@ class Client:
         return cast(dict[str, Any], value["contract"])
 
     def actor_path(self, actor_name: str, actor_id: str) -> str:
+        """Return the project-scoped HTTP path after validating the actor name and ID."""
         return f"/v1/projects/{self.project_id}/actors/{component(actor_name, 255)}/{component(actor_id, 128)}"
 
     def _invoke_attempt(
