@@ -124,6 +124,7 @@ async fn project_exports_capture_actor_console_without_copying_to_runtime_output
                     let captured = captured.clone();
                     async move {
                         assert_eq!(headers["authorization"], "Bearer log-secret");
+                        assert_eq!(headers["content-type"], "application/x-protobuf");
                         captured
                             .lock()
                             .unwrap()
@@ -139,7 +140,7 @@ async fn project_exports_capture_actor_console_without_copying_to_runtime_output
         .await
         .unwrap();
     });
-    let runtime = LocalRuntime::start_with_actor(None, r#"async read(): Promise<number> { console.log("customer-stdout"); console.error("customer-stderr"); process.stdout.write("customer-partial"); return 1 }"#).await?;
+    let runtime = LocalRuntime::start_with_actor(Some("info"), r#"async read(): Promise<number> { console.log("customer-stdout"); console.error("customer-stderr"); process.stdout.write("customer-partial"); return 1 }"#).await?;
     let client = reqwest::Client::new();
     let deployment_url = format!("{}/v1/projects/default/deployment", runtime.origin);
     let mut deployment: serde_json::Value = client
@@ -180,6 +181,15 @@ async fn project_exports_capture_actor_console_without_copying_to_runtime_output
     for marker in ["customer-stdout", "customer-stderr", "customer-partial"] {
         assert!(exported.contains(marker), "missing {marker}: {exported}");
         assert!(!output.contains(marker), "runtime output leaked {marker}");
+    }
+    for marker in [
+        "durable-actors host stopped",
+        "durable_actors.project_id",
+        "durable_actors.actor_id",
+        "Counter",
+        "cloud.region",
+    ] {
+        assert!(exported.contains(marker), "missing {marker}: {exported}");
     }
     assert!(!exported.contains("durable_actors::control_plane"));
     server.abort();
@@ -229,6 +239,14 @@ impl LocalRuntime {
             .env(
                 "TEST_LOG_HEADERS",
                 r#"{"authorization":"Bearer log-secret"}"#,
+            )
+            .env(
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "authorization=Bearer wrong-secret",
+            )
+            .env(
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "http://127.0.0.1:1/wrong",
             )
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())

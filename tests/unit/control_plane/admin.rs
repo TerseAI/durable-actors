@@ -1,28 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn log_exports_are_project_scoped_and_survive_postgres_reconnection() -> Result<()> {
-    crate::postgres::testing::with_postgres(async |fixture| {
-        let registry = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
-        let original = spec("image");
-        let settings = serde_json::json!({"endpoint":"https://collector.example/v1/logs","headersEnv":"CUSTOMER_LOG_HEADERS"});
-        let mut document = serde_json::to_value(&original)?;
-        document["logExport"] = settings.clone();
-        let configured: HostLaunchSpec = serde_json::from_value(document)?;
-        assert_ne!(original.host_config_key(), configured.host_config_key());
-        registry.register_test_deployment(&configured).await?;
-        let mut other = original;
-        other.project_id = "other".into();
-        registry.register_test_deployment(&other).await?;
-        drop(registry);
-        let reopened = PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
-        let saved = reopened.launch_spec("default").await?.unwrap();
-        assert_eq!(serde_json::to_value(saved)?["logExport"], settings);
-        assert_eq!(reopened.launch_spec("other").await?, Some(other));
-        Ok(())
-    }).await
-}
-
 #[test]
 fn secret_changes_update_host_configuration() {
     let mut deployment = spec("image-1");
@@ -147,6 +124,11 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
         ))?)?;
         let mut first = spec("first-image");
         first.project_id = "team-a".into();
+        let original_key = first.host_config_key();
+        first.log_export = Some(serde_json::from_value(serde_json::json!({
+            "endpoint":"https://collector.example/v1/logs", "headersEnv":"LOG_HEADERS"
+        }))?);
+        assert_ne!(original_key, first.host_config_key());
         let mut second = spec("second-image");
         second.project_id = "team-b".into();
         registry

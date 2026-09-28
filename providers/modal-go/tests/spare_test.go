@@ -11,22 +11,6 @@ import (
 	"time"
 )
 
-func TestActorSandboxOutputCannotReachProviderLogs(t *testing.T) {
-	params, err := spareParams(spareRequest{Kind: "actor", Name: "test", ImageRef: "im-runtime", CanonicalRegion: "canada", Resources: resourceLimits{CPUMillis: 1000, MemoryMiB: 1024}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if params.Env["DURABLE_ACTORS_LOG_MODE"] != "export" {
-		t.Fatal("actor host does not use private log export")
-	}
-	// Exercise the shell redirection with a replacement command that emits both streams.
-	script := strings.Replace(params.Command[2], "exec /usr/local/bin/durable-actors", "(printf customer-stdout; printf customer-stderr >&2)", 1)
-	output, err := exec.Command("sh", "-c", script).CombinedOutput()
-	if err != nil || len(output) != 0 {
-		t.Fatalf("provider output: %q, error: %v", output, err)
-	}
-}
-
 func TestSparePlacementUsesGCP(t *testing.T) {
 	for _, test := range []struct{ kind, region, placement string }{{"actor", "north-america-east", "us-east"}, {"replica", "europe-west", "eu-west"}, {"actor", "canada", "ca"}} {
 		t.Run(test.kind, func(t *testing.T) {
@@ -86,6 +70,14 @@ func TestGenericSpareHasNoCustomerCredentialsAndAppliesLimits(t *testing.T) {
 	}
 	if api.params.Env["DURABLE_ACTORS_PROCESS_ROLE"] != "spare" {
 		t.Fatal("runtime is not initialized")
+	}
+	if api.params.Env["DURABLE_ACTORS_LOG_MODE"] != "export" {
+		t.Fatal("actor host does not use private log export")
+	}
+	script := strings.Replace(api.params.Command[2], "exec /usr/local/bin/durable-actors", "(printf customer-stdout; printf customer-stderr >&2)", 1)
+	output, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil || len(output) != 0 {
+		t.Fatalf("provider output: %q, error: %v", output, err)
 	}
 }
 
