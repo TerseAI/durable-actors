@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
 
 from .actor import Actor
@@ -117,13 +118,15 @@ class ActorRuntime:
                 args = await socket_arguments(command["event"], scope)
                 admit()
                 if hasattr(instance, name):
-                    await getattr(instance, name)(*args)
+                    await invoke_handler(scope, getattr(instance, name), *args)
                 result = None
             else:
                 method = self.definition.methods[name]
                 arguments = bind_arguments(method, command["args"])
                 admit()
-                value = await getattr(instance, name)(*arguments.args, **arguments.kwargs)
+                value = await invoke_handler(
+                    scope, getattr(instance, name), *arguments.args, **arguments.kwargs
+                )
                 result = encode(method.result, value)
             task = asyncio.current_task()
             if task is not None and task.cancelling():
@@ -214,6 +217,29 @@ class ActorRuntime:
             for name, field in self.definition.fields.items()
             if field.persisted
         }
+
+
+async def invoke_handler(
+    scope: SocketScope, handler: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    if inspect.iscoroutinefunction(handler):
+        return await handler(*args, **kwargs)
+    worker = asyncio.create_task(asyncio.to_thread(handler, *args, **kwargs))
+    cancelled = False
+    # Threads cannot be stopped: retain the actor lock until the handler exits.
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+            scope.cancel()
+        except Exception:
+            break
+    if cancelled:
+        if not worker.cancelled():
+            worker.exception()
+        raise asyncio.CancelledError
+    return worker.result()
 
 
 def bind_arguments(method: Method, values: list[Any]) -> inspect.BoundArguments:

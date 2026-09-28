@@ -18,7 +18,7 @@ def main() -> None:
         Path(directory, "actors.py").write_text("""from little_actors import Actor
 class Counter(Actor):
     count: int = 0
-    async def increment(self) -> int:
+    def increment(self) -> int:
         self.count += 1
         return self.count
 """)

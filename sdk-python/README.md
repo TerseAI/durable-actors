@@ -26,12 +26,12 @@ class Chat(Actor):
     messages: list[Message] = emitted(default_factory=list)
     busy: bool = ephemeral(False)
 
-    async def append(self, message: Message) -> list[Message]:
+    def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
         return self.messages
 ```
 
-Public async methods become RPCs. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`.
+Public `def` methods become RPCs; `async def` is also supported. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`. Synchronous handlers run on a worker thread, with calls serialized per actor. Socket hooks can also use ordinary `def`; `self.get_connections()` returns typed sockets. Async handlers use `await self.aget_connections()`.
 
 ## Generate and use a client
 

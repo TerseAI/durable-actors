@@ -25,7 +25,7 @@ class Count(BaseModel):
 class Counter(Actor):
     'A durable counter.'
     count: int = 0
-    async def increment(self, amount: int = 1) -> Count:
+    def increment(self, amount: int = 1) -> Count:
         'Increment the count and return its new value.'
         self.count += amount
         return Count(value=self.count)
@@ -65,13 +65,13 @@ class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
     count: int = emitted(0)
-    async def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
+    def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
         socket.set_tags("connected")
-    async def on_message(self, socket: ActorSocket[Payload, Payload], message: Payload) -> None:
+    def on_message(self, socket: ActorSocket[Payload, Payload], message: Payload) -> None:
         self.count += message.value
         socket.send(Payload(value=self.count + socket.metadata.value))
-    async def count_connections(self) -> int:
-        return len(await self.get_connections())
+    def count_connections(self) -> int:
+        return len(self.get_connections())
 """)
     with actor_server(tmp_path, "socket_actors.py", free_port()) as (client, contract):
         generate_client(contract, tmp_path / "socket_client")
@@ -103,7 +103,7 @@ def test_generated_subscription_delivers_state_while_calling_rpcs(tmp_path, monk
 class Counter(Actor):
     count: int = emitted(0)
     label: str = emitted("ready")
-    async def increment(self) -> int:
+    def increment(self) -> int:
         self.count += 1
         return self.count
 """)

@@ -18,7 +18,7 @@ class Chat(Actor):
     messages: list[Message] = emitted(default_factory=list)
     busy: bool = ephemeral(False)
 
-    async def append(self, message: Message) -> list[Message]:
+    def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
         return self.messages
 ```
@@ -33,14 +33,14 @@ Public SDK classes and methods include docstrings for IDE hover and `help()`. Ac
 
 Inline annotations and a `py.typed` marker support mypy and Pyright without a custom checker plugin. Tests verify both valid calls and rejection of invalid calls, including generated model return types. Runtime validation is strict: a string is not coerced into an integer RPC argument.
 
-Classes extend `Actor` directly. Public async methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `broadcast`, `connect`, `prepare_websocket`, `subscribe`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
+Classes extend `Actor` directly. Public `def` and `async def` methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `aget_connections`, `broadcast`, `connect`, `prepare_websocket`, `subscribe`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
 
 Generated clients fill omitted middle arguments only when the contract provides a default. If a later argument is supplied and an earlier optional argument has no schema default (as in TypeScript contracts), the client raises `ValueError` before sending the RPC. Trailing optional arguments can always be omitted.
 
 Each field must have a default or a `default_factory`. Defaults are copied per instance. Both `emitted()` and `ephemeral()` accept a value or a factory; use the standard `dataclasses.field(default_factory=...)` for a persisted field that does not emit changes. Factories run when an actor activates, rather than during schema extraction. Actor constructors are not supported. For example:
 
 ```python
-from asyncio import Lock
+from threading import Lock
 lock: Lock = ephemeral(default_factory=Lock)
 ```
 
@@ -48,9 +48,11 @@ Persisted fields beginning with `_` stay out of the public socket state schema. 
 
 ## Execution and failures
 
-Methods run serially by default. A failed invocation restores persisted state to its previous snapshot. Ephemeral defaults are recreated when restoring or reactivating an actor. Use `self.id` within methods and hooks to read the current actor ID.
+Methods run serially by default. Use ordinary `def` for RPCs and socket hooks. Synchronous handlers run on a worker thread, so blocking I/O does not block executor communication. You can also use `async def` for async libraries. The runtime owns the event loop; applications do not need to start it. A failed invocation restores persisted state to its previous snapshot. Ephemeral defaults are recreated when restoring or reactivating an actor. Use `self.id` within methods and hooks to read the current actor ID.
 
-`@reentrant` permits other calls to enter while a method awaits. Reentrant actors share a live Python instance; their mutations are not rolled back on exceptions, since doing so would overwrite overlapping successful work. Completion sequences preserve commit ordering in Rust. Use reentrancy deliberately for streaming or long waits. Move blocking work off the event loop with `asyncio.to_thread`.
+`@reentrant` requires `async def` and permits other calls to enter while a method awaits. Reentrant actors share a live Python instance; their mutations are not rolled back on exceptions, since doing so would overwrite overlapping successful work. Completion sequences preserve commit ordering in Rust. Use reentrancy deliberately for streaming or long waits. In async methods, move blocking work off the event loop with `asyncio.to_thread`. Reentrant work shares state with other handlers, including synchronous handlers on worker threads; coordinate overlapping mutations explicitly.
+
+Eviction cancels queued calls and waits for any running synchronous handler before discarding its instance. Python threads cannot be forcibly stopped; configure timeouts on blocking I/O. A cancelled invocation cannot publish further socket effects or commit state after the handler exits.
 
 The synchronous HTTP client caches direct actor routes, refreshes stale routes, and retries only a rejection known to precede execution. `ActorInvocationError` exposes `code` and `request_id`. A lost response raises `outcome_unknown`; automatically replaying it could repeat actor side effects.
 
@@ -80,20 +82,20 @@ Declare `Actor[Metadata, Incoming, Outgoing]` to type both ends of the socket. T
 
 ```python
 class Room(Actor[Member, Message, Message]):
-    async def on_connect(self, socket: ActorSocket[Member, Message]) -> None:
+    def on_connect(self, socket: ActorSocket[Member, Message]) -> None:
         socket.set_tags("members")
 
-    async def on_message(self, socket: ActorSocket[Member, Message], message: Message) -> None:
+    def on_message(self, socket: ActorSocket[Member, Message], message: Message) -> None:
         self.broadcast(message)
 
-    async def on_disconnect(
+    def on_disconnect(
         self, socket: ActorSocket[Member, Message], code: int,
         reason: str, was_clean: bool,
     ) -> None:
         pass
 ```
 
-Import `ActorSocket` from `little_actors`. `await self.get_connections()` returns typed sockets. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
+Import `ActorSocket` from `little_actors`. `self.get_connections()` returns typed sockets in synchronous handlers. Async handlers use `await self.aget_connections()`. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
 
 ```python
 from generated import actors

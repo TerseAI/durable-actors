@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
+from functools import partial
+from threading import get_ident
 from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import TypeAdapter
@@ -14,6 +17,7 @@ from .guards import is_document
 
 Metadata = TypeVar("Metadata")
 Outgoing = TypeVar("Outgoing")
+T = TypeVar("T")
 
 
 class Effects(Protocol):
@@ -129,6 +133,9 @@ class SocketScope:
         connections: list[Document] | None,
         live: bool,
     ) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.thread = get_ident()
+        self.requests: set[asyncio.Task[Any]] = set()
         self.instance = instance
         self.actor_id = actor_id
         self.metadata, self.incoming, self.outgoing = (TypeAdapter(hint) for hint in types)
@@ -140,6 +147,29 @@ class SocketScope:
         self.output: asyncio.Task[None] | None = None
         self.failure: Exception | None = None
         self.sockets: dict[str, ActorSocket[Any, Any]] = {}
+
+    def blocking(self, operation: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        if get_ident() == self.thread:
+            raise RuntimeError("async handlers must use await self.aget_connections()")
+        self.ensure_active()
+        return asyncio.run_coroutine_threadsafe(self.exchange(operation), self.loop).result()
+
+    async def exchange(self, operation: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        self.ensure_active()
+        task = asyncio.current_task()
+        assert task is not None
+        self.requests.add(task)
+        try:
+            return await operation()
+        finally:
+            self.requests.discard(task)
+
+    def cancel(self) -> None:
+        self.active = False
+        for request in self.requests:
+            request.cancel()
+        if self.output is not None:
+            self.output.cancel()
 
     async def get_connections(self) -> list[ActorSocket[Any, Any]]:
         self.ensure_active()
@@ -180,6 +210,9 @@ class SocketScope:
         return {"type": "text", "data": data}
 
     def push(self, effect: Document) -> None:
+        if get_ident() != self.thread:
+            self.blocking(partial(self.enqueue, effect))
+            return
         self.ensure_active()
         if self.failure:
             raise self.failure
@@ -191,6 +224,9 @@ class SocketScope:
         self.pending.append(effect)
         if self.live and self.output is None:
             self.output = asyncio.create_task(self.drain())
+
+    async def enqueue(self, effect: Document) -> None:
+        self.push(effect)
 
     async def finish(self) -> list[Document]:
         if self.output is not None:

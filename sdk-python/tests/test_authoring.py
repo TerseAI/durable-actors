@@ -16,11 +16,11 @@ class Chat(Actor[Message, Message, Message]):
     messages: list[Message] = emitted(default_factory=list)
     busy: bool = ephemeral(False)
 
-    async def append(self, message: Message) -> list[Message]:
+    def append(self, message: Message) -> list[Message]:
         self.messages.append(message)
         return self.messages
 
-    async def clear(self) -> None:
+    def clear(self) -> None:
         self.messages.clear()
 
 
@@ -259,3 +259,13 @@ def test_subscription_method_name_is_reserved():
 
     with pytest.raises(ValueError, match="reserved"):
         describe_actor(Conflicting)
+
+
+def test_reentrant_requires_an_async_handler():
+    class Invalid(Actor):
+        @reentrant
+        def wait(self) -> None:
+            pass
+
+    with pytest.raises(ValueError, match="reentrant.*async"):
+        describe_actor(Invalid)

@@ -9,7 +9,7 @@ def scope():
     return SocketScope(object(), "one", (JsonValue, JsonValue, JsonValue), Effects(), [], False)
 
 
-def test_reject_defaults_to_a_supported_close_code():
+async def test_reject_defaults_to_a_supported_close_code():
     context = scope()
     socket = context.socket({"id": "one", "metadata": None, "tags": []}, "connecting")
     socket.reject()
@@ -17,12 +17,12 @@ def test_reject_defaults_to_a_supported_close_code():
     assert context.pending[0]["code"] == 4003
 
 
-def test_actor_output_cannot_impersonate_state_events():
+async def test_actor_output_cannot_impersonate_state_events():
     with pytest.raises(ValueError, match="reserved"):
         scope().message({"type": "state", "state": {}})
 
 
-def test_metadata_limit_is_enforced_before_publishing():
+async def test_metadata_limit_is_enforced_before_publishing():
     context = scope()
     socket = context.socket({"id": "one", "metadata": None, "tags": []})
     with pytest.raises(ValueError, match="64 KiB"):

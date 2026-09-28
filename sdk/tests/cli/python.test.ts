@@ -19,7 +19,7 @@ const environment = Object.fromEntries(
 const source = `from little_actors import Actor, emitted
 class Counter(Actor):
     count: int = emitted(0)
-    async def increment(self, amount: int = 1) -> int:
+    def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
 `

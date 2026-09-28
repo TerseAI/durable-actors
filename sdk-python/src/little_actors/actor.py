@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -22,8 +22,8 @@ F = TypeVar("F", bound=Callable[..., Any])
 class Actor(Generic[Metadata, Incoming, Outgoing]):
     """Base class for durable actors with typed RPCs and WebSocket hooks.
 
-    Public async methods become RPCs. Annotated fields persist by default;
-    emitted() also broadcasts their saved changes, and ephemeral() excludes
+    Public def and async def methods become RPCs. Annotated fields persist by
+    default; emitted() also broadcasts their saved changes, and ephemeral() excludes
     temporary values. Use field defaults or factories instead of a constructor.
 
     Generic parameters describe connection metadata, incoming application
@@ -49,26 +49,28 @@ class Actor(Generic[Metadata, Incoming, Outgoing]):
 
         return current_scope(self).actor_id
 
-    async def on_connect(self, socket: ActorSocket[Metadata, Outgoing]) -> None:
+    def on_connect(self, socket: ActorSocket[Metadata, Outgoing]) -> None | Awaitable[None]:
         """Handle a new WebSocket connection before it is accepted.
 
-        Override to inspect metadata, set tags, send a welcome message, or reject
-        the connection with socket.reject(). The default accepts the connection.
+        Override with def or async def to inspect metadata, set tags, send a welcome
+        message, or reject with socket.reject(). The default accepts the connection.
         """
         pass
 
-    async def on_message(self, socket: ActorSocket[Metadata, Outgoing], message: Incoming) -> None:
+    def on_message(
+        self, socket: ActorSocket[Metadata, Outgoing], message: Incoming
+    ) -> None | Awaitable[None]:
         """Handle a validated incoming application message from a connected client.
 
-        Override to update actor state or send typed replies through socket.
-        The default ignores application messages.
+        Override with def or async def to update actor state or send typed replies
+        through socket. The default ignores application messages.
         """
         pass
 
-    async def on_disconnect(
+    def on_disconnect(
         self, socket: ActorSocket[Metadata, Outgoing], code: int, reason: str, was_clean: bool
-    ) -> None:
-        """Handle a closed connection; the default performs no cleanup.
+    ) -> None | Awaitable[None]:
+        """Handle a closed connection; override with def or async def for cleanup.
 
         Args:
             socket: Connection with its last known metadata and tags.
@@ -78,7 +80,18 @@ class Actor(Generic[Metadata, Incoming, Outgoing]):
         """
         pass
 
-    async def get_connections(self) -> list[ActorSocket[Metadata, Outgoing]]:
+    def get_connections(self) -> list[ActorSocket[Metadata, Outgoing]]:
+        """Return connected sockets from a synchronous actor method or hook.
+
+        Use the returned handles only during the current invocation.
+        Async handlers use await self.aget_connections().
+        """
+        from .socket import current_scope
+
+        scope = current_scope(self)
+        return scope.blocking(scope.get_connections)
+
+    async def aget_connections(self) -> list[ActorSocket[Metadata, Outgoing]]:
         """Return this actor's connected sockets with typed metadata.
 
         Use the returned handles only during the current invocation.

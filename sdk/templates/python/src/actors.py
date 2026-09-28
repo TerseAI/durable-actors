@@ -4,6 +4,6 @@ from little_actors import Actor
 class Counter(Actor):
     count: int = 0
 
-    async def increment(self, amount: int = 1) -> int:
+    def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count

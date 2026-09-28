@@ -17,7 +17,7 @@ class Notebook(Actor):
 
     notes: list[Note] = emitted(default_factory=list)
 
-    async def save(self, note: Note) -> Note:
+    def save(self, note: Note) -> Note:
         """Save a note and return the saved value.
 
         Args:
@@ -29,5 +29,5 @@ class Notebook(Actor):
         self.notes.append(note)
         return note
 
-    async def clear(self) -> None:
+    def clear(self) -> None:
         self.notes.clear()

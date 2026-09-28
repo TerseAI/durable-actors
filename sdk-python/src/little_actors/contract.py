@@ -17,7 +17,15 @@ from .json import JsonValue
 
 Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
-RESERVED = {"get_connections", "broadcast", "get", "connect", "prepare_websocket", "subscribe"}
+RESERVED = {
+    "get_connections",
+    "aget_connections",
+    "broadcast",
+    "get",
+    "connect",
+    "prepare_websocket",
+    "subscribe",
+}
 
 
 @dataclass(frozen=True)
@@ -88,13 +96,15 @@ def _describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
             raise ValueError(
                 f"{actor.__name__}.{name}: public accessors and static methods are unsupported"
             )
-        if not inspect.iscoroutinefunction(value):
+        if not inspect.isfunction(value):
             raise ValueError(
-                f"{actor.__name__}.{name}: public methods must be async; fields require annotations"
+                f"{actor.__name__}.{name}: public members must be methods; fields require annotations"
             )
         if name in RESERVED:
             raise ValueError(f"reserved actor method: {name}")
         if getattr(value, "__actor_reentrant__", False):
+            if not inspect.iscoroutinefunction(value):
+                raise ValueError(f"{actor.__name__}.{name}: reentrant methods must be async")
             reentrant_methods.add(name)
         if name not in HOOKS:
             methods[name] = read_method(value)

@@ -1,3 +1,7 @@
+import asyncio
+from threading import Event
+
+import pytest
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
@@ -13,12 +17,12 @@ class Counter(Actor):
     value: Value = Value(count=0)
     calls: int = ephemeral(0)
 
-    async def increment(self, amount: int = 1) -> Value:
+    def increment(self, amount: int = 1) -> Value:
         self.value.count += amount
         self.calls += 1
         return self.value
 
-    async def fail(self) -> None:
+    def fail(self) -> None:
         self.value.count = 99
         raise ValueError("failed")
 
@@ -69,8 +73,6 @@ async def test_argument_validation_precedes_actor_execution():
 
 
 async def test_reentrant_failure_does_not_erase_overlapping_success():
-    import asyncio
-
     from little_actors import reentrant
 
     entered, resume = asyncio.Event(), asyncio.Event()
@@ -84,7 +86,7 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
             await resume.wait()
             raise ValueError("failed")
 
-        async def increment(self) -> int:
+        def increment(self) -> int:
             self.count += 1
             return self.count
 
@@ -108,7 +110,7 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
     class Room(Actor[Value, Value, Value]):
         value: Value = emitted(Value(count=0))
 
-        async def on_message(self, socket: ActorSocket[Value, Value], message: Value) -> None:
+        def on_message(self, socket: ActorSocket[Value, Value], message: Value) -> None:
             self.value = message
             socket.send(Value(count=message.count + socket.metadata.count))
 
@@ -134,8 +136,6 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
 
 
 async def test_eviction_cancels_active_and_queued_calls_before_rehydration():
-    import asyncio
-
     from little_actors import reentrant
 
     entered, ordinary_entered = asyncio.Event(), asyncio.Event()
@@ -164,7 +164,7 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration():
             finally:
                 stopped.append("ordinary")
 
-        async def increment(self) -> int:
+        def increment(self) -> int:
             self.count += 1
             return self.count
 
@@ -200,3 +200,82 @@ async def test_eviction_cancels_active_and_queued_calls_before_rehydration():
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("evict", [False, True])
+async def test_sync_handlers_keep_order_and_drain_before_eviction(evict):
+    entered = asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    class Blocking(Actor):
+        count: int = 0
+
+        def hold(self) -> int:
+            assert self.id == "one"
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(3):
+                raise TimeoutError("test did not release the handler")
+            self.count += 1
+            return self.count
+
+        def increment(self) -> int:
+            self.count += 1
+            return self.count
+
+    runtime = ActorRuntime(Blocking, Effects())
+    actor = {**ACTOR, "actor_name": "Blocking"}
+    active = asyncio.create_task(runtime.handle(command("hold", actor=actor)))
+    tasks = [active]
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not active.done()
+        running = next(iter(runtime.pending))
+        queued = asyncio.create_task(runtime.handle(command(actor=actor)))
+        tasks.append(queued)
+        await asyncio.sleep(0)
+        assert not queued.done()
+        if evict:
+            eviction = asyncio.create_task(runtime.handle({"type": "evict", "actor": actor}))
+            tasks.append(eviction)
+            await asyncio.sleep(0)
+            running.cancel()
+            await asyncio.sleep(0)
+            assert not eviction.done()
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        if evict:
+            assert [reply["code"] for reply in results[:2]] == ["actor_evicted"] * 2
+            assert results[2] == {"type": "evicted"}
+            assert (await runtime.handle(command(actor=actor, state={"count": 10})))["result"] == 11
+        else:
+            assert [reply["result"] for reply in results] == [1, 2]
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_eviction_unblocks_sync_socket_queries():
+    entered = asyncio.Event()
+
+    class WaitingEffects(Effects):
+        async def get_connections(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+    class Room(Actor):
+        def count_connections(self) -> int:
+            return len(self.get_connections())
+
+    runtime = ActorRuntime(Room, WaitingEffects())
+    actor = {**ACTOR, "actor_name": "Room"}
+    active = asyncio.create_task(runtime.handle(command("count_connections", actor=actor)))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert await asyncio.wait_for(runtime.handle({"type": "evict", "actor": actor}), 1) == {
+            "type": "evicted"
+        }
+        assert (await active)["code"] == "actor_evicted"
+    finally:
+        active.cancel()
+        await asyncio.gather(active, return_exceptions=True)
