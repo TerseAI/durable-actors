@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -74,6 +75,7 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
 	request.HostIdleTimeoutMS = 75000
 	request.ActorIsNew = true
+	request.OwnerHint = `{"generation":17,"record":{"epoch":3}}`
 	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
@@ -87,6 +89,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	}
 	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_ACTORS_ACTOR_IS_NEW"] != "true" {
 		t.Fatal("ownership epoch missing")
+	}
+	if sb.assignment["DURABLE_ACTORS_OWNER_HINT"] != request.OwnerHint {
+		t.Fatal("owner hint missing from assignment")
 	}
 	if api.creates != 0 {
 		t.Fatal("claimed spare was replaced by a new sandbox")
@@ -174,6 +179,52 @@ func TestOnlyActorSparesReceiveTheControlPlaneForPreconnection(t *testing.T) {
 		}
 		if actual := params.Env["DURABLE_ACTORS_CONTROL_PLANE_URL"]; actual != expected {
 			t.Fatalf("%s control plane = %q, want %q", kind, actual, expected)
+		}
+	}
+}
+
+func TestPoolMissOverlapsStartupAndCleansUpFailure(t *testing.T) {
+	for _, want := range []error{nil, errors.New("startup failed")} {
+		started, release := make(chan struct{}, 2), make(chan struct{})
+		sb := &fakeSandbox{mountStarted: make(chan struct{}), assignmentStarted: make(chan struct{})}
+		sb.startup = func(ctx context.Context) error {
+			started <- struct{}{}
+			select {
+			case <-release:
+				return want
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		p := newTestProvider(&fakeAPI{created: sb})
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		done := make(chan error, 1)
+		go func() { _, err := p.ensureHost(ctx, testRequest()); done <- err }()
+		for _, phase := range []<-chan struct{}{sb.mountStarted, started, started} {
+			select {
+			case <-phase:
+			case <-ctx.Done():
+				cancel()
+				<-done
+				t.Fatal("mount, readiness, and routes did not overlap")
+			}
+		}
+		select {
+		case <-sb.assignmentStarted:
+			t.Error("assigned before readiness and routes")
+		default:
+		}
+		close(release)
+		err := <-done
+		cancel()
+		if !errors.Is(err, want) {
+			t.Fatalf("got %v, want %v", err, want)
+		}
+		if sb.mounted != testRequest().CodeSnapshot {
+			t.Fatalf("mounted %q", sb.mounted)
+		}
+		if want != nil && (len(sb.calls) != 4 || !slices.Equal(sb.calls[2:], []string{"terminate", "detach"})) {
+			t.Fatalf("cleanup = %v", sb.calls)
 		}
 	}
 }
