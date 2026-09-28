@@ -143,6 +143,15 @@ impl Fixture {
             },
         })
     }
+
+    async fn stream(&self) -> Result<ReplicaStream> {
+        self.runtime
+            .load(&self.actor.storage_key())
+            .await?
+            .context("actor ownership missing")?
+            .1
+            .stream()
+    }
 }
 
 fn request(session: &str) -> HostLeaseRequest {
@@ -261,27 +270,52 @@ async fn snapshot_writes_need_one_bucket_write_and_no_ownership_read() -> Result
 
 #[tokio::test]
 async fn stale_absence_and_concurrent_claims_cannot_replace_a_winner() -> Result<()> {
-    let f = Fixture::new()?;
-    let left = request("left");
-    let right = request("right");
-    let (a, b) = tokio::join!(
-        f.runtime
-            .register_activation(&f.actor, &left, "us-east", true),
-        f.runtime
-            .register_activation(&f.actor, &right, "us-east", true),
-    );
-    assert_ne!(a.is_ok(), b.is_ok());
-    let winner = a.or(b)?.placement;
-    assert!(
-        f.runtime
-            .register_activation(&f.actor, &request("late"), "us-east", true)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        f.runtime.get_owner(&f.actor.storage_key()).await?.unwrap(),
-        winner
-    );
+    for new_actor in [true, false] {
+        let (f, expected) = if new_actor {
+            (Fixture::new()?, None)
+        } else {
+            let (mut f, peers, _, bytes) = parallel::replicated().await?;
+            f.runtime.peers = peers;
+            f.clock.0.store(11_000, Ordering::SeqCst);
+            (f, Some(bytes))
+        };
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        *f.bucket.delay_write.lock().unwrap() = Some((entered.clone(), release.clone()));
+        let left = request("left");
+        let right = request("right");
+        let (loser, winner) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                f.runtime
+                    .register_activation(&f.actor, &left, "us-east", new_actor),
+                async {
+                    tokio::time::timeout(Duration::from_secs(1), entered.acquire())
+                        .await??
+                        .forget();
+                    let result = f
+                        .runtime
+                        .register_activation(&f.actor, &right, "us-east", new_actor)
+                        .await;
+                    release.add_permits(1);
+                    result
+                },
+            )
+        })
+        .await?;
+        assert!(loser.is_err());
+        let winner = winner?;
+        assert_eq!(winner.state.as_deref(), expected.as_deref());
+        assert!(
+            f.runtime
+                .register_activation(&f.actor, &request("late"), "us-east", true)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            f.runtime.get_owner(&f.actor.storage_key()).await?.unwrap(),
+            winner.placement
+        );
+    }
     Ok(())
 }
 
