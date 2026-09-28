@@ -31,9 +31,10 @@ impl RuntimeStorage {
                 "actor activation is still active"
             );
         }
-        let Some(session) = self.start_recovery(scope).await? else {
+        let session = self.start_recovery(scope).await?;
+        if session.state == RecoveryState::Sealed {
             return Ok(());
-        };
+        }
         for snapshot in self.seal_replicas(&session).await? {
             self.recover_snapshot(&session.replicas, &snapshot).await?;
         }
@@ -61,16 +62,22 @@ impl RuntimeStorage {
         &self,
         owner: &Ownership,
     ) -> Result<Option<LoadedSnapshot>> {
-        let Some(session) = self.start_recovery(&owner.scope()).await? else {
-            return Ok(None);
-        };
+        let session = self.start_recovery(&owner.scope()).await?;
+        if session.state == RecoveryState::Sealed {
+            if session.replicas.is_empty() {
+                return Ok(None);
+            }
+            // Another recovery may have uploaded snapshots after our parallel LIST.
+            let newest = self.latest_snapshot_key(owner).await?;
+            return self.load_latest(owner, None, newest, &[]).await;
+        }
         let snapshots = self.seal_replicas(&session).await?;
         let recovered = self.restore_session(owner, &session, snapshots).await?;
         self.finish_recovery(&owner.scope(), session).await?;
         Ok(recovered)
     }
 
-    async fn start_recovery(&self, scope: &ReplicaScope) -> Result<Option<Session>> {
+    async fn start_recovery(&self, scope: &ReplicaScope) -> Result<Session> {
         let key = key(&scope.host, &scope.session);
         let id = scope.identity();
         loop {
@@ -84,7 +91,7 @@ impl RuntimeStorage {
                     state: RecoveryState::Sealed,
                 };
                 if self.save_session(&key, None, &sealed).await? {
-                    return Ok(None);
+                    return Ok(sealed);
                 }
                 continue;
             };
@@ -94,15 +101,15 @@ impl RuntimeStorage {
                 "session identity mismatch"
             );
             match session.state {
-                RecoveryState::Sealed => return Ok(None),
-                RecoveryState::Recovering => return Ok(Some(session)),
+                RecoveryState::Sealed => return Ok(session),
+                RecoveryState::Recovering => return Ok(session),
                 RecoveryState::Open => {
                     session.state = RecoveryState::Recovering;
                     if self
                         .save_session(&key, Some(object.generation), &session)
                         .await?
                     {
-                        return Ok(Some(session));
+                        return Ok(session);
                     }
                 }
             }

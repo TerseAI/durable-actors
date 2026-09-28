@@ -44,7 +44,10 @@ struct HostProvider {
 
 #[async_trait]
 impl SandboxProvider for HostProvider {
-    async fn build_code(&self, _: &crate::sandbox::BuildCodeRequest) -> Result<crate::sandbox::BuiltActorCode> {
+    async fn build_code(
+        &self,
+        _: &crate::sandbox::BuildCodeRequest,
+    ) -> Result<crate::sandbox::BuiltActorCode> {
         anyhow::bail!("fixture does not build deployment images")
     }
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -63,6 +66,12 @@ impl SandboxProvider for HostProvider {
                 &request_lease,
                 &request.canonical_region,
                 request.actor_is_new,
+                request
+                    .owner_hint
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()?
+                    .as_ref(),
             )
             .await?;
         Ok(ActorHostHandle {
@@ -150,7 +159,9 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         actor_name: "Counter".into(),
         actor_id: "new".into(),
     };
-    let target = service.resolve_actor_route(&actor, None, None, None).await?;
+    let target = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(target.owner_epoch, 1);
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 1);
     assert_eq!(bucket.writes.load(Ordering::SeqCst), 1);
@@ -161,7 +172,9 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     assert_eq!(principal.actor, actor);
     service.require_active_host(&principal).await?;
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 2);
-    let again = service.resolve_actor_route(&actor, None, None, None).await?;
+    let again = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
     assert_eq!(again.route, target.route);
     assert_eq!(
         bucket.reads.load(Ordering::SeqCst),
@@ -199,5 +212,25 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     invalid.lease.as_mut().unwrap().session_id = assignment.session_id.clone();
     invalid.lease.as_mut().unwrap().expires_at_ms = 1;
     assert!(ready_lease(&invalid, &assignment).is_err());
+    provider
+        .runtime
+        .release_activation(&actor, &assignment.host_id, &assignment.session_id)
+        .await?;
+    bucket.reads.store(0, Ordering::SeqCst);
+    bucket.writes.store(0, Ordering::SeqCst);
+    let returning = service
+        .resolve_actor_route(&actor, None, None, None)
+        .await?;
+    assert_eq!(returning.owner_epoch, 2);
+    assert_eq!(
+        bucket.reads.load(Ordering::SeqCst),
+        2,
+        "control-plane owner GET and host session GET"
+    );
+    assert_eq!(
+        bucket.writes.load(Ordering::SeqCst),
+        2,
+        "session tombstone and owner CAS"
+    );
     Ok(())
 }

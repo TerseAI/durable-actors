@@ -39,6 +39,7 @@ pub(crate) struct HostStorage {
     region: String,
     actor: Option<ActorKey>,
     new_actor: bool,
+    owner_hint: Option<crate::bucket::OwnershipHint>,
     activation: Mutex<Option<ActorActivation>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
@@ -90,15 +91,22 @@ impl HostStorage {
             region: config.region,
             actor: None,
             new_actor: false,
+            owner_hint: None,
             activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
         })
     }
 
-    pub(crate) fn with_actor(mut self, actor: Option<ActorKey>, new_actor: bool) -> Self {
+    pub(crate) fn with_actor(
+        mut self,
+        actor: Option<ActorKey>,
+        new_actor: bool,
+        owner_hint: Option<crate::bucket::OwnershipHint>,
+    ) -> Self {
         self.actor = actor;
         self.new_actor = new_actor;
+        self.owner_hint = owner_hint;
         self
     }
 
@@ -268,7 +276,13 @@ impl HostLeaseRegistry for HostStorage {
         let lease = if first {
             let loaded = self
                 .runtime
-                .register_activation(actor, request, &self.region, self.new_actor)
+                .register_activation(
+                    actor,
+                    request,
+                    &self.region,
+                    self.new_actor,
+                    self.owner_hint.as_ref(),
+                )
                 .await?;
             let lease = loaded.placement.lease;
             *self.activation.lock().unwrap() = Some(ActorActivation {

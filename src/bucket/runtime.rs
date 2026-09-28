@@ -71,6 +71,12 @@ struct Ownership {
     base: Option<SnapshotRef>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OwnershipHint {
+    generation: i64,
+    record: Ownership,
+}
+
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
@@ -156,11 +162,17 @@ impl RuntimeStorage {
 
 #[async_trait]
 impl ObjectPlacementStore for RuntimeStorage {
-    async fn get_owner(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        Ok(self
-            .load(object)
-            .await?
-            .map(|(_, record)| record.placement()))
+    async fn get_owner_with_hint(
+        &self,
+        object: &ActorStorageKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        Ok(match self.load(object).await? {
+            Some((generation, record)) => (
+                Some(record.placement()),
+                Some(OwnershipHint { generation, record }),
+            ),
+            None => (None, None),
+        })
     }
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         match self.load(object).await? {
@@ -307,10 +319,15 @@ impl RuntimeStorage {
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let bucket = &self.authority;
-        let stream = record.stream()?;
-        let newest = bucket
-            .list(&stream.prefix)
+        let newest = self.latest_snapshot_key(record).await?;
+        let replicas = self.replica_members(&record.scope()).await?;
+        self.load_latest(record, known, newest, &replicas).await
+    }
+
+    async fn latest_snapshot_key(&self, record: &Ownership) -> Result<Option<String>> {
+        Ok(self
+            .authority
+            .list(&record.stream()?.prefix)
             .await?
             .into_iter()
             .filter_map(|key| {
@@ -318,11 +335,29 @@ impl RuntimeStorage {
                     .filter(|(epoch, _)| *epoch == record.epoch)
                     .map(|position| (position, key))
             })
-            .max_by_key(|(position, _)| *position);
+            .max_by_key(|(position, _)| *position)
+            .map(|(_, key)| key))
+    }
+
+    async fn load_latest(
+        &self,
+        record: &Ownership,
+        known: Option<LoadedSnapshot>,
+        newest: Option<String>,
+        replicas: &[ReplicaTarget],
+    ) -> Result<Option<LoadedSnapshot>> {
+        let stream = record.stream()?;
         let mut loaded = match newest {
-            Some((_, key)) if known.as_ref().is_some_and(|s| s.reference.object == key) => known,
-            Some((_, key)) => {
-                let object = bucket
+            Some(key)
+                if known.as_ref().is_some_and(|s| {
+                    snapshot_position(&s.reference.object) >= snapshot_position(&key)
+                }) =>
+            {
+                known
+            }
+            Some(key) => {
+                let object = self
+                    .authority
                     .get(&key)
                     .await?
                     .context("listed snapshot disappeared")?;
@@ -332,9 +367,8 @@ impl RuntimeStorage {
         };
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
-        let replicas = self.replica_members(&record.scope()).await?;
         let mut pending = JoinSet::new();
-        for target in &replicas {
+        for target in replicas {
             let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
             pending.spawn(async move { peers.head(&target, &stream).await });
         }
@@ -353,7 +387,7 @@ impl RuntimeStorage {
         if let Some(snapshot) = candidate
             && loaded.as_ref().is_none_or(|s| s.reference != snapshot)
         {
-            let bytes = self.recover_snapshot(&replicas, &snapshot).await?;
+            let bytes = self.recover_snapshot(replicas, &snapshot).await?;
             loaded = Some(LoadedSnapshot {
                 reference: snapshot,
                 bytes: bytes.into(),

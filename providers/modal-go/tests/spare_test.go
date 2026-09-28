@@ -177,3 +177,18 @@ func TestOnlyActorSparesReceiveTheControlPlaneForPreconnection(t *testing.T) {
 		}
 	}
 }
+
+func TestAssignmentPassesOwnerHintToReturningActor(t *testing.T) {
+	request := testRequest()
+	if err := json.Unmarshal([]byte(`{"ownerHint":"{\"generation\":17,\"record\":{\"epoch\":3}}"}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	request.Spare = &spareHandle{ResourceID: "sb-test", Route: "https://host.test", CanonicalRegion: request.CanonicalRegion}
+	sb := &fakeSandbox{}
+	if _, err := newTestProvider(&fakeAPI{found: sb}).ensureHost(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if sb.assignment["DURABLE_ACTORS_OWNER_HINT"] != `{"generation":17,"record":{"epoch":3}}` {
+		t.Fatal("owner record and generation missing from assignment")
+	}
+}

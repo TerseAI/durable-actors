@@ -211,6 +211,7 @@ impl Fixture {
             region: scope.region.clone(),
             actor: Some(scope.actor.clone()),
             new_actor: true,
+            owner_hint: None,
             activation: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
