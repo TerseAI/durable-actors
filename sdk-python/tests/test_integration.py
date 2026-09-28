@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from queue import Queue
 
@@ -60,13 +61,14 @@ def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
     from little_actors import StateSnapshot, StateUpdate
 
     (tmp_path / "socket_actors.py").write_text("""from pydantic import BaseModel
-from little_actors import Actor, ActorSocket, emitted
+from little_actors import Actor, ActorSocket, emitted, reentrant
 class Payload(BaseModel):
     value: int
 class Room(Actor[Payload, Payload, Payload]):
     count: int = emitted(0)
     def on_connect(self, socket: ActorSocket[Payload, Payload]) -> None:
         socket.set_tags("connected")
+    @reentrant
     def on_message(self, socket: ActorSocket[Payload, Payload], message: Payload) -> None:
         self.count += message.value
         socket.send(Payload(value=self.count + socket.metadata.value))
@@ -124,6 +126,52 @@ class Counter(Actor):
             subscription.close()
         assert subscription.closed
         assert subscription.error is None
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+)
+def test_sync_reentrant_rpc_allows_another_rpc_to_release_its_wait(tmp_path, monkeypatch):
+    (tmp_path / "actors.py").write_text("""from threading import Event
+from little_actors import Actor, ephemeral, reentrant
+class Waiting(Actor):
+    count: int = 0
+    entered: Event = ephemeral(default_factory=Event)
+    release: Event = ephemeral(default_factory=Event)
+    @reentrant
+    def hold(self) -> int:
+        self.entered.set()
+        if not self.release.wait(5):
+            raise TimeoutError("waiting for finish")
+        self.count += 10
+        return self.count
+    def ready(self) -> bool:
+        return self.entered.is_set()
+    def finish(self) -> int:
+        self.count += 1
+        result = self.count
+        self.release.set()
+        return result
+    def read(self) -> int:
+        return self.count
+""")
+    port = free_port()
+    with actor_server(tmp_path, "actors.py", port) as (client, contract):
+        generate_client(contract, tmp_path / "reentrant_client")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        remote = importlib.import_module("reentrant_client")
+        actor = remote.actors.Waiting.get("one", client)
+        with ThreadPoolExecutor(max_workers=1) as callers:
+            pending = callers.submit(actor.hold)
+            deadline = time.monotonic() + 3
+            while not actor.ready():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert actor.finish() == 1
+            assert pending.result(timeout=3) == 11
+            assert actor.read() == 11
+    with actor_server(tmp_path, "actors.py", port) as (client, _):
+        assert remote.actors.Waiting.get("one", client).read() == 11
 
 
 @contextmanager

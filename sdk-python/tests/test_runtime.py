@@ -5,7 +5,7 @@ import pytest
 from fixtures.effects import Effects
 from pydantic import BaseModel
 
-from little_actors import Actor, ephemeral
+from little_actors import Actor, ephemeral, reentrant
 from little_actors.runtime import ActorRuntime
 
 
@@ -72,18 +72,26 @@ async def test_argument_validation_precedes_actor_execution():
     assert (await runtime.handle(command()))["result"] == {"count": 1}
 
 
-async def test_reentrant_failure_does_not_erase_overlapping_success():
-    from little_actors import reentrant
-
-    entered, resume = asyncio.Event(), asyncio.Event()
+@pytest.mark.parametrize("method", ["wait_and_fail", "await_and_fail"])
+async def test_reentrant_failure_does_not_erase_overlapping_success(method):
+    entered, async_resume = asyncio.Event(), asyncio.Event()
+    resume = Event()
+    loop = asyncio.get_running_loop()
 
     class Shared(Actor):
         count: int = 0
 
         @reentrant
-        async def wait_and_fail(self) -> None:
+        def wait_and_fail(self) -> None:
+            loop.call_soon_threadsafe(entered.set)
+            if not resume.wait(3):
+                raise TimeoutError("test did not release the handler")
+            raise ValueError("failed")
+
+        @reentrant
+        async def await_and_fail(self) -> None:
             entered.set()
-            await resume.wait()
+            await async_resume.wait()
             raise ValueError("failed")
 
         def increment(self) -> int:
@@ -92,14 +100,20 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
 
     runtime = ActorRuntime(Shared, Effects())
     actor = {**ACTOR, "actor_name": "Shared"}
-    pending = asyncio.create_task(runtime.handle(command("wait_and_fail", actor=actor)))
-    await asyncio.wait_for(entered.wait(), 1)
-    reply = await asyncio.wait_for(runtime.handle(command(actor=actor)), 1)
-    resume.set()
-    assert (await pending)["type"] == "failed"
-    assert reply["result"] == 1
-    assert reply["sequence"] == 1
-    assert (await runtime.handle(command(actor=actor)))["result"] == 2
+    pending = asyncio.create_task(runtime.handle(command(method, actor=actor)))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        reply = await asyncio.wait_for(runtime.handle(command(actor=actor)), 1)
+        resume.set()
+        async_resume.set()
+        assert (await pending)["type"] == "failed"
+        assert reply["result"] == 1
+        assert reply["sequence"] == 1
+        assert (await runtime.handle(command(actor=actor)))["result"] == 2
+    finally:
+        resume.set()
+        async_resume.set()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_socket_messages_are_typed_and_emit_persisted_changes():
@@ -279,3 +293,98 @@ async def test_eviction_unblocks_sync_socket_queries():
     finally:
         active.cancel()
         await asyncio.gather(active, return_exceptions=True)
+
+
+async def test_nested_sync_reentrant_calls_keep_the_ordinary_call_exclusive():
+    entered = asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+    calls = []
+
+    class Nested(Actor):
+        def ordinary(self) -> None:
+            calls.append("ordinary:start")
+            self.hold()
+            calls.append("ordinary:end")
+
+        @reentrant
+        def hold(self) -> None:
+            calls.append("hold")
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(3):
+                raise TimeoutError("test did not release the handler")
+
+    effects = Effects()
+    runtime = ActorRuntime(Nested, effects)
+    actor = {**ACTOR, "actor_name": "Nested"}
+    ordinary = asyncio.create_task(runtime.handle(command("ordinary", actor=actor)))
+    tasks = [ordinary]
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        direct = asyncio.create_task(runtime.handle(command("hold", actor=actor)))
+        tasks.append(direct)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert effects.admissions == 0
+        assert calls == ["ordinary:start", "hold"]
+        release.set()
+        replies = await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        assert all(reply["type"] == "invoked" for reply in replies)
+        assert effects.admissions == 1
+        assert calls == ["ordinary:start", "hold", "ordinary:end", "hold"]
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
+    entered, finished = asyncio.Queue(), asyncio.Queue()
+    releases = [Event(), Event()]
+    loop = asyncio.get_running_loop()
+
+    class Concurrent(Actor):
+        count: int = 0
+
+        @reentrant
+        def hold(self, index: int) -> None:
+            loop.call_soon_threadsafe(entered.put_nowait, index)
+            try:
+                if not releases[index].wait(3):
+                    raise TimeoutError("test did not release the handler")
+                self.count = 99
+                self.broadcast("too late")
+            finally:
+                loop.call_soon_threadsafe(finished.put_nowait, index)
+
+        def increment(self) -> int:
+            self.count += 1
+            return self.count
+
+    effects = Effects()
+    runtime = ActorRuntime(Concurrent, effects)
+    actor = {**ACTOR, "actor_name": "Concurrent"}
+    tasks = [
+        asyncio.create_task(runtime.handle(command("hold", args=[index], actor=actor)))
+        for index in range(2)
+    ]
+    try:
+        assert {await asyncio.wait_for(entered.get(), 1) for _ in range(2)} == {0, 1}
+        eviction = asyncio.create_task(runtime.handle({"type": "evict", "actor": actor}))
+        tasks.append(eviction)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        releases[0].set()
+        assert await asyncio.wait_for(finished.get(), 1) == 0
+        assert not eviction.done()
+        releases[1].set()
+        replies = await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        assert [reply["code"] for reply in replies[:2]] == ["actor_evicted"] * 2
+        assert replies[2] == {"type": "evicted"}
+        assert effects.published == []
+        reply = await runtime.handle(command(actor=actor, state={"count": 10}))
+        assert reply["result"] == 11
+        assert reply["sequence"] == 1
+    finally:
+        for release in releases:
+            release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)

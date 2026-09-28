@@ -50,7 +50,28 @@ Persisted fields beginning with `_` stay out of the public socket state schema. 
 
 Methods run serially by default. Use ordinary `def` for RPCs and socket hooks. Synchronous handlers run on a worker thread, so blocking I/O does not block executor communication. You can also use `async def` for async libraries. The runtime owns the event loop; applications do not need to start it. A failed invocation restores persisted state to its previous snapshot. Ephemeral defaults are recreated when restoring or reactivating an actor. Use `self.id` within methods and hooks to read the current actor ID.
 
-`@reentrant` requires `async def` and permits other calls to enter while a method awaits. Reentrant actors share a live Python instance; their mutations are not rolled back on exceptions, since doing so would overwrite overlapping successful work. Completion sequences preserve commit ordering in Rust. Use reentrancy deliberately for streaming or long waits. In async methods, move blocking work off the event loop with `asyncio.to_thread`. Reentrant work shares state with other handlers, including synchronous handlers on worker threads; coordinate overlapping mutations explicitly.
+`@reentrant` supports ordinary `def` and `async def` methods and socket hooks. A decorated invocation allows another call to enter before it finishes. Synchronous handlers run concurrently on worker threads, including while doing blocking I/O; asynchronous handlers interleave at awaits. Ordinary invocations still serialize with each other and prevent new calls from entering until completion, but already-running reentrant handlers may continue. Calling a decorated method directly through `self` inherits the outer invocation's policy.
+
+```python
+import time
+from little_actors import Actor, reentrant
+
+class Counter(Actor):
+    count: int = 0
+
+    def increment(self) -> int:
+        self.count += 1
+        return self.count
+
+    @reentrant
+    def wait(self, seconds: float) -> str:
+        time.sleep(seconds)
+        return self.id
+```
+
+Another client can call `increment()` while `wait()` is sleeping. The generated clients remain synchronous, so overlapping client calls need separate threads or processes.
+
+Reentrant handlers share a live instance, and worker threads may overlap between arbitrary Python statements. Protect shared read-modify-write operations with an ephemeral `threading.Lock`, and keep blocking I/O outside the lock. This differs from TypeScript's single-threaded interleaving. Async handlers must avoid blocking the event loop on a thread lock; offload the entire locked operation with `asyncio.to_thread` when sharing a lock with synchronous handlers. Enabling reentrancy disables error rollback for the entire actor class: an exception must not erase another call's successful changes. Successful completions snapshot shared state, including changes visible from other in-flight invocations; completion sequences preserve commit ordering in Rust.
 
 Eviction cancels queued calls and waits for any running synchronous handler before discarding its instance. Python threads cannot be forcibly stopped; configure timeouts on blocking I/O. A cancelled invocation cannot publish further socket effects or commit state after the handler exits.
 

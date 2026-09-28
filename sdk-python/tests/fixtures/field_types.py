@@ -1,7 +1,7 @@
 from threading import Lock
 from typing import assert_type
 
-from little_actors import Actor, ActorSocket, emitted, ephemeral
+from little_actors import Actor, ActorSocket, emitted, ephemeral, reentrant
 
 
 class TypedActor(Actor[str, str, str]):
@@ -11,6 +11,7 @@ class TypedActor(Actor[str, str, str]):
     busy: bool = ephemeral(False)
     lock: Lock = ephemeral(default_factory=Lock)
 
+    @reentrant
     def append(self, message: str) -> int:
         with self.lock:
             self.messages.append(message)
@@ -37,6 +38,7 @@ class TypedActor(Actor[str, str, str]):
 
 
 class AsyncActor(Actor[str, str, str]):
+    @reentrant
     async def on_connect(self, socket: ActorSocket[str, str]) -> None:
         assert_type(await self.aget_connections(), list[ActorSocket[str, str]])
         socket.send("hello")

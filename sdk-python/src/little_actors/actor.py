@@ -124,10 +124,16 @@ class Actor(Generic[Metadata, Incoming, Outgoing]):
 
 
 def reentrant(method: F) -> F:
-    """Allow another invocation to enter while this async method awaits.
+    """Allow other invocations to enter before this method finishes.
 
-    Reentrant actors share a live instance. Failed invocations do not roll back
-    shared state, because that could overwrite changes from overlapping work.
+    Works with def and async def RPCs and socket hooks. Synchronous handlers
+    overlap on worker threads; asynchronous handlers interleave at awaits.
+    Ordinary invocations still serialize with each other and block new entries.
+    Nested method calls inherit the outer invocation's admission policy.
+
+    Reentrant actors share a live instance. Coordinate shared mutable state
+    across overlapping handlers. Failed invocations do not roll back state
+    anywhere in the actor class, because that could erase another call's work.
     """
     setattr(method, "__actor_reentrant__", True)
     return method

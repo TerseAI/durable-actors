@@ -103,8 +103,6 @@ def _describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
         if name in RESERVED:
             raise ValueError(f"reserved actor method: {name}")
         if getattr(value, "__actor_reentrant__", False):
-            if not inspect.iscoroutinefunction(value):
-                raise ValueError(f"{actor.__name__}.{name}: reentrant methods must be async")
             reentrant_methods.add(name)
         if name not in HOOKS:
             methods[name] = read_method(value)

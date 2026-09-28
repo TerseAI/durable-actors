@@ -33,6 +33,8 @@ class Chat(Actor):
 
 Public `def` methods become RPCs; `async def` is also supported. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`. Synchronous handlers run on a worker thread, with calls serialized per actor. Socket hooks can also use ordinary `def`; `self.get_connections()` returns typed sockets. Async handlers use `await self.aget_connections()`.
 
+Add `@reentrant` (imported from `little_actors`) to a `def` or `async def` method to let other invocations enter before it finishes. Synchronous reentrant handlers overlap on worker threads; coordinate shared mutations and keep blocking I/O outside shared locks. Ordinary calls still serialize with each other. As in TypeScript, enabling reentrancy disables error rollback for the entire actor class. See the [execution semantics](../docs/reference/python.md#execution-and-failures) for details.
+
 ## Generate and use a client
 
 With the actor server running, generate clients in your application:

@@ -226,7 +226,7 @@ async def invoke_handler(
         return await handler(*args, **kwargs)
     worker = asyncio.create_task(asyncio.to_thread(handler, *args, **kwargs))
     cancelled = False
-    # Threads cannot be stopped: retain the actor lock until the handler exits.
+    # Threads cannot be stopped: drain the handler before completing cancellation.
     while not worker.done():
         try:
             await asyncio.shield(worker)

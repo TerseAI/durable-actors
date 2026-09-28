@@ -72,10 +72,14 @@ def test_fields_persist_by_default_and_class_variables_are_not_state():
 def test_reentrant_preserves_method_types_and_marks_runtime_metadata():
     class Counter(Actor):
         @reentrant
-        async def read(self) -> int:
+        def read(self) -> int:
             return 1
 
-    assert describe_actor(Counter).reentrant_methods == {"read"}
+        @reentrant
+        async def aread(self) -> int:
+            return 1
+
+    assert describe_actor(Counter).reentrant_methods == {"read", "aread"}
 
 
 def test_nested_untyped_values_are_rejected():
@@ -259,13 +263,3 @@ def test_subscription_method_name_is_reserved():
 
     with pytest.raises(ValueError, match="reserved"):
         describe_actor(Conflicting)
-
-
-def test_reentrant_requires_an_async_handler():
-    class Invalid(Actor):
-        @reentrant
-        def wait(self) -> None:
-            pass
-
-    with pytest.raises(ValueError, match="reentrant.*async"):
-        describe_actor(Invalid)
