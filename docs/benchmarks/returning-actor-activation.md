@@ -6,25 +6,25 @@ Run on September 28, 2026, on macOS arm64 with Rust 1.89.0, using the debug test
 
 Each storage GET, LIST, or CAS receives the indicated delay. Each replica RPC receives a 5 ms delay. Two replicas hold the same committed snapshot. There are 3 warmups and 30 measured samples per cell; percentiles use nearest rank.
 
-| Storage delay | Version | Activation p50 | Activation p95 | Shutdown p50 |
-| --- | --- | ---: | ---: | ---: |
-| 10 ms | Original | 159.36 ms | 166.58 ms | 29.20 ms |
-| 10 ms | Read optimizations | 125.60 ms | 133.80 ms | 29.77 ms |
-| 10 ms | Read optimizations + clean shutdown | 42.96 ms | 44.95 ms | 61.42 ms |
-| 25 ms | Original | 316.09 ms | 325.30 ms | 61.14 ms |
-| 25 ms | Read optimizations | 235.75 ms | 239.78 ms | 61.34 ms |
-| 25 ms | Read optimizations + clean shutdown | 87.72 ms | 90.13 ms | 120.08 ms |
-| 50 ms | Original | 563.98 ms | 570.33 ms | 110.02 ms |
-| 50 ms | Read optimizations | 407.62 ms | 413.43 ms | 109.97 ms |
-| 50 ms | Read optimizations + clean shutdown | 162.45 ms | 164.17 ms | 220.32 ms |
+| Storage delay | Version                             | Activation p50 | Activation p95 | Shutdown p50 |
+| ------------- | ----------------------------------- | -------------: | -------------: | -----------: |
+| 10 ms         | Original                            |      159.36 ms |      166.58 ms |     29.20 ms |
+| 10 ms         | Read optimizations                  |      125.60 ms |      133.80 ms |     29.77 ms |
+| 10 ms         | Read optimizations + clean shutdown |       42.96 ms |       44.95 ms |     61.42 ms |
+| 25 ms         | Original                            |      316.09 ms |      325.30 ms |     61.14 ms |
+| 25 ms         | Read optimizations                  |      235.75 ms |      239.78 ms |     61.34 ms |
+| 25 ms         | Read optimizations + clean shutdown |       87.72 ms |       90.13 ms |    120.08 ms |
+| 50 ms         | Original                            |      563.98 ms |      570.33 ms |    110.02 ms |
+| 50 ms         | Read optimizations                  |      407.62 ms |      413.43 ms |    109.97 ms |
+| 50 ms         | Read optimizations + clean shutdown |      162.45 ms |      164.17 ms |    220.32 ms |
 
 At 25 ms per storage operation, median activation falls from 316.09 ms to 235.75 ms with the read optimizations, then to 87.72 ms with clean shutdown: **228.37 ms saved (72.2%)** versus the original.
 
-| Version | GETs | LISTs | CAS writes | Total storage calls | Replica seal RPCs |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Original | 6 | 1 | 3 | 10 | 2 |
-| Read optimizations | 4 | 1 | 3 | 8 | 2 |
-| Read optimizations + clean shutdown | 2 | 0 | 1 | 3 | 0 |
+| Version                             | GETs | LISTs | CAS writes | Total storage calls | Replica seal RPCs |
+| ----------------------------------- | ---: | ----: | ---------: | ------------------: | ----------------: |
+| Original                            |    6 |     1 |          3 |                  10 |                 2 |
+| Read optimizations                  |    4 |     1 |          3 |                   8 |                 2 |
+| Read optimizations + clean shutdown |    2 |     0 |          1 |                   3 |                 0 |
 
 The final path performs the control-plane owner GET, the snapshot GET, and the new owner CAS. The owner hint carries the prior generation and the clean-shutdown marker; its base points to the final uploaded snapshot. This avoids the host owner GET, session recovery, and snapshot LIST. A stale hint still has to pass the owner CAS and falls back to a fresh read on conflict.
 
@@ -34,11 +34,11 @@ Clean shutdown adds a session GET/CAS before the existing owner release GET/CAS.
 
 The final snapshot exists only on replicas, and the old owner lease expires without unregistering. This checks that the clean-shutdown optimization does not bypass recovery.
 
-| Storage delay | Original p50 / p95 | Read optimizations p50 / p95 | Final p50 / p95 |
-| --- | ---: | ---: | ---: |
-| 10 ms | 187.92 / 197.77 ms | 154.08 / 160.86 ms | 150.26 / 155.74 ms |
-| 25 ms | 352.59 / 367.38 ms | 275.88 / 283.60 ms | 270.06 / 276.16 ms |
-| 50 ms | 629.81 / 638.50 ms | 475.16 / 482.00 ms | 471.41 / 479.48 ms |
+| Storage delay | Original p50 / p95 | Read optimizations p50 / p95 |    Final p50 / p95 |
+| ------------- | -----------------: | ---------------------------: | -----------------: |
+| 10 ms         | 187.92 / 197.77 ms |           154.08 / 160.86 ms | 150.26 / 155.74 ms |
+| 25 ms         | 352.59 / 367.38 ms |           275.88 / 283.60 ms | 270.06 / 276.16 ms |
+| 50 ms         | 629.81 / 638.50 ms |           475.16 / 482.00 ms | 471.41 / 479.48 ms |
 
 Crash recovery uses 11 storage operations in the original version and 9 in both optimized versions, plus 2 seal RPCs and 1 replica read. The clean-shutdown change preserves this recovery path; small timing differences between the latter two versions are run-to-run variation.
 
