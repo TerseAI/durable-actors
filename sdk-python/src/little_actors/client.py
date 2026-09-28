@@ -43,11 +43,11 @@ class SocketGrant(BaseModel):
 
 
 class RpcTransport(Protocol):
-    async def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any: ...
+    def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any: ...
 
 
 class ActorTransport(RpcTransport, Protocol):
-    async def prepare_websocket(
+    def prepare_websocket(
         self,
         actor_name: str,
         actor_id: str,
@@ -65,7 +65,7 @@ class Client:
         project_id: str | None = None,
         api_key: str | None = None,
         home_region: str | None = None,
-        http: httpx.AsyncClient | None = None,
+        http: httpx.Client | None = None,
     ) -> None:
         self.origin = validate_origin(
             control_plane_url
@@ -85,30 +85,28 @@ class Client:
             raise ValueError("API key must not be empty")
         self.headers = {"authorization": f"Bearer {key.strip()}"} if key is not None else {}
         self.home_region = home_region or os.environ.get("DURABLE_ACTORS_HOME_REGION")
-        self._http = (
-            http if http is not None else httpx.AsyncClient(timeout=180, follow_redirects=False)
-        )
+        self._http = http if http is not None else httpx.Client(timeout=180, follow_redirects=False)
         self._owns_http = http is None
         self._closed = False
         self._targets: dict[tuple[str, str], dict[str, Any]] = {}
 
-    async def __aenter__(self) -> Client:
+    def __enter__(self) -> Client:
         return self
 
-    async def __aexit__(
+    def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.aclose()
+        self.close()
 
-    async def aclose(self) -> None:
+    def close(self) -> None:
         self._closed = True
         if self._owns_http:
-            await self._http.aclose()
+            self._http.close()
 
-    async def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any:
+    def invoke(self, actor_name: str, actor_id: str, method: str, args: list[Any]) -> Any:
         if self._closed:
             raise RuntimeError("client is closed")
         path = self.actor_path(actor_name, actor_id)
@@ -122,7 +120,7 @@ class Client:
                 target = None
                 self._targets.pop(key, None)
             try:
-                reply = await self._invoke_attempt(path, request_id, method, args, target, key)
+                reply = self._invoke_attempt(path, request_id, method, args, target, key)
             except httpx.TransportError as error:
                 self._targets.pop(key, None)
                 if target is not None and isinstance(error, httpx.ConnectError) and refused(error):
@@ -157,7 +155,7 @@ class Client:
                 )
         raise AssertionError("unreachable")
 
-    async def prepare_websocket(
+    def prepare_websocket(
         self,
         actor_name: str,
         actor_id: str,
@@ -169,7 +167,7 @@ class Client:
             raise ValueError("authorization lifetime must be between one second and one day")
         if len(json.dumps(metadata, allow_nan=False).encode()) > 65536:
             raise ValueError("socket metadata exceeds 64 KiB")
-        response = await self._http.post(
+        response = self._http.post(
             self.origin + self.actor_path(actor_name, actor_id) + "/find-websocket",
             headers=self.headers,
             json={"metadata": metadata, "authorizationLifetimeMs": authorization_lifetime_ms},
@@ -181,8 +179,8 @@ class Client:
             raise ActorProtocolError("invalid websocket URL")
         return grant
 
-    async def get_contract(self) -> dict[str, Any]:
-        response = await self._http.get(
+    def get_contract(self) -> dict[str, Any]:
+        response = self._http.get(
             f"{self.origin}/v1/projects/{self.project_id}/deployment/contract",
             headers=self.headers,
             follow_redirects=False,
@@ -198,7 +196,7 @@ class Client:
     def actor_path(self, actor_name: str, actor_id: str) -> str:
         return f"/v1/projects/{self.project_id}/actors/{component(actor_name, 255)}/{component(actor_id, 128)}"
 
-    async def _invoke_attempt(
+    def _invoke_attempt(
         self,
         path: str,
         request_id: str,
@@ -216,7 +214,7 @@ class Client:
             headers = {"authorization": f"Bearer {target['token']}"}
         elif self.home_region:
             body["homeRegion"] = self.home_region
-        response = await self._http.post(
+        response = self._http.post(
             origin + path + "/invoke",
             headers={**headers, "x-request-id": request_id},
             json=body,

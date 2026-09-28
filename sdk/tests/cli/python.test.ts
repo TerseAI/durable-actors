@@ -47,16 +47,16 @@ test(
         const env = { ...environment, VIRTUAL_ENV: undefined }
         const result = await run(process.execPath, [cli, "generate", "actors.py"], { cwd: directory, env })
         assert.match(result.stdout, /Generated 1 actor contract/u)
-        assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /async def increment/u)
+        assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /def increment/u)
         await readFile(path.join(directory, "generated/py.typed"))
         await writeFile(
             path.join(directory, "usage.py"),
             `from generated import Counter
 from little_actors import Client
-async def use(client: Client) -> None:
+def use(client: Client) -> None:
     counter = Counter("one", client)
-    result: int = await counter.increment(2)
-    await counter.increment("bad")
+    result: int = counter.increment(2)
+    counter.increment("bad")
 `
         )
         await assert.rejects(
@@ -99,7 +99,7 @@ test("generate infers Python from a published contract without actor source", { 
         cwd: directory,
         env: { ...environment, DURABLE_ACTORS_PYTHON: python }
     })
-    assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /async def increment/u)
+    assert.match(await readFile(path.join(directory, "generated/counter.py"), "utf8"), /def increment/u)
 })
 
 test(
@@ -149,12 +149,9 @@ test(
                 python!,
                 [
                     "-c",
-                    `import asyncio
-from little_actors import Client
-async def main():
-    async with Client(control_plane_url="${origin}") as client:
-        print(await client.invoke("Counter", "one", "increment", []))
-asyncio.run(main())`
+                    `from little_actors import Client
+with Client(control_plane_url="${origin}") as client:
+    print(client.invoke("Counter", "one", "increment", []))`
                 ],
                 { cwd: directory }
             )

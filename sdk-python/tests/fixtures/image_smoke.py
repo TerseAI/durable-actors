@@ -1,7 +1,8 @@
-import asyncio
 import os
 import socket
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -9,7 +10,7 @@ import httpx
 from little_actors import Client
 
 
-async def main() -> None:
+def main() -> None:
     with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -22,37 +23,49 @@ class Counter(Actor):
         return self.count
 """)
         for expected in (1, 2):
-            runtime = await asyncio.create_subprocess_exec(
-                "durable-actors",
-                "dev",
-                "--project",
-                directory,
-                "--entrypoint",
-                "actors.py",
-                "--port",
-                str(port),
+            runtime = subprocess.Popen(
+                [
+                    "durable-actors",
+                    "dev",
+                    "--project",
+                    directory,
+                    "--entrypoint",
+                    "actors.py",
+                    "--port",
+                    str(port),
+                ],
                 env={**os.environ, "DURABLE_ACTORS_PYTHON": "python3"},
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
             try:
-                async with asyncio.timeout(30), Client(f"http://127.0.0.1:{port}") as client:
+                with (
+                    httpx.Client(timeout=5) as http,
+                    Client(f"http://127.0.0.1:{port}", http=http) as client,
+                ):
+                    deadline = time.monotonic() + 30
                     while True:
-                        if runtime.returncode is not None:
-                            raise RuntimeError(await runtime.communicate())
+                        if runtime.poll() is not None:
+                            raise RuntimeError(runtime.communicate())
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("actor runtime did not start")
                         try:
-                            contract = await client.get_contract()
+                            contract = client.get_contract()
                             assert contract["actors"][0]["actorName"] == "Counter"
                             break
                         except (httpx.TransportError, httpx.HTTPStatusError):
-                            await asyncio.sleep(0.1)
-                    assert await client.invoke("Counter", "one", "increment", []) == expected
+                            time.sleep(0.1)
+                    assert client.invoke("Counter", "one", "increment", []) == expected
             finally:
-                if runtime.returncode is None:
+                if runtime.poll() is None:
                     runtime.terminate()
-                async with asyncio.timeout(10):
-                    await runtime.communicate()
+                try:
+                    runtime.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    runtime.kill()
+                    runtime.communicate()
+                    raise
     print("Python actor image: invocation and durable restart passed")
 
 
-asyncio.run(main())
+main()

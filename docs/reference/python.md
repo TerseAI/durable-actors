@@ -1,6 +1,6 @@
 # Python SDK
 
-The `little-actors` distribution provides actor authoring, a Python executor, and async clients, driven by the shared TypeScript `durable-actors` CLI. Install `little-actors[codegen]` in development environments for generation and type checking. See the [quickstart](../../sdk-python/README.md) and [runnable example](../../examples/python).
+The `little-actors` distribution provides actor authoring, a Python executor, and synchronous clients, driven by the shared TypeScript `durable-actors` CLI. Install `little-actors[codegen]` in development environments for generation and type checking. See the [quickstart](../../sdk-python/README.md) and [runnable example](../../examples/python).
 
 ## Actor definitions and typing
 
@@ -27,7 +27,7 @@ Annotated instance fields are persisted by default. `ephemeral()` excludes tempo
 
 Every RPC parameter, return value, and persisted field needs a concrete annotation. Supported schema types include JSON primitives, typed collections with string dictionary keys, fixed tuples, optional values, literals, unions (including discriminated unions), recursive models, Pydantic models, dataclasses, `typing_extensions.TypedDict`, dates, datetimes, and UUIDs. `JsonValue` explicitly describes arbitrary nested JSON. Bare collections, `Any`, and `object` are rejected at public boundaries. Ephemeral fields can hold Python objects such as API clients and locks.
 
-Source annotations produce JSON Schema. Generated clients have real async methods and independent Pydantic models that describe the wire representation. Import those models from `generated.<actor_name>_models`; actor implementation classes and source-only dependencies are not needed by consumers. Schema constraints are generated into client models. When serialization changes a model shape, separate `Input` and `Output` models describe the two wire types; computed fields appear in outputs. Source-only Python validators and methods remain on the actor side, so the actor validates every call as well.
+Source annotations produce JSON Schema. Generated clients have ordinary synchronous methods and independent Pydantic models that describe the wire representation. Import those models from `generated.<actor_name>_models`; actor implementation classes and source-only dependencies are not needed by consumers. Schema constraints are generated into client models. When serialization changes a model shape, separate `Input` and `Output` models describe the two wire types; computed fields appear in outputs. Source-only Python validators and methods remain on the actor side, so the actor validates every call as well.
 
 Inline annotations and a `py.typed` marker support mypy and Pyright without a custom checker plugin. Tests verify both valid calls and rejection of invalid calls, including generated model return types. Runtime validation is strict: a string is not coerced into an integer RPC argument.
 
@@ -50,7 +50,7 @@ Methods run serially by default. A failed invocation restores persisted state to
 
 `@reentrant` permits other calls to enter while a method awaits. Reentrant actors share a live Python instance; their mutations are not rolled back on exceptions, since doing so would overwrite overlapping successful work. Completion sequences preserve commit ordering in Rust. Use reentrancy deliberately for streaming or long waits. Move blocking work off the event loop with `asyncio.to_thread`.
 
-The async HTTP client caches direct actor routes, refreshes stale routes, and retries only a rejection known to precede execution. `ActorInvocationError` exposes `code` and `request_id`. A lost response raises `outcome_unknown`; automatically replaying it could repeat actor side effects.
+The synchronous HTTP client caches direct actor routes, refreshes stale routes, and retries only a rejection known to precede execution. `ActorInvocationError` exposes `code` and `request_id`. A lost response raises `outcome_unknown`; automatically replaying it could repeat actor side effects.
 
 ## Typed WebSockets
 
@@ -78,11 +78,11 @@ from generated import Room
 from generated.room_models import Member, Message
 from little_actors import Client, StateSnapshot, StateUpdate
 
-async with Client() as transport:
+with Client() as transport:
     room = Room("lobby", transport)
-    async with await room.connect(Member(name="Ada")) as connection:
-        await connection.send(Message(role="user", text="hello"))
-        async for event in connection:
+    with room.connect(Member(name="Ada")) as connection:
+        connection.send(Message(role="user", text="hello"))
+        for event in connection:
             if isinstance(event, StateSnapshot):
                 print(event.state)
             elif isinstance(event, StateUpdate):
@@ -90,6 +90,8 @@ async with Client() as transport:
             else:
                 print(event.text)
 ```
+
+`connection.receive()` blocks until a message arrives; pass `timeout=5` to wait up to five seconds and raise `TimeoutError` if no message arrives. Use a `with` block to close connections and clients, or call `.close()` explicitly.
 
 `StateSnapshot` contains all emittable fields; `StateUpdate.changes` contains changed fields. Optional fields without a schema default use the typed `UNSET` sentinel, exported from `little_actors`. This preserves the distinction between omission and an explicit `None`. Use `model_fields_set`, `isinstance(value, Unset)`, or `model_dump(exclude_unset=True)` when processing patches. `prepare_websocket(metadata)` returns a short-lived grant when another process will connect. Reconnect explicitly with a new grant after expiry or connection loss.
 
@@ -109,7 +111,7 @@ Use the existing Node CLI (`pnpm exec durable-actors`). The Python package has n
 
 The CLI selects `DURABLE_ACTORS_PYTHON`, then the active `VIRTUAL_ENV`, then the project's `.venv/bin/python`, then `python3`. Set `DURABLE_ACTORS_ENTRYPOINT=src/actors.py` in `.env`; the Python template creates this setting. `.env.local` and `.env` work just as they do for TypeScript projects. `DURABLE_ACTORS_PROJECT` overrides the project directory, and `DURABLE_ACTORS_DATA_DIR` the local state directory. `dev --port 0` selects a free port. `DURABLE_ACTORS_BINARY` selects a native executable instead of downloading it. Keep native runtime, TypeScript CLI, and Python SDK versions aligned.
 
-Client constructor arguments override environment variables. Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_ACTORS_SECRET`, and optionally `DURABLE_ACTORS_HOME_REGION`. Local defaults are `http://127.0.0.1:7100` and project `local`. Remote origins require a project ID. An injected `httpx.AsyncClient` lets applications supply transport and timeout policy; its lifecycle remains with the application. CLI commands load `.env.local` and `.env`, preserving exported environment overrides.
+Client constructor arguments override environment variables. Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_ACTORS_SECRET`, and optionally `DURABLE_ACTORS_HOME_REGION`. Local defaults are `http://127.0.0.1:7100` and project `local`. Remote origins require a project ID. An injected `httpx.Client` lets applications supply transport and timeout policy; its lifecycle remains with the application. CLI commands load `.env.local` and `.env`, preserving exported environment overrides.
 
 Generation from local source imports that source. Generation from a server consumes schemas and does not execute the actor implementation.
 

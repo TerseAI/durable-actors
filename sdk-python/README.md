@@ -50,24 +50,22 @@ pnpm exec durable-actors generate src/actors.py --out-dir generated
 ```
 
 ```python
-import asyncio
 from little_actors import Client
 from generated import Chat
 from generated.chat_models import Message
 
-async def main() -> None:
-    async with Client() as transport:
-        chat = Chat("lobby", transport)
-        messages = await chat.append(Message(text="hello"))
-        print(messages[0].text)
-
-asyncio.run(main())
+with Client() as transport:
+    chat = Chat("lobby", transport)
+    messages: list[Message] = chat.append(Message(text="hello"))
+    print(messages[0].text)
 ```
 
 The CLI runs strict mypy on local actor definitions before generation and on the generated package afterward. `dev` checks definitions before startup and every reload; an invalid edit leaves the previous code running.
 
+The client uses synchronous calls and context managers. Generated RPC methods return typed values directly.
+
 The generated package includes method signatures, independent Pydantic models, and `py.typed`. Consumers need only `little-actors`, not the actor project or the code generator. Regenerate after changing the actor contract, and include the generated package in your application's type checks.
 
-Typing uses inline annotations and the [PEP 561](https://peps.python.org/pep-0561/) package marker. Both mypy and Pyright check the SDK and generated clients. Pydantic validates inputs, outputs, and persisted state at runtime. Python annotations remain ordinary annotations: `await chat.append(42)` is rejected by a type checker and by runtime validation.
+Typing uses inline annotations and the [PEP 561](https://peps.python.org/pep-0561/) package marker. Both mypy and Pyright check the SDK and generated clients. Pydantic validates inputs, outputs, and persisted state at runtime. Python annotations remain ordinary annotations: `chat.append(42)` is rejected by a type checker and by runtime validation.
 
 See the [Python reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/python.md) for supported types, sockets, reentrancy, deployment, and CLI options.

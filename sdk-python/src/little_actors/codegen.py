@@ -194,9 +194,9 @@ def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, 
     result = method["result"]
     returned = "None" if result["kind"] == "void" else types["Rpc" + root_key(result["type"])]
     lines = [
-        f"    async def {name}(_self{', ' if params else ''}{', '.join(params)}) -> {returned}:",
+        f"    def {name}(_self{', ' if params else ''}{', '.join(params)}) -> {returned}:",
         f"        _args = _arguments([{', '.join(values)}], [{', '.join(defaults)}])",
-        f"        _result = await _self._transport.invoke({actor!r}, _self._actor_id, {name!r}, _args)",
+        f"        _result = _self._transport.invoke({actor!r}, _self._actor_id, {name!r}, _args)",
     ]
     if returned != "None":
         lines.extend(
@@ -253,12 +253,12 @@ def socket_methods(actor: str, types: dict[str, str]) -> list[str]:
     state, patch = types["SocketEmittedState"], types["SocketStatePatch"]
     connection = f"_Connection[{incoming}, {outgoing}, {state}, {patch}]"
     return [
-        f"    async def prepare_websocket(self, metadata: {metadata}, *, authorization_lifetime_ms: int = 900000) -> _SocketGrant:",
-        f"        return await self._transport.prepare_websocket({actor!r}, self._actor_id, _argument(metadata, _TypeAdapter({metadata})), authorization_lifetime_ms=authorization_lifetime_ms)",
+        f"    def prepare_websocket(self, metadata: {metadata}, *, authorization_lifetime_ms: int = 900000) -> _SocketGrant:",
+        f"        return self._transport.prepare_websocket({actor!r}, self._actor_id, _argument(metadata, _TypeAdapter({metadata})), authorization_lifetime_ms=authorization_lifetime_ms)",
         "",
-        f"    async def connect(self, metadata: {metadata}) -> {connection}:",
-        "        grant = await self.prepare_websocket(metadata)",
-        f"        return await {connection}.open(grant, _TypeAdapter({incoming}), _TypeAdapter({outgoing}), _TypeAdapter({state}), _TypeAdapter({patch}))",
+        f"    def connect(self, metadata: {metadata}) -> {connection}:",
+        "        grant = self.prepare_websocket(metadata)",
+        f"        return {connection}.open(grant, _TypeAdapter({incoming}), _TypeAdapter({outgoing}), _TypeAdapter({state}), _TypeAdapter({patch}))",
         "",
     ]
 

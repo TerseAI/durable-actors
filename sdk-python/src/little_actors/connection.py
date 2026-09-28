@@ -5,8 +5,8 @@ from types import TracebackType
 from typing import Generic, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, TypeAdapter
-from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosedOK
+from websockets.sync.client import connect
 
 from .client import ActorProtocolError, SocketGrant
 from .contract import encode
@@ -32,9 +32,9 @@ class StateUpdate(BaseModel, Generic[Patch]):
 
 
 class SocketWire(Protocol):
-    async def send(self, message: str) -> None: ...
-    async def recv(self) -> str | bytes: ...
-    async def close(self, code: int = 1000, reason: str = "") -> None: ...
+    def send(self, message: str) -> None: ...
+    def recv(self, timeout: float | None = None) -> str | bytes: ...
+    def close(self, code: int = 1000, reason: str = "") -> None: ...
 
 
 class Connection(Generic[Send, Receive, State, Patch]):
@@ -53,7 +53,7 @@ class Connection(Generic[Send, Receive, State, Patch]):
         self._patch = patch
 
     @classmethod
-    async def open(
+    def open(
         cls,
         grant: SocketGrant,
         incoming: TypeAdapter[Send],
@@ -61,15 +61,17 @@ class Connection(Generic[Send, Receive, State, Patch]):
         state: TypeAdapter[State],
         patch: TypeAdapter[Patch],
     ) -> Connection[Send, Receive, State, Patch]:
-        wire = await connect(grant.websocket_url, max_size=16 * 1024 * 1024)
+        wire = connect(grant.websocket_url, max_size=16 * 1024 * 1024)
         return cls(wire, incoming, outgoing, state, patch)
 
-    async def send(self, message: Send) -> None:
+    def send(self, message: Send) -> None:
         data = encode(self._incoming, message)
-        await self._wire.send(json.dumps(data, separators=(",", ":"), allow_nan=False))
+        self._wire.send(json.dumps(data, separators=(",", ":"), allow_nan=False))
 
-    async def receive(self) -> Receive | StateSnapshot[State] | StateUpdate[Patch]:
-        data = await self._wire.recv()
+    def receive(
+        self, timeout: float | None = None
+    ) -> Receive | StateSnapshot[State] | StateUpdate[Patch]:
+        data = self._wire.recv(timeout=timeout)
         if not isinstance(data, str):
             raise ActorProtocolError("actor sockets require JSON text")
         value = json.loads(data)
@@ -84,25 +86,25 @@ class Connection(Generic[Send, Receive, State, Patch]):
             return StateUpdate[Patch](changes=patch, removed=removed, version=value["version"])
         return self._outgoing.validate_json(data, strict=True)
 
-    def __aiter__(self) -> Connection[Send, Receive, State, Patch]:
+    def __iter__(self) -> Connection[Send, Receive, State, Patch]:
         return self
 
-    async def __anext__(self) -> Receive | StateSnapshot[State] | StateUpdate[Patch]:
+    def __next__(self) -> Receive | StateSnapshot[State] | StateUpdate[Patch]:
         try:
-            return await self.receive()
+            return self.receive()
         except ConnectionClosedOK:
-            raise StopAsyncIteration from None
+            raise StopIteration from None
 
-    async def close(self, code: int = 1000, reason: str = "") -> None:
-        await self._wire.close(code, reason)
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        self._wire.close(code, reason)
 
-    async def __aenter__(self) -> Connection[Send, Receive, State, Patch]:
+    def __enter__(self) -> Connection[Send, Receive, State, Patch]:
         return self
 
-    async def __aexit__(
+    def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.close()
+        self.close()
