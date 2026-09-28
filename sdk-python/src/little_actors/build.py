@@ -8,8 +8,9 @@ import sys
 import tomllib
 import zipfile
 from contextlib import redirect_stdout
-from importlib.metadata import distributions, version
+from importlib.metadata import distribution, distributions, version
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from packaging.requirements import Requirement
@@ -59,7 +60,41 @@ def install_dependencies(project: Path, output: Path, settings: Document) -> Non
     arguments = (
         ["-r", str(requirements)] if requirements.is_file() else runtime_requirements(dependencies)
     )
+    versions = runtime_versions()
     if arguments:
+        install_requirements(project, output / "python", arguments, versions)
+    remove_bundled_runtime(output / "python", versions)
+    sys.path.insert(0, str(output / "python"))
+
+
+def runtime_versions() -> dict[str, str]:
+    versions: dict[str, str] = {}
+    visited: set[tuple[str, tuple[str, ...]]] = set()
+    pending = [Requirement("little-actors")]
+    while pending:
+        requirement = pending.pop()
+        name = canonicalize_name(requirement.name)
+        extras = tuple(sorted(requirement.extras))
+        if (name, extras) in visited:
+            continue
+        visited.add((name, extras))
+        installed = distribution(name)
+        versions[name] = installed.version
+        for text in installed.requires or []:
+            dependency = Requirement(text)
+            if dependency.marker is None or any(
+                dependency.marker.evaluate({"extra": extra}) for extra in ("", *extras)
+            ):
+                pending.append(dependency)
+    return versions
+
+
+def install_requirements(
+    project: Path, directory: Path, arguments: list[str], versions: dict[str, str]
+) -> None:
+    with TemporaryDirectory(prefix="little-actors-constraints-") as temporary:
+        constraints = Path(temporary) / "runtime.txt"
+        constraints.write_text("".join(f"{name}=={value}\n" for name, value in versions.items()))
         subprocess.run(
             [
                 sys.executable,
@@ -69,29 +104,42 @@ def install_dependencies(project: Path, output: Path, settings: Document) -> Non
                 "--disable-pip-version-check",
                 "--no-compile",
                 "--target",
-                str(output / "python"),
+                str(directory),
+                "--constraint",
+                str(constraints),
                 *arguments,
             ],
             cwd=project,
             check=True,
             stdout=sys.stderr,
         )
-    remove_bundled_sdk(output / "python")
-    sys.path.insert(0, str(output / "python"))
 
 
-def remove_bundled_sdk(directory: Path) -> None:
-    for distribution in distributions(path=[str(directory)]):
-        if canonicalize_name(distribution.metadata["Name"]) != "little-actors":
+def remove_bundled_runtime(directory: Path, versions: dict[str, str]) -> None:
+    for installed in distributions(path=[str(directory)]):
+        name = canonicalize_name(installed.metadata["Name"])
+        if name not in versions:
             continue
-        if distribution.version != version("little-actors"):
-            raise ValueError("actor SDK version must match the build runtime")
-        if distribution.files is None:
-            raise ValueError("installed actor SDK has no file manifest")
-        for file in distribution.files:
-            installed = (directory / file).resolve()
-            if installed.is_relative_to(directory) and installed.is_file():
-                installed.unlink()
+        if installed.version != versions[name]:
+            raise ValueError(f"{name} version must match the build runtime")
+        if installed.files is None:
+            raise ValueError(f"installed {name} has no file manifest")
+        for file in installed.files:
+            remove_bundled_file(directory, directory / file)
+
+
+def remove_bundled_file(directory: Path, file: Path) -> None:
+    file = file.resolve()
+    if not file.is_relative_to(directory) or not file.is_file():
+        return
+    file.unlink()
+    for parent in file.parents:
+        if parent == directory:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
 
 
 def runtime_requirements(dependencies: list[str]) -> list[str]:
