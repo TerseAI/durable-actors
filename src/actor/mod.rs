@@ -1,3 +1,4 @@
+pub use crate::ltx::{SqliteState, SqliteWal};
 mod executor_connection;
 mod protocol;
 mod socket;

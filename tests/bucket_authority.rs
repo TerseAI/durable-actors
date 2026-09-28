@@ -511,7 +511,9 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
         serde_json::json!({"count":1}),
         serde_json::json!(1),
     )?;
-    snapshot.sqlite = Some("A".repeat(34 * 1024 * 1024));
+    snapshot.state = serde_json::value::to_raw_value(
+        &serde_json::json!({"payload": "A".repeat(34 * 1024 * 1024)}),
+    )?;
     let snapshot = snapshot.encode()?;
     let http = Arc::new(GrpcStateTransport::new());
     let transport = ReplicatedStateTransport::new(runtime.clone(), http.clone());

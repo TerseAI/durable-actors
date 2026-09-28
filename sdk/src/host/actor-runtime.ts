@@ -18,8 +18,8 @@ import type { JsonObject, JsonValue } from "../json.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
-import { SqliteActorDatabase } from "./sqlite.js"
-import type { ActorDatabaseStorage } from "./sqlite.js"
+import { SqliteActorDatabase, SqliteCaptureError } from "./sqlite.js"
+import type { ActorDatabaseStorage, SqliteState } from "./sqlite.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
@@ -117,17 +117,20 @@ class ActorRuntime {
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             const state = snapshotActorState(instance, this.definition.state)
-            const database = this.databaseState()
             const effects = [...operation.effects, ...this.stateUpdates(before, state)]
             return {
                 type: "invoked",
                 result,
                 state,
-                ...database,
+                ...this.databaseState(),
                 ...this.completionOrder(),
                 ...(effects.length === 0 ? {} : { effects })
             }
         } catch (error) {
+            if (error instanceof SqliteCaptureError) {
+                this.fatal = failedReply("actor_database_failed", errorMessage(error))
+                return this.fatal
+            }
             if (!this.interleaved) this.restoreInstance(command.actor, before)
             return failedReply("actor_method_failed", errorMessage(error))
         }
@@ -160,7 +163,6 @@ class ActorRuntime {
                 this.schemas
             )
             const state = snapshotActorState(instance, this.definition.state)
-            const database = this.databaseState()
             const effects = [
                 ...operation.effects,
                 ...this.stateUpdates(
@@ -169,14 +171,19 @@ class ActorRuntime {
                     command.event.type === "connect" ? command.event.connection.id : undefined
                 )
             ]
+            const publishedEffects = socketEffects(command, state, effects, this.definition.state)
             return {
                 type: "websocket_handled",
                 state,
-                ...database,
+                ...this.databaseState(),
                 ...this.completionOrder(),
-                effects: socketEffects(command, state, effects, this.definition.state)
+                effects: publishedEffects
             }
         } catch (error) {
+            if (error instanceof SqliteCaptureError) {
+                this.fatal = failedReply("actor_database_failed", errorMessage(error))
+                return this.fatal
+            }
             if (!this.interleaved) this.restoreInstance(command.actor, before)
             return failedReply("actor_socket_failed", errorMessage(error))
         }
@@ -200,7 +207,10 @@ class ActorRuntime {
                 "resident actor Worker received an invocation for a different actor"
             )
         }
-        if (this.instance !== undefined) return this.instance
+        if (this.instance !== undefined) {
+            this.database.checkpoint(command.durable_sqlite_txid)
+            return this.instance
+        }
         if (command.resident_only) return { type: "state_required" }
         if (command.state === undefined)
             return failedReply("invalid_actor_state", "actor hydration requires an explicit state or null")
@@ -208,7 +218,7 @@ class ActorRuntime {
         return this.createInstance(identity, command.state)
     }
 
-    private databaseState(): { sqlite?: string } {
+    private databaseState(): { sqlite?: SqliteState } {
         const sqlite = this.database.snapshot()
         return sqlite === undefined ? {} : { sqlite }
     }

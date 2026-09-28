@@ -57,6 +57,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Result<Self> {
+        Self::with_capacity(4096).await
+    }
+
+    async fn with_capacity(capacity: u64) -> Result<Self> {
         let directory = tempfile::tempdir()?;
         let bucket = Arc::new(FileBucket::new(directory.path().join("bucket"))?);
         let authority = Arc::new(AmbiguousBucket {
@@ -79,7 +83,8 @@ impl Fixture {
         let mut targets = Vec::new();
         let mut stores = Vec::new();
         for id in ["first", "failed", "replacement"] {
-            let store = Arc::new(FileReplicaStore::open(directory.path().join(id), 4096).await?);
+            let store =
+                Arc::new(FileReplicaStore::open(directory.path().join(id), capacity).await?);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             targets.push(ReplicaTarget {
                 host_id: id.into(),
@@ -227,9 +232,16 @@ impl StateTransport for SeedTransport {
     async fn read(&self, _: &str) -> Result<Bytes> {
         anyhow::bail!("unused")
     }
-    async fn write(&self, url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
+    async fn write_bundle(
+        &self,
+        url: &str,
+        bytes: Vec<u8>,
+        dependencies: Vec<crate::state_transport::SnapshotDependency>,
+    ) -> Result<StateWrite> {
         ensure!(!self.fail, "replacement disk unavailable");
-        let proof = GrpcStateTransport::new().write(url, bytes).await?;
+        let proof = GrpcStateTransport::new()
+            .write_bundle(url, bytes, dependencies)
+            .await?;
         self.entered.add_permits(1);
         self.release.acquire().await?.forget();
         Ok(proof)
@@ -365,6 +377,107 @@ async fn uncertain_membership_update_uses_gcs_until_the_record_is_reconciled() -
             .await?
             .replication
             .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacement_seeds_the_sqlite_chain_and_bucket_before_retiring_replicas() -> Result<()> {
+    use crate::{
+        ltx::{SqliteCapture, SqliteState, SqliteWal},
+        state_log::SqliteSnapshot,
+    };
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let f = Fixture::with_capacity(1024 * 1024).await?;
+    let path = f._directory.path().join("source.sqlite");
+    let database = rusqlite::Connection::open(&path)?;
+    database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE entries (value INTEGER)")?;
+    let mut capture = SqliteCapture::new()?;
+    let mut parent = None;
+    let mut snapshots = Vec::new();
+    for version in 2..=4 {
+        let ltx = if version < 4 {
+            if version == 3 {
+                database.execute_batch("INSERT INTO entries VALUES (7)")?;
+            }
+            Some(STANDARD.encode(capture.capture(&SqliteState {
+                txid: version - 1,
+                path: None,
+                wal: Some(SqliteWal {
+                    base_txid: 0,
+                    data: STANDARD.encode(std::fs::read(path.with_extension("sqlite-wal"))?),
+                }),
+            })?))
+        } else {
+            None
+        };
+        let mut snapshot = StateSnapshot::new(
+            version,
+            1,
+            format!("request-{version}"),
+            serde_json::json!({"count": version}),
+            serde_json::Value::Null,
+        )?;
+        snapshot.sqlite = Some(SqliteSnapshot {
+            object: if ltx.is_some() {
+                f.latest.0.stream.object(version)
+            } else {
+                f.latest.0.stream.object(3)
+            },
+            txid: capture.txid(),
+            parent: parent.clone(),
+            ltx,
+        });
+        let bytes = snapshot.encode()?;
+        for store in &f.stores[..2] {
+            store.append(&f.latest.0.stream, &bytes).await?;
+        }
+        if version < 4 {
+            parent = Some(f.latest.0.stream.snapshot(&bytes)?);
+        }
+        snapshots.push((f.latest.0.stream.object(version), bytes));
+    }
+    let (object, bytes) = snapshots.last().unwrap();
+    assert!(f.bucket.get(object).await?.is_none());
+    let latest = (
+        WritePlan {
+            object_name: object.clone(),
+            state_version: 4,
+            ..f.latest.0.clone()
+        },
+        bytes.clone(),
+    );
+    let membership = f
+        .runtime
+        .replace_replicas(
+            &f.scope,
+            f.replacements(),
+            Some(&latest),
+            &GrpcStateTransport::new(),
+        )
+        .await?;
+    f.runtime.enable_replication(membership)?;
+    for (object, bytes) in &snapshots {
+        assert_eq!(f.stores[2].read(object).await?.as_ref(), Some(bytes));
+    }
+    f.runtime
+        .release_activation(&f.scope.actor, &f.scope.host, &f.scope.session)
+        .await?;
+    f.runtime.retire_replication(&f.scope).await?;
+    let mut restored = SqliteCapture::new()?;
+    for (object, bytes) in snapshots {
+        assert_eq!(f.bucket.get(&object).await?.unwrap().bytes, bytes);
+        if let Some(ltx) = StateSnapshot::decode(&bytes)?.sqlite.unwrap().segment()? {
+            restored.apply(&ltx)?;
+        }
+    }
+    assert_eq!(
+        rusqlite::Connection::open(restored.path())?.query_row(
+            "SELECT value FROM entries",
+            [],
+            |row| row.get::<_, u32>(0)
+        )?,
+        7
     );
     Ok(())
 }

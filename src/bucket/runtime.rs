@@ -29,6 +29,7 @@ use crate::{
         ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaScope, ReplicaStream,
         ReplicaTarget, ReplicationTicket, SnapshotRef,
     },
+    state_log::StateSnapshot,
     storage::{SnapshotReader, WritePlan, snapshot_object_name, snapshot_prefix},
 };
 
@@ -422,18 +423,80 @@ impl RuntimeStorage {
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        if let Some(object) = self.authority.get(&snapshot.object).await? {
-            snapshot.verify(&object.bytes)?;
-            return Ok(object.bytes);
-        }
-        for peer in replicas {
-            if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
-                snapshot.verify(&bytes)?;
-                self.persist(&snapshot.object, bytes.clone()).await?;
-                return Ok(bytes);
+        let mut current = snapshot.clone();
+        let mut missing = Vec::new();
+        loop {
+            if let Some(object) = self.authority.get(&current.object).await? {
+                current.verify(&object.bytes)?;
+                if missing.is_empty() {
+                    return Ok(object.bytes);
+                }
+                break;
             }
+            let mut recovered = None;
+            for peer in replicas {
+                if let Ok(bytes) = self.peers.read(peer, &current.object).await {
+                    current.verify(&bytes)?;
+                    recovered = Some(bytes);
+                    break;
+                }
+            }
+            let bytes = recovered.context("acknowledged snapshot is unavailable")?;
+            let decoded = StateSnapshot::decode(&bytes)?;
+            decoded.validate_object(&current.object)?;
+            ensure!(
+                decoded.state_version == current.state_version,
+                "SQLite dependency version mismatch"
+            );
+            let parent = decoded.sqlite.and_then(|sqlite| sqlite.parent);
+            missing.push((current.object, bytes));
+            let Some(parent) = parent else {
+                break;
+            };
+            current = parent;
         }
-        anyhow::bail!("acknowledged snapshot is unavailable")
+        let bytes = missing
+            .first()
+            .context("missing recovered snapshot")?
+            .1
+            .clone();
+        for (object, data) in missing.into_iter().rev() {
+            self.persist(&object, data).await?;
+        }
+        Ok(bytes)
+    }
+
+    async fn snapshot_dependencies(
+        &self,
+        bytes: &[u8],
+        replicas: &[ReplicaTarget],
+    ) -> Result<Vec<crate::state_transport::SnapshotDependency>> {
+        let mut snapshot = StateSnapshot::decode(bytes)?;
+        let mut dependencies = Vec::new();
+        while let Some(parent) = snapshot
+            .sqlite
+            .as_ref()
+            .and_then(|sqlite| sqlite.parent.clone())
+        {
+            snapshot.validate_object(
+                &snapshot
+                    .sqlite
+                    .as_ref()
+                    .context("SQLite state missing")?
+                    .object,
+            )?;
+            let bytes = self.recover_snapshot(replicas, &parent).await?;
+            snapshot = StateSnapshot::decode(&bytes)?;
+            ensure!(
+                snapshot.state_version == parent.state_version,
+                "SQLite dependency version mismatch"
+            );
+            dependencies.push(crate::state_transport::SnapshotDependency {
+                object: parent.object,
+                bytes,
+            });
+        }
+        Ok(dependencies)
     }
 
     async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {
@@ -505,6 +568,7 @@ impl proto::snapshot_service_server::SnapshotService for RuntimeStorageService {
         let data = self.0.fetch_snapshot(&grant).await.map_err(unavailable)?;
         Ok(Response::new(proto::SnapshotData {
             data: data.to_vec(),
+            dependencies: Vec::new(),
         }))
     }
 
@@ -590,6 +654,19 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             .entry(stream.session.clone())
             .or_default()
             .started += 1;
+        if let Some(parent) = StateSnapshot::decode(&bytes)?
+            .sqlite
+            .and_then(|sqlite| sqlite.parent)
+        {
+            let replicas = self
+                .sessions
+                .lock()
+                .unwrap()
+                .get(&stream.session)
+                .cloned()
+                .unwrap_or_default();
+            self.recover_snapshot(&replicas, &parent).await?;
+        }
         self.persist(&snapshot.object, bytes).await?;
         let mut uploaded = self.uploaded.lock().unwrap();
         let uploaded = uploaded.entry(stream.session.clone()).or_default();

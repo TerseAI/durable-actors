@@ -1,13 +1,22 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import type { ActorDatabase, SqliteValue } from "../actor/database.js"
 
+interface SqliteState {
+    readonly txid: number
+    readonly path?: string
+    readonly wal?: { readonly base_txid: number; readonly data: string }
+}
+
+class SqliteCaptureError extends Error {}
+
 interface ActorDatabaseStorage extends ActorDatabase {
-    restore(image: string | undefined): void
-    snapshot(): string | undefined
+    restore(state: SqliteState | undefined): void
+    checkpoint(durableTxid: number | undefined): void
+    snapshot(): SqliteState | undefined
     rollback(): void
     close(): void
 }
@@ -15,7 +24,10 @@ interface ActorDatabaseStorage extends ActorDatabase {
 class SqliteActorDatabase implements ActorDatabaseStorage {
     private connection: SqliteConnection | undefined
     private directory: string | undefined
-    private image: string | undefined
+    private seed: SqliteState | undefined
+    private txid = 0
+    private baseTxid = 0
+    private offset = 0
 
     constructor(private readonly connect: (path: string) => SqliteConnection = openSqlite) {}
 
@@ -27,28 +39,47 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         return statement.all(...bindings) as Row[]
     }
 
-    restore(image: string | undefined): void {
+    restore(state: SqliteState | undefined): void {
         this.close()
-        if (image !== undefined) {
-            const bytes = Buffer.from(image, "base64")
-            if (bytes.toString("base64") !== image || bytes.subarray(0, 16).toString() !== "SQLite format 3\0")
-                throw new Error("invalid actor SQLite snapshot")
-        }
-        this.image = image
+        if (state !== undefined && (!Number.isSafeInteger(state.txid) || state.txid < 1 || !state.path))
+            throw new Error("invalid actor SQLite recovery state")
+        this.seed = state
+        this.txid = this.baseTxid = state?.txid ?? 0
+        this.offset = 0
     }
 
-    snapshot(): string | undefined {
+    checkpoint(durableTxid: number | undefined): void {
         const database = this.connection
-        if (database === undefined || !database.isTransaction) return this.image
-        database.exec("COMMIT")
-        const bytes = readFileSync(join(this.directory!, "actor.sqlite"))
-        this.image = bytes.length === 0 ? undefined : bytes.toString("base64")
-        return this.image
+        if (durableTxid !== this.txid || database === undefined || database.isTransaction) return
+        const result = database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()
+        if (result?.busy !== 0) return
+        this.baseTxid = this.txid
+        this.offset = 0
+    }
+
+    snapshot(): SqliteState | undefined {
+        const database = this.connection
+        if (database === undefined || !database.isTransaction) return this.position()
+        try {
+            database.exec("COMMIT")
+            const path = join(this.directory!, "actor.sqlite-wal")
+            if (!existsSync(path)) return this.position()
+            const wal = readFileSync(path)
+            const commit = walCommit(wal)
+            if (commit <= this.offset) return this.position()
+            this.offset = commit
+            this.txid += 1
+            return {
+                txid: this.txid,
+                wal: { base_txid: this.baseTxid, data: wal.subarray(0, commit).toString("base64") }
+            }
+        } catch (cause) {
+            throw new SqliteCaptureError("failed to capture actor SQLite WAL", { cause })
+        }
     }
 
     rollback(): void {
-        // Restore the captured image even if COMMIT succeeded but reading the file failed.
-        this.close()
+        if (this.connection?.isTransaction) this.connection.exec("ROLLBACK")
     }
 
     close(): void {
@@ -61,13 +92,19 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         }
     }
 
+    private position(): SqliteState | undefined {
+        return this.txid === 0 ? undefined : { txid: this.txid }
+    }
+
     private open(): SqliteConnection {
         if (this.connection !== undefined) return this.connection
         this.directory = mkdtempSync(join(tmpdir(), "durable-actor-sqlite-"))
         const path = join(this.directory, "actor.sqlite")
-        if (this.image !== undefined) writeFileSync(path, Buffer.from(this.image, "base64"))
+        if (this.seed?.path !== undefined) copyFileSync(this.seed.path, path)
         const database = (this.connection = this.connect(path))
-        database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = DELETE")
+        database.exec(
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL"
+        )
         if (database.prepare("PRAGMA quick_check").get()!.quick_check !== "ok")
             throw new Error("invalid actor SQLite database")
         return database
@@ -126,5 +163,18 @@ function withoutComments(sql: string): string {
     return sql.replace(/^(?:\s|;|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/, "").trim()
 }
 
-export { SqliteActorDatabase }
-export type { ActorDatabaseStorage }
+function walCommit(wal: Buffer): number {
+    if (wal.length < 32) return 0
+    const pageSize = wal.readUInt32BE(8)
+    if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) !== 0)
+        throw new Error("invalid SQLite WAL page size")
+    let commit = 0
+    for (let offset = 32; offset + 24 + pageSize <= wal.length; offset += 24 + pageSize) {
+        if (!wal.subarray(offset + 8, offset + 16).equals(wal.subarray(16, 24))) break
+        if (wal.readUInt32BE(offset + 4) !== 0) commit = offset + 24 + pageSize
+    }
+    return commit
+}
+
+export { SqliteActorDatabase, SqliteCaptureError }
+export type { ActorDatabaseStorage, SqliteState }

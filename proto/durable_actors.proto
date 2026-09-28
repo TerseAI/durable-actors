@@ -25,7 +25,8 @@ service ReplicaService {
   rpc Head(Empty) returns (ReplicaStreamHead);
   rpc Seal(Empty) returns (ReplicaSessionHead);
 }
-message SnapshotData { bytes data = 1; }
+message SnapshotData { bytes data = 1; repeated SnapshotDependency dependencies = 2; }
+message SnapshotDependency { string object = 1; bytes data = 2; }
 message SnapshotWriteReply { bool already_exists = 1; }
 message ReplicaStreamIdentity {
   string session = 1;

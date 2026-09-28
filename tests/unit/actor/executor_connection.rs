@@ -7,12 +7,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":19})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":20})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":19,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":20,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -62,7 +62,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":19, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":20, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -296,7 +296,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":19, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":20, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -482,7 +482,14 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
 async fn large_snapshots_round_trip_through_the_executor() -> Result<()> {
     let state = ActorState {
         fields: json!({"payload": "x".repeat(17 * 1024 * 1024)}),
-        sqlite: Some("A".repeat(34 * 1024 * 1024)),
+        sqlite: Some(crate::ltx::SqliteState {
+            txid: 1,
+            path: None,
+            wal: Some(crate::ltx::SqliteWal {
+                base_txid: 0,
+                data: "A".repeat(34 * 1024 * 1024),
+            }),
+        }),
     };
     let (host, customer) = UnixStream::pair()?;
     let (reader, writer) = host.into_split();
@@ -494,7 +501,7 @@ async fn large_snapshots_round_trip_through_the_executor() -> Result<()> {
         assert_eq!(message["command"]["state"], state.fields);
         assert_eq!(
             message["command"]["sqlite"],
-            state.sqlite.as_deref().unwrap()
+            serde_json::to_value(&state.sqlite)?
         );
         write_json_line(&mut reader, &json!({
             "type": "reply", "message_id": message["message_id"],
@@ -541,11 +548,11 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":19,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":20,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 19, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 20, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;

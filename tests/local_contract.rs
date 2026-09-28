@@ -26,16 +26,21 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
             this.db.exec("CREATE TABLE payload (data BLOB)");
             this.db.exec("INSERT INTO payload VALUES (zeroblob(?))", 25 * 1024 * 1024);
         }
-        async insert(value: string): Promise<void> { this.db.exec("INSERT INTO entries VALUES (?)", value); }
+        async insert(value: string): Promise<void> { this.db.exec("INSERT INTO entries (value) VALUES (?)", value); }
         async increment(): Promise<number> { return ++this.count; }
+        async migrate(): Promise<void> {
+            this.db.exec("ALTER TABLE entries ADD COLUMN enabled INTEGER DEFAULT 1");
+            this.db.exec("PRAGMA user_version = 2");
+        }
         async fail(): Promise<void> {
             ++this.count;
             this.db.exec("INSERT INTO entries VALUES ('discarded')");
             throw new Error("rollback");
         }
-        async read(): Promise<{count: number; fieldBytes: number; databaseBytes: number; entries: {value: string}[]}> {
+        async read(): Promise<{count: number; schemaVersion: number; fieldBytes: number; databaseBytes: number; entries: {value: string}[]}> {
             return {
                 count: this.count,
+                schemaVersion: this.db.exec<{user_version: number}>("PRAGMA user_version")[0]!.user_version,
                 fieldBytes: this.payload.length,
                 databaseBytes: this.db.exec<{bytes: number}>("SELECT length(data) AS bytes FROM payload")[0]!.bytes,
                 entries: this.db.exec<{value: string}>("SELECT value FROM entries ORDER BY rowid")
@@ -57,10 +62,14 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
                 await call('insert', ['retained']);
                 assert.equal(await call('increment'), 1);
                 await assert.rejects(call('fail'), /rollback/);
+            }} else {{
+                await call('migrate');
+                await call('insert', ['after-restart']);
+                assert.equal(await call('increment'), 2);
             }}
             assert.deepEqual(await call('read'), {{
-                count: 1, fieldBytes: 17 * 1024 * 1024, databaseBytes: 25 * 1024 * 1024,
-                entries: [{{value: 'retained'}}]
+                count: {initialize} ? 1 : 2, schemaVersion: {initialize} ? 0 : 2, fieldBytes: 17 * 1024 * 1024, databaseBytes: 25 * 1024 * 1024,
+                entries: {initialize} ? [{{value: 'retained'}}] : [{{value: 'retained'}}, {{value: 'after-restart'}}]
             }});
         "#,
             serde_json::to_string(&sdk)?
@@ -81,6 +90,37 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
         );
         runtime.stop().await?;
     }
+    use base64::Engine;
+    use durable_actors::bucket::{Bucket, FileBucket};
+    use durable_actors::state_log::StateSnapshot;
+    let bucket = FileBucket::new(project.path().join(".durable-actors/objects"))?;
+    let mut snapshots = Vec::new();
+    for key in bucket.list("durable-actors/v3/snapshots/").await? {
+        snapshots.push(StateSnapshot::decode(
+            &bucket.get(&key).await?.unwrap().bytes,
+        )?);
+    }
+    snapshots.sort_by_key(|snapshot| snapshot.state_version);
+    assert_eq!(
+        snapshots.len(),
+        6,
+        "reads and failed calls must not publish a version"
+    );
+    let mut segment_sizes = Vec::new();
+    for snapshot in &snapshots {
+        if let Some(encoded) = &snapshot.sqlite.as_ref().unwrap().ltx {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+            let (_, header) = litetx::Decoder::new(bytes.as_slice())?;
+            assert_eq!(
+                header.max_txid.into_inner(),
+                snapshot.sqlite.as_ref().unwrap().txid
+            );
+            segment_sizes.push(bytes.len());
+        }
+    }
+    assert_eq!(segment_sizes.len(), 4);
+    assert!(segment_sizes[0] > 25 * 1024 * 1024);
+    assert!(segment_sizes[1..].iter().all(|size| *size < 64 * 1024));
     Ok(())
 }
 

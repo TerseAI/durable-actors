@@ -215,17 +215,23 @@ impl RuntimeStorage {
                 "repair snapshot belongs to another activation"
             );
             plan.stream.snapshot(bytes)?;
-            let writes = replicas.iter().map(|target| async move {
-                let url = self.access.url(
-                    &target.url,
-                    &ReplicaGrant {
-                        host_id: target.host_id.clone(),
-                        stream: Some(plan.stream.clone()),
-                        ..grant("APPEND", &target.region, &plan.stream.prefix, 60_000)?
-                    },
-                )?;
-                transport.write(&url, bytes.clone()).await?;
-                anyhow::Ok(())
+            let dependencies = self.snapshot_dependencies(bytes, previous).await?;
+            let writes = replicas.iter().map(|target| {
+                let dependencies = dependencies.clone();
+                async move {
+                    let url = self.access.url(
+                        &target.url,
+                        &ReplicaGrant {
+                            host_id: target.host_id.clone(),
+                            stream: Some(plan.stream.clone()),
+                            ..grant("APPEND", &target.region, &plan.stream.prefix, 60_000)?
+                        },
+                    )?;
+                    transport
+                        .write_bundle(&url, bytes.clone(), dependencies)
+                        .await?;
+                    anyhow::Ok(())
+                }
             });
             futures_util::future::try_join_all(writes).await?;
         }

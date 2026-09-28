@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 19;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 20;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -170,7 +170,7 @@ pub struct ActorState {
     #[serde(rename = "state")]
     pub fields: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqlite: Option<String>,
+    pub sqlite: Option<crate::ltx::SqliteState>,
 }
 
 #[async_trait]
@@ -845,7 +845,12 @@ impl ExecutorDriver {
             command: ExecutorCommandEnvelope {
                 command: &pending.command,
                 state: state.map(|value| &value.fields),
-                sqlite: state.and_then(|value| value.sqlite.as_deref()),
+                sqlite: state.and_then(|value| value.sqlite.as_ref()),
+                durable_sqlite_txid: pending
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.sqlite.as_ref())
+                    .map(|sqlite| sqlite.txid),
                 resident_only: pending.resident_only,
             },
         });
@@ -1069,7 +1074,9 @@ struct ExecutorCommandEnvelope<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sqlite: Option<&'a str>,
+    sqlite: Option<&'a crate::ltx::SqliteState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    durable_sqlite_txid: Option<u64>,
     resident_only: bool,
 }
 

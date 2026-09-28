@@ -12,7 +12,21 @@ pub enum StateWrite {
 #[async_trait]
 pub trait StateTransport: Send + Sync {
     async fn read(&self, signed_url: &str) -> Result<Bytes>;
-    async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite>;
+    async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
+        self.write_bundle(signed_url, bytes, Vec::new()).await
+    }
+    async fn write_bundle(
+        &self,
+        signed_url: &str,
+        bytes: Vec<u8>,
+        dependencies: Vec<SnapshotDependency>,
+    ) -> Result<StateWrite>;
+}
+
+#[derive(Clone)]
+pub struct SnapshotDependency {
+    pub object: String,
+    pub bytes: Vec<u8>,
 }
 
 #[async_trait]
@@ -64,11 +78,25 @@ impl StateTransport for GrpcStateTransport {
         Ok(Bytes::from(response.into_inner().data))
     }
 
-    async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
+    async fn write_bundle(
+        &self,
+        signed_url: &str,
+        bytes: Vec<u8>,
+        dependencies: Vec<SnapshotDependency>,
+    ) -> Result<StateWrite> {
         let (channel, token) = self.capability(signed_url).await?;
         let response = storage_client(channel)
             .write(crate::grpc::transport::request(
-                crate::grpc::proto::SnapshotData { data: bytes },
+                crate::grpc::proto::SnapshotData {
+                    data: bytes,
+                    dependencies: dependencies
+                        .into_iter()
+                        .map(|entry| crate::grpc::proto::SnapshotDependency {
+                            object: entry.object,
+                            data: entry.bytes,
+                        })
+                        .collect(),
+                },
                 &token,
             )?)
             .await?;

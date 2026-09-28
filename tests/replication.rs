@@ -22,7 +22,12 @@ impl StateTransport for Storage {
         anyhow::bail!("not uploaded")
     }
 
-    async fn write(&self, url: &str, _: Vec<u8>) -> Result<StateWrite> {
+    async fn write_bundle(
+        &self,
+        url: &str,
+        _: Vec<u8>,
+        _: Vec<durable_actors::state_transport::SnapshotDependency>,
+    ) -> Result<StateWrite> {
         match url {
             "bucket" => {
                 self.bucket.acquire().await?.forget();

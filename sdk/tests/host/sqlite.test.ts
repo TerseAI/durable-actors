@@ -5,6 +5,7 @@ import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorRuntime } from "../../src/host/actor-runtime.js"
 import type { InvokeCommand } from "../../src/host/protocol.js"
+import { SqliteRecovery } from "../fixtures/sqlite.js"
 
 class SqliteCounter extends Actor {
     count = 0
@@ -47,6 +48,13 @@ const definition = registerActorClass(SqliteCounter, {
 })
 
 const runtimes: ActorRuntime[] = []
+const recoveries: SqliteRecovery[] = []
+afterEach(() => recoveries.splice(0).forEach(recovery => recovery.close()))
+function recover(state: import("../../src/host/sqlite.js").SqliteState | undefined) {
+    const recovery = new SqliteRecovery()
+    recoveries.push(recovery)
+    return recovery.apply(state)
+}
 afterEach(() => runtimes.splice(0).forEach(runtime => runtime.close()))
 
 function createRuntime(actor = definition): ActorRuntime {
@@ -71,7 +79,7 @@ test("SQL data and schema changes persist alongside unchanged JSON fields", asyn
     const runtime = createRuntime()
     const initialized = await invoke(runtime, "initialize")
     assert.equal(initialized.type, "invoked")
-    assert.equal(typeof Reflect.get(initialized, "sqlite"), "string")
+    assert.equal(typeof Reflect.get(initialized, "sqlite"), "object")
     const inserted = await invoke(runtime, "insert", ["hello ' SQL"])
     assert.equal(inserted.type, "invoked")
     assert.deepEqual(Reflect.get(inserted, "state"), { count: 0 })
@@ -82,10 +90,10 @@ test("SQL data and schema changes persist alongside unchanged JSON fields", asyn
     const restored = createRuntime()
     const read = await invoke(restored, "read", [], {
         state: Reflect.get(migrated, "state"),
-        sqlite: Reflect.get(migrated, "sqlite")
+        sqlite: recover(Reflect.get(migrated, "sqlite"))
     })
     assert.deepEqual(Reflect.get(read, "result"), { count: 0, rows: [{ value: "hello ' SQL" }] })
-    assert.equal(Reflect.get(read, "sqlite"), Reflect.get(migrated, "sqlite"))
+    assert.equal(Reflect.get(read, "sqlite")?.txid, Reflect.get(migrated, "sqlite")?.txid)
 })
 
 test("field-only writes retain SQLite and reads retain both snapshots", async () => {
@@ -93,10 +101,10 @@ test("field-only writes retain SQLite and reads retain both snapshots", async ()
     const initialized = await invoke(runtime, "initialize")
     const changed = await invoke(runtime, "increment")
     assert.deepEqual(Reflect.get(changed, "state"), { count: 1 })
-    assert.equal(Reflect.get(changed, "sqlite"), Reflect.get(initialized, "sqlite"))
+    assert.equal(Reflect.get(changed, "sqlite")?.txid, Reflect.get(initialized, "sqlite")?.txid)
     const read = await invoke(runtime, "read")
     assert.deepEqual(Reflect.get(read, "state"), Reflect.get(changed, "state"))
-    assert.equal(Reflect.get(read, "sqlite"), Reflect.get(changed, "sqlite"))
+    assert.equal(Reflect.get(read, "sqlite")?.txid, Reflect.get(changed, "sqlite")?.txid)
 })
 
 test("large JSON fields and SQLite databases restore together", async () => {
@@ -129,11 +137,11 @@ test("large JSON fields and SQLite databases restore together", async () => {
     const read = await invoke(createRuntime(actor), "read", [], {
         ...identity,
         state: initialized.state,
-        sqlite: initialized.sqlite
+        sqlite: recover(initialized.sqlite)
     })
     assert.deepEqual(Reflect.get(read, "result"), { fieldBytes, databaseBytes })
     assert.deepEqual(Reflect.get(read, "state"), initialized.state)
-    assert.equal(Reflect.get(read, "sqlite"), initialized.sqlite)
+    assert.equal(Reflect.get(read, "sqlite")?.txid, initialized.sqlite?.txid)
 })
 
 test("failed calls roll back object fields, SQL writes, and SQL schema changes", async () => {
@@ -147,7 +155,7 @@ test("failed calls roll back object fields, SQL writes, and SQL schema changes",
     })
     const read = await invoke(runtime, "read")
     assert.deepEqual(Reflect.get(read, "result"), { count: 0, rows: [{ value: "retained" }] })
-    assert.equal(Reflect.get(read, "sqlite"), Reflect.get(inserted, "sqlite"))
+    assert.equal(Reflect.get(read, "sqlite")?.txid, Reflect.get(inserted, "sqlite")?.txid)
     assert.deepEqual(Reflect.get(await invoke(runtime, "tables"), "result"), [{ name: "entries" }])
 })
 
@@ -180,7 +188,7 @@ test("socket hooks persist SQL and fields in the same completion", async () => {
     assert.equal(reply.type, "websocket_handled")
     if (reply.type !== "websocket_handled") return
     assert.deepEqual(reply.state, { count: 1 })
-    assert.equal(typeof reply.sqlite, "string")
+    assert.equal(typeof reply.sqlite, "object")
     assert.deepEqual(reply.effects, [])
     const restored = createRuntime(actor)
     const read = await restored.handle({
@@ -190,7 +198,7 @@ test("socket hooks persist SQL and fields in the same completion", async () => {
         method: "read",
         args: [],
         state: reply.state,
-        sqlite: reply.sqlite
+        sqlite: recover(reply.sqlite)
     })
     assert.deepEqual(Reflect.get(read, "result"), [{ count: 1 }])
 })
@@ -245,11 +253,11 @@ test("compiled object schema changes preserve SQLite while adding and removing f
     })
     const read = await invoke(updated, "read", [], {
         state: { count: 8, retired: true },
-        sqlite: Reflect.get(inserted, "sqlite")
+        sqlite: recover(Reflect.get(inserted, "sqlite"))
     })
     assert.deepEqual(Reflect.get(read, "state"), {})
     assert.deepEqual(Reflect.get(read, "result"), { count: 0, rows: [{ value: "retained" }] })
-    assert.equal(Reflect.get(read, "sqlite"), Reflect.get(inserted, "sqlite"))
+    assert.equal(Reflect.get(read, "sqlite")?.txid, Reflect.get(inserted, "sqlite")?.txid)
 })
 
 test("database handles cannot write after their invocation completes", async () => {
@@ -276,4 +284,25 @@ test("database handles cannot write after their invocation completes", async () 
     assert.throws(escaped, /outside its invocation/)
     release()
     await assert.rejects(pending, /outside its invocation/)
+})
+
+test("a WAL capture failure prevents further execution until the actor is reloaded", async () => {
+    const { SqliteActorDatabase, SqliteCaptureError } = await import("../../src/host/sqlite.js")
+    class BrokenCapture extends SqliteActorDatabase {
+        override snapshot() {
+            super.snapshot()
+            throw new SqliteCaptureError("WAL read failed")
+        }
+    }
+    const runtime = new ActorRuntime(
+        definition,
+        () => {},
+        undefined,
+        async () => [],
+        new BrokenCapture()
+    )
+    runtimes.push(runtime)
+    const failed = await invoke(runtime, "initialize")
+    assert.deepEqual(failed, { type: "failed", code: "actor_database_failed", message: "WAL read failed" })
+    assert.deepEqual(await invoke(runtime, "increment"), failed)
 })

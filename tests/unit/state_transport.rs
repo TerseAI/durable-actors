@@ -18,6 +18,7 @@ impl proto::snapshot_service_server::SnapshotService for EchoToken {
     ) -> Result<tonic::Response<proto::SnapshotData>, tonic::Status> {
         Ok(tonic::Response::new(proto::SnapshotData {
             data: crate::grpc::transport::token(&request)?.as_bytes().to_vec(),
+            dependencies: vec![],
         }))
     }
     async fn write(

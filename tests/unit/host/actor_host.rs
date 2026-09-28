@@ -35,7 +35,7 @@ struct IncrementingExecutor {
 #[tokio::test]
 async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> Result<()> {
     struct DualStoreExecutor {
-        images: [String; 2],
+        images: [crate::ltx::SqliteState; 2],
         restored: Mutex<Option<ActorState>>,
     }
     #[async_trait]
@@ -72,11 +72,26 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
     let path = directory.path().join("actor.sqlite");
     let database = rusqlite::Connection::open(&path)?;
     database.execute_batch(
-        "CREATE TABLE entries (value TEXT); INSERT INTO entries VALUES ('retained')",
+        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE entries (value TEXT); INSERT INTO entries VALUES ('retained')",
     )?;
-    let rows = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?);
+    let wal_path = path.with_extension("sqlite-wal");
+    let rows = crate::ltx::SqliteState {
+        txid: 2,
+        path: None,
+        wal: Some(crate::ltx::SqliteWal {
+            base_txid: 0,
+            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&wal_path)?),
+        }),
+    };
     database.execute_batch("ALTER TABLE entries ADD COLUMN enabled INTEGER DEFAULT 1")?;
-    let schema = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?);
+    let schema = crate::ltx::SqliteState {
+        txid: 3,
+        path: None,
+        wal: Some(crate::ltx::SqliteWal {
+            base_txid: 0,
+            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&wal_path)?),
+        }),
+    };
     let executor = Arc::new(DualStoreExecutor {
         images: [rows.clone(), schema.clone()],
         restored: Mutex::new(None),
@@ -96,13 +111,26 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
     for request in [
         "initial", "read-1", "sql", "read-2", "fields", "read-3", "schema", "read-4",
     ] {
-        assert!(matches!(
-            invoke(&host, request).await?,
-            ActorExecutionResult::Completed { .. }
-        ));
+        if request == "sql" {
+            writes.failures.store(1, Ordering::SeqCst);
+            assert!(matches!(
+                invoke(&host, request).await?,
+                ActorExecutionResult::Failed { .. }
+            ));
+        } else {
+            assert!(matches!(
+                invoke(&host, request).await?,
+                ActorExecutionResult::Completed { .. }
+            ));
+        }
     }
     host.drain(Duration::from_secs(1)).await?;
-    let snapshots = writes.writes.lock().unwrap().clone();
+    let mut snapshots = writes.writes.lock().unwrap().clone();
+    assert_eq!(
+        snapshots[1], snapshots[2],
+        "retry must publish the same JSON and LTX commit"
+    );
+    snapshots.dedup();
     assert_eq!(
         snapshots.len(),
         4,
@@ -113,16 +141,24 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
         .map(|bytes| StateSnapshot::decode(bytes))
         .collect::<Result<Vec<_>>>()?;
     assert!(decoded[0].sqlite.is_none());
-    assert_eq!(decoded[1].sqlite.as_deref(), Some(rows.as_str()));
+    assert_eq!(decoded[1].sqlite.as_ref().unwrap().txid, 2);
+    assert!(decoded[1].sqlite.as_ref().unwrap().ltx.is_some());
     assert_eq!(decoded[1].state.get(), r#"{"count":0}"#);
-    assert_eq!(decoded[2].sqlite.as_deref(), Some(rows.as_str()));
+    assert_eq!(decoded[2].sqlite.as_ref().unwrap().txid, 2);
+    assert!(decoded[2].sqlite.as_ref().unwrap().ltx.is_none());
     assert_eq!(decoded[2].state.get(), r#"{"count":1}"#);
-    assert_eq!(decoded[3].sqlite.as_deref(), Some(schema.as_str()));
+    assert_eq!(decoded[3].sqlite.as_ref().unwrap().txid, 3);
+    assert!(decoded[3].sqlite.as_ref().unwrap().ltx.is_some());
     let restored = ActorHost::new(
         endpoint,
         executor.clone(),
         Arc::new(FakeAuthority {
             initial_state: Some((4, snapshots[3].clone().into())),
+            history: [(
+                decoded[1].sqlite.as_ref().unwrap().object.clone(),
+                snapshots[1].clone(),
+            )]
+            .into(),
             ..Default::default()
         }),
         writes.clone(),
@@ -136,7 +172,27 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
             sqlite: Some(schema)
         })
     );
-    assert_eq!(writes.writes.lock().unwrap().len(), 4);
+    let recovered_path = executor
+        .restored
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .sqlite
+        .as_ref()
+        .unwrap()
+        .path
+        .clone()
+        .unwrap();
+    let recovered = rusqlite::Connection::open(recovered_path)?;
+    assert_eq!(
+        recovered.query_row("SELECT value, enabled FROM entries", [], |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?
+        )))?,
+        ("retained".into(), 1)
+    );
+    assert_eq!(writes.writes.lock().unwrap().len(), 5);
     restored.drain(Duration::from_secs(1)).await?;
     Ok(())
 }
@@ -1020,6 +1076,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
 
 #[derive(Default)]
 struct FakeAuthority {
+    history: std::collections::HashMap<String, Vec<u8>>,
     fenced: std::sync::atomic::AtomicBool,
     loads: AtomicUsize,
     initial_state: Option<(u64, bytes::Bytes)>,
@@ -1059,6 +1116,18 @@ impl ActorStorage for FakeAuthority {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok(self.initial_state.clone().unwrap_or_default())
     }
+    async fn read_snapshot(
+        &self,
+        _: &ActorKey,
+        snapshot: &crate::replication::SnapshotRef,
+    ) -> Result<bytes::Bytes> {
+        Ok(self
+            .history
+            .get(&snapshot.object)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing snapshot dependency"))?
+            .into())
+    }
     async fn prepare_state_write(
         &self,
         _actor: &ActorKey,
@@ -1070,8 +1139,11 @@ impl ActorStorage for FakeAuthority {
         let mut ticket = ticket(expected_version + 1);
         {
             let stream = crate::replication::ReplicaStream {
-                prefix: "snapshots/epoch/".into(),
-                session: "snapshots/epoch/sessions/one/".into(),
+                prefix: format!("{}epoch/", crate::storage_paths::snapshots(_actor)?),
+                session: format!(
+                    "{}epoch/sessions/one/",
+                    crate::storage_paths::snapshots(_actor)?
+                ),
                 owner_epoch: _owner_epoch,
                 base_version: 0,
             };

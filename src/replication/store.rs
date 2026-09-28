@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -42,6 +42,23 @@ struct StoreState {
 struct Metadata {
     object: String,
     size: u64,
+    #[serde(default)]
+    digest: String,
+    #[serde(default)]
+    parent: Option<super::SnapshotRef>,
+}
+
+impl Metadata {
+    fn new(object: String, bytes: &[u8]) -> Self {
+        Self {
+            object,
+            size: bytes.len() as u64,
+            digest: URL_SAFE_NO_PAD.encode(digest(&SHA256, bytes).as_ref()),
+            parent: crate::state_log::StateSnapshot::decode(bytes)
+                .ok()
+                .and_then(|snapshot| snapshot.sqlite.and_then(|sqlite| sqlite.parent)),
+        }
+    }
 }
 
 impl FileReplicaStore {
@@ -121,10 +138,7 @@ impl ReplicaStore for FileReplicaStore {
     }
 
     async fn put(&self, object: &str, bytes: &[u8]) -> Result<()> {
-        let metadata = Metadata {
-            object: object.into(),
-            size: u64::try_from(bytes.len())?,
-        };
+        let metadata = Metadata::new(object.into(), bytes);
         let bytes = bytes.to_vec();
         self.run(move |state| state.put(metadata, &bytes)).await
     }
@@ -283,14 +297,8 @@ impl StoreState {
                 return self.prune_stream(&head);
             }
         }
-        // Full snapshots include intervening writes that used the bucket fallback.
-        self.put(
-            Metadata {
-                object: snapshot.object.clone(),
-                size: bytes.len() as u64,
-            },
-            bytes,
-        )?;
+        self.sqlite_dependencies(bytes)?;
+        self.put(Metadata::new(snapshot.object.clone(), bytes), bytes)?;
         head.latest = Some(snapshot);
         self.save_head(head.clone())?;
         self.prune_stream(&head)
@@ -336,10 +344,19 @@ impl StoreState {
         let Some(latest) = &head.latest else {
             return Ok(());
         };
+        let latest_bytes = read_blob(
+            &self.path(&latest.object),
+            self.snapshots
+                .get(&latest.object)
+                .context("missing replica head")?
+                .size,
+        )?;
+        let mut retained = self.sqlite_dependencies(&latest_bytes)?;
+        retained.insert(latest.object.clone());
         let obsolete: Vec<_> = self
             .snapshots
             .keys()
-            .filter(|object| object.starts_with(&head.stream.prefix) && **object != latest.object)
+            .filter(|object| object.starts_with(&head.stream.prefix) && !retained.contains(*object))
             .cloned()
             .collect();
         if obsolete.is_empty() {
@@ -352,6 +369,28 @@ impl StoreState {
         }
         File::open(&self.directory)?.sync_all()?;
         Ok(())
+    }
+
+    fn sqlite_dependencies(&self, bytes: &[u8]) -> Result<HashSet<String>> {
+        let snapshot = crate::state_log::StateSnapshot::decode(bytes)?;
+        let mut parent = snapshot.sqlite.and_then(|sqlite| sqlite.parent);
+        let mut retained = HashSet::new();
+        while let Some(reference) = parent {
+            ensure!(
+                retained.insert(reference.object.clone()),
+                "cyclic SQLite dependency"
+            );
+            let metadata = self
+                .snapshots
+                .get(&reference.object)
+                .context("missing SQLite dependency")?;
+            ensure!(
+                metadata.digest == reference.digest,
+                "SQLite dependency checksum mismatch"
+            );
+            parent = metadata.parent.clone();
+        }
+        Ok(retained)
     }
 
     fn path(&self, object: &str) -> PathBuf {

@@ -69,7 +69,10 @@ impl proto::snapshot_service_server::SnapshotService for ReplicaServer {
             .await
             .map_err(unavailable)?
             .ok_or_else(|| Status::not_found("snapshot not found"))?;
-        Ok(Response::new(proto::SnapshotData { data }))
+        Ok(Response::new(proto::SnapshotData {
+            data,
+            dependencies: Vec::new(),
+        }))
     }
 
     async fn write(
@@ -77,12 +80,17 @@ impl proto::snapshot_service_server::SnapshotService for ReplicaServer {
         request: Request<proto::SnapshotData>,
     ) -> Result<Response<proto::SnapshotWriteReply>, Status> {
         let grant = self.authorize(&request, &["APPEND"])?;
-        let bytes = request.into_inner().data;
+        let bundle = request.into_inner();
+        let bytes = bundle.data;
         StateSnapshot::decode(&bytes).map_err(|_| Status::invalid_argument("invalid snapshot"))?;
         let stream = grant
             .stream
             .as_ref()
             .ok_or_else(|| Status::permission_denied("stream authority is required"))?;
+        stream.snapshot(&bytes).map_err(unavailable)?;
+        self.install_dependencies(&bytes, bundle.dependencies)
+            .await
+            .map_err(unavailable)?;
         self.store
             .append(stream, &bytes)
             .await
@@ -141,6 +149,58 @@ impl ReplicaServer {
             return Err(Status::permission_denied("session authority is required"));
         }
         Ok(grant)
+    }
+
+    async fn install_dependencies(
+        &self,
+        bytes: &[u8],
+        dependencies: Vec<proto::SnapshotDependency>,
+    ) -> anyhow::Result<()> {
+        use anyhow::{Context, ensure};
+        let actor = &self
+            .binding
+            .get()
+            .context("replica is not assigned")?
+            .scope
+            .actor;
+        let prefix = crate::storage_paths::snapshots(actor)?;
+        let mut supplied = std::collections::HashMap::new();
+        for dependency in dependencies {
+            ensure!(
+                supplied
+                    .insert(dependency.object, dependency.data)
+                    .is_none(),
+                "duplicate SQLite dependency"
+            );
+        }
+        let mut snapshot = StateSnapshot::decode(bytes)?;
+        let mut installing = Vec::new();
+        while let Some(parent) = snapshot
+            .sqlite
+            .as_ref()
+            .and_then(|sqlite| sqlite.parent.clone())
+        {
+            ensure!(
+                parent.object.starts_with(&prefix),
+                "SQLite dependency belongs to another actor"
+            );
+            let Some(data) = supplied.remove(&parent.object) else {
+                break;
+            };
+            parent.verify(&data)?;
+            snapshot = StateSnapshot::decode(&data)?;
+            snapshot.validate_object(&parent.object)?;
+            ensure!(
+                snapshot.state_version == parent.state_version,
+                "SQLite dependency version mismatch"
+            );
+            installing.push((parent.object, data));
+        }
+        ensure!(supplied.is_empty(), "unreferenced SQLite dependencies");
+        for (object, data) in installing.into_iter().rev() {
+            self.store.put(&object, &data).await?;
+        }
+        Ok(())
     }
 
     fn authorize<T>(

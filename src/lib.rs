@@ -6,6 +6,7 @@ pub mod control_plane;
 mod grpc;
 pub mod host;
 pub mod host_leases;
+mod ltx;
 pub mod placement;
 mod postgres;
 pub mod replication;

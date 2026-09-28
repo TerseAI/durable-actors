@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import type { SocketEffect } from "../../src/actor/socketProtocol.js"
 import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorWorker, ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
+import { SqliteRecovery } from "../fixtures/sqlite.js"
 
 const actorIdentity = {
     project_id: "default",
@@ -16,7 +17,9 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
-test("worker eviction restores SQLite alongside JSON fields", { timeout: 30000 }, async () => {
+test("worker eviction restores SQLite alongside JSON fields", { timeout: 30000 }, async context => {
+    const recovery = new SqliteRecovery()
+    context.after(() => recovery.close())
     const root = await createTypeScriptConsumer("SqliteWorker")
     const file = path.join(root, "src/actors.ts")
     await writeFile(
@@ -40,7 +43,7 @@ test("worker eviction restores SQLite alongside JSON fields", { timeout: 30000 }
         const first = await supervisor.handle(command, () => {})
         assert.equal(first.type, "invoked")
         if (first.type !== "invoked") return
-        assert.equal(typeof first.sqlite, "string")
+        assert.equal(typeof first.sqlite, "object")
         assert.deepEqual(first.state, { count: 1 })
         await supervisor.handle({ type: "evict", actor: command.actor }, () => {})
         const restored = await supervisor.handle(
@@ -48,14 +51,14 @@ test("worker eviction restores SQLite alongside JSON fields", { timeout: 30000 }
                 ...command,
                 method: "read",
                 state: first.state,
-                sqlite: first.sqlite
+                sqlite: recovery.apply(first.sqlite)
             },
             () => {}
         )
         assert.equal(restored.type, "invoked")
         if (restored.type !== "invoked") return
         assert.deepEqual(restored.result, [{ count: 1 }])
-        assert.equal(restored.sqlite, first.sqlite)
+        assert.equal(restored.sqlite?.txid, first.sqlite?.txid)
         assert.deepEqual(restored.state, first.state)
     } finally {
         supervisor.close()
