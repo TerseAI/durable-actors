@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use aws_lc_rs::hmac;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -16,6 +16,11 @@ use crate::{
 };
 
 use super::{admin::AdminRegistry, process::SandboxProviderConfig};
+
+mod assignment;
+#[cfg(test)]
+use assignment::warm_assignment;
+use assignment::{assign_replica, assignment_client};
 
 mod lifecycle;
 mod store;
@@ -50,15 +55,17 @@ pub(super) fn fleet(
         )?),
         pool_config,
     );
+    let client = assignment_client(std::time::Duration::from_secs(u64::from(
+        config.pool.idle_ttl_seconds,
+    )))?;
+    tokio::spawn(assignment::keep_warm(
+        pool.clone(),
+        client.clone(),
+        stop.clone(),
+    ));
     pool.start(registry.clone(), stop);
     let fleet = Arc::new(ActorReplicaFleet {
-        provider: Arc::new(PooledReplicaProvider {
-            pool,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
-        }),
+        provider: Arc::new(PooledReplicaProvider { pool, client }),
         registry,
         store: store::Store(database),
         secret: secret.clone(),
@@ -189,21 +196,7 @@ impl ReplicaProvider for PooledReplicaProvider {
             .pool
             .acquire_replica(image, region, &assignment.host_id)
             .await?;
-        let response = self
-            .client
-            .post(format!(
-                "{}/assign",
-                spare.control_route.trim_end_matches('/')
-            ))
-            .bearer_auth(&spare.control_token)
-            .json(assignment)
-            .send()
-            .await?
-            .error_for_status()?;
-        ensure!(
-            response.status() == reqwest::StatusCode::NO_CONTENT,
-            "replica spare did not confirm assignment"
-        );
+        assign_replica(&self.client, &spare, assignment).await?;
         self.pool.activate_replica(&assignment.host_id).await?;
         Ok(ReplicaTarget {
             host_id: assignment.host_id.clone(),
@@ -216,3 +209,7 @@ impl ReplicaProvider for PooledReplicaProvider {
         self.pool.retire_replica(host).await
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/control_plane/replica_assignment.rs"]
+mod assignment_tests;

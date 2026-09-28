@@ -7,6 +7,15 @@ enum Reservation {
 }
 
 impl SparePool {
+    pub(crate) async fn idle_replica_routes(&self) -> Result<Vec<String>> {
+        self.store.0.connection().await?.query(
+            "SELECT handle FROM durable_actors_spares WHERE kind = 'replica' AND status = 'ready' AND expires_at > clock_timestamp()",
+            &[],
+        ).await?.into_iter().map(|row| {
+            Ok(serde_json::from_str::<SpareHandle>(row.get::<_, &str>(0))?.control_route)
+        }).collect()
+    }
+
     pub(crate) async fn acquire_replica(
         &self,
         image: &str,
