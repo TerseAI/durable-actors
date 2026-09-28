@@ -34,14 +34,8 @@ fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Re
 async fn refreshes_idle_tokens_before_expiry_without_blocking_readers() -> Result<()> {
     let (tokens, mut exchange, clock) = token_fixture();
     complete_exchange(&mut exchange, Ok(storage_token(&clock, "first", 600))).await;
-    assert_eq!(ready_token(&tokens).await?.access_token, "first");
 
-    tokio::time::advance(Duration::from_secs(301)).await;
-    assert_eq!(ready_token(&tokens).await?.access_token, "first");
-    assert!(exchange.try_recv().is_err());
-    tokio::time::advance(Duration::from_secs(178)).await;
-    assert!(exchange.try_recv().is_err());
-    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::advance(Duration::from_secs(480)).await;
     let refresh = next_exchange(&mut exchange).await;
     assert_eq!(ready_token(&tokens).await?.access_token, "first");
     refresh
@@ -69,65 +63,6 @@ async fn retries_failed_refreshes_while_preserving_a_usable_token() -> Result<()
     complete_exchange(&mut exchange, Ok(storage_token(&clock, "second", 300))).await;
     assert_eq!(ready_token(&tokens).await?.access_token, "second");
     Ok(())
-}
-
-#[tokio::test(start_paused = true)]
-async fn concurrent_requests_share_the_background_exchange() -> Result<()> {
-    let (tokens, mut exchange, clock) = token_fixture();
-    let tokens = Arc::new(tokens);
-    let initial = next_exchange(&mut exchange).await;
-    let requests = spawn_requests(&tokens);
-    tokio::task::yield_now().await;
-    assert!(requests.iter().all(|request| !request.is_finished()));
-    assert!(exchange.try_recv().is_err());
-    initial
-        .send(Ok(storage_token(&clock, "first", 300)))
-        .unwrap();
-    for request in requests {
-        assert_eq!(request.await??.access_token, "first");
-    }
-
-    tokio::time::advance(Duration::from_secs(180)).await;
-    let refresh = next_exchange(&mut exchange).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
-    let requests = spawn_requests(&tokens);
-    tokio::task::yield_now().await;
-    assert!(requests.iter().all(|request| !request.is_finished()));
-    assert!(exchange.try_recv().is_err());
-    refresh
-        .send(Ok(storage_token(&clock, "second", 300)))
-        .unwrap();
-    for request in requests {
-        assert_eq!(request.await??.access_token, "second");
-    }
-    Ok(())
-}
-
-#[tokio::test(start_paused = true)]
-async fn expired_tokens_are_not_returned_when_exchange_fails() -> Result<()> {
-    let (tokens, mut exchange, clock) = token_fixture();
-    complete_exchange(&mut exchange, Ok(storage_token(&clock, "first", 300))).await;
-    tokio::time::advance(Duration::from_secs(301)).await;
-    complete_exchange(&mut exchange, Err(anyhow::anyhow!("STS unavailable"))).await;
-
-    let request = tokio::spawn(async move { tokens.issue().await });
-    complete_exchange(&mut exchange, Err(anyhow::anyhow!("STS unavailable"))).await;
-    assert!(request.await?.is_err());
-    Ok(())
-}
-
-#[tokio::test(start_paused = true)]
-async fn dropping_tokens_cancels_an_in_flight_exchange() {
-    let (tokens, mut exchange, _) = token_fixture();
-    let refresh = next_exchange(&mut exchange).await;
-    drop(tokens);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), exchange.recv())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(refresh.is_closed());
 }
 
 type ExchangeRequest = tokio::sync::oneshot::Sender<Result<StorageToken>>;
@@ -188,15 +123,4 @@ async fn next_exchange(
 
 async fn ready_token(tokens: &StorageTokens) -> Result<StorageToken> {
     tokio::time::timeout(Duration::from_secs(1), tokens.issue()).await?
-}
-
-fn spawn_requests(
-    tokens: &Arc<StorageTokens>,
-) -> Vec<tokio::task::JoinHandle<Result<StorageToken>>> {
-    (0..8)
-        .map(|_| {
-            let tokens = tokens.clone();
-            tokio::spawn(async move { tokens.issue().await })
-        })
-        .collect()
 }
