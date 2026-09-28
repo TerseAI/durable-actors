@@ -30,6 +30,8 @@
 
 ---
 
+Build stateful applications like AI agents, background workflows, collaborative tools, and multiplayer games without managing persistence, concurrency, or infrastructure.
+
 > [!TIP]
 > Get started by pasting this into your agent.
 ```text
