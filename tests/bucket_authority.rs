@@ -442,7 +442,9 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
     let bucket = Arc::new(MemoryBucket::default());
     let clock = Arc::new(TestClock(AtomicU64::new(1000)));
     let access = ReplicaAccess::new("secret", Arc::new(SystemClock));
-    let replica = Arc::new(FileReplicaStore::open(directory.path().join("replica"), 4096).await?);
+    let replica = Arc::new(
+        FileReplicaStore::open(directory.path().join("replica"), 128 * 1024 * 1024).await?,
+    );
     let peer_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let peer_url = format!("http://{}", peer_listener.local_addr()?);
     let peer_stop = tokio_util::sync::CancellationToken::new();
@@ -502,14 +504,15 @@ async fn grpc_replication_and_takeover_recover_unarchived_state_without_postgres
     let ticket = runtime
         .prepare_actor_write(&actor, &first.lease, first.owner_epoch, 1)
         .await?;
-    let snapshot = StateSnapshot::new(
+    let mut snapshot = StateSnapshot::new(
         1,
         first.owner_epoch,
         "first".into(),
         serde_json::json!({"count":1}),
         serde_json::json!(1),
-    )?
-    .encode()?;
+    )?;
+    snapshot.sqlite = Some("A".repeat(34 * 1024 * 1024));
+    let snapshot = snapshot.encode()?;
     let http = Arc::new(GrpcStateTransport::new());
     let transport = ReplicatedStateTransport::new(runtime.clone(), http.clone());
     bucket.reject_snapshots.store(true, Ordering::SeqCst);

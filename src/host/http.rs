@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use crate::{
     actor::{
         ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect,
-        MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
+        MAX_ACTOR_INVOCATION_BYTES,
     },
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
@@ -52,7 +52,7 @@ impl ActorHostHttpService {
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
                 post(publish),
             )
-            .layer(DefaultBodyLimit::max(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))
+            .layer(DefaultBodyLimit::max(MAX_ACTOR_INVOCATION_BYTES))
             .with_state(Arc::new(self))
     }
 

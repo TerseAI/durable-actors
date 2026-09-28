@@ -2,7 +2,7 @@ use super::{ReplicaAccess, ReplicaGrant, ReplicaStore};
 use crate::{
     grpc::{
         proto,
-        transport::{MAX_STORAGE_MESSAGE_BYTES, token, unavailable},
+        transport::{token, unavailable},
     },
     state_log::StateSnapshot,
 };
@@ -45,13 +45,13 @@ pub(super) fn routes(
     tonic::service::Routes::from(Router::new().route("/health", get(|| async { StatusCode::OK })))
         .add_service(
             proto::snapshot_service_server::SnapshotServiceServer::new(server.clone())
-                .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
         )
         .add_service(
             proto::replica_service_server::ReplicaServiceServer::new(server)
-                .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
         )
         .into_axum_router()
 }

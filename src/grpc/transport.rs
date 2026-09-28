@@ -5,8 +5,6 @@ use tonic::{
     transport::{Channel, ClientTlsConfig, Endpoint},
 };
 
-pub(crate) const MAX_STORAGE_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
-
 #[derive(Clone)]
 pub(crate) struct Channels(moka::future::Cache<String, Channel>);
 

@@ -13,6 +13,79 @@ use tokio::{
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir sdk build and Bun"]
+async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<()> {
+    let project = tempfile::tempdir()?;
+    local_project::write_actor(
+        project.path(),
+        r#"
+        @Persisted count = 0;
+        @Persisted payload = "";
+        async initialize(): Promise<void> {
+            this.payload = "x".repeat(17 * 1024 * 1024);
+            this.db.exec("CREATE TABLE entries (value TEXT NOT NULL)");
+            this.db.exec("CREATE TABLE payload (data BLOB)");
+            this.db.exec("INSERT INTO payload VALUES (zeroblob(?))", 25 * 1024 * 1024);
+        }
+        async insert(value: string): Promise<void> { this.db.exec("INSERT INTO entries VALUES (?)", value); }
+        async increment(): Promise<number> { return ++this.count; }
+        async fail(): Promise<void> {
+            ++this.count;
+            this.db.exec("INSERT INTO entries VALUES ('discarded')");
+            throw new Error("rollback");
+        }
+        async read(): Promise<{count: number; fieldBytes: number; databaseBytes: number; entries: {value: string}[]}> {
+            return {
+                count: this.count,
+                fieldBytes: this.payload.length,
+                databaseBytes: this.db.exec<{bytes: number}>("SELECT length(data) AS bytes FROM payload")[0]!.bytes,
+                entries: this.db.exec<{value: string}>("SELECT value FROM entries ORDER BY rowid")
+            };
+        }
+    "#,
+    )?;
+    for initialize in [true, false] {
+        let runtime = LocalRuntime::start(project.path(), None).await?;
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist/backend.js");
+        let script = format!(
+            r#"
+            import assert from 'node:assert/strict';
+            import {{ createActorTransport }} from {};
+            const client = createActorTransport({{ controlPlaneUrl: process.argv[1] }});
+            const call = (method, args = []) => client.invoke('Counter', 'one', method, args);
+            if ({initialize}) {{
+                await call('initialize');
+                await call('insert', ['retained']);
+                assert.equal(await call('increment'), 1);
+                await assert.rejects(call('fail'), /rollback/);
+            }}
+            assert.deepEqual(await call('read'), {{
+                count: 1, fieldBytes: 17 * 1024 * 1024, databaseBytes: 25 * 1024 * 1024,
+                entries: [{{value: 'retained'}}]
+            }});
+        "#,
+            serde_json::to_string(&sdk)?
+        );
+        let output = timeout(
+            Duration::from_secs(60),
+            Command::new("node")
+                .args(["--input-type=module", "--eval", &script, &runtime.origin])
+                .env("DURABLE_ACTORS_TELEMETRY", "0")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await??;
+        ensure!(
+            output.status.success(),
+            "SQLite client failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        runtime.stop().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir sdk build and Bun"]
 async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_on_restart()
 -> Result<()> {
     let project = tempfile::Builder::new()
@@ -190,12 +263,14 @@ impl LocalRuntime {
         let mut output = BufReader::new(child.stdout.take().context("capture runtime output")?);
         let origin = timeout(Duration::from_secs(20), async {
             let mut line = String::new();
+            let mut logs = String::new();
             let mut origin = None;
             loop {
                 ensure!(
                     output.read_line(&mut line).await? != 0,
-                    "runtime exited before readiness: {line}"
+                    "runtime exited before readiness: {logs}"
                 );
+                logs.push_str(&line);
                 if let Some((_, value)) = line.split_once("  Ready  ") {
                     origin = Some(value.trim().to_owned());
                 }

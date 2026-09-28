@@ -16,9 +16,11 @@ const port = parentPort
 if (port === null) throw new Error("actor Worker requires a parent message port")
 
 let exiting = false
+let runtime: ActorRuntime | undefined
 // Bun 1.3 can drain microtasks after process.exit().
 process.once("exit", () => {
     exiting = true
+    runtime?.close()
 })
 
 let assigned = false
@@ -42,8 +44,6 @@ async function initialize(data: ActorWorkerData): Promise<void> {
         if (assigned) throw new Error("customer code already assigned")
         assigned = true
         const actorNames = await loadActorEntrypoint(data.moduleUrl)
-        let runtime: ActorRuntime | undefined
-
         port!.on("message", (message: ActorWorkerRequest) => {
             if (message.type === "load") throw new Error("customer code already assigned")
             if (message.type === "socket_connections") {

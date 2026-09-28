@@ -6,7 +6,7 @@ use std::{
 
 use crate::grpc::{
     proto,
-    transport::{MAX_STORAGE_MESSAGE_BYTES, token, unavailable},
+    transport::{token, unavailable},
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -170,8 +170,8 @@ impl RuntimeStorage {
         tonic::service::Routes::from(Router::new())
             .add_service(
                 proto::snapshot_service_server::SnapshotServiceServer::new(service)
-                    .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
-                    .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
+                    .max_decoding_message_size(usize::MAX)
+                    .max_encoding_message_size(usize::MAX),
             )
             .into_axum_router()
     }

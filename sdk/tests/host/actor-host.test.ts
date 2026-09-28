@@ -8,7 +8,7 @@ import { before, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
 import { buildActor } from "../../src/compiler/actor-build.js"
-import { ActorSession, parseHostSettings, serializeWithinBytes } from "../../src/host/actor-host.js"
+import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
 
 before(
@@ -31,7 +31,7 @@ test("loads a prepared JavaScript artifact only inside the first execution Worke
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 18 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 19 })}\n`)
             socket.end()
         })
     })
@@ -76,46 +76,6 @@ test("a stalled actor import times out and closes the Worker", { timeout: 5_000 
     assert.equal(closed, 1)
 })
 
-test("serializes JSON within exact UTF-8 byte limits", () => {
-    const values = [
-        null,
-        true,
-        12.5,
-        1e30,
-        "plain",
-        'quote\"slash\\',
-        "中",
-        "日本語",
-        "€",
-        "emoji 😀",
-        "\ud800",
-        ["nested"],
-        { 日本語: { value: "中" } }
-    ]
-    for (const value of values) {
-        const bytes = Buffer.byteLength(JSON.stringify(value))
-        assert.equal(serializeWithinBytes(value, bytes), JSON.stringify(value))
-        assert.equal(serializeWithinBytes(value, bytes - 1), undefined)
-    }
-    assert.equal(serializeWithinBytes("x".repeat(1024), 100), undefined)
-})
-
-test("oversized serialization stops before visiting the rest of a reply", () => {
-    let visitedState = false
-    const value = {
-        result: "x".repeat(1024),
-        get state() {
-            visitedState = true
-            return {}
-        }
-    }
-    assert.equal(serializeWithinBytes(value, 100), undefined)
-    assert.equal(visitedState, false)
-    const circular = { self: {} }
-    circular.self = circular
-    assert.equal(serializeWithinBytes(circular, 100), undefined)
-})
-
 test("the actor session carries only owned execution commands", async t => {
     const socketPath = `/tmp/ta-session-${process.pid}.sock`
     await removeSocket(socketPath)
@@ -150,10 +110,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 18,
+            protocol: 19,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 18 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 19 })}\n`)
         await startup
 
         customerSocket.write(
@@ -233,9 +193,9 @@ test("the actor session carries only owned execution commands", async t => {
             type: "reply",
             message_id: 2,
             reply: {
-                type: "failed",
-                code: "resource_exhausted",
-                message: "actor session response exceeds 33554432 bytes"
+                type: "invoked",
+                result: "x".repeat(32 * 1024 * 1024),
+                state: { count: 5 }
             }
         })
 
@@ -256,7 +216,7 @@ test("the actor session carries only owned execution commands", async t => {
         assert.deepEqual(await readMessage(iterator), {
             type: "reply",
             message_id: 3,
-            reply: { type: "invoked", result: 5, state: { count: 5 } }
+            reply: { type: "invoked", result: 6, state: { count: 6 } }
         })
 
         customerSocket.write(
@@ -344,7 +304,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 18, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 19, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()

@@ -31,6 +31,7 @@ const invokeCommandSchema = z.object({
     method: actorComponentSchema,
     args: z.array(jsonValueSchema),
     state: jsonValueSchema.nullable().optional(),
+    sqlite: z.string().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -41,6 +42,7 @@ const websocketEventCommandSchema = z.object({
     event: socketEventSchema,
     connections: z.array(socketConnectionSchema),
     state: jsonValueSchema.nullable().optional(),
+    sqlite: z.string().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -53,6 +55,7 @@ const hydrateCommandSchema = z.object({
     type: z.literal("hydrate"),
     actor: actorIdentitySchema,
     state: jsonValueSchema.nullable().optional(),
+    sqlite: z.string().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -64,7 +67,7 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(18), supports_residency: z.boolean().optional() }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(19), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -105,7 +108,7 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 18
+    readonly protocol: 19
     readonly actor_names: readonly string[]
 }
 
@@ -120,6 +123,7 @@ interface InvokedReply {
     readonly sequence?: number
     readonly result: JsonValue
     readonly state: JsonObject
+    readonly sqlite?: string
     readonly effects?: readonly SocketEffect[]
 }
 
@@ -127,6 +131,7 @@ interface WebSocketHandledReply {
     readonly type: "websocket_handled"
     readonly sequence?: number
     readonly state: JsonObject
+    readonly sqlite?: string
     readonly effects: readonly SocketEffect[]
 }
 

@@ -1,5 +1,8 @@
 use crate::{
-    actor::{ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketOutcome},
+    actor::{
+        ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketOutcome,
+        ActorState,
+    },
     state_log::StateSnapshot,
     state_transport::StateWrite,
     storage::WritePlan,
@@ -27,6 +30,115 @@ impl ActorSocketPublisher for EmptySocketPublisher {
 
 struct IncrementingExecutor {
     invocations: AtomicU64,
+}
+
+#[tokio::test]
+async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> Result<()> {
+    struct DualStoreExecutor {
+        images: [String; 2],
+        restored: Mutex<Option<ActorState>>,
+    }
+    #[async_trait]
+    impl ActorExecutor for DualStoreExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            state: Option<&ActorState>,
+        ) -> Result<ActorMethodOutcome> {
+            *self.restored.lock().unwrap() = state.cloned();
+            let mut state = state.cloned().unwrap_or(ActorState {
+                fields: json!({"count": 0}),
+                sqlite: None,
+            });
+            match invocation.request_id.as_str() {
+                "sql" => state.sqlite = Some(self.images[0].clone()),
+                "fields" => state.fields["count"] = json!(1),
+                "schema" => state.sqlite = Some(self.images[1].clone()),
+                _ => {}
+            }
+            Ok(ActorMethodOutcome::Completed {
+                result: state.fields["count"].clone(),
+                state,
+                effects: vec![],
+            })
+        }
+    }
+    use base64::Engine;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("actor.sqlite");
+    let database = rusqlite::Connection::open(&path)?;
+    database.execute_batch(
+        "CREATE TABLE entries (value TEXT); INSERT INTO entries VALUES ('retained')",
+    )?;
+    let rows = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?);
+    database.execute_batch("ALTER TABLE entries ADD COLUMN enabled INTEGER DEFAULT 1")?;
+    let schema = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?);
+    let executor = Arc::new(DualStoreExecutor {
+        images: [rows.clone(), schema.clone()],
+        restored: Mutex::new(None),
+    });
+    let writes = Arc::new(FakeStateTransport::default());
+    let endpoint = HostEndpoint {
+        id: super::super::HostId::new("host-1"),
+        route: "http://host.invalid/".into(),
+    };
+    let host = ActorHost::new(
+        endpoint.clone(),
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        writes.clone(),
+        Arc::new(EmptySocketPublisher),
+    );
+    for request in [
+        "initial", "read-1", "sql", "read-2", "fields", "read-3", "schema", "read-4",
+    ] {
+        assert!(matches!(
+            invoke(&host, request).await?,
+            ActorExecutionResult::Completed { .. }
+        ));
+    }
+    host.drain(Duration::from_secs(1)).await?;
+    let snapshots = writes.writes.lock().unwrap().clone();
+    assert_eq!(
+        snapshots.len(),
+        4,
+        "reads should not publish another version"
+    );
+    let decoded = snapshots
+        .iter()
+        .map(|bytes| StateSnapshot::decode(bytes))
+        .collect::<Result<Vec<_>>>()?;
+    assert!(decoded[0].sqlite.is_none());
+    assert_eq!(decoded[1].sqlite.as_deref(), Some(rows.as_str()));
+    assert_eq!(decoded[1].state.get(), r#"{"count":0}"#);
+    assert_eq!(decoded[2].sqlite.as_deref(), Some(rows.as_str()));
+    assert_eq!(decoded[2].state.get(), r#"{"count":1}"#);
+    assert_eq!(decoded[3].sqlite.as_deref(), Some(schema.as_str()));
+    let restored = ActorHost::new(
+        endpoint,
+        executor.clone(),
+        Arc::new(FakeAuthority {
+            initial_state: Some((4, snapshots[3].clone().into())),
+            ..Default::default()
+        }),
+        writes.clone(),
+        Arc::new(EmptySocketPublisher),
+    );
+    assert_eq!(invoke(&restored, "read-restored").await?, completed(1));
+    assert_eq!(
+        executor.restored.lock().unwrap().as_ref(),
+        Some(&ActorState {
+            fields: json!({"count": 1}),
+            sqlite: Some(schema)
+        })
+    );
+    assert_eq!(writes.writes.lock().unwrap().len(), 4);
+    restored.drain(Duration::from_secs(1)).await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -86,7 +198,7 @@ impl ActorExecutor for SerialAdmissionExecutor {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.inner.invoke(invocation, state).await
     }
@@ -123,7 +235,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
-            _: Option<&Value>,
+            _: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             let sequence = if invocation.request_id == "first" {
                 self.admission.send_replace(());
@@ -139,7 +251,10 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
                     result: json!(sequence),
-                    state: json!({"count": sequence}),
+                    state: ActorState {
+                        fields: json!({"count": sequence}),
+                        sqlite: None,
+                    },
                     effects: vec![],
                 },
             ))
@@ -223,7 +338,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
-            _: Option<&Value>,
+            _: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             self.started.send(invocation.request_id.clone())?;
             let sequence = match invocation.request_id.as_str() {
@@ -243,7 +358,10 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
                     result: json!(sequence),
-                    state: json!({"count": sequence}),
+                    state: ActorState {
+                        fields: json!({"count": sequence}),
+                        sqlite: None,
+                    },
                     effects: vec![],
                 },
             ))
@@ -308,7 +426,7 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
-            state: Option<&Value>,
+            state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             if invocation.request_id.starts_with("fail") {
                 return Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
@@ -321,10 +439,16 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
                     message: "failed".into(),
                 }));
             }
-            let count = state.and_then(|state| state["count"].as_u64()).unwrap_or(0) + 1;
+            let count = state
+                .and_then(|state| state.fields["count"].as_u64())
+                .unwrap_or(0)
+                + 1;
             Ok(ActorMethodOutcome::Completed {
                 result: json!(count),
-                state: json!({"count": count}),
+                state: ActorState {
+                    fields: json!({"count": count}),
+                    sqlite: None,
+                },
                 effects: vec![],
             })
         }
@@ -381,7 +505,7 @@ impl ActorExecutor for ControlledExecutor {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.started.send(invocation.request_id.clone())?;
         if invocation.request_id == "panic" {
@@ -390,10 +514,16 @@ impl ActorExecutor for ControlledExecutor {
         if invocation.request_id == "first" {
             self.release.acquire().await?.forget();
         }
-        let count = state.and_then(|value| value["count"].as_u64()).unwrap_or(0) + 1;
+        let count = state
+            .and_then(|value| value.fields["count"].as_u64())
+            .unwrap_or(0)
+            + 1;
         Ok(ActorMethodOutcome::Completed {
             result: json!(count),
-            state: json!({"count": count}),
+            state: ActorState {
+                fields: json!({"count": count}),
+                sqlite: None,
+            },
             effects: Vec::new(),
         })
     }
@@ -401,7 +531,7 @@ impl ActorExecutor for ControlledExecutor {
     async fn handle_socket(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         let result = self
             .invoke(
@@ -713,17 +843,20 @@ impl ActorExecutor for IncrementingExecutor {
     async fn invoke(
         &self,
         _invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.invocations.fetch_add(1, Ordering::Relaxed);
         let count = state
-            .and_then(|state| state.get("count"))
+            .and_then(|state| state.fields.get("count"))
             .and_then(Value::as_u64)
             .unwrap_or(0)
             + 1;
         Ok(ActorMethodOutcome::Completed {
             result: json!(count),
-            state: json!({ "count": count }),
+            state: ActorState {
+                fields: json!({ "count": count }),
+                sqlite: None,
+            },
             effects: Vec::new(),
         })
     }
@@ -731,15 +864,18 @@ impl ActorExecutor for IncrementingExecutor {
     async fn handle_socket(
         &self,
         _invocation: ActorSocketInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         let count = state
-            .and_then(|state| state.get("count"))
+            .and_then(|state| state.fields.get("count"))
             .and_then(Value::as_u64)
             .unwrap_or(0)
             + 1;
         Ok(ActorSocketOutcome::Handled {
-            state: json!({ "count": count }),
+            state: ActorState {
+                fields: json!({ "count": count }),
+                sqlite: None,
+            },
             effects: vec![ActorSocketEffect::Send {
                 connection_id: "socket-1".into(),
                 message: crate::actor::ActorSocketMessage::Text {
@@ -759,7 +895,7 @@ impl ActorExecutor for ExhaustedExecutor {
     async fn invoke(
         &self,
         _invocation: ActorMethodInvocation,
-        _state: Option<&Value>,
+        _state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
             code: "resource_exhausted".into(),
@@ -777,11 +913,14 @@ impl ActorExecutor for InvalidEffectsExecutor {
     async fn invoke(
         &self,
         _invocation: ActorMethodInvocation,
-        _state: Option<&Value>,
+        _state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         Ok(ActorMethodOutcome::Completed {
             result: Value::Null,
-            state: json!({ "count": 1 }),
+            state: ActorState {
+                fields: json!({ "count": 1 }),
+                sqlite: None,
+            },
             effects: vec![ActorSocketEffect::Close {
                 connection_id: "socket-1".into(),
                 code: 1001,
@@ -1018,7 +1157,7 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
         async fn invoke(
             &self,
             _: ActorMethodInvocation,
-            state: Option<&Value>,
+            state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             self.0.fenced.store(true, Ordering::SeqCst);
             Ok(ActorMethodOutcome::Completed {
@@ -1277,12 +1416,18 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
         async fn invoke(
             &self,
             _: ActorMethodInvocation,
-            state: Option<&Value>,
+            state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
-            let count = state.and_then(|state| state["count"].as_u64()).unwrap_or(0) + 1;
+            let count = state
+                .and_then(|state| state.fields["count"].as_u64())
+                .unwrap_or(0)
+                + 1;
             Ok(ActorMethodOutcome::Completed {
                 result: json!(count),
-                state: json!({"count": count}),
+                state: ActorState {
+                    fields: json!({"count": count}),
+                    sqlite: None,
+                },
                 effects: serde_json::from_value(
                     json!([{ "type":"state_update", "changes":{"count":count}, "removed":[] }]),
                 )?,

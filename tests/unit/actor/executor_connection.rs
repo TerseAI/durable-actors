@@ -7,12 +7,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":18})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":19})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":18,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":19,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -37,7 +37,10 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
                 actor_name: "counter".into(),
                 actor_id: "one".into(),
             },
-            Some(Arc::new(json!({"count":41}))),
+            Some(Arc::new(ActorState {
+                fields: json!({"count":41}),
+                sqlite: None,
+            })),
         )
         .await?;
     peer.await??;
@@ -59,7 +62,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":18, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":19, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
@@ -293,7 +296,7 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":18, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":19, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
@@ -363,7 +366,10 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
         outcome,
         ActorMethodOutcome::Completed {
             result: json!(2),
-            state: json!({ "count": 2 }),
+            state: ActorState {
+                fields: json!({ "count": 2 }),
+                sqlite: None
+            },
             effects: Vec::new(),
         }
     );
@@ -389,13 +395,19 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
                     tags: Vec::new(),
                 }],
             },
-            Some(&json!({ "count": 2 })),
+            Some(&ActorState {
+                fields: json!({ "count": 2 }),
+                sqlite: None,
+            }),
         )
         .await?;
     assert_eq!(
         socket_outcome,
         ActorSocketOutcome::Handled {
-            state: json!({ "count": 3 }),
+            state: ActorState {
+                fields: json!({ "count": 3 }),
+                sqlite: None
+            },
             effects: vec![ActorSocketEffect::Send {
                 connection_id: "socket-1".into(),
                 message: ActorSocketMessage::Text {
@@ -449,7 +461,10 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
                         method: "increment".into(),
                         args: vec![],
                     },
-                    Some(&json!({"count":count})),
+                    Some(&ActorState {
+                        fields: json!({"count":count}),
+                        sqlite: None,
+                    }),
                 )
                 .await?;
             assert!(
@@ -464,64 +479,60 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
 }
 
 #[tokio::test]
-async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
-    let root = TempDir::new_in("/tmp")?;
-    let socket = root.path().join("actor-executor.sock");
-    let host = ActorExecutorListener::bind(&socket).await?;
-    let customer = tokio::spawn(run_attached_customer(socket.clone()));
-    let connection = host.accept().await?;
-    let executor = connection.executor();
-    connection.mark_ready(None, None).await?;
-
-    let shutdown = CancellationToken::new();
-    let connection_task = tokio::spawn(connection.run(shutdown.clone()));
-    let outcome = executor
-        .invoke(
-            ActorMethodInvocation {
-                request_id: "request-1".into(),
-                actor: ActorKey {
-                    project_id: "default".into(),
-                    actor_name: "counter".into(),
-                    actor_id: "counter-1".into(),
+async fn large_snapshots_round_trip_through_the_executor() -> Result<()> {
+    let state = ActorState {
+        fields: json!({"payload": "x".repeat(17 * 1024 * 1024)}),
+        sqlite: Some("A".repeat(34 * 1024 * 1024)),
+    };
+    let (host, customer) = UnixStream::pair()?;
+    let (reader, writer) = host.into_split();
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
+    let customer = async {
+        let mut reader = BufReader::new(customer);
+        let message = read_json_line(&mut reader).await?;
+        assert_eq!(message["command"]["state"], state.fields);
+        assert_eq!(
+            message["command"]["sqlite"],
+            state.sqlite.as_deref().unwrap()
+        );
+        write_json_line(&mut reader, &json!({
+            "type": "reply", "message_id": message["message_id"],
+            "reply": {"type": "invoked", "result": 1, "state": state.fields, "sqlite": state.sqlite}
+        })).await
+    };
+    let invoke = async {
+        let outcome = executor
+            .invoke(
+                ActorMethodInvocation {
+                    request_id: "large".into(),
+                    actor: ActorKey {
+                        project_id: "default".into(),
+                        actor_name: "counter".into(),
+                        actor_id: "one".into(),
+                    },
+                    method: "read".into(),
+                    args: vec![],
                 },
-                method: "accept".into(),
-                args: vec![json!("x".repeat(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))],
-            },
-            None,
-        )
-        .await?;
-
-    assert!(matches!(
-        outcome,
-        ActorMethodOutcome::Failed(ref failure) if failure.code == "resource_exhausted"
-    ));
-    shutdown.cancel();
-    connection_task.await??;
-    customer.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn oversized_client_messages_are_rejected_before_newline() -> Result<()> {
-    let (host, mut customer) = UnixStream::pair()?;
-    let (reader, _) = host.into_split();
-    let mut reader = BufReader::new(reader);
-    let customer = tokio::spawn(async move {
-        let chunk = vec![b'x'; 64 * 1024];
-        for _ in 0..=MAX_ACTOR_EXECUTOR_MESSAGE_BYTES / chunk.len() {
-            customer.write_all(&chunk).await?;
-        }
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
-    });
-
-    let result = timeout(Duration::from_secs(5), read_client_message(&mut reader)).await;
-    customer.abort();
-    let error = result
-        .context("oversized actor executor message was not rejected before newline")?
-        .expect_err("oversized actor executor message should fail");
-    assert!(error.to_string().contains("exceeds"));
+                Some(&state),
+            )
+            .await?;
+        assert_eq!(
+            outcome,
+            ActorMethodOutcome::Completed {
+                result: json!(1),
+                state: state.clone(),
+                effects: vec![],
+            }
+        );
+        anyhow::Ok(())
+    };
+    let result = timeout(Duration::from_secs(30), async {
+        tokio::try_join!(customer, invoke)
+    })
+    .await;
+    running.abort();
+    result??;
     Ok(())
 }
 
@@ -530,11 +541,11 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":18,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":19,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 18, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 19, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;
@@ -585,25 +596,6 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     ensure!(
         reader.read_line(&mut trailing).await? == 0,
         "expected Rust host to close the actor executor"
-    );
-    Ok(())
-}
-
-async fn run_attached_customer(socket: PathBuf) -> Result<()> {
-    let stream = UnixStream::connect(socket).await?;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":18,\"actor_names\":[\"counter\"]}\n")
-        .await?;
-    ensure!(
-        read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 18, "supports_residency": true })
-    );
-    let mut trailing = String::new();
-    ensure!(
-        reader.read_line(&mut trailing).await? == 0,
-        "oversized command reached the customer actor executor"
     );
     Ok(())
 }

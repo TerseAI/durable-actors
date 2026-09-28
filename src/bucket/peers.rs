@@ -2,7 +2,7 @@ use crate::{
     clock::{Clock, SystemClock},
     grpc::{
         proto::{Empty, replica_service_client::ReplicaServiceClient},
-        transport::{MAX_STORAGE_MESSAGE_BYTES, request},
+        transport::request,
     },
     replication::{
         ReplicaAccess, ReplicaGrant, ReplicaStream, ReplicaTarget, SessionHead, StreamHead,
@@ -52,8 +52,8 @@ impl GrpcReplicaPeers {
         let (channel, token) = self.transport.capability(&address).await?;
         Ok((
             ReplicaServiceClient::new(channel)
-                .max_decoding_message_size(MAX_STORAGE_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
             request(Empty {}, &token)?,
         ))
     }

@@ -1,7 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    error::Error,
-    fmt::{Display, Formatter},
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{
         UnixListener,
         unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -26,9 +24,8 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 18;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 19;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
-pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct ActorMethodInvocation {
@@ -144,7 +141,7 @@ pub enum ActorMethodOutcome {
     Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
-        state: Value,
+        state: ActorState,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -154,7 +151,7 @@ pub enum ActorMethodOutcome {
 pub enum ActorSocketOutcome {
     Interleaved(ActorInterleavedOutcome),
     Handled {
-        state: Value,
+        state: ActorState,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -164,8 +161,16 @@ pub enum ActorSocketOutcome {
 pub struct ActorInterleavedOutcome {
     pub sequence: u64,
     pub result: Value,
-    pub state: Value,
+    pub state: ActorState,
     pub effects: Vec<ActorSocketEffect>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ActorState {
+    #[serde(rename = "state")]
+    pub fields: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite: Option<String>,
 }
 
 #[async_trait]
@@ -176,7 +181,7 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<Value>>) -> Result<()> {
+    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
         Ok(())
     }
 
@@ -191,13 +196,13 @@ pub trait ActorExecutor: Send + Sync {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome>;
 
     async fn handle_socket(
         &self,
         _invocation: ActorSocketInvocation,
-        _state: Option<&Value>,
+        _state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
             code: "socket_not_supported".into(),
@@ -209,7 +214,7 @@ pub trait ActorExecutor: Send + Sync {
     async fn invoke_shared(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorMethodOutcome> {
         self.invoke(invocation, state.as_deref()).await
     }
@@ -217,7 +222,7 @@ pub trait ActorExecutor: Send + Sync {
     async fn handle_socket_shared(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorSocketOutcome> {
         self.handle_socket(invocation, state.as_deref()).await
     }
@@ -396,7 +401,7 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<Value>>) -> Result<()> {
+    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
         match self
             .exchange(
                 ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
@@ -431,7 +436,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.invoke_shared(invocation, state.cloned().map(Arc::new))
             .await
@@ -440,7 +445,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn handle_socket(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<&Value>,
+        state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
         self.handle_socket_shared(invocation, state.cloned().map(Arc::new))
             .await
@@ -449,7 +454,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn invoke_shared(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorMethodOutcome> {
         match self
             .exchange(ExecutorCommand::Invoke(invocation), state)
@@ -491,7 +496,7 @@ impl ActorExecutor for JsActorExecutor {
     async fn handle_socket_shared(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ActorSocketOutcome> {
         match self
             .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
@@ -585,7 +590,7 @@ impl JsActorExecutor {
     async fn exchange(
         &self,
         command: ExecutorCommand,
-        state: Option<Arc<Value>>,
+        state: Option<Arc<ActorState>>,
     ) -> Result<ExecutorReply> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -825,17 +830,22 @@ impl ExecutorDriver {
         self.next_message_id = message_id
             .checked_add(1)
             .context("actor executor message ID overflow")?;
+        let empty = ActorState {
+            fields: Value::Null,
+            sqlite: None,
+        };
         let state = if pending.resident_only || matches!(pending.command, ExecutorCommand::Evict(_))
         {
             None
         } else {
-            Some(pending.state.as_deref().unwrap_or(&Value::Null))
+            Some(pending.state.as_deref().unwrap_or(&empty))
         };
         let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
             message_id,
             command: ExecutorCommandEnvelope {
                 command: &pending.command,
-                state,
+                state: state.map(|value| &value.fields),
+                sqlite: state.and_then(|value| value.sqlite.as_deref()),
                 resident_only: pending.resident_only,
             },
         });
@@ -853,15 +863,7 @@ impl ExecutorDriver {
                 self.pending.insert(message_id, pending);
             }
             Err(error) => {
-                let reply = if error.is::<ActorExecutorMessageTooLarge>() {
-                    Ok(ExecutorReply::Failed {
-                        code: "resource_exhausted".into(),
-                        message: error.to_string(),
-                    })
-                } else {
-                    Err(error)
-                };
-                let _ = pending.reply.send(reply);
+                let _ = pending.reply.send(Err(error));
             }
         }
         Ok(())
@@ -962,7 +964,7 @@ enum ExecutorRequest {
 
 struct PendingCommand {
     command: ExecutorCommand,
-    state: Option<Arc<Value>>,
+    state: Option<Arc<ActorState>>,
     resident_only: bool,
     admission_granted: bool,
     reply: oneshot::Sender<Result<ExecutorReply>>,
@@ -987,17 +989,10 @@ async fn read_client_message(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
 ) -> Result<Option<ActorExecutorClientMessage>> {
     let mut document = Vec::new();
-    let bytes = reader
-        .take((MAX_ACTOR_EXECUTOR_MESSAGE_BYTES + 1) as u64)
-        .read_until(b'\n', &mut document)
-        .await?;
+    let bytes = reader.read_until(b'\n', &mut document).await?;
     if bytes == 0 {
         return Ok(None);
     }
-    ensure!(
-        bytes <= MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
-        "customer actor executor message exceeds {MAX_ACTOR_EXECUTOR_MESSAGE_BYTES} bytes"
-    );
     serde_json::from_slice(trim_ascii_end(&document))
         .map(Some)
         .context("decode customer actor executor message")
@@ -1013,25 +1008,8 @@ fn trim_ascii_end(mut document: &[u8]) -> &[u8] {
 fn encode_server_message(message: &ActorExecutorServerMessage<'_>) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(message)?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_ACTOR_EXECUTOR_MESSAGE_BYTES {
-        return Err(ActorExecutorMessageTooLarge.into());
-    }
     Ok(bytes)
 }
-
-#[derive(Debug)]
-struct ActorExecutorMessageTooLarge;
-
-impl Display for ActorExecutorMessageTooLarge {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "actor executor command exceeds {MAX_ACTOR_EXECUTOR_MESSAGE_BYTES} bytes"
-        )
-    }
-}
-
-impl Error for ActorExecutorMessageTooLarge {}
 
 async fn prepare_socket_path(path: &Path) -> Result<()> {
     match tokio::fs::symlink_metadata(path).await {
@@ -1090,6 +1068,8 @@ struct ExecutorCommandEnvelope<'a> {
     command: &'a ExecutorCommand,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sqlite: Option<&'a str>,
     resident_only: bool,
 }
 
@@ -1138,14 +1118,16 @@ enum ExecutorReply {
     StateRequired,
     Invoked {
         result: Value,
-        state: Value,
+        #[serde(flatten)]
+        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
-        state: Value,
+        #[serde(flatten)]
+        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         effects: Vec<ActorSocketEffect>,

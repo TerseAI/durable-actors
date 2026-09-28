@@ -16,6 +16,53 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
+test("worker eviction restores SQLite alongside JSON fields", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("SqliteWorker")
+    const file = path.join(root, "src/actors.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class SqliteWorker extends Actor {
+            @Persisted count = 0
+            async increment(): Promise<number> {
+                this.db.exec("CREATE TABLE IF NOT EXISTS entries (count INTEGER)")
+                this.db.exec("INSERT INTO entries VALUES (?)", ++this.count)
+                return this.count
+            }
+            async read(): Promise<{count: number}[]> {
+                return this.db.exec<{count: number}>("SELECT count FROM entries ORDER BY count")
+            }
+        }`
+    )
+    const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: await buildConsumer(root) })
+    try {
+        const command = invokeCommand("one", "SqliteWorker")
+        const first = await supervisor.handle(command, () => {})
+        assert.equal(first.type, "invoked")
+        if (first.type !== "invoked") return
+        assert.equal(typeof first.sqlite, "string")
+        assert.deepEqual(first.state, { count: 1 })
+        await supervisor.handle({ type: "evict", actor: command.actor }, () => {})
+        const restored = await supervisor.handle(
+            {
+                ...command,
+                method: "read",
+                state: first.state,
+                sqlite: first.sqlite
+            },
+            () => {}
+        )
+        assert.equal(restored.type, "invoked")
+        if (restored.type !== "invoked") return
+        assert.deepEqual(restored.result, [{ count: 1 }])
+        assert.equal(restored.sqlite, first.sqlite)
+        assert.deepEqual(restored.state, first.state)
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("keeps actor state resident between requests until the host closes", async context => {
     context.mock.timers.enable({ apis: ["setTimeout"] })
     let created = 0

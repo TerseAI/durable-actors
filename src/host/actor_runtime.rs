@@ -12,7 +12,8 @@ use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
+        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, ActorState,
+        validate_socket_effects,
     },
     state_log::StateSnapshot,
     state_transport::StateWrite,
@@ -381,7 +382,10 @@ impl ActorRuntime {
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        executed: std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult>,
+        executed: std::result::Result<
+            (Value, ActorState, Vec<ActorSocketEffect>),
+            ActorExecutionResult,
+        >,
         origin: CommitOrigin,
         timings: &mut InvocationTimings,
     ) -> Result<ActorExecutionResult> {
@@ -499,8 +503,9 @@ impl ActorRuntime {
     async fn execute_method(
         &self,
         invocation: &ActorInvocation,
-        state: Option<Arc<Value>>,
-    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+        state: Option<Arc<ActorState>>,
+    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
+    {
         let outcome = self
             .executor
             .invoke_shared(
@@ -520,7 +525,8 @@ impl ActorRuntime {
         &self,
         invocation: &ActorInvocation,
         outcome: Result<ActorMethodOutcome>,
-    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
+    {
         match outcome {
             Ok(ActorMethodOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
@@ -565,8 +571,8 @@ impl ActorRuntime {
     async fn execute_socket_event(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<Value>>,
-    ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+        state: Option<Arc<ActorState>>,
+    ) -> std::result::Result<(ActorState, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
         match self.executor.handle_socket_shared(invocation, state).await {
             Ok(ActorSocketOutcome::Interleaved(_)) => {
@@ -604,7 +610,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         result: Value,
-        next_state: Value,
+        next_state: ActorState,
         origin: CommitOrigin,
     ) -> Result<ActorExecutionResult> {
         let mut timings = StateWriteTimings::new();
@@ -630,7 +636,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         result: Value,
-        next_state: Value,
+        next_state: ActorState,
         origin: CommitOrigin,
         timings: &mut StateWriteTimings,
     ) -> Result<ActorExecutionResult> {
@@ -672,9 +678,10 @@ impl ActorRuntime {
             next_version,
             owner_epoch,
             invocation.request_id.clone(),
-            &next_state,
+            &next_state.fields,
             result.clone(),
         )?;
+        snapshot.sqlite = next_state.sqlite.clone();
         snapshot.attribution = Some(crate::state_log::StateAttribution {
             operation: invocation.method.clone(),
             connection_id: origin.connection_id,
@@ -900,14 +907,14 @@ pub(super) fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'sta
 }
 
 pub(super) enum PreparedInvocation {
-    Execute(Option<Arc<Value>>),
+    Execute(Option<Arc<ActorState>>),
     Completed(ActorExecutionResult),
 }
 
 struct CachedActorState {
     owner_epoch: u64,
     state_version: u64,
-    state: Option<Arc<Value>>,
+    state: Option<Arc<ActorState>>,
     last_request_id: Option<String>,
     last_result: Option<Value>,
     next_write: Option<WritePlan>,
@@ -916,7 +923,7 @@ struct CachedActorState {
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
-    state: Value,
+    state: ActorState,
     ticket: WritePlan,
     durable: bool,
 }
@@ -947,7 +954,10 @@ impl CachedActorState {
         Ok(Self {
             owner_epoch,
             state_version,
-            state: Some(Arc::new(serde_json::from_str(snapshot.state.get())?)),
+            state: Some(Arc::new(ActorState {
+                fields: serde_json::from_str(snapshot.state.get())?,
+                sqlite: snapshot.sqlite,
+            })),
             last_request_id: Some(snapshot.request_id),
             last_result: Some(snapshot.result),
             next_write: None,
@@ -955,7 +965,7 @@ impl CachedActorState {
         })
     }
 
-    fn state(&self) -> Option<Arc<Value>> {
+    fn state(&self) -> Option<Arc<ActorState>> {
         self.state.clone()
     }
 

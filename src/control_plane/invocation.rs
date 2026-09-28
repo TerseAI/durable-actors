@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::public_api::{
     ActorPath, ActorTargetReply, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
-use crate::actor::{ActorInvocation, MAX_ACTOR_EXECUTOR_MESSAGE_BYTES};
+use crate::actor::{ActorInvocation, MAX_ACTOR_INVOCATION_BYTES};
 
 pub(super) async fn invoke(
     State(state): State<PublicApiState>,
@@ -113,7 +113,7 @@ async fn dispatch(
 async fn read_reply(mut response: reqwest::Response) -> Result<Value, ApiError> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| outcome_unknown())? {
-        if body.len() + chunk.len() > MAX_ACTOR_EXECUTOR_MESSAGE_BYTES {
+        if body.len() + chunk.len() > MAX_ACTOR_INVOCATION_BYTES {
             return Err(outcome_unknown());
         }
         body.extend_from_slice(&chunk);

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
+import { bindActorDatabase, runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
 import { runInActorInvocation } from "../actor/invocationContext.js"
@@ -17,6 +18,8 @@ import type { JsonObject, JsonValue } from "../json.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
+import { SqliteActorDatabase } from "./sqlite.js"
+import type { ActorDatabaseStorage } from "./sqlite.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
@@ -34,7 +37,8 @@ class ActorRuntime {
         private readonly publish?: SocketPublisher,
         private readonly connections: SocketSource = async () => {
             throw new Error("actor connection lookup is unavailable")
-        }
+        },
+        private readonly database: ActorDatabaseStorage = new SqliteActorDatabase()
     ) {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
     }
@@ -46,6 +50,10 @@ class ActorRuntime {
         const operation = this.serial.then(() => this.execute(command))
         if (!reentrant) this.serial = operation.catch(() => undefined)
         return operation
+    }
+
+    close(): void {
+        this.reset()
     }
 
     private async execute(
@@ -99,22 +107,28 @@ class ActorRuntime {
                 instance,
                 this.connections,
                 async () =>
-                    runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
+                    runWithActorDatabase(instance, async () =>
+                        runInActorInvocation(
+                            async () => Reflect.apply(method, instance, command.args) as Promise<unknown>
+                        )
+                    ),
                 this.publish,
                 this.schemas
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             const state = snapshotActorState(instance, this.definition.state)
+            const database = this.databaseState()
             const effects = [...operation.effects, ...this.stateUpdates(before, state)]
             return {
                 type: "invoked",
                 result,
                 state,
+                ...database,
                 ...this.completionOrder(),
                 ...(effects.length === 0 ? {} : { effects })
             }
         } catch (error) {
-            if (!this.interleaved) this.createInstance(command.actor, before)
+            if (!this.interleaved) this.restoreInstance(command.actor, before)
             return failedReply("actor_method_failed", errorMessage(error))
         }
     }
@@ -138,12 +152,15 @@ class ActorRuntime {
                         throw new ActorProtocolError(
                             `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
                         )
-                    await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
+                    await runWithActorDatabase(instance, async () =>
+                        runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
+                    )
                 },
                 command.event.type === "connect" ? undefined : this.publish,
                 this.schemas
             )
             const state = snapshotActorState(instance, this.definition.state)
+            const database = this.databaseState()
             const effects = [
                 ...operation.effects,
                 ...this.stateUpdates(
@@ -155,11 +172,12 @@ class ActorRuntime {
             return {
                 type: "websocket_handled",
                 state,
+                ...database,
                 ...this.completionOrder(),
                 effects: socketEffects(command, state, effects, this.definition.state)
             }
         } catch (error) {
-            if (!this.interleaved) this.createInstance(command.actor, before)
+            if (!this.interleaved) this.restoreInstance(command.actor, before)
             return failedReply("actor_socket_failed", errorMessage(error))
         }
     }
@@ -186,7 +204,18 @@ class ActorRuntime {
         if (command.resident_only) return { type: "state_required" }
         if (command.state === undefined)
             return failedReply("invalid_actor_state", "actor hydration requires an explicit state or null")
+        this.database.restore(command.sqlite)
         return this.createInstance(identity, command.state)
+    }
+
+    private databaseState(): { sqlite?: string } {
+        const sqlite = this.database.snapshot()
+        return sqlite === undefined ? {} : { sqlite }
+    }
+
+    private restoreInstance(identity: ActorIdentity, state: JsonObject): void {
+        this.database.rollback()
+        this.createInstance(identity, state)
     }
 
     private stateUpdates(before: JsonObject, state: JsonObject, except?: string): SocketEffect[] {
@@ -196,6 +225,7 @@ class ActorRuntime {
     }
 
     private reset(): void {
+        this.database.close()
         this.instance = undefined
         this.identity = undefined
     }
@@ -203,6 +233,7 @@ class ActorRuntime {
     private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
         const instance = Reflect.construct(this.definition.actorClass, []) as AnyActor
         bindActorIdentity(instance, identity.actor_id)
+        bindActorDatabase(instance, this.database)
         validateActorState(instance, this.definition.state)
         if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
         if (this.interleaved) this.lastCompletedState = snapshotActorState(instance, this.definition.state)

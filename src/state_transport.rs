@@ -84,8 +84,8 @@ fn storage_client(
     channel: tonic::transport::Channel,
 ) -> crate::grpc::proto::snapshot_service_client::SnapshotServiceClient<tonic::transport::Channel> {
     crate::grpc::proto::snapshot_service_client::SnapshotServiceClient::new(channel)
-        .max_decoding_message_size(crate::grpc::transport::MAX_STORAGE_MESSAGE_BYTES)
-        .max_encoding_message_size(crate::grpc::transport::MAX_STORAGE_MESSAGE_BYTES)
+        .max_decoding_message_size(usize::MAX)
+        .max_encoding_message_size(usize::MAX)
 }
 
 #[cfg(test)]
