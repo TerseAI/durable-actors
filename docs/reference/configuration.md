@@ -68,8 +68,6 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 
 ### Per-actor sandbox overrides
 
-Use `@Sandbox` on an actor class to override its deployment defaults. Each field is optional; omitting the decorator preserves the existing behavior.
-
 ```ts
 import { Actor, Sandbox } from "durable-actors"
 
@@ -89,13 +87,7 @@ export class CustomerAgent extends Actor {}
 | `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
 
-Options must be literal values in the decorator so deployment can validate them without executing actor code. New actors prefer the current default region when it is allowed; otherwise placement is chosen automatically from the list. If creation fails before ownership is established, another allowed region can be tried. An explicit backend `homeRegion` must belong to the decorator's list, or match the configured server region when no list is provided. Existing actors retain their saved home; removing that region from the list causes a placement conflict, not a state migration.
-
-Supported regions are `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, and `asia-southeast`. Canada maps to Modal's `ca` container placement. It does not select a particular Canadian city. Google region reports for Montreal (`northamerica-northeast1`) and Toronto (`northamerica-northeast2`), including zones, map to `canada`.
-
-CPU and memory limits apply to hosted sandboxes. Custom allocations that differ from the warm pool use on-demand sandboxes. Local development keeps running on the local machine. The idle timeout follows the existing activity rules: method calls and WebSocket messages reset it, active handlers defer eviction, and open sockets keep the host and connections alive.
-
-Compute placement does not configure the locations of PostgreSQL, object storage, replicas, backups, or logs. Those require separate regional infrastructure settings. See [Modal region selection](https://modal.com/docs/guide/region-selection) for the provider's placement options.
+Supported regions: `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, `asia-southeast`.
 
 ### Authentication and callbacks
 
