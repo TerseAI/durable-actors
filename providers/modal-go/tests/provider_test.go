@@ -103,6 +103,7 @@ func (a *fakeAPI) Find(_ context.Context, name string) (sandbox, error) {
 
 type fakeSandbox struct {
 	callsMu           sync.Mutex
+	startup           func(context.Context) error
 	mounted           string
 	assignment        map[string]string
 	mountErr          error
@@ -145,11 +146,20 @@ func (s *fakeSandbox) Connect(context.Context) (socketCredentials, error) {
 }
 
 func (s *fakeSandbox) ID() string { return "sb-test" }
-func (s *fakeSandbox) Routes(context.Context) (string, string, error) {
-	s.recordCall("route")
-	return "https://host.test", "https://control.test", nil
+func (s *fakeSandbox) Routes(ctx context.Context) (string, string, error) {
+	defer s.recordCall("route")
+	return "https://host.test", "https://control.test", s.waitForStartup(ctx)
 }
-func (s *fakeSandbox) Ready(context.Context) error { s.recordCall("ready"); return nil }
+func (s *fakeSandbox) Ready(ctx context.Context) error {
+	defer s.recordCall("ready")
+	return s.waitForStartup(ctx)
+}
+func (s *fakeSandbox) waitForStartup(ctx context.Context) error {
+	if s.startup != nil {
+		return s.startup(ctx)
+	}
+	return nil
+}
 func (s *fakeSandbox) Metadata(context.Context) ([]byte, error) {
 	s.recordCall("metadata")
 	return json.RawMessage(s.metadata), nil

@@ -13,8 +13,6 @@
         "provider_test.go": "tests/provider_test.go",
         "tests/provider_test.go": "",
         "spare_test.go": "tests/spare_test.go",
-        "tests/spare_test.go": "",
-        "pool_miss_test.go": "tests/pool_miss_test.go",
-        "tests/pool_miss_test.go": ""
+        "tests/spare_test.go": ""
     }
 }
