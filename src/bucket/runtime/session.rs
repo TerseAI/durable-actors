@@ -1,7 +1,6 @@
 use super::*;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{TryStreamExt, stream::FuturesUnordered};
 use std::time::Instant;
-use tokio::sync::Semaphore;
 use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -255,7 +254,6 @@ impl RuntimeStorage {
         }
         let mut witnesses = 0;
         let mut snapshots: HashMap<String, PendingSnapshot> = HashMap::new();
-        let downloads = Arc::new(Semaphore::new(8));
         while let Some(result) = pending.join_next().await {
             if let Ok(Ok(head)) = result {
                 ensure!(
@@ -284,7 +282,7 @@ impl RuntimeStorage {
                         {
                             snapshots.insert(
                                 head.stream.prefix,
-                                self.prefetch_snapshot(session, snapshot, downloads.clone()),
+                                self.prefetch_snapshot(session, snapshot),
                             );
                         }
                     }
@@ -299,17 +297,11 @@ impl RuntimeStorage {
     }
 
     // Downloads stay read-only until the claim and every seal are validated.
-    fn prefetch_snapshot(
-        &self,
-        session: &Session,
-        reference: SnapshotRef,
-        downloads: Arc<Semaphore>,
-    ) -> PendingSnapshot {
+    fn prefetch_snapshot(&self, session: &Session, reference: SnapshotRef) -> PendingSnapshot {
         let (authority, peers) = (self.authority.clone(), self.peers.clone());
         let replicas = session.replicas.clone();
         let snapshot = reference.clone();
         let download = tokio::spawn(async move {
-            let _permit = downloads.acquire_owned().await?;
             Self::download_snapshot(authority.as_ref(), peers.as_ref(), &replicas, &snapshot).await
         });
         PendingSnapshot {
@@ -323,9 +315,10 @@ impl RuntimeStorage {
         session: &Session,
         snapshots: Vec<PendingSnapshot>,
     ) -> Result<Vec<LoadedSnapshot>> {
-        futures_util::stream::iter(snapshots)
+        snapshots
+            .into_iter()
             .map(|snapshot| self.restore_snapshot(session, snapshot))
-            .buffer_unordered(8)
+            .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
     }

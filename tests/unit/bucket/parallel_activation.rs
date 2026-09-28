@@ -121,6 +121,53 @@ async fn a_conflicting_late_seal_discards_the_prefetched_snapshot() -> Result<()
 }
 
 #[tokio::test]
+async fn independent_snapshots_start_without_waiting_for_other_downloads_or_writes() -> Result<()> {
+    let (mut f, peers, _, bytes) = replicated().await?;
+    let mut owner = f.runtime.load(&f.actor.storage_key()).await?.unwrap().1;
+    let store = peers.stores.lock().unwrap()["old"].clone();
+    let mut objects = vec![owner.stream()?.object(1)];
+    for index in 1..12 {
+        owner.actor.actor_id = format!("parallel-{index}");
+        let stream = owner.stream()?;
+        store.append(&stream, &bytes).await?;
+        objects.push(stream.object(1));
+    }
+    let read_release = Arc::new(Semaphore::new(0));
+    peers
+        .read_release
+        .lock()
+        .unwrap()
+        .insert("old".into(), read_release.clone());
+    let write_started = Arc::new(Semaphore::new(0));
+    let write_release = Arc::new(Semaphore::new(0));
+    f.runtime.authority = Arc::new(ObservedBucket {
+        inner: f.bucket.clone(),
+        listed: Semaphore::new(0),
+        snapshot_read: None,
+        snapshot_write: Some((write_started.clone(), write_release.clone())),
+    });
+    f.runtime.peers = peers.clone();
+    let task = activate(f.runtime, f.actor.clone(), f.clock.clone());
+    let reads =
+        tokio::time::timeout(Duration::from_secs(1), peers.read_started.acquire_many(12)).await;
+    read_release.add_permits(12);
+    let writes = tokio::time::timeout(Duration::from_secs(1), write_started.acquire_many(12)).await;
+    write_release.add_permits(12);
+    let result = tokio::time::timeout(Duration::from_secs(5), task).await???;
+    reads
+        .context("independent downloads waited for earlier downloads")??
+        .forget();
+    writes
+        .context("independent snapshot writes waited for earlier writes")??
+        .forget();
+    assert_eq!(result.state.unwrap().as_ref(), bytes);
+    for object in objects {
+        assert_eq!(f.bucket.get(&object).await?.unwrap().bytes, bytes);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn snapshot_listing_overlaps_replica_restore_without_losing_the_newer_state() -> Result<()> {
     let (mut f, peers, _, _) = replicated().await?;
     let bytes = snapshot(2)?;
@@ -135,6 +182,7 @@ async fn snapshot_listing_overlaps_replica_restore_without_losing_the_newer_stat
         inner: f.bucket.clone(),
         listed: Semaphore::new(0),
         snapshot_read: None,
+        snapshot_write: None,
     });
     let release = Arc::new(Semaphore::new(0));
     peers
@@ -165,6 +213,7 @@ async fn replica_reads_overlap_the_bucket_lookup() -> Result<()> {
         inner: f.bucket.clone(),
         listed: Semaphore::new(0),
         snapshot_read: Some((read_started.clone(), release.clone())),
+        snapshot_write: None,
     });
     f.runtime.peers = peers.clone();
     let task = activate(f.runtime, f.actor.clone(), f.clock.clone());
@@ -572,6 +621,7 @@ struct ObservedBucket {
     inner: Arc<CountedBucket>,
     listed: Semaphore,
     snapshot_read: Option<(Arc<Semaphore>, Arc<Semaphore>)>,
+    snapshot_write: Option<(Arc<Semaphore>, Arc<Semaphore>)>,
 }
 
 #[async_trait]
@@ -591,6 +641,12 @@ impl Bucket for ObservedBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        if key.contains("/snapshots/")
+            && let Some((entered, release)) = &self.snapshot_write
+        {
+            entered.add_permits(1);
+            release.acquire().await?.forget();
+        }
         self.inner.compare_and_swap(key, generation, bytes).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
