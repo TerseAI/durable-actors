@@ -8,6 +8,60 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("extracts sandbox overrides from an aliased class decorator", () => {
+    const result = analyze(`import { Actor, Sandbox as S } from "./sdk.js"
+        @S({ cpu: 2, memoryMiB: 2048, idleTimeoutMs: 60_000, regions: ["canada", "north-america-east"] })
+        export class Room extends Actor { async read() {} }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [
+        {
+            actorName: "Room",
+            fields: [],
+            sandbox: {
+                cpu: 2,
+                memoryMiB: 2048,
+                idleTimeoutMs: 60_000,
+                regions: ["canada", "north-america-east"]
+            }
+        }
+    ])
+    const partial = analyze(`import { Actor, Sandbox } from "./sdk.js"
+        @Sandbox({ memoryMiB: 4096 }) export class Room extends Actor {}`)
+    assert.deepEqual(partial.schemas, [{ actorName: "Room", fields: [], sandbox: { memoryMiB: 4096 } }])
+})
+
+test("rejects invalid or dynamic sandbox overrides", () => {
+    for (const settings of [
+        "{ cpu: 0 }",
+        "{ cpu: 65 }",
+        "{ cpu: 0.1001 }",
+        "{ memoryMiB: 127 }",
+        "{ memoryMiB: 262145 }",
+        "{ memoryMiB: 1024.5 }",
+        "{ regions: ['us-east'] }",
+        "{ regions: [] }",
+        "{ regions: ['canada', 'canada'] }",
+        "{ regions: [region] }",
+        "{ gpu: 1 }",
+        "{ cpu: Math.random() }",
+        "{ ...defaults }",
+        "defaults",
+        "{ idleTimeoutMs: 0 }",
+        "{ idleTimeoutMs: 86400001 }",
+        "{ idleTimeoutMs: 100.5 }"
+    ]) {
+        const result = analyze(`import { Actor, Sandbox } from "./sdk.js"
+            const defaults = { cpu: 1 }; const region = "canada"
+            @Sandbox(${settings}) export class Room extends Actor { async read() {} }`)
+        assert.ok(result.diagnostics.length > 0, settings)
+    }
+    for (const declaration of [
+        "@Sandbox({}) @Sandbox({}) export class Room extends Actor {}",
+        "export class Room extends Actor { @Sandbox({}) async read() {} }"
+    ])
+        assert.ok(analyze(`import { Actor, Sandbox } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
+})
+
 test("recognizes aliased reentrant async methods", () => {
     const result = analyze(`import { Actor, Reentrant as R } from "./sdk.js"
         export class Room extends Actor { @R async stream() {} async read() {} }`)
@@ -449,6 +503,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Reentrant(...args: unknown[]) {}
+            export function Sandbox(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])

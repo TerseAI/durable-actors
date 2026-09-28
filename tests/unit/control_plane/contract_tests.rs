@@ -12,6 +12,38 @@ use crate::{
 };
 
 #[test]
+fn sandbox_contract_validates_allocation_and_allowed_regions() -> Result<()> {
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    document["actors"][0]["sandbox"] = json!({"cpu": 2, "memoryMiB": 2048, "regions": ["canada", "north-america-east"], "idleTimeoutMs": 60000});
+    let original = PublicActorContract::new(document.clone())?;
+    document["actors"][0]["sandbox"]["cpu"] = json!(1.5);
+    assert_ne!(
+        original.hash(),
+        PublicActorContract::new(document.clone())?.hash()
+    );
+    for invalid in [
+        json!({"cpu":0}),
+        json!({"cpu":65}),
+        json!({"cpu":0.1001}),
+        json!({"memoryMiB":127}),
+        json!({"memoryMiB":1024.5}),
+        json!({"regions":["us-east"]}),
+        json!({"regions":[]}),
+        json!({"regions":["canada","canada"]}),
+        json!({"gpu":1}),
+        json!({"idleTimeoutMs":0}),
+        json!({"idleTimeoutMs":86400001}),
+        json!({"idleTimeoutMs":1.5}),
+    ] {
+        document["actors"][0]["sandbox"] = invalid;
+        assert!(PublicActorContract::new(document.clone()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn published_declarations_and_dependencies_are_preserved_and_hashed() -> Result<()> {
     let mut document: Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
@@ -286,6 +318,7 @@ async fn registry_behavior(registry: Arc<dyn AdminRegistry>) -> Result<()> {
 
 fn spec() -> HostLaunchSpec {
     HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         code_snapshot: None,

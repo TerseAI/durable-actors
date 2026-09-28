@@ -7,6 +7,18 @@ import { fileURLToPath } from "node:url"
 
 const specPath = fileURLToPath(new URL("../../docs/reference/openapi.yaml", import.meta.url))
 
+test("actor contracts document sandbox overrides and their bounds", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const validate = new Ajv({ strict: false }).compile(spec.components.schemas.PublicActorContract)
+    const document = JSON.parse(await readFile(new URL("../../sdk/tests/fixtures/public-contract.json", import.meta.url), "utf8"))
+    document.actors[0].sandbox = { cpu: 2, memoryMiB: 2048, regions: ["canada"], idleTimeoutMs: 60_000 }
+    assert.ok(validate(document), JSON.stringify(validate.errors))
+    for (const invalid of [{ regions: [] }, { regions: ["canada", "canada"] }, { regions: ["toronto"] }, { cpu: 0 }, { memoryMiB: 127 }, { idleTimeoutMs: 0 }]) {
+        document.actors[0].sandbox = invalid
+        assert.equal(validate(document), false, JSON.stringify(invalid))
+    }
+})
+
 test("OpenAPI validates and covers the public HTTP routes", async () => {
     const spec = await SwaggerParser.validate(specPath)
     const paths = new Set()

@@ -63,8 +63,39 @@ When importing the runtime image into Modal, clear its Docker entrypoint with `m
 | `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `1000`               | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
 | `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `1024`               | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REPLICA_REGIONS`            | `[]`                 | JSON list of up to eight replica regions; duplicates allowed. Empty uses object storage only.                                                                                                                   |
-| `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Explicit assignments must match it; existing actors keep their saved home.                                                                                                       |
+| `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
+
+### Per-actor sandbox overrides
+
+Use `@Sandbox` on an actor class to override its deployment defaults. Each field is optional; omitting the decorator preserves the existing behavior.
+
+```ts
+import { Actor, Sandbox } from "durable-actors"
+
+@Sandbox({
+    cpu: 2,
+    memoryMiB: 2048,
+    regions: ["canada"],
+    idleTimeoutMs: 60_000,
+})
+export class CustomerAgent extends Actor {}
+```
+
+| Option | Meaning | Default when omitted |
+| --- | --- | --- |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 1. |
+| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 1024. |
+| `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
+| `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
+
+Options must be literal values in the decorator so deployment can validate them without executing actor code. New actors prefer the current default region when it is allowed; otherwise placement is chosen automatically from the list. If creation fails before ownership is established, another allowed region can be tried. An explicit backend `homeRegion` must belong to the decorator's list, or match the configured server region when no list is provided. Existing actors retain their saved home; removing that region from the list causes a placement conflict, not a state migration.
+
+Supported regions are `canada`, `north-america-east`, `north-america-central`, `north-america-south`, `north-america-west`, `europe-west`, and `asia-southeast`. Canada maps to Modal's `ca` container placement. It does not select a particular Canadian city. Google region reports for Montreal (`northamerica-northeast1`) and Toronto (`northamerica-northeast2`), including zones, map to `canada`.
+
+CPU and memory limits apply to hosted sandboxes. Custom allocations that differ from the warm pool use on-demand sandboxes. Local development keeps running on the local machine. The idle timeout follows the existing activity rules: method calls and WebSocket messages reset it, active handlers defer eviction, and open sockets keep the host and connections alive.
+
+Compute placement does not configure the locations of PostgreSQL, object storage, replicas, backups, or logs. Those require separate regional infrastructure settings. See [Modal region selection](https://modal.com/docs/guide/region-selection) for the provider's placement options.
 
 ### Authentication and callbacks
 

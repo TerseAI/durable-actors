@@ -23,6 +23,23 @@ func TestSparePlacementUsesGCP(t *testing.T) {
 	}
 }
 
+func TestCanadianSandboxPlacementIsStrict(t *testing.T) {
+	for _, kind := range []string{"actor", "replica"} {
+		t.Run(kind, func(t *testing.T) {
+			params, err := spareParams(spareRequest{Kind: kind, Name: "do-spare-canada", ImageRef: "im-runtime", CanonicalRegion: "canada", Resources: resourceLimits{CPUMillis: 2000, MemoryMiB: 2048}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.Cloud != "gcp" || !slices.Equal(params.Regions, []string{"ca"}) {
+				t.Fatalf("unexpected placement: %v %v", params.Cloud, params.Regions)
+			}
+		})
+	}
+	if _, err := modalRegion("toronto"); err == nil {
+		t.Fatal("unsupported placement accepted")
+	}
+}
+
 func TestSpareRetainsItsConnectionUntilClaimed(t *testing.T) {
 	sb := &fakeSandbox{}
 	api := &fakeAPI{created: sb, found: sb}

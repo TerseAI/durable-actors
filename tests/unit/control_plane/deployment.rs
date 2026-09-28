@@ -137,6 +137,48 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
 }
 
 #[tokio::test]
+async fn compiled_sandbox_overrides_survive_code_reuse_and_redeployment() -> Result<()> {
+    let (service, admin, provider) = fixture()?;
+    let mut document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    let options =
+        serde_json::json!({"cpu":2,"memoryMiB":4096,"regions":["canada"],"idleTimeoutMs":60000});
+    document["actors"][0]["sandbox"] = options.clone();
+    *provider.contract.lock().unwrap() = document;
+    let mut input = source();
+    service.deploy_source(&admin, &input, None).await?;
+    let deployed = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(
+        serde_json::to_value(&deployed.sandboxes["ChatRoom"])?,
+        options
+    );
+    input.secret_refs.push("new-secrets".into());
+    service.deploy_source(&admin, &input, None).await?;
+    assert_eq!(provider.builds.lock().unwrap().len(), 1);
+    assert_eq!(
+        admin
+            .current_deployment("default")
+            .await?
+            .unwrap()
+            .sandboxes,
+        deployed.sandboxes
+    );
+    input.image_ref = "im-updated".into();
+    *provider.contract.lock().unwrap() = contract();
+    service.deploy_source(&admin, &input, None).await?;
+    assert!(
+        admin
+            .current_deployment("default")
+            .await?
+            .unwrap()
+            .sandboxes
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn cached_code_cannot_be_registered_with_an_unrelated_contract() -> Result<()> {
     let (service, admin, provider) = fixture()?;
     let source = source();
@@ -217,16 +259,25 @@ async fn compiled_deployments_and_cached_contracts_are_scoped_to_the_project() -
 async fn resolved_targets_expire_within_host_idle_lease_and_authorization_limits() -> Result<()> {
     use crate::clock::{Clock, SystemClock};
 
-    for (idle_ms, lease_ms, grant_ms) in [
-        (10_000, 30_000, None),
-        (25_000, 30_000, Some(60_000)),
-        (1, 30_000, Some(60_000)),
-        (120_000, 8_000, Some(60_000)),
-        (120_000, 60_000, Some(120_000)),
-        (30_000, 30_000, Some(7_000)),
+    for (default_idle_ms, override_idle_ms, lease_ms, grant_ms) in [
+        (10_000, None, 30_000, None),
+        (25_000, None, 30_000, Some(60_000)),
+        (1, None, 30_000, Some(60_000)),
+        (120_000, None, 8_000, Some(60_000)),
+        (120_000, None, 60_000, Some(120_000)),
+        (30_000, None, 30_000, Some(7_000)),
+        (10_000, Some(60_000), 120_000, None),
+        (60_000, Some(1_000), 120_000, None),
     ] {
-        let (mut service, admin, _) = fixture_with_idle_timeout(idle_ms)?;
-        let spec = source();
+        let (mut service, admin, _) = fixture_with_idle_timeout(default_idle_ms)?;
+        let mut spec = source();
+        let idle_ms = override_idle_ms.unwrap_or(default_idle_ms);
+        if let Some(timeout) = override_idle_ms {
+            spec.sandboxes.insert(
+                "Counter".into(),
+                serde_json::from_value(serde_json::json!({"idleTimeoutMs":timeout}))?,
+            );
+        }
         admin.register_deployment(&spec, None).await?;
         let actor = ActorKey {
             project_id: "default".into(),
@@ -320,6 +371,7 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
         image_ref: "im-customer".into(),
@@ -334,11 +386,22 @@ fn contract() -> serde_json::Value {
     serde_json::json!({"version":1,"actors":[],"typescript":{"declarations":"export interface ActorTypes {}","dependencies":{}}})
 }
 
-#[derive(Default)]
 struct BuildProvider {
     builds: Mutex<Vec<serde_json::Value>>,
     retired: Mutex<Vec<String>>,
     fail: AtomicBool,
+    contract: Mutex<serde_json::Value>,
+}
+
+impl Default for BuildProvider {
+    fn default() -> Self {
+        Self {
+            builds: Mutex::new(vec![]),
+            retired: Mutex::new(vec![]),
+            fail: AtomicBool::new(false),
+            contract: Mutex::new(contract()),
+        }
+    }
 }
 
 #[async_trait]
@@ -349,7 +412,7 @@ impl SandboxProvider for BuildProvider {
         ensure!(!self.fail.load(Ordering::SeqCst), "compilation failed");
         Ok(BuiltActorCode {
             code_snapshot: format!("im-code-{}", builds.len()),
-            contract: contract(),
+            contract: self.contract.lock().unwrap().clone(),
         })
     }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
