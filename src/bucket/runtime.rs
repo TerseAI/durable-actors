@@ -52,6 +52,8 @@ mod repair_tests;
 pub struct RuntimeStorage {
     clock: Arc<dyn crate::clock::Clock>,
     owned: Mutex<HashMap<String, Ownership>>,
+    uploads: tokio_util::task::TaskTracker,
+    uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
     sessions: Mutex<HashMap<String, Vec<ReplicaTarget>>>,
     authority: Arc<dyn Bucket>,
     fleet: Arc<dyn ReplicaProvisioner>,
@@ -62,6 +64,8 @@ pub struct RuntimeStorage {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    #[serde(default)]
+    sealed: bool,
     inventory: ActivationInventory,
     lease: HostLease,
     mutation: String,
@@ -80,6 +84,17 @@ pub struct OwnershipHint {
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,
+}
+
+#[derive(Default)]
+struct UploadedSnapshots {
+    started: u64,
+    completed: u64,
+    latest: Option<SnapshotRef>,
+}
+
+struct SessionCheckpoint {
+    snapshot: Option<SnapshotRef>,
 }
 
 struct LoadedSnapshot {
@@ -139,6 +154,8 @@ impl RuntimeStorage {
         Ok(Self {
             clock,
             owned: Mutex::new(HashMap::new()),
+            uploads: tokio_util::task::TaskTracker::new(),
+            uploaded: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             authority,
             fleet,
@@ -191,6 +208,10 @@ impl SnapshotReader for RuntimeStorage {
 }
 
 impl RuntimeStorage {
+    pub(crate) fn upload_tracker(&self) -> tokio_util::task::TaskTracker {
+        self.uploads.clone()
+    }
+
     pub async fn read_url(&self, region: &str, object: &str) -> Result<String> {
         self.access.url(
             &self.origin,
@@ -563,7 +584,17 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             snapshot.object == plan.object_name && snapshot.state_version == plan.state_version,
             "write plan does not match snapshot"
         );
+        self.uploaded
+            .lock()
+            .unwrap()
+            .entry(stream.session.clone())
+            .or_default()
+            .started += 1;
         self.persist(&snapshot.object, bytes).await?;
+        let mut uploaded = self.uploaded.lock().unwrap();
+        let uploaded = uploaded.entry(stream.session.clone()).or_default();
+        advance(&mut uploaded.latest, Some(snapshot))?;
+        uploaded.completed += 1;
         Ok(crate::state_transport::StateWrite::Written)
     }
 }

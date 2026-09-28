@@ -311,13 +311,20 @@ impl HostLeaseRegistry for HostStorage {
             "host lease scope mismatch"
         );
         self.fence.lock().unwrap().fenced = true;
-        self.runtime
-            .release_activation(
-                self.actor.as_ref().context("host actor identity missing")?,
-                host,
-                session,
-            )
-            .await?;
+        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let completed = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.runtime.finish_activation(actor, host, session),
+        )
+        .await
+        .context("snapshot drain timed out")
+        .and_then(|result| result);
+        if let Err(error) = completed {
+            tracing::warn!(%error, "clean session shutdown deferred to recovery");
+            self.runtime
+                .release_activation(actor, host, session)
+                .await?;
+        }
         self.notify_observer();
         Ok(())
     }

@@ -70,6 +70,7 @@ struct CountedBucket {
     session_read_wait: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     paused_list: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
     writes: AtomicU64,
+    lists: AtomicU64,
     lose_reply: AtomicBool,
     delay_write: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
 }
@@ -115,6 +116,7 @@ impl Bucket for CountedBucket {
         Ok(written)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
         let barrier = self.parallel_reads.lock().unwrap().clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
@@ -149,6 +151,7 @@ impl Fixture {
             session_read_wait: Mutex::new(None),
             paused_list: Mutex::new(None),
             writes: AtomicU64::new(0),
+            lists: AtomicU64::new(0),
             lose_reply: AtomicBool::new(false),
             delay_write: Mutex::new(None),
         });
@@ -1014,5 +1017,118 @@ async fn concurrent_session_sealing_refreshes_the_parallel_snapshot_listing() ->
     let activated = activated?;
     assert_eq!(activated.placement.state_version, 1);
     assert_eq!(activated.state.unwrap().as_ref(), bytes);
+    Ok(())
+}
+
+#[path = "returning_benchmark.rs"]
+mod benchmark;
+
+#[tokio::test]
+async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_session_reads()
+-> Result<()> {
+    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
+    for written in [true, false] {
+        let f = Fixture::new()?;
+        let first = request("first");
+        let loaded = f
+            .runtime
+            .register_activation(&f.actor, &first, "us-east", true, None)
+            .await?;
+        let bytes = StateSnapshot::new(
+            1,
+            1,
+            "committed".into(),
+            serde_json::json!({"count": 42}),
+            serde_json::json!(42),
+        )?
+        .encode()?;
+        if written {
+            let plan = f
+                .runtime
+                .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
+                .await?;
+            f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+        }
+        f.runtime
+            .finish_activation(&f.actor, &first.id, &first.session_id)
+            .await?;
+        for (epoch, session) in [(2, "next"), (3, "again")] {
+            let (_, hint) = f
+                .runtime
+                .get_owner_with_hint(&f.actor.storage_key())
+                .await?;
+            assert!(hint.as_ref().unwrap().record.sealed);
+            f.bucket.read_keys.lock().unwrap().clear();
+            f.bucket.lists.store(0, Ordering::SeqCst);
+            let next = request(session);
+            let loaded = f
+                .runtime
+                .register_activation(&f.actor, &next, "us-east", false, hint.as_ref())
+                .await?;
+            assert_eq!(loaded.placement.owner_epoch, epoch);
+            assert_eq!(loaded.state.as_deref(), written.then_some(bytes.as_slice()));
+            assert_eq!(f.bucket.lists.load(Ordering::SeqCst), 0);
+            let reads = f.bucket.read_keys.lock().unwrap().clone();
+            assert_eq!(reads.len(), usize::from(written));
+            assert!(reads.iter().all(|key| key.contains("/snapshots/")));
+            f.runtime
+                .finish_activation(&f.actor, &next.id, &next.session_id)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn clean_shutdown_keeps_the_newest_out_of_order_upload() -> Result<()> {
+    use crate::{state_log::StateSnapshot, state_transport::SnapshotWriter};
+    let f = Fixture::new()?;
+    let first = request("first");
+    let loaded = f
+        .runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let old_plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 1)
+        .await?;
+    let new_plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &loaded.placement.lease, 1, 2)
+        .await?;
+    let snapshot = |version| {
+        StateSnapshot::new(
+            version,
+            1,
+            format!("write-{version}"),
+            serde_json::json!({"count": version}),
+            serde_json::json!(version),
+        )?
+        .encode()
+    };
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    *f.bucket.delay_write.lock().unwrap() = Some((entered.clone(), resume.clone()));
+    let first_write = f.runtime.write_snapshot(&old_plan, snapshot(1)?);
+    let second_write = async {
+        entered.acquire().await?.forget();
+        f.runtime.write_snapshot(&new_plan, snapshot(2)?).await?;
+        resume.add_permits(1);
+        anyhow::Ok(())
+    };
+    let (first_result, second_result) = tokio::join!(first_write, second_write);
+    first_result?;
+    second_result?;
+    f.runtime
+        .finish_activation(&f.actor, &first.id, &first.session_id)
+        .await?;
+    assert_eq!(
+        f.runtime
+            .get_owner(&f.actor.storage_key())
+            .await?
+            .unwrap()
+            .state_version,
+        2
+    );
     Ok(())
 }

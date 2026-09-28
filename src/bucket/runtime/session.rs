@@ -22,6 +22,31 @@ pub(super) enum RecoveryState {
 }
 
 impl RuntimeStorage {
+    pub(crate) async fn finish_activation(
+        &self,
+        actor: &ActorKey,
+        host: &HostId,
+        session: &str,
+    ) -> Result<()> {
+        self.uploads.close();
+        self.uploads.wait().await;
+        let record = self
+            .owned
+            .lock()
+            .unwrap()
+            .get(actor.storage_key().as_str())
+            .cloned()
+            .context("actor is not locally activated")?;
+        ensure!(
+            record.lease.id == *host && record.lease.session_id == session,
+            "actor ownership changed"
+        );
+        let checkpoint = self.upload_checkpoint(&record)?;
+        self.seal_owned_session(&record.scope()).await?;
+        self.release_with_checkpoint(actor, host, session, Some(checkpoint))
+            .await
+    }
+
     pub async fn retire_replication(&self, scope: &ReplicaScope) -> Result<()> {
         if let Some(owner) = self.get_owner(&scope.actor.storage_key()).await? {
             ensure!(
@@ -56,6 +81,58 @@ impl RuntimeStorage {
         } else {
             session.replicas
         })
+    }
+
+    fn upload_checkpoint(&self, record: &Ownership) -> Result<SessionCheckpoint> {
+        let mut snapshot = record.base.clone();
+        if let Some(uploaded) = self
+            .uploaded
+            .lock()
+            .unwrap()
+            .get(&record.scope().identity())
+        {
+            ensure!(
+                uploaded.started == uploaded.completed,
+                "snapshot uploads did not complete successfully"
+            );
+            advance(&mut snapshot, uploaded.latest.clone())?;
+        }
+        Ok(SessionCheckpoint { snapshot })
+    }
+
+    async fn seal_owned_session(&self, scope: &ReplicaScope) -> Result<()> {
+        let key = key(&scope.host, &scope.session);
+        for _ in 0..3 {
+            let object = self.authority.get(&key).await?;
+            let mut session = match &object {
+                Some(object) => serde_json::from_slice::<Session>(&object.bytes)?,
+                None => Session {
+                    id: scope.identity(),
+                    region: scope.region.clone(),
+                    replicas: vec![],
+                    state: RecoveryState::Open,
+                },
+            };
+            ensure!(
+                session.id == scope.identity() && session.region == scope.region,
+                "session identity mismatch"
+            );
+            ensure!(
+                session.state != RecoveryState::Recovering,
+                "session recovery has already started"
+            );
+            if session.state == RecoveryState::Sealed {
+                return Ok(());
+            }
+            session.state = RecoveryState::Sealed;
+            if self
+                .save_session(&key, object.map(|object| object.generation), &session)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("session kept changing during clean shutdown")
     }
 
     pub(super) async fn recover_session(

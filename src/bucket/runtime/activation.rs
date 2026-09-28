@@ -51,6 +51,7 @@ impl RuntimeStorage {
                 )
                 .await?;
             let mut record = Ownership {
+                sealed: false,
                 inventory: ActivationInventory::default(),
                 actor: actor.clone(),
                 epoch: current
@@ -130,6 +131,17 @@ impl RuntimeStorage {
         host: &HostId,
         session: &str,
     ) -> Result<()> {
+        self.release_with_checkpoint(actor, host, session, None)
+            .await
+    }
+
+    pub(super) async fn release_with_checkpoint(
+        &self,
+        actor: &ActorKey,
+        host: &HostId,
+        session: &str,
+        checkpoint: Option<SessionCheckpoint>,
+    ) -> Result<()> {
         for _ in 0..3 {
             let Some((generation, mut record)) = self.load(&actor.storage_key()).await? else {
                 return Ok(());
@@ -141,6 +153,10 @@ impl RuntimeStorage {
                 return Ok(());
             }
             record.lease.expires_at_ms = 0;
+            if let Some(checkpoint) = &checkpoint {
+                record.base = checkpoint.snapshot.clone();
+                record.sealed = true;
+            }
             if self
                 .replace_activation(&mut record, Some(generation))
                 .await?
@@ -173,6 +189,14 @@ impl RuntimeStorage {
             record.lease.expires_at_ms <= self.clock.now_ms()?,
             "previous owner lease is still active"
         );
+        if record.sealed {
+            let started = Instant::now();
+            return Ok(ActivationRecovery {
+                snapshot: self.load_latest(record, None, None, &[]).await?,
+                snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+                session_ms: None,
+            });
+        }
         let mut recovery = ActivationRecovery::default();
         let recover = async {
             let started = Instant::now();

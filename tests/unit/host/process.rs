@@ -239,7 +239,7 @@ fn assigned_owner_hint_is_loaded_from_the_environment() -> Result<()> {
         "record": {
             "inventory": {"resident": false, "connections": [], "waiting": []},
             "actor": {"project_id": "default", "actor_name": "Counter", "actor_id": "one"},
-            "epoch": 3, "region": "north-america-east", "base": null, "mutation": "previous",
+            "epoch": 3, "region": "north-america-east", "base": null, "mutation": "previous", "sealed": false,
             "lease": {"id": "previous", "session_id": "previous", "route": "http://previous", "expires_at_ms": 0}
         }
     });
