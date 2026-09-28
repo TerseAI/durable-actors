@@ -489,3 +489,71 @@ def check() -> None:
             text=True,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_generated_null_types_work_as_fields_arguments_and_socket_metadata(tmp_path, monkeypatch):
+    from pydantic import BaseModel
+
+    from little_actors import Actor, SocketGrant
+
+    class Empty(BaseModel):
+        value: None
+
+    class Nulls(Actor[None, None, None]):
+        def echo(self, value: None = None) -> Empty:
+            return Empty(value=value)
+
+    class Calls:
+        def invoke(self, actor_name, actor_id, method, args):
+            assert (actor_name, actor_id, method) == ("Nulls", "one", "echo")
+            assert args in ([], [None])
+            return {"value": None}
+
+        def prepare_websocket(
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
+        ):
+            assert metadata is None
+            return SocketGrant(
+                websocket_url="wss://example.test/socket",
+                home_region="canada",
+                connect_by_ms=1,
+                authorized_until_ms=2,
+            )
+
+        def broadcast(self, actor_name, actor_id, message):
+            assert message is None
+
+    generate_client(public_contract([Nulls]), tmp_path / "null_client")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    generated = importlib.import_module("null_client")
+    client = generated.actors.Nulls.get("one", Calls())
+    assert client.echo().value is None
+    assert client.echo(None).value is None
+    client.broadcast(None)
+    assert client.prepare_websocket(None).home_region == "canada"
+    authorization = generated.actors.Nulls.Authorization(actor_id="one", metadata=None)
+    assert generated.ActorProxy.handle(authorization, Calls()).home_region == "canada"
+    source = tmp_path / "usage.py"
+    source.write_text("""from null_client import actors
+
+def check() -> None:
+    client = actors.Nulls.get("one")
+    result: actors.Nulls.Empty = client.echo(None)
+    client.connect(None)
+    client.prepare_websocket(None)
+    client.broadcast(None)
+""")
+    for checker in ("mypy", "pyright"):
+        result = subprocess.run(
+            [sys.executable, "-m", checker, str(source)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr

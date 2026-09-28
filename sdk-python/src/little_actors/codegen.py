@@ -614,7 +614,7 @@ def qualify(node: ast.expr, names: set[str]) -> str:
 
 
 def compatible_aliases(source: str) -> str:
-    # Mypy needs implicit recursive aliases; Pydantic needs named ones at runtime.
+    # Keep recursive and None aliases named at runtime so unions remain evaluable.
     tree = ast.parse(source)
     aliases = False
     for index, node in enumerate(tree.body):
@@ -643,6 +643,8 @@ def compatible_aliases(source: str) -> str:
         tree.body[index] = (
             ast.If(test=ast.Name(id="TYPE_CHECKING", ctx=ast.Load()), body=[checked], orelse=[node])
             if recursive
+            or isinstance(node.value.args[1], ast.Constant)
+            and node.value.args[1].value is None
             else checked
         )
     if aliases:

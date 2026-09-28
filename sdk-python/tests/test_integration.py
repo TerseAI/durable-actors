@@ -127,7 +127,7 @@ class Room(Actor[Payload, Payload, Payload]):
 )
 def test_generated_subscription_delivers_state_while_calling_rpcs(tmp_path, monkeypatch):
     (tmp_path / "actors.py").write_text("""from little_actors import Actor, emitted
-class Counter(Actor):
+class Counter(Actor[None, None, None]):
     count: int = emitted(0)
     label: str = emitted("ready")
     def increment(self) -> int:
