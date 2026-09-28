@@ -77,6 +77,11 @@ pub struct LoadedActor {
     pub state: Option<Bytes>,
 }
 
+struct DownloadedSnapshot {
+    bytes: Vec<u8>,
+    persisted: bool,
+}
+
 struct LoadedSnapshot {
     reference: SnapshotRef,
     bytes: Bytes,
@@ -403,8 +408,24 @@ impl RuntimeStorage {
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        let bucket = self.authority.get(&snapshot.object);
-        let peers = self.read_replica_snapshot(replicas, snapshot);
+        let download = Self::download_snapshot(
+            self.authority.as_ref(),
+            self.peers.as_ref(),
+            replicas,
+            snapshot,
+        )
+        .await?;
+        self.persist_download(snapshot, download).await
+    }
+
+    async fn download_snapshot(
+        authority: &dyn Bucket,
+        peers: &dyn ReplicaPeers,
+        replicas: &[ReplicaTarget],
+        snapshot: &SnapshotRef,
+    ) -> Result<DownloadedSnapshot> {
+        let bucket = authority.get(&snapshot.object);
+        let peers = Self::read_replica_snapshot(peers, replicas, snapshot);
         tokio::pin!(bucket, peers);
         let (object, prefetched) = tokio::select! {
             object = &mut bucket => (object?, None),
@@ -412,25 +433,30 @@ impl RuntimeStorage {
         };
         if let Some(object) = object {
             snapshot.verify(&object.bytes)?;
-            return Ok(object.bytes);
+            return Ok(DownloadedSnapshot {
+                bytes: object.bytes,
+                persisted: true,
+            });
         }
         let bytes = match prefetched {
             Some(bytes) => bytes?,
             None => peers.await?,
         };
-        self.persist(&snapshot.object, bytes.clone()).await?;
-        Ok(bytes)
+        Ok(DownloadedSnapshot {
+            bytes,
+            persisted: false,
+        })
     }
 
     async fn read_replica_snapshot(
-        &self,
+        peers: &dyn ReplicaPeers,
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
         let mut reads: futures_util::stream::FuturesUnordered<_> = replicas
             .iter()
             .map(|peer| async move {
-                let bytes = self.peers.read(peer, &snapshot.object).await?;
+                let bytes = peers.read(peer, &snapshot.object).await?;
                 snapshot.verify(&bytes)?;
                 anyhow::Ok(bytes)
             })
@@ -441,6 +467,18 @@ impl RuntimeStorage {
             }
         }
         anyhow::bail!("acknowledged snapshot is unavailable")
+    }
+
+    async fn persist_download(
+        &self,
+        snapshot: &SnapshotRef,
+        download: DownloadedSnapshot,
+    ) -> Result<Vec<u8>> {
+        if !download.persisted {
+            self.persist(&snapshot.object, download.bytes.clone())
+                .await?;
+        }
+        Ok(download.bytes)
     }
 
     async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {

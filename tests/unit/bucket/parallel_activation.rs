@@ -23,17 +23,18 @@ async fn recovery_seals_replicas_before_the_claim_write_finishes() -> Result<()>
 
 #[tokio::test]
 async fn a_lost_claim_retries_the_repaired_membership_and_discards_old_seal_errors() -> Result<()> {
-    let (mut f, peers, scope, _) = replicated().await?;
-    let replacement = ReplicaTarget {
-        host_id: "replacement".into(),
-        url: "http://replacement".into(),
-        region: "us-east".into(),
-    };
-    let store = Arc::new(
-        crate::replication::FileReplicaStore::open(f._directory.path().join("replacement"), 4096)
-            .await?,
-    );
-    store.initialize_session(&scope.identity()).await?;
+    lost_claim(true).await
+}
+
+#[tokio::test]
+async fn a_lost_claim_discards_prefetched_snapshots() -> Result<()> {
+    lost_claim(false).await
+}
+
+#[tokio::test]
+async fn snapshot_download_overlaps_sealing_and_waits_for_the_newer_witness() -> Result<()> {
+    let newer = snapshot(2)?;
+    let (mut f, peers, scope, release) = delayed_seal(&newer).await?;
     let stream = f
         .runtime
         .load(&f.actor.storage_key())
@@ -41,41 +42,81 @@ async fn a_lost_claim_retries_the_repaired_membership_and_discards_old_seal_erro
         .unwrap()
         .1
         .stream()?;
-    let bytes = snapshot(2)?;
-    store.append(&stream, &bytes).await?;
-    peers
-        .stores
-        .lock()
-        .unwrap()
-        .insert(replacement.host_id.clone(), store.clone());
-    peers.fail_old_seal.store(true, Ordering::SeqCst);
-    let entered = Arc::new(Semaphore::new(0));
-    let release = Arc::new(Semaphore::new(0));
-    *f.bucket.delay_write.lock().unwrap() = Some((entered.clone(), release.clone()));
     f.runtime.peers = peers.clone();
     let task = activate(f.runtime, f.actor.clone(), f.clock.clone());
-    entered.acquire().await?.forget();
-    let overlapped = tokio::time::timeout(Duration::from_secs(1), peers.sealed.acquire()).await;
+    let overlapped =
+        tokio::time::timeout(Duration::from_secs(1), peers.read_started.acquire()).await;
+    assert!(!task.is_finished());
     let key = format!(
         "{}.json",
         crate::storage_paths::session(&scope.host, &scope.session)
     );
-    let object = f.bucket.inner.get(&key).await?.unwrap();
-    let mut session: session::Session = serde_json::from_slice(&object.bytes)?;
-    session.replicas = vec![replacement];
-    assert!(
-        f.bucket
-            .inner
-            .compare_and_swap(&key, Some(object.generation), serde_json::to_vec(&session)?)
+    let session: session::Session =
+        serde_json::from_slice(&f.bucket.get(&key).await?.unwrap().bytes)?;
+    assert!(session.state != session::RecoveryState::Sealed);
+    let owner: Ownership = serde_json::from_slice(
+        &f.bucket
+            .get(&ownership_key(&f.actor.storage_key())?)
             .await?
-    );
+            .unwrap()
+            .bytes,
+    )?;
+    assert_eq!(owner.lease.id, scope.host);
+    assert!(f.bucket.get(&stream.object(1)).await?.is_none());
     release.add_permits(1);
     let result = task.await??;
     overlapped
-        .context("sealing did not overlap the disputed claim")??
+        .context("snapshot download waited for the remaining seal")??
         .forget();
-    assert_eq!(result.state.unwrap().as_ref(), bytes);
-    assert!(store.append(&stream, &snapshot(3)?).await.is_err());
+    assert_eq!(result.state.unwrap().as_ref(), newer);
+    assert!(f.bucket.get(&stream.object(1)).await?.is_none());
+    assert_eq!(f.bucket.get(&stream.object(2)).await?.unwrap().bytes, newer);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_conflicting_late_seal_discards_the_prefetched_snapshot() -> Result<()> {
+    let conflicting = StateSnapshot::new(
+        1,
+        1,
+        "conflicting".into(),
+        serde_json::json!({"count":99}),
+        serde_json::json!(99),
+    )?
+    .encode()?;
+    let (mut f, peers, scope, release) = delayed_seal(&conflicting).await?;
+    let stream = f
+        .runtime
+        .load(&f.actor.storage_key())
+        .await?
+        .unwrap()
+        .1
+        .stream()?;
+    f.runtime.peers = peers.clone();
+    let task = activate(f.runtime, f.actor.clone(), f.clock.clone());
+    let overlapped =
+        tokio::time::timeout(Duration::from_secs(1), peers.read_started.acquire()).await;
+    release.add_permits(1);
+    assert!(task.await?.is_err());
+    overlapped
+        .context("snapshot download waited for the conflicting seal")??
+        .forget();
+    assert!(f.bucket.get(&stream.object(1)).await?.is_none());
+    let key = format!(
+        "{}.json",
+        crate::storage_paths::session(&scope.host, &scope.session)
+    );
+    let session: session::Session =
+        serde_json::from_slice(&f.bucket.get(&key).await?.unwrap().bytes)?;
+    assert!(session.state == session::RecoveryState::Recovering);
+    let owner: Ownership = serde_json::from_slice(
+        &f.bucket
+            .get(&ownership_key(&f.actor.storage_key())?)
+            .await?
+            .unwrap()
+            .bytes,
+    )?;
+    assert_eq!(owner.lease.id, scope.host);
     Ok(())
 }
 
@@ -238,7 +279,7 @@ async fn recovery_cannot_close_the_session_or_publish_ownership_before_restorati
     );
     let object = f.bucket.get(&key).await?.unwrap();
     let session: session::Session = serde_json::from_slice(&object.bytes)?;
-    assert!(session.state == session::RecoveryState::Recovering);
+    assert!(session.state != session::RecoveryState::Sealed);
     let owner = f
         .bucket
         .get(&ownership_key(&f.actor.storage_key())?)
@@ -331,6 +372,107 @@ async fn concurrent_recoveries_publish_only_one_new_owner() -> Result<()> {
     Ok(())
 }
 
+async fn lost_claim(fail_seal: bool) -> Result<()> {
+    let (mut f, peers, scope, _) = replicated().await?;
+    let replacement = ReplicaTarget {
+        host_id: "replacement".into(),
+        url: "http://replacement".into(),
+        region: "us-east".into(),
+    };
+    let store = Arc::new(
+        crate::replication::FileReplicaStore::open(f._directory.path().join("replacement"), 4096)
+            .await?,
+    );
+    store.initialize_session(&scope.identity()).await?;
+    let stream = f
+        .runtime
+        .load(&f.actor.storage_key())
+        .await?
+        .unwrap()
+        .1
+        .stream()?;
+    let bytes = snapshot(2)?;
+    store.append(&stream, &bytes).await?;
+    peers
+        .stores
+        .lock()
+        .unwrap()
+        .insert(replacement.host_id.clone(), store.clone());
+    peers.fail_old_seal.store(fail_seal, Ordering::SeqCst);
+    let entered = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    *f.bucket.delay_write.lock().unwrap() = Some((entered.clone(), release.clone()));
+    f.runtime.peers = peers.clone();
+    let task = activate(f.runtime, f.actor.clone(), f.clock.clone());
+    entered.acquire().await?.forget();
+    let overlapped = tokio::time::timeout(Duration::from_secs(1), peers.sealed.acquire()).await;
+    let key = format!(
+        "{}.json",
+        crate::storage_paths::session(&scope.host, &scope.session)
+    );
+    let object = f.bucket.inner.get(&key).await?.unwrap();
+    let mut session: session::Session = serde_json::from_slice(&object.bytes)?;
+    let downloaded = if fail_seal {
+        None
+    } else {
+        Some(tokio::time::timeout(Duration::from_secs(1), peers.read_started.acquire()).await)
+    };
+    session.replicas = vec![replacement];
+    assert!(
+        f.bucket
+            .inner
+            .compare_and_swap(&key, Some(object.generation), serde_json::to_vec(&session)?)
+            .await?
+    );
+    release.add_permits(1);
+    let result = task.await??;
+    overlapped
+        .context("sealing did not overlap the disputed claim")??
+        .forget();
+    if let Some(downloaded) = downloaded {
+        downloaded
+            .context("snapshot download waited for the claim")??
+            .forget();
+    }
+    assert_eq!(result.state.unwrap().as_ref(), bytes);
+    assert!(f.bucket.get(&stream.object(1)).await?.is_none());
+    assert!(store.append(&stream, &snapshot(3)?).await.is_err());
+    Ok(())
+}
+
+async fn delayed_seal(
+    bytes: &[u8],
+) -> Result<(Fixture, Arc<ObservedPeers>, ReplicaScope, Arc<Semaphore>)> {
+    let (mut f, peers, scope, _) = replicated().await?;
+    let stream = f
+        .runtime
+        .load(&f.actor.storage_key())
+        .await?
+        .unwrap()
+        .1
+        .stream()?;
+    let targets = add_replica(&mut f, &peers, &scope, &stream, bytes).await?;
+    let key = format!(
+        "{}.json",
+        crate::storage_paths::session(&scope.host, &scope.session)
+    );
+    let object = f.bucket.get(&key).await?.unwrap();
+    let mut session: session::Session = serde_json::from_slice(&object.bytes)?;
+    session.replicas = targets;
+    assert!(
+        f.bucket
+            .compare_and_swap(&key, Some(object.generation), serde_json::to_vec(&session)?)
+            .await?
+    );
+    let release = Arc::new(Semaphore::new(0));
+    peers
+        .seal_release
+        .lock()
+        .unwrap()
+        .insert("second".into(), release.clone());
+    Ok((f, peers, scope, release))
+}
+
 async fn add_replica(
     f: &mut Fixture,
     peers: &ObservedPeers,
@@ -406,6 +548,7 @@ async fn replicated() -> Result<(Fixture, Arc<ObservedPeers>, ReplicaScope, Vec<
     let peers = Arc::new(ObservedPeers {
         stores: Mutex::new(HashMap::from([(target.host_id, store)])),
         sealed: Semaphore::new(0),
+        seal_release: Mutex::new(HashMap::new()),
         read_started: Semaphore::new(0),
         read_release: Mutex::new(HashMap::new()),
         read_override: Mutex::new(HashMap::new()),
@@ -459,6 +602,7 @@ impl Bucket for ObservedBucket {
 struct ObservedPeers {
     stores: Mutex<HashMap<String, Arc<crate::replication::FileReplicaStore>>>,
     sealed: Semaphore,
+    seal_release: Mutex<HashMap<String, Arc<Semaphore>>>,
     read_started: Semaphore,
     read_release: Mutex<HashMap<String, Arc<Semaphore>>>,
     read_override: Mutex<HashMap<String, Vec<u8>>>,
@@ -489,6 +633,15 @@ impl ReplicaPeers for ObservedPeers {
         session: &str,
     ) -> Result<crate::replication::SessionHead> {
         self.sealed.add_permits(1);
+        let release = self
+            .seal_release
+            .lock()
+            .unwrap()
+            .get(&peer.host_id)
+            .cloned();
+        if let Some(release) = release {
+            release.acquire().await?.forget();
+        }
         ensure!(
             peer.host_id != "old" || !self.fail_old_seal.load(Ordering::SeqCst),
             "old replica unavailable"

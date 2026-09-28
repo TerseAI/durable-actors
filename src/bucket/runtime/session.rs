@@ -1,6 +1,8 @@
 use super::*;
 use futures_util::{StreamExt, TryStreamExt};
 use std::time::Instant;
+use tokio::sync::Semaphore;
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Session {
@@ -21,6 +23,11 @@ pub(super) enum RecoveryState {
     Open,
     Recovering,
     Sealed,
+}
+
+struct PendingSnapshot {
+    reference: SnapshotRef,
+    download: AbortOnDropHandle<Result<DownloadedSnapshot>>,
 }
 
 impl RuntimeStorage {
@@ -105,7 +112,7 @@ impl RuntimeStorage {
     async fn start_recovery(
         &self,
         scope: &ReplicaScope,
-    ) -> Result<Option<(Session, Vec<SnapshotRef>)>> {
+    ) -> Result<Option<(Session, Vec<PendingSnapshot>)>> {
         let key = key(&scope.host, &scope.session);
         let id = scope.identity();
         loop {
@@ -152,7 +159,7 @@ impl RuntimeStorage {
         scope: &ReplicaScope,
         generation: i64,
         session: &Session,
-    ) -> Result<Option<Vec<SnapshotRef>>> {
+    ) -> Result<Option<Vec<PendingSnapshot>>> {
         let key = key(&scope.host, &scope.session);
         let started = Instant::now();
         let claim = async {
@@ -178,7 +185,7 @@ impl RuntimeStorage {
         &self,
         scope: &ReplicaScope,
         session: Session,
-        snapshots: Vec<SnapshotRef>,
+        snapshots: Vec<PendingSnapshot>,
     ) -> Result<Vec<LoadedSnapshot>> {
         let key = key(&scope.host, &scope.session);
         let started = Instant::now();
@@ -240,14 +247,15 @@ impl RuntimeStorage {
         .await
     }
 
-    async fn seal_replicas(&self, session: &Session) -> Result<Vec<SnapshotRef>> {
+    async fn seal_replicas(&self, session: &Session) -> Result<Vec<PendingSnapshot>> {
         let mut pending = JoinSet::new();
         for target in &session.replicas {
             let (peers, target, id) = (self.peers.clone(), target.clone(), session.id.clone());
             pending.spawn(async move { peers.seal(&target, &id).await });
         }
         let mut witnesses = 0;
-        let mut snapshots = HashMap::new();
+        let mut snapshots: HashMap<String, PendingSnapshot> = HashMap::new();
+        let downloads = Arc::new(Semaphore::new(8));
         while let Some(result) = pending.join_next().await {
             if let Ok(Ok(head)) = result {
                 ensure!(
@@ -268,10 +276,17 @@ impl RuntimeStorage {
                             snapshot.object == head.stream.object(snapshot.state_version),
                             "replica snapshot identity mismatch"
                         );
-                        advance(
-                            snapshots.entry(head.stream.prefix).or_insert(None),
-                            Some(snapshot),
-                        )?;
+                        let current = snapshots.get(&head.stream.prefix);
+                        let mut newest = current.map(|current| current.reference.clone());
+                        advance(&mut newest, Some(snapshot.clone()))?;
+                        if newest.as_ref() == Some(&snapshot)
+                            && current.is_none_or(|current| current.reference != snapshot)
+                        {
+                            snapshots.insert(
+                                head.stream.prefix,
+                                self.prefetch_snapshot(session, snapshot, downloads.clone()),
+                            );
+                        }
                     }
                 }
             }
@@ -280,25 +295,57 @@ impl RuntimeStorage {
             session.replicas.is_empty() || witnesses > 0,
             "no complete replica witness; refusing to lose acknowledged state"
         );
-        Ok(snapshots.into_values().flatten().collect())
+        Ok(snapshots.into_values().collect())
+    }
+
+    // Downloads stay read-only until the claim and every seal are validated.
+    fn prefetch_snapshot(
+        &self,
+        session: &Session,
+        reference: SnapshotRef,
+        downloads: Arc<Semaphore>,
+    ) -> PendingSnapshot {
+        let (authority, peers) = (self.authority.clone(), self.peers.clone());
+        let replicas = session.replicas.clone();
+        let snapshot = reference.clone();
+        let download = tokio::spawn(async move {
+            let _permit = downloads.acquire_owned().await?;
+            Self::download_snapshot(authority.as_ref(), peers.as_ref(), &replicas, &snapshot).await
+        });
+        PendingSnapshot {
+            reference,
+            download: AbortOnDropHandle::new(download),
+        }
     }
 
     async fn restore_snapshots(
         &self,
         session: &Session,
-        snapshots: Vec<SnapshotRef>,
+        snapshots: Vec<PendingSnapshot>,
     ) -> Result<Vec<LoadedSnapshot>> {
         futures_util::stream::iter(snapshots)
-            .map(|snapshot| async {
-                let bytes = self.recover_snapshot(&session.replicas, &snapshot).await?;
-                anyhow::Ok(LoadedSnapshot {
-                    reference: snapshot,
-                    bytes: bytes.into(),
-                })
-            })
+            .map(|snapshot| self.restore_snapshot(session, snapshot))
             .buffer_unordered(8)
             .try_collect()
             .await
+    }
+
+    async fn restore_snapshot(
+        &self,
+        session: &Session,
+        snapshot: PendingSnapshot,
+    ) -> Result<LoadedSnapshot> {
+        let bytes = match snapshot.download.await? {
+            Ok(download) => self.persist_download(&snapshot.reference, download).await?,
+            Err(_) => {
+                self.recover_snapshot(&session.replicas, &snapshot.reference)
+                    .await?
+            }
+        };
+        Ok(LoadedSnapshot {
+            reference: snapshot.reference,
+            bytes: bytes.into(),
+        })
     }
 }
 
