@@ -89,7 +89,16 @@ test("rebuilds for configuration and dependency changes", { timeout: 15_000 }, a
         await watcher.close()
         await rm(root, { recursive: true, force: true })
     })
-    for (const file of ["tsconfig.json", "package.json", "pnpm-lock.yaml", "helper.js"]) {
+    for (const file of [
+        "tsconfig.json",
+        "package.json",
+        "pnpm-lock.yaml",
+        "helper.js",
+        "actors.py",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements.txt"
+    ]) {
         const refreshed = new Promise<void>((resolve, reject) => {
             const deadline = setTimeout(() => reject(new Error(`${file} did not trigger a rebuild`)), 2500)
             changed = () => {

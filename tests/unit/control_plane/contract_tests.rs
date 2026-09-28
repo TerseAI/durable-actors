@@ -295,3 +295,14 @@ fn spec() -> HostLaunchSpec {
         secret_refs: vec![],
     }
 }
+
+#[test]
+fn python_contracts_publish_without_typescript_declarations() -> Result<()> {
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    document.as_object_mut().unwrap().remove("typescript");
+    let contract = PublicActorContract::new(document.clone())?;
+    assert_eq!(contract.document(), &document);
+    Ok(())
+}

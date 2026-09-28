@@ -235,7 +235,7 @@ func validateAssignment(request ensureRequest) error {
 		return fmt.Errorf("published code snapshot is required")
 	}
 	entrypoint := request.ActorEntrypoint
-	if request.WorkingDirectory != "/customer" || entrypoint == "" || strings.HasPrefix(entrypoint, "/") || path.Clean(entrypoint) != entrypoint || strings.HasPrefix(entrypoint, "../") || !strings.HasSuffix(entrypoint, ".mjs") {
+	if request.WorkingDirectory != "/customer" || entrypoint == "" || strings.HasPrefix(entrypoint, "/") || path.Clean(entrypoint) != entrypoint || strings.HasPrefix(entrypoint, "../") || (!strings.HasSuffix(entrypoint, ".mjs") && !strings.HasSuffix(entrypoint, ".pyz")) {
 		return fmt.Errorf("customer entrypoint must be a compiled module under /customer")
 	}
 	return nil

@@ -107,7 +107,21 @@ function ignoredActorPath(candidate: string, options: ActorSourceWatcherOptions)
     const relative = path.relative(options.projectDirectory, candidate)
     if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
     const components = relative.split(path.sep)
-    if (components.includes(".git") || components.includes("node_modules")) return true
+    if (
+        components.some(component =>
+            [
+                ".git",
+                "node_modules",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".mypy_cache",
+                ".pytest_cache",
+                ".ruff_cache"
+            ].includes(component)
+        )
+    )
+        return true
     if ([".durable-actors", "generated"].includes(components[0])) return true
     if (!options.dataDirectory) return false
     const state = path.resolve(options.dataDirectory)
@@ -115,7 +129,10 @@ function ignoredActorPath(candidate: string, options: ActorSourceWatcherOptions)
 }
 
 function isActorSource(candidate: string): boolean {
-    return /\.(?:[cm]?[jt]sx?|json|ya?ml)$/u.test(candidate) || path.basename(candidate) === "bun.lock"
+    return (
+        /\.(?:[cm]?[jt]sx?|json|ya?ml|py|toml)$/u.test(candidate) ||
+        ["bun.lock", "uv.lock", "requirements.txt"].includes(path.basename(candidate))
+    )
 }
 
 function reportWatchError(error: unknown): void {
