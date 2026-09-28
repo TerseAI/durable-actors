@@ -22,10 +22,14 @@ def actor_reference(actor: type[A], actor_id: str, transport: ActorTransport | N
     component(actor_id, 128)
     definition = describe_actor(actor)
     client = transport if transport is not None else default_client()
-    metadata, incoming, outgoing = (TypeAdapter(hint) for hint in definition.socket_types[:3])
+    metadata_adapter, incoming, outgoing = (
+        TypeAdapter(hint) for hint in definition.socket_types[:3]
+    )
 
-    def connect(self: A, value: Any) -> Connection[Any, Any, JsonValue, JsonValue]:
-        grant = client.prepare_websocket(actor.__name__, actor_id, encode(metadata, value))
+    def connect(self: A, metadata: Any) -> Connection[Any, Any, JsonValue, JsonValue]:
+        grant = client.prepare_websocket(
+            actor.__name__, actor_id, encode(metadata_adapter, metadata)
+        )
         return Connection[Any, Any, JsonValue, JsonValue].open(
             grant, incoming, outgoing, TypeAdapter(JsonValue), TypeAdapter(JsonValue)
         )

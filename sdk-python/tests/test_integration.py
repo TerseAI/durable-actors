@@ -112,6 +112,14 @@ class Room(Actor[Payload, Payload, Payload]):
             assert connection.receive(timeout=5).value == 17
             with pytest.raises(TimeoutError):
                 connection.receive(timeout=0.01)
+        source = importlib.import_module("socket_actors")
+        reference = source.Room.get("lobby", client)
+        with reference.connect(metadata=source.Payload(value=2)) as connection:
+            snapshot = connection.receive(timeout=5)
+            assert isinstance(snapshot, StateSnapshot)
+            assert snapshot.state == {"count": 3}
+            reference.broadcast(source.Payload(value=19))
+            assert connection.receive(timeout=5).value == 19
 
 
 @pytest.mark.skipif(
