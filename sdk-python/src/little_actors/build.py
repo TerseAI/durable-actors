@@ -8,7 +8,7 @@ import sys
 import tomllib
 import zipfile
 from contextlib import redirect_stdout
-from importlib.metadata import version
+from importlib.metadata import distributions, version
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +76,22 @@ def install_dependencies(project: Path, output: Path, settings: Document) -> Non
             check=True,
             stdout=sys.stderr,
         )
+    remove_bundled_sdk(output / "python")
     sys.path.insert(0, str(output / "python"))
+
+
+def remove_bundled_sdk(directory: Path) -> None:
+    for distribution in distributions(path=[str(directory)]):
+        if canonicalize_name(distribution.metadata["Name"]) != "little-actors":
+            continue
+        if distribution.version != version("little-actors"):
+            raise ValueError("actor SDK version must match the build runtime")
+        if distribution.files is None:
+            raise ValueError("installed actor SDK has no file manifest")
+        for file in distribution.files:
+            installed = (directory / file).resolve()
+            if installed.is_relative_to(directory) and installed.is_file():
+                installed.unlink()
 
 
 def runtime_requirements(dependencies: list[str]) -> list[str]:

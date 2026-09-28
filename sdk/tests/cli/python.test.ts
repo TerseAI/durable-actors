@@ -173,3 +173,28 @@ with Client(control_plane_url="${origin}") as client:
         await assert.rejects(fetch(origin))
     }
 )
+
+test("deployment builder dispatches Python and produces a loadable artifact", { skip: !python }, async t => {
+    const directory = await mkdtemp(path.join(tmpdir(), "actors-python-deploy-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    await writeFile(path.join(directory, "actors.py"), source)
+    const output = path.join(directory, "dist")
+    const builder = fileURLToPath(new URL("../../../dist/compiler/deployment-build.js", import.meta.url))
+    const built = await run("bun", [builder, directory, "actors.py", output], {
+        env: { ...environment, DURABLE_ACTORS_PYTHON: python }
+    })
+    assert.equal(JSON.parse(built.stdout).actors[0].actorName, "Counter")
+    await rm(path.join(directory, "actors.py"))
+    const loaded = await run(
+        python!,
+        [
+            "-c",
+            `from pathlib import Path
+from little_actors.build import load_artifact
+actor = load_artifact(Path("actors.pyz"))[0]()
+print(actor.increment(7))`
+        ],
+        { cwd: output }
+    )
+    assert.equal(loaded.stdout.trim(), "7")
+})

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -203,9 +202,9 @@ func (s *sdkSandbox) Snapshot(ctx context.Context) (string, error) {
 }
 
 func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string) (json.RawMessage, error) {
-	process, err := s.sb.Exec(ctx, buildCodeCommand(directory, entrypoint), &modal.SandboxExecParams{Stdout: modal.Pipe, Stderr: modal.Pipe, Timeout: actorBuildTimeout})
+	process, err := s.sb.Exec(ctx, []string{"bun", "/opt/durable-actors/sdk/dist/compiler/deployment-build.js", directory, entrypoint, compiledCodeDirectory}, &modal.SandboxExecParams{Stdout: modal.Pipe, Stderr: modal.Pipe, Timeout: actorBuildTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("start actor compiler (build image requires matching Bun and durable-actors SDK): %w", err)
+		return nil, fmt.Errorf("start actor compiler (build image requires matching runtime and actor SDKs): %w", err)
 	}
 	defer process.Stdout.Close()
 	defer process.Stderr.Close()
@@ -233,11 +232,4 @@ func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string
 		return nil, fmt.Errorf("actor compiler returned an invalid or oversized contract")
 	}
 	return json.RawMessage(output), nil
-}
-
-func buildCodeCommand(directory, entrypoint string) []string {
-	if strings.HasSuffix(entrypoint, ".py") {
-		return []string{"python3", "-m", "little_actors.build", directory, entrypoint, compiledCodeDirectory}
-	}
-	return []string{"bun", "/opt/durable-actors/sdk/dist/compiler/deployment-build.js", directory, entrypoint, compiledCodeDirectory}
 }

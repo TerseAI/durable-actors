@@ -31,13 +31,6 @@ func TestSDKInitializesWithTheRustProvidersSanitizedEnvironment(t *testing.T) {
 	}
 }
 
-func TestPythonBuildCommand(t *testing.T) {
-	command := buildCodeCommand("/project", "actors.py")
-	if command[0] != "python3" || command[1] != "-m" || command[2] != "little_actors.build" {
-		t.Fatalf("unexpected Python build command: %v", command)
-	}
-}
-
 func TestResolveCachesAppAndEachImage(t *testing.T) {
 	api, calls := testSDKAPI(t)
 	for _, id := range []string{"im-one", "im-two", "im-one", "im-two"} {

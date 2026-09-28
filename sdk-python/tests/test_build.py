@@ -115,3 +115,47 @@ def test_build_excludes_virtual_environment_sources(tmp_path, directory):
     write_artifact(tmp_path, output, "actors", {})
     with zipfile.ZipFile(output / "actors.pyz") as artifact:
         assert set(artifact.namelist()) == {"little-actors.json", "actors.py", "helper.py"}
+
+
+@pytest.mark.parametrize("compatible", [True, False])
+def test_requirements_preserve_the_runtime_sdk(tmp_path, compatible):
+    from importlib.metadata import version
+
+    sdk_version = version("little-actors") if compatible else "999.0.0"
+    dependency = tmp_path / f"little_actors-{sdk_version}-py3-none-any.whl"
+    metadata = f"little_actors-{sdk_version}.dist-info"
+    with zipfile.ZipFile(dependency, "w") as wheel:
+        files = {
+            "little_actors/__init__.py": "raise RuntimeError('bundled SDK shadows runtime')\n",
+            f"{metadata}/METADATA": f"Metadata-Version: 2.1\nName: little-actors\nVersion: {sdk_version}\n",
+            f"{metadata}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        for name, content in files.items():
+            wheel.writestr(name, content)
+        wheel.writestr(f"{metadata}/RECORD", "".join(f"{name},,\n" for name in files))
+    (tmp_path / "requirements.txt").write_text(f"little-actors @ {dependency.as_uri()}\n")
+    (tmp_path / "actors.py").write_text("""from little_actors import Actor
+class Counter(Actor):
+    def read(self) -> int:
+        return 7
+""")
+    output = tmp_path / "dist"
+    result = subprocess.run(
+        [sys.executable, "-m", "little_actors.build", str(tmp_path), "actors.py", str(output)],
+        capture_output=True,
+        text=True,
+    )
+    if not compatible:
+        assert result.returncode != 0
+        assert "actor SDK version must match the build runtime" in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["actors"][0]["actorName"] == "Counter"
+    loaded = subprocess.run(
+        [sys.executable, "-c", "import little_actors; print(little_actors.Actor.__name__)"],
+        cwd=output / "python",
+        capture_output=True,
+        text=True,
+    )
+    assert loaded.returncode == 0, loaded.stderr
+    assert loaded.stdout.strip() == "Actor"
