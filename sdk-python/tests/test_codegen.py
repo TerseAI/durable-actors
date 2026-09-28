@@ -13,8 +13,11 @@ from little_actors.contract import public_contract
 
 
 class Transport:
+    def broadcast(self, actor_name, actor_id, message):
+        raise AssertionError("not used")
+
     def prepare_websocket(
-        self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+        self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000, home_region=None
     ):
         raise AssertionError("not used")
 
@@ -66,10 +69,10 @@ def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_p
     from little_actors import Actor
 
     class Parameters(Actor):
-        async def total(self, initial: int, *values: int) -> int:
+        def total(self, initial: int, *values: int) -> int:
             return initial + sum(values)
 
-        async def label(self, *, value: str = "default") -> str:
+        def label(self, *, value: str = "default") -> str:
             return value
 
     generate_client(public_contract([Parameters]), tmp_path / "parameters_client")
@@ -77,8 +80,17 @@ def test_generated_rest_and_keyword_parameters_preserve_calling_convention(tmp_p
     generated = importlib.import_module("parameters_client")
 
     class Calls:
+        def broadcast(self, actor_name, actor_id, message):
+            raise AssertionError("not used")
+
         def prepare_websocket(
-            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
         ):
             raise AssertionError("not used")
 
@@ -95,7 +107,7 @@ def test_generated_names_cannot_shadow_client_runtime(tmp_path, monkeypatch):
     from little_actors import Actor
 
     class Connection(Actor):
-        async def call(self, json: str, TypeAdapter: int, argument: bool) -> str:
+        def call(self, json: str, TypeAdapter: int, argument: bool) -> str:
             return json
 
     generate_client(public_contract([Connection]), tmp_path / "names_client")
@@ -103,8 +115,17 @@ def test_generated_names_cannot_shadow_client_runtime(tmp_path, monkeypatch):
     module = importlib.import_module("names_client")
 
     class Calls:
+        def broadcast(self, actor_name, actor_id, message):
+            raise AssertionError("not used")
+
         def prepare_websocket(
-            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
         ):
             raise AssertionError("not used")
 
@@ -130,8 +151,17 @@ def test_generated_recursive_unions_dates_and_tuples(tmp_path, monkeypatch):
     runtime = ActorRuntime(Trees, Effects())
 
     class Calls:
+        def broadcast(self, actor_name, actor_id, message):
+            raise AssertionError("not used")
+
         def prepare_websocket(
-            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
         ):
             raise AssertionError("not used")
 
@@ -202,8 +232,17 @@ def test_generated_models_preserve_omitted_typed_dict_fields(tmp_path, monkeypat
     models = remote.actors.OptionActor
 
     class Calls:
+        def broadcast(self, actor_name, actor_id, message):
+            raise AssertionError("not used")
+
         def prepare_websocket(
-            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
         ):
             raise AssertionError("not used")
 
@@ -241,13 +280,13 @@ def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(tmp_p
     from little_actors import Actor
 
     class Defaults(Actor):
-        async def greet(self, name: str = "friend", suffix: str = "!") -> list[str]:
+        def greet(self, name: str = "friend", suffix: str = "!") -> list[str]:
             return [name, suffix]
 
-        async def nullable(self, name: str | None = None, suffix: str = "!") -> list[str | None]:
+        def nullable(self, name: str | None = None, suffix: str = "!") -> list[str | None]:
             return [name, suffix]
 
-        async def unknown(self, name: str = "friend", suffix: str = "!") -> list[str]:
+        def unknown(self, name: str = "friend", suffix: str = "!") -> list[str]:
             return [name, suffix]
 
     contract = public_contract([Defaults])
@@ -262,8 +301,17 @@ def test_generated_clients_only_fill_omitted_arguments_with_known_defaults(tmp_p
     calls = []
 
     class Calls:
+        def broadcast(self, actor_name, actor_id, message):
+            raise AssertionError("not used")
+
         def prepare_websocket(
-            self, actor_name, actor_id, metadata, *, authorization_lifetime_ms=900000
+            self,
+            actor_name,
+            actor_id,
+            metadata,
+            *,
+            authorization_lifetime_ms=900000,
+            home_region=None,
         ):
             raise AssertionError("not used")
 
@@ -341,10 +389,10 @@ def test_actor_namespaces_preserve_typed_imports_and_method_types(tmp_path, monk
     class Counter(Actor):
         count: int = 0
 
-        async def total(self, initial: int = 0, *values: int) -> int:
+        def total(self, initial: int = 0, *values: int) -> int:
             return initial + sum(values)
 
-        async def clear(self) -> None:
+        def clear(self) -> None:
             self.count = 0
 
     generate_client(public_contract([Chat, Counter]), tmp_path / "namespace_client")
@@ -412,11 +460,11 @@ def test_actor_namespaces_keep_model_and_builtin_names_distinct(tmp_path, monkey
     class Names(Actor):
         payload: State = State(value=0)
 
-        async def echo(self, value: Stub) -> Stub:
+        def echo(self, value: Stub) -> Stub:
             return value
 
     class str(Actor):
-        async def echo(self, value: builtins.str) -> builtins.str:
+        def echo(self, value: builtins.str) -> builtins.str:
             return value
 
     generate_client(public_contract([str, Names]), tmp_path / "collision_client")

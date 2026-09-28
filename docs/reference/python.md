@@ -33,7 +33,7 @@ Public SDK classes and methods include docstrings for IDE hover and `help()`. Ac
 
 Inline annotations and a `py.typed` marker support mypy and Pyright without a custom checker plugin. Tests verify both valid calls and rejection of invalid calls, including generated model return types. Runtime validation is strict: a string is not coerced into an integer RPC argument.
 
-Classes extend `Actor` directly. Public `def` and `async def` methods are RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `aget_connections`, `broadcast`, `connect`, `prepare_websocket`, `subscribe`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
+Classes extend `Actor` directly. Public `def` methods are synchronous RPCs; `_` methods are helpers. Properties and static methods are not RPCs. `get_connections`, `broadcast`, `connect`, `prepare_websocket`, `subscribe`, and `get` are reserved. Lifecycle hooks are described below. Positional, positional-only, keyword-only, defaulted, and final variadic parameters are supported. The wire contract requires required parameters before optional parameters and variadic parameters last; `**kwargs` is unsupported.
 
 Generated clients fill omitted middle arguments only when the contract provides a default. If a later argument is supplied and an earlier optional argument has no schema default (as in TypeScript contracts), the client raises `ValueError` before sending the RPC. Trailing optional arguments can always be omitted.
 
@@ -48,9 +48,9 @@ Persisted fields beginning with `_` stay out of the public socket state schema. 
 
 ## Execution and failures
 
-Methods run serially by default. Use ordinary `def` for RPCs and socket hooks. Synchronous handlers run on a worker thread, so blocking I/O does not block executor communication. You can also use `async def` for async libraries. The runtime owns the event loop; applications do not need to start it. A failed invocation restores persisted state to its previous snapshot. Ephemeral defaults are recreated when restoring or reactivating an actor. Use `self.id` within methods and hooks to read the current actor ID.
+Methods run serially by default. Use ordinary `def` for RPCs and socket hooks. Synchronous handlers run on a worker thread, so blocking I/O does not block executor communication. Actor methods, hooks, and clients use a synchronous API. Asyncio is an internal executor detail. A failed invocation restores persisted state to its previous snapshot. Ephemeral defaults are recreated when restoring or reactivating an actor. Use `self.id` within methods and hooks to read the current actor ID.
 
-`@reentrant` supports ordinary `def` and `async def` methods and socket hooks. A decorated invocation allows another call to enter before it finishes. Synchronous handlers run concurrently on worker threads, including while doing blocking I/O; asynchronous handlers interleave at awaits. Ordinary invocations still serialize with each other and prevent new calls from entering until completion, but already-running reentrant handlers may continue. Calling a decorated method directly through `self` inherits the outer invocation's policy.
+`@reentrant` supports ordinary `def` methods and socket hooks. A decorated invocation allows another call to enter before it finishes. Handlers run concurrently on worker threads, including while doing blocking I/O. Ordinary invocations still serialize with each other and prevent new calls from entering until completion, but already-running reentrant handlers may continue. Calling a decorated method directly through `self` inherits the outer invocation's policy.
 
 ```python
 import time
@@ -71,9 +71,9 @@ class Counter(Actor):
 
 Another client can call `increment()` while `wait()` is sleeping. The generated clients remain synchronous, so overlapping client calls need separate threads or processes.
 
-Reentrant handlers share a live instance, and worker threads may overlap between arbitrary Python statements. Protect shared read-modify-write operations with an ephemeral `threading.Lock`, and keep blocking I/O outside the lock. This differs from TypeScript's single-threaded interleaving. Async handlers must avoid blocking the event loop on a thread lock; offload the entire locked operation with `asyncio.to_thread` when sharing a lock with synchronous handlers. Enabling reentrancy disables error rollback for the entire actor class: an exception must not erase another call's successful changes. Successful completions snapshot shared state, including changes visible from other in-flight invocations; completion sequences preserve commit ordering in Rust.
+Reentrant handlers share a live instance, and worker threads may overlap between arbitrary Python statements. Protect shared read-modify-write operations with an ephemeral `threading.Lock`, and keep blocking I/O outside the lock. This differs from TypeScript's single-threaded interleaving. Enabling reentrancy disables error rollback for the entire actor class: an exception must not erase another call's successful changes. Successful completions snapshot shared state, including changes visible from other in-flight invocations; completion sequences preserve commit ordering in Rust.
 
-Eviction cancels queued calls and waits for any running synchronous handler before discarding its instance. Python threads cannot be forcibly stopped; configure timeouts on blocking I/O. A cancelled invocation cannot publish further socket effects or commit state after the handler exits.
+Actor code runs in a replaceable child process. Eviction terminates that process, including blocked handlers, while the supervisor retains the executor connection. The next call starts a fresh worker and restores saved state. Already-published socket effects are acknowledged before failed calls complete; terminated calls cannot publish additional effects or commit state. Completion sequence numbers continue across worker replacements. Workers also exit when their supervisor disappears.
 
 The synchronous HTTP client caches direct actor routes, refreshes stale routes, and retries only a rejection known to precede execution. `ActorInvocationError` exposes `code` and `request_id`. A lost response raises `outcome_unknown`; automatically replaying it could repeat actor side effects.
 
@@ -86,7 +86,7 @@ from generated import actors
 
 chat = actors.Chat.get("lobby")
 subscription = chat.subscribe(lambda state: print(state.messages))
-chat.append(actors.Chat.Message(text="hello"))
+chat.append(actors.Chat.Message(role="user", text="hello"))
 ```
 
 The SDK delivers the initial snapshot and applies subsequent changes and removals before calling your callback. Omitted fields are preserved, changed fields are replaced, and removed optional fields return to their omitted/default state. Each callback receives a new model; mutating it does not affect later snapshots. Only emitted fields are included.
@@ -99,24 +99,33 @@ Connection metadata is optional only when its declared type accepts `None`. For 
 
 ## Typed WebSockets
 
-Declare `Actor[Metadata, Incoming, Outgoing]` to type both ends of the socket. The defaults are `JsonValue`.
+Declare `Actor[Metadata, Incoming, Outgoing, Tag]` to type both ends of the socket and its allowed tags. `Metadata` and `Incoming` default to `JsonValue`, `Outgoing` defaults to `Incoming`, and `Tag` defaults to `str`. Use a `Literal` union for restricted tags; both the type checker and runtime validate them.
 
 ```python
-class Room(Actor[Member, Message, Message]):
-    def on_connect(self, socket: ActorSocket[Member, Message]) -> None:
+from typing import Literal
+from pydantic import BaseModel
+from little_actors import Actor, ActorSocket
+
+class Member(BaseModel):
+    name: str
+
+Tag = Literal["members", "admins"]
+
+class Room(Actor[Member, Message, Message, Tag]):
+    def on_connect(self, socket: ActorSocket[Member, Message, Tag]) -> None:
         socket.set_tags("members")
 
-    def on_message(self, socket: ActorSocket[Member, Message], message: Message) -> None:
+    def on_message(self, socket: ActorSocket[Member, Message, Tag], message: Message) -> None:
         self.broadcast(message)
 
     def on_disconnect(
-        self, socket: ActorSocket[Member, Message], code: int,
+        self, socket: ActorSocket[Member, Message, Tag], code: int,
         reason: str, was_clean: bool,
     ) -> None:
         pass
 ```
 
-Import `ActorSocket` from `little_actors`. `self.get_connections()` returns typed sockets in synchronous handlers. Async handlers use `await self.aget_connections()`. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
+Import `ActorSocket` from `little_actors`. `self.get_connections()` returns typed sockets in synchronous handlers. Each socket has `id`, `metadata`, `tags`, and `state`, with `send`, `close`, `reject`, and `set_tags` operations. Assign `socket.metadata` to update it. `reject()` defaults to application close code 4003 and is valid only during connection. Socket handles are scoped to the active invocation.
 
 ```python
 from generated import actors
@@ -162,11 +171,80 @@ Set `DURABLE_ACTORS_CONTROL_PLANE_URL`, `DURABLE_ACTORS_PROJECT_ID`, `DURABLE_AC
 
 Generation from local source imports that source. Generation from a server consumes schemas and does not execute the actor implementation.
 
+## Source-class references and backend broadcasts
+
+When the actor source is available, call it directly without generation:
+
+```python
+from my_app.actors import Chat, Message
+
+chat = Chat.get("lobby")
+messages = chat.append(Message(role="user", text="hello"))
+```
+
+`get()` preserves synchronous method signatures and uses the shared client. It does not construct an actor or run field factories locally. Actor fields remain remote; access state through an RPC or generated subscription. References also support typed `connect(metadata)` and `broadcast(message)`. Filtered broadcasts belong in actor methods through `self.broadcast(...)`.
+
+Actor methods may call other actors using these references. Calls follow the callee's normal serialization and reentrancy policy. A synchronous call back into an actor waiting for that call requires a reentrant entry point.
+
+Generated handles support `actors.Chat.get("lobby").broadcast(message)` for sending application messages to connected clients. Broadcasts are not persisted, and uncertain deliveries are not automatically retried.
+
+## Browser authorization and renewable sessions
+
+After authenticating a user and checking their access, issue a browser WebSocket grant:
+
+```python
+from generated import actors, ActorAuthorization, ActorProxy
+
+access: ActorAuthorization = actors.Room.Authorization(
+    actor_id="lobby",
+    metadata=actors.Room.Metadata(name="Ada"),
+    home_region="canada",
+)
+grant = ActorProxy.handle(access)
+# For a single actor, actors.Room.prepare_websocket(access) also works.
+```
+
+The authorization type binds the actor name to its metadata type. Pass an optional `Client` as the second argument to either helper for custom configuration. The default authorization lifetime is fifteen minutes; `authorization_lifetime_ms` accepts 1,000–86,400,000. `home_region` overrides the client's placement preference for socket setup. Treat the grant URL as a credential.
+
+For clients using short-lived application sessions, pass an `ActorSessionTransport`:
+
+```python
+from generated import actors
+from little_actors import ActorSession, ActorSessionTransport
+
+def get_session() -> ActorSession:
+    return authorize_with_your_backend()
+
+with ActorSessionTransport(project_id="my-project", get_session=get_session) as session:
+    chat = actors.Chat.get("lobby", session)
+    print(chat.append(actors.Chat.Message(role="user", text="hello")))
+```
+
+`ActorSession` contains `project_id`, `control_plane_url`, `token`, and `expires_at_ms` (Unix milliseconds). Sessions require HTTPS outside localhost and about one minute of validity. `get_session` is synchronous; raise `ActorSessionRejectedError` when the backend denies or revokes access. The SDK renews sessions on a background thread, coalesces concurrent refreshes, stops renewal after a minute without activity, and keeps old transports alive until their in-flight requests finish. Explicitly close the session or use `with`.
+
+Set `DURABLE_ACTORS_TELEMETRY=1` for JSON invocation timing on stderr, or pass a `telemetry` callback to `Client`. Events include the request ID, actor, method, outcome, and elapsed time, without arguments, results, or credentials.
+
+## Sandbox resources
+
+```python
+from little_actors import Actor, sandbox
+
+@sandbox(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
+class CustomerAgent(Actor):
+    count: int = 0
+
+    def increment(self) -> int:
+        self.count += 1
+        return self.count
+```
+
+These are the same per-actor overrides as TypeScript's `@Sandbox`: CPU request and cap in cores (0.1–64, in 0.001 increments), memory request and cap in MiB (128–262144), allowed regions, and inactivity before eviction in milliseconds (1–86400000). Omitted values inherit deployment defaults. Regions must be nonempty and unique; their order is not a priority and existing actors retain their saved region. `SandboxRegion` and `SandboxOptions` are exported for typed configuration. See [configuration](configuration.md#per-actor-sandbox-overrides) for server defaults and placement rules.
+
 ## Deployment
 
 The runtime image includes Python 3.13 and this SDK. Register a hosted deployment through the [HTTP API](openapi.md), using the source image's project directory and a Python `actorEntrypoint`, such as `actors.py`. The Modal builder installs dependencies, extracts the contract, and snapshots `actors.pyz` and its sibling `python/` dependency directory. Python hosts implement the existing executor protocol, persistence, residency, and socket effects. Spare sandboxes switch to a Python executor upon assignment; Python itself is not prewarmed in the shared Bun spare pool.
 
-Build dependencies come from `requirements.txt` when present, otherwise from `[project].dependencies` in `pyproject.toml`. Pin dependencies for reproducible builds. The SDK dependency in `pyproject.toml` must match the runtime's installed SDK. The hosted Python version and platform must support any native dependencies; build them in the runtime image, rather than copying a macOS virtual environment into a Linux deployment.
+Hosted compilation has a ten-minute budget for dependency installation and packaging; the enclosing build request allows twelve minutes for provisioning and snapshotting. Build dependencies come from `requirements.txt` when present, otherwise from `[project].dependencies` in `pyproject.toml`. Pin dependencies for reproducible builds. The SDK dependency in `pyproject.toml` must match the runtime's installed SDK. The hosted Python version and platform must support any native dependencies; build them in the runtime image, rather than copying a macOS virtual environment into a Linux deployment.
 
 Python source is packaged from the project, excluding hidden directories, `node_modules`, `venv`, `__pycache__`, `dist`, `target`, `generated`, and any directory containing `pyvenv.cfg`. Export actor classes from the entrypoint; an optional `__all__` controls exports. Explicitly include resources as needed:
 

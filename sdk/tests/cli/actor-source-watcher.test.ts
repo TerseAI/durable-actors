@@ -1,4 +1,4 @@
-import { FSWatcher } from "chokidar"
+import { FSWatcher, watch } from "chokidar"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { once } from "node:events"
@@ -108,5 +108,36 @@ test("rebuilds for configuration and dependency changes", { timeout: 15_000 }, a
         })
         await writeFile(path.join(root, file), "{}")
         await refreshed
+    }
+})
+
+test("excludes virtual environments regardless of their directory name", async t => {
+    const root = await mkdtemp(path.join(tmpdir(), "actor-venv-watch-"))
+    const environments = ["env", "tools/custom-python"]
+    for (const directory of environments) {
+        const environment = path.join(root, directory)
+        await mkdir(path.join(environment, "lib/dependency"), { recursive: true })
+        await writeFile(path.join(environment, "pyvenv.cfg"), "include-system-site-packages = false\n")
+        await writeFile(path.join(environment, "lib/dependency/__init__.py"), "value = 1\n")
+    }
+    await mkdir(path.join(root, "src"))
+    await writeFile(path.join(root, "src/actors.py"), "class Counter: pass\n")
+    let source: FSWatcher | undefined
+    const watcher = new ActorSourceWatcher(
+        { projectDirectory: root },
+        async () => {},
+        (paths, options) => (source = watch(paths, options)),
+        assert.fail
+    )
+    t.after(async () => {
+        await watcher.close()
+        await rm(root, { recursive: true, force: true })
+    })
+    await watcher.start()
+    const watched = Object.keys(source!.getWatched())
+    assert.ok(watched.includes(path.join(root, "src")))
+    for (const directory of environments) {
+        const environment = path.join(root, directory)
+        assert.ok(!watched.some(candidate => candidate === environment || candidate.startsWith(environment + path.sep)))
     }
 })

@@ -35,15 +35,16 @@ def generate_client(contract: Document, output: Path) -> None:
         '"""Typed actor namespaces; obtain an instance handle with actors.Name.get(actor_id)."""\n'
         "from __future__ import annotations\n"
         "import builtins as _builtins\n"
-        "from typing import TypeAlias as _TypeAlias\n"
+        "from typing import TypeAlias as _TypeAlias, Literal as _Literal\n"
         "from little_actors.client import ActorTransport as _ActorTransport\n"
         "from little_actors.generated import Unset as _Unset\n"
+        "from little_actors.proxy import SocketAuthorization as _SocketAuthorization, prepare_authorization as _prepare_authorization\n"
+        "from little_actors.client import SocketGrant as _SocketGrant\n"
+        "from pydantic import TypeAdapter as _TypeAdapter\n"
         + "\n".join(namespaces)
         + f"\n__all__ = {names!r}\n"
     )
-    files["__init__.py"] = (
-        '"""Generated actor clients and types."""\nfrom . import actors as actors\n'
-    )
+    files["__init__.py"] = proxy_module(names)
     files["py.typed"] = ""
     output.mkdir(parents=True, exist_ok=True)
     for name, source in files.items():
@@ -208,6 +209,8 @@ def actor_namespace(actor: Document, types: dict[str, str], models: list[str], i
         "",
         *get_method(client),
         "",
+        *authorization_methods(name, types, model),
+        "",
         *method_namespace(actor, types, model),
     ]
     return "\n".join(lines)
@@ -223,7 +226,7 @@ def namespace_aliases(
             for kind in ("Metadata", "Incoming", "Outgoing", "State", "EmittedState", "StatePatch")
         },
     }
-    reserved = {*aliases, "Methods", "get"}
+    reserved = {*aliases, "Methods", "get", "Authorization", "prepare_websocket"}
     state_models = {
         types["Socket" + kind].removeprefix("_models.")
         for kind in ("State", "EmittedState", "StatePatch")
@@ -255,6 +258,46 @@ def get_method(client: str) -> list[str]:
         ),
         f"        return {client}.Stub(actor_id, transport)",
     ]
+
+
+def authorization_methods(name: str, types: dict[str, str], model: str) -> list[str]:
+    metadata = namespace_type(types["SocketMetadata"], model)
+    return [
+        f"    class Authorization(_SocketAuthorization[{metadata}]):",
+        docstring(
+            f"Backend-approved access to a {name} actor and its typed connection metadata.", 8
+        ),
+        f"        actor_name: _Literal[{name!r}] = {name!r}",
+        "",
+        "    @_builtins.staticmethod",
+        f"    def prepare_websocket(authorization: {name}.Authorization, transport: _ActorTransport | None = None) -> _SocketGrant:",
+        docstring(
+            "Issue browser access after authenticating the user and authorizing this actor.", 8
+        ),
+        f"        return _prepare_authorization(_TypeAdapter({name}.Authorization).validate_python(authorization), transport)",
+    ]
+
+
+def proxy_module(names: list[str]) -> str:
+    authorization = " | ".join(f"actors.{name}.Authorization" for name in names) or "_Never"
+    return f'''"""Generated actor clients, authorization types, and browser access helpers."""
+from . import actors as actors
+from typing import TypeAlias as _TypeAlias, Never as _Never
+from pydantic import TypeAdapter as _TypeAdapter
+from little_actors.client import ActorTransport as _ActorTransport, SocketGrant as _SocketGrant
+from little_actors.proxy import prepare_authorization as _prepare_authorization
+from little_actors import ActorSession as ActorSession, ActorSessionTransport as ActorSessionTransport, ActorSessionRejectedError as ActorSessionRejectedError
+
+ActorAuthorization: _TypeAlias = {authorization}
+
+class ActorProxy:
+    """Issue WebSocket grants for the actors in this generated package."""
+
+    @staticmethod
+    def handle(authorization: ActorAuthorization, transport: _ActorTransport | None = None) -> _SocketGrant:
+        """Issue a grant after the backend has authenticated and authorized the user."""
+        return _prepare_authorization(_TypeAdapter(ActorAuthorization).validate_python(authorization), transport)
+'''
 
 
 def method_namespace(actor: Document, types: dict[str, str], model: str) -> list[str]:
@@ -362,7 +405,7 @@ def actor_client(actor: Document, types: dict[str, str]) -> str:
 
 def rpc_method(actor: str, method: Document, schema: Document, types: dict[str, str]) -> list[str]:
     name = identifier(method["name"])
-    if name in {"connect", "prepare_websocket", "subscribe"}:
+    if name in {"connect", "prepare_websocket", "subscribe", "broadcast"}:
         raise ValueError(f"reserved actor method: {name}")
     params, values, defaults = method_parameters(method["parameters"], schema, types)
     result = method["result"]
@@ -441,6 +484,12 @@ def socket_methods(actor: str, types: dict[str, str]) -> list[str]:
     state, patch = types["SocketEmittedState"], types["SocketStatePatch"]
     connection = f"_Connection[{incoming}, {outgoing}, {state}, {patch}]"
     return [
+        f"    def broadcast(self, message: {outgoing}) -> None:",
+        docstring(
+            "Broadcast a typed application message to every connection without persisting it.", 8
+        ),
+        f"        self._transport.broadcast({actor!r}, self._actor_id, _argument(message, _TypeAdapter({outgoing})))",
+        "",
         f"    def prepare_websocket(self, metadata: {metadata}, *, authorization_lifetime_ms: int = 900000) -> _SocketGrant:",
         docstring(
             "Authorize a WebSocket connection without opening it.\n\n"

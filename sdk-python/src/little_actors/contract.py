@@ -14,12 +14,12 @@ from typing_extensions import TypeAliasType
 from .actor import Actor
 from .guards import is_document, is_field, is_list
 from .json import JsonValue
+from .sandbox import sandbox_contract
 
 Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
 RESERVED = {
     "get_connections",
-    "aget_connections",
     "broadcast",
     "get",
     "connect",
@@ -48,14 +48,14 @@ class Method:
 
 @dataclass(frozen=True)
 class Definition:
-    actor: type[Actor[Any, Any, Any]]
+    actor: type[Actor[Any, Any, Any, Any]]
     fields: dict[str, Field]
     methods: dict[str, Method]
     reentrant_methods: set[str]
-    socket_types: tuple[Any, Any, Any]
+    socket_types: tuple[Any, Any, Any, Any]
 
 
-def public_contract(actors: list[type[Actor[Any, Any, Any]]]) -> Document:
+def public_contract(actors: list[type[Actor[Any, Any, Any, Any]]]) -> Document:
     names = [actor.__name__ for actor in actors]
     if not names or len(names) != len(set(names)):
         raise ValueError("export at least one uniquely named actor")
@@ -67,16 +67,16 @@ def public_contract(actors: list[type[Actor[Any, Any, Any]]]) -> Document:
     }
 
 
-_definitions: dict[type[Actor[Any, Any, Any]], Definition] = {}
+_definitions: dict[type[Actor[Any, Any, Any, Any]], Definition] = {}
 
 
-def describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
+def describe_actor(actor: type[Actor[Any, Any, Any, Any]]) -> Definition:
     if actor not in _definitions:
         _definitions[actor] = _describe_actor(actor)
     return _definitions[actor]
 
 
-def _describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
+def _describe_actor(actor: type[Actor[Any, Any, Any, Any]]) -> Definition:
     if Actor not in actor.__bases__:
         raise ValueError("actors must extend Actor directly")
     if actor.__init__ is not Actor.__init__:
@@ -100,6 +100,14 @@ def _describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
             raise ValueError(
                 f"{actor.__name__}.{name}: public members must be methods; fields require annotations"
             )
+        if (
+            inspect.iscoroutinefunction(value)
+            or inspect.isgeneratorfunction(value)
+            or inspect.isasyncgenfunction(value)
+        ):
+            raise ValueError(
+                f"{actor.__name__}.{name}: actor methods and hooks must be synchronous def functions"
+            )
         if name in RESERVED:
             raise ValueError(f"reserved actor method: {name}")
         if getattr(value, "__actor_reentrant__", False):
@@ -112,7 +120,7 @@ def _describe_actor(actor: type[Actor[Any, Any, Any]]) -> Definition:
             for base in getattr(actor, "__orig_bases__", ())
             if get_origin(base) is Actor
         ),
-        (JsonValue, JsonValue, JsonValue),
+        (JsonValue, JsonValue, JsonValue, str),
     )
     return Definition(actor, fields, dict(sorted(methods.items())), reentrant_methods, socket_types)
 
@@ -156,7 +164,7 @@ def actor_contract(definition: Definition) -> Document:
                 node["default"] = encode(method.parameters[parameter.name], parameter.default)
     socket_roots = {
         name: adapter_for(hint)
-        for name, hint in zip(("Metadata", "Incoming", "Outgoing"), definition.socket_types)
+        for name, hint in zip(("Metadata", "Incoming", "Outgoing", "Tag"), definition.socket_types)
     }
     public = {
         name: field
@@ -177,6 +185,7 @@ def actor_contract(definition: Definition) -> Document:
     return {
         "actorName": definition.actor.__name__,
         **documentation(definition.actor),
+        **sandbox_contract(definition.actor),
         "rpc": {"schema": rpc_schema, "methods": methods},
         "socket": {
             "version": 1,
@@ -192,7 +201,7 @@ def documentation(value: object) -> Document:
     return {"description": inspect.cleandoc(description)} if description else {}
 
 
-def read_field(actor: type[Actor[Any, Any, Any]], name: str, hint: Any) -> Field:
+def read_field(actor: type[Actor[Any, Any, Any, Any]], name: str, hint: Any) -> Field:
     if name in RESERVED | HOOKS | {"id"}:
         raise ValueError(f"reserved actor field: {name}")
     default = getattr(actor, name, MISSING)

@@ -13,11 +13,11 @@ from .socket import Effects, SocketScope, scope_context
 
 
 class ActorRuntime:
-    def __init__(self, actor: type[Actor[Any, Any, Any]], effects: Effects) -> None:
+    def __init__(self, actor: type[Actor[Any, Any, Any, Any]], effects: Effects) -> None:
         self.effects = effects
         self.fatal: Document | None = None
         self.definition = describe_actor(actor)
-        self.instance: Actor[Any, Any, Any] | None = None
+        self.instance: Actor[Any, Any, Any, Any] | None = None
         self.identity: Document | None = None
         self.lifecycle = asyncio.Lock()
         self.pending: set[asyncio.Task[Document]] = set()
@@ -222,8 +222,6 @@ class ActorRuntime:
 async def invoke_handler(
     scope: SocketScope, handler: Callable[..., Any], *args: Any, **kwargs: Any
 ) -> Any:
-    if inspect.iscoroutinefunction(handler):
-        return await handler(*args, **kwargs)
     worker = asyncio.create_task(asyncio.to_thread(handler, *args, **kwargs))
     cancelled = False
     # Threads cannot be stopped: drain the handler before completing cancellation.

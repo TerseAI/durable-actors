@@ -1,4 +1,5 @@
 import { type FSWatcher, watch } from "chokidar"
+import { existsSync } from "node:fs"
 import path from "node:path"
 
 interface ActorSourceWatcherOptions {
@@ -34,6 +35,7 @@ class ActorSourceWatcher {
             this.watcher = this.createWatcher(this.options.projectDirectory, {
                 ignored: (watchedPath, stats) =>
                     ignoredActorPath(watchedPath, this.options) ||
+                    (stats?.isDirectory() === true && existsSync(path.join(watchedPath, "pyvenv.cfg"))) ||
                     (stats !== undefined && !stats.isDirectory() && (!stats.isFile() || !isActorSource(watchedPath))),
                 ignoreInitial: true,
                 followSymlinks: false,

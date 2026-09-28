@@ -6,8 +6,10 @@ import atexit
 import json
 import os
 import re
+import sys
 import time
 import uuid
+from collections.abc import Callable
 from threading import Lock
 from types import TracebackType
 from typing import Any, Protocol, cast
@@ -74,7 +76,7 @@ class RpcTransport(Protocol):
 
 
 class ActorTransport(RpcTransport, Protocol):
-    """Transport supporting both synchronous RPCs and WebSocket authorization."""
+    """Transport supporting synchronous RPCs, WebSocket authorization, and broadcasts."""
 
     def prepare_websocket(
         self,
@@ -83,7 +85,10 @@ class ActorTransport(RpcTransport, Protocol):
         metadata: Any,
         *,
         authorization_lifetime_ms: int = 900000,
+        home_region: str | None = None,
     ) -> SocketGrant: ...
+
+    def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None: ...
 
 
 class Client:
@@ -102,6 +107,7 @@ class Client:
         api_key: str | None = None,
         home_region: str | None = None,
         http: httpx.Client | None = None,
+        telemetry: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Configure a transport, using environment values for omitted options.
 
@@ -116,6 +122,8 @@ class Client:
                 DURABLE_ACTORS_HOME_REGION.
             http: Optional caller-owned httpx.Client. When omitted, this transport
                 creates and owns its HTTP client with a 180-second timeout.
+            telemetry: Receives invocation timing and outcome, without payloads or
+                credentials. Defaults to stderr when DURABLE_ACTORS_TELEMETRY=1.
         """
         self.origin = validate_origin(
             control_plane_url
@@ -135,6 +143,9 @@ class Client:
             raise ValueError("API key must not be empty")
         self.headers = {"authorization": f"Bearer {key.strip()}"} if key is not None else {}
         self.home_region = home_region or os.environ.get("DURABLE_ACTORS_HOME_REGION")
+        if self.home_region is not None:
+            component(self.home_region, 255)
+        self._telemetry = telemetry or stderr_telemetry
         self._http = http if http is not None else httpx.Client(timeout=180, follow_redirects=False)
         self._owns_http = http is None
         self._closed = False
@@ -175,12 +186,144 @@ class Client:
 
         Only failures known to precede execution are automatically retried.
         """
+        request_id = str(uuid.uuid4())
+        started = time.perf_counter()
+        outcome = "failed"
+        try:
+            result = self._invoke(actor_name, actor_id, method, args, request_id)
+            outcome = "completed"
+            return result
+        finally:
+            self._telemetry(
+                {
+                    "type": "actor_invocation",
+                    "request_id": request_id,
+                    "actor_name": actor_name,
+                    "actor_id": actor_id,
+                    "method": method,
+                    "outcome": outcome,
+                    "completed_at_ms": (time.perf_counter() - started) * 1000,
+                }
+            )
+
+    def prepare_websocket(
+        self,
+        actor_name: str,
+        actor_id: str,
+        metadata: Any,
+        *,
+        authorization_lifetime_ms: int = 900000,
+        home_region: str | None = None,
+    ) -> SocketGrant:
+        """Request a short-lived WebSocket grant without opening a connection.
+
+        Args:
+            actor_name: Exported actor class name.
+            actor_id: Identity of the actor instance.
+            metadata: JSON-compatible connection metadata, limited to 64 KiB.
+            authorization_lifetime_ms: Duration from 1,000 to 86,400,000
+                milliseconds; defaults to 15 minutes.
+            home_region: Placement preference overriding the client default.
+
+        Returns:
+            The authorized URL, home region, and connection/authorization deadlines.
+        """
+        self._ensure_open()
+        placement = home_region if home_region is not None else self.home_region
+        if placement is not None:
+            component(placement, 255)
+        if (
+            type(authorization_lifetime_ms) is not int
+            or not 1000 <= authorization_lifetime_ms <= 86400000
+        ):
+            raise ValueError("authorization lifetime must be between one second and one day")
+        if len(json.dumps(metadata, allow_nan=False).encode()) > 65536:
+            raise ValueError("socket metadata exceeds 64 KiB")
+        response = self._http.post(
+            self.origin + self.actor_path(actor_name, actor_id) + "/find-websocket",
+            headers=self.headers,
+            json={
+                "metadata": metadata,
+                "authorizationLifetimeMs": authorization_lifetime_ms,
+                **({"homeRegion": placement} if placement is not None else {}),
+            },
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        grant = SocketGrant.model_validate(response.json(), strict=True)
+        if urlsplit(grant.websocket_url).scheme not in {"ws", "wss"}:
+            raise ActorProtocolError("invalid websocket URL")
+        return grant
+
+    def broadcast(self, actor_name: str, actor_id: str, message: Any) -> None:
+        """Send an application message to all actor connections from a backend.
+
+        Delivery is not persisted. An uncertain delivery raises outcome_unknown
+        and is never replayed automatically.
+        """
+        self._ensure_open()
+        path = self.actor_path(actor_name, actor_id)
+        if is_document(message) and message.get("type") in {"state", "state_update"}:
+            raise ValueError("state and state_update messages are reserved")
+        data = json.dumps(message, separators=(",", ":"), allow_nan=False)
+        if len(data.encode()) > 16 * 1024 * 1024:
+            raise ValueError("socket message exceeds 16 MiB")
+        request_id = str(uuid.uuid4())
+        key = actor_name, actor_id
+        target = self._target(key, path, request_id)
+        payload: dict[str, Any] = {
+            "ownerEpoch": target["ownerEpoch"],
+            "effects": [
+                {
+                    "type": "broadcast",
+                    "message": {"type": "text", "data": data},
+                    "except_connection_ids": [],
+                    "tags": [],
+                }
+            ],
+        }
+        try:
+            response = self._http.post(
+                target["route"] + path + "/socket-effects",
+                headers={"authorization": f"Bearer {target['token']}", "x-request-id": request_id},
+                json=payload,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            self._targets.pop(key, None)
+            raise ActorInvocationError(
+                "outcome_unknown", request_id, "broadcast delivery could not be confirmed"
+            ) from error
+
+    def get_contract(self) -> dict[str, Any]:
+        """Fetch the published actor contract used to generate typed clients."""
+        self._ensure_open()
+        response = self._http.get(
+            f"{self.origin}/v1/projects/{self.project_id}/deployment/contract",
+            headers=self.headers,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        value = document(response)
+        if not re.fullmatch(
+            r"sha256:[a-f0-9]{64}", value.get("contractHash", "")
+        ) or not isinstance(value.get("contract"), dict):
+            raise ActorProtocolError("invalid contract publication")
+        return cast(dict[str, Any], value["contract"])
+
+    def actor_path(self, actor_name: str, actor_id: str) -> str:
+        """Return the project-scoped HTTP path after validating the actor name and ID."""
+        return f"/v1/projects/{self.project_id}/actors/{component(actor_name, 255)}/{component(actor_id, 128)}"
+
+    def _invoke(
+        self, actor_name: str, actor_id: str, method: str, args: list[Any], request_id: str
+    ) -> Any:
         if self._closed:
             raise RuntimeError("client is closed")
         path = self.actor_path(actor_name, actor_id)
         component(method, 255)
         json.dumps(args, allow_nan=False)
-        request_id = str(uuid.uuid4())
         key = actor_name, actor_id
         for attempt in range(2):
             target = self._targets.get(key)
@@ -223,60 +366,24 @@ class Client:
                 )
         raise AssertionError("unreachable")
 
-    def prepare_websocket(
-        self,
-        actor_name: str,
-        actor_id: str,
-        metadata: Any,
-        *,
-        authorization_lifetime_ms: int = 900000,
-    ) -> SocketGrant:
-        """Request a short-lived WebSocket grant without opening a connection.
-
-        Args:
-            actor_name: Exported actor class name.
-            actor_id: Identity of the actor instance.
-            metadata: JSON-compatible connection metadata, limited to 64 KiB.
-            authorization_lifetime_ms: Duration from 1,000 to 86,400,000
-                milliseconds; defaults to 15 minutes.
-
-        Returns:
-            The authorized URL, home region, and connection/authorization deadlines.
-        """
-        if not 1000 <= authorization_lifetime_ms <= 86400000:
-            raise ValueError("authorization lifetime must be between one second and one day")
-        if len(json.dumps(metadata, allow_nan=False).encode()) > 65536:
-            raise ValueError("socket metadata exceeds 64 KiB")
+    def _target(self, key: tuple[str, str], path: str, request_id: str) -> dict[str, Any]:
+        target = self._targets.get(key)
+        if target is not None and target["expiresAtMs"] > time.time() * 1000 + 5000:
+            return target
         response = self._http.post(
-            self.origin + self.actor_path(actor_name, actor_id) + "/find-websocket",
-            headers=self.headers,
-            json={"metadata": metadata, "authorizationLifetimeMs": authorization_lifetime_ms},
+            self.origin + path + "/find",
+            headers={**self.headers, "x-request-id": request_id},
+            json={"homeRegion": self.home_region} if self.home_region else {},
             follow_redirects=False,
         )
         response.raise_for_status()
-        grant = SocketGrant.model_validate(response.json(), strict=True)
-        if urlsplit(grant.websocket_url).scheme not in {"ws", "wss"}:
-            raise ActorProtocolError("invalid websocket URL")
-        return grant
+        target = validate_target(document(response))
+        self._targets[key] = target
+        return target
 
-    def get_contract(self) -> dict[str, Any]:
-        """Fetch the published actor contract used to generate typed clients."""
-        response = self._http.get(
-            f"{self.origin}/v1/projects/{self.project_id}/deployment/contract",
-            headers=self.headers,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        value = document(response)
-        if not re.fullmatch(
-            r"sha256:[a-f0-9]{64}", value.get("contractHash", "")
-        ) or not isinstance(value.get("contract"), dict):
-            raise ActorProtocolError("invalid contract publication")
-        return cast(dict[str, Any], value["contract"])
-
-    def actor_path(self, actor_name: str, actor_id: str) -> str:
-        """Return the project-scoped HTTP path after validating the actor name and ID."""
-        return f"/v1/projects/{self.project_id}/actors/{component(actor_name, 255)}/{component(actor_id, 128)}"
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("client is closed")
 
     def _invoke_attempt(
         self,
@@ -398,3 +505,8 @@ def refused(error: BaseException) -> bool:
             return False
         error = cause
     return False
+
+
+def stderr_telemetry(event: dict[str, Any]) -> None:
+    if os.environ.get("DURABLE_ACTORS_TELEMETRY") == "1":
+        print(json.dumps(event), file=sys.stderr)

@@ -19,7 +19,7 @@ async def test_artifact_attaches_invokes_and_rehydrates_in_a_fresh_python_proces
     (project / "actors.py").write_text("""from little_actors import Actor
 class Counter(Actor):
     count: int = 0
-    async def increment(self, amount: int = 1) -> int:
+    def increment(self, amount: int = 1) -> int:
         self.count += amount
         return self.count
 """)
@@ -110,18 +110,20 @@ class Counter(Actor):
                 await server.wait_closed()
 
 
-async def test_eviction_cancels_socket_output_and_accepts_late_acknowledgments(tmp_path):
+@pytest.mark.parametrize("action", ["evict", "kill_host"])
+async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path, action):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "eviction_actors.py").write_text("""import asyncio
+    (project / "eviction_actors.py").write_text("""import os
+from threading import Event
 from little_actors import Actor, reentrant
 class Counter(Actor):
     count: int = 0
     @reentrant
-    async def hold(self) -> None:
-        self.broadcast("started")
-        await asyncio.Event().wait()
-    async def increment(self) -> int:
+    def hold(self) -> None:
+        self.broadcast(os.getpid())
+        Event().wait()
+    def increment(self) -> int:
         self.count += 1
         return self.count
 """)
@@ -146,6 +148,7 @@ class Counter(Actor):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        child_pid = None
         try:
             async with asyncio.timeout(5):
                 reader, writer = await connected
@@ -167,9 +170,32 @@ class Counter(Actor):
                     "method": "hold",
                     "args": [],
                 }
+                send(
+                    {
+                        "type": "command",
+                        "message_id": 0,
+                        "command": {**invocation, "method": "increment"},
+                    }
+                )
+                initial = await receive()
+                assert initial["reply"]["sequence"] == 1
                 send({"type": "command", "message_id": 1, "command": invocation})
                 assert (await receive())["type"] == "ready_for_invocation"
-                assert (await receive())["type"] == "socket_effects"
+                effect = await receive()
+                assert effect["type"] == "socket_effects"
+                child_pid = json.loads(effect["effects"][0]["message"]["data"])
+                if action == "kill_host":
+                    process.kill()
+                    await process.wait()
+                    for _ in range(100):
+                        try:
+                            os.kill(child_pid, 0)
+                        except ProcessLookupError:
+                            break
+                        await asyncio.sleep(0.01)
+                    else:
+                        pytest.fail("actor worker survived its supervisor")
+                    return
                 send(
                     {
                         "type": "command",
@@ -177,11 +203,11 @@ class Counter(Actor):
                         "command": {"type": "evict", "actor": actor},
                     }
                 )
+                send({"type": "socket_effects_published", "message_id": 1})
                 replies = [await receive(), await receive()]
                 outcomes = {reply["message_id"]: reply["reply"] for reply in replies}
                 assert outcomes[1]["code"] == "actor_evicted"
                 assert outcomes[2] == {"type": "evicted"}
-                send({"type": "socket_effects_published", "message_id": 1})
                 send(
                     {
                         "type": "command",
@@ -193,8 +219,15 @@ class Counter(Actor):
                         },
                     }
                 )
-                assert (await receive())["reply"]["result"] == 11
+                restored = (await receive())["reply"]
+                assert restored["result"] == 11
+                assert restored["sequence"] == 2
         finally:
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
             if process.returncode is None:
                 process.terminate()
             await asyncio.wait_for(process.communicate(), 2)

@@ -28,11 +28,11 @@ class Node(BaseModel):
 class Trees(Actor):
     nodes: list[Node] = []
 
-    async def append(self, node: Node) -> list[Node]:
+    def append(self, node: Node) -> list[Node]:
         self.nodes.append(node)
         return self.nodes
 
-    async def pair(self, value: tuple[int, str]) -> tuple[int, str]:
+    def pair(self, value: tuple[int, str]) -> tuple[int, str]:
         return value
 
 
@@ -42,5 +42,5 @@ class Options(TypedDict):
 
 
 class OptionActor(Actor):
-    async def echo(self, options: Options) -> Options:
+    def echo(self, options: Options) -> Options:
         return options

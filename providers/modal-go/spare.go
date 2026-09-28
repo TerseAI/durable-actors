@@ -268,7 +268,8 @@ func (p *provider) buildCode(ctx context.Context, request buildCodeRequest) (map
 	if err != nil {
 		return nil, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", "120"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
+	lifetime := actorBuildTimeout + time.Minute
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"sleep", fmt.Sprint(int(lifetime.Seconds()))}, Timeout: lifetime, Regions: []string{region}, Cloud: "gcp", CPU: 1, CPULimit: 1})
 	if err != nil {
 		return nil, err
 	}

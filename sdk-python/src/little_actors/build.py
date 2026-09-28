@@ -143,7 +143,7 @@ def source_paths(project: Path, output: Path) -> set[Path]:
     return paths
 
 
-def load_artifact(path: Path) -> list[type[Actor[Any, Any, Any]]]:
+def load_artifact(path: Path) -> list[type[Actor[Any, Any, Any, Any]]]:
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("little-actors.json"))
     if manifest.get("version") != 1:
@@ -152,7 +152,7 @@ def load_artifact(path: Path) -> list[type[Actor[Any, Any, Any]]]:
     return load_module(path, manifest["module"])
 
 
-def load_module(root: Path, module: str) -> list[type[Actor[Any, Any, Any]]]:
+def load_module(root: Path, module: str) -> list[type[Actor[Any, Any, Any, Any]]]:
     sys.path[:0] = [str(root), str(root / "src")]
     importlib.invalidate_caches()
     loaded = importlib.import_module(module)

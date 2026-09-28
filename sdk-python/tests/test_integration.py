@@ -20,9 +20,11 @@ from little_actors.codegen import generate_client
 )
 def test_python_actor_generated_client_and_durable_restart(tmp_path):
     (tmp_path / "actors.py").write_text("""from pydantic import BaseModel
-from little_actors import Actor
+from little_actors import Actor, sandbox
+import os
 class Count(BaseModel):
     value: int
+@sandbox(cpu=0.5, memory_mib=512, idle_timeout_ms=60000)
 class Counter(Actor):
     'A durable counter.'
     count: int = 0
@@ -30,10 +32,17 @@ class Counter(Actor):
         'Increment the count and return its new value.'
         self.count += amount
         return Count(value=self.count)
+    def crash(self) -> None:
+        os._exit(17)
 """)
     port = free_port()
     for expected in (2, 4):
         with actor_server(tmp_path, "actors.py", port) as (client, contract):
+            assert contract["actors"][0]["sandbox"] == {
+                "cpu": 0.5,
+                "memoryMiB": 512,
+                "idleTimeoutMs": 60000,
+            }
             generate_client(contract, tmp_path / "remote")
             result = subprocess.run(
                 [
@@ -52,6 +61,12 @@ class Counter(Actor):
             )
             assert result.returncode == 0, result.stdout + result.stderr
             assert int(result.stdout) == expected
+            from little_actors import ActorInvocationError
+
+            with pytest.raises(ActorInvocationError) as error:
+                client.invoke("Counter", "one", "crash", [])
+            assert error.value.code == "actor_error"
+            assert client.invoke("Counter", "one", "increment", [0]) == {"value": expected}
 
 
 @pytest.mark.skipif(
@@ -93,6 +108,8 @@ class Room(Actor[Payload, Payload, Payload]):
             update = connection.receive(timeout=5)
             assert isinstance(update, StateUpdate)
             assert update.changes.count == 3
+            room.broadcast(models.Payload(value=17))
+            assert connection.receive(timeout=5).value == 17
             with pytest.raises(TimeoutError):
                 connection.receive(timeout=0.01)
 
@@ -172,6 +189,25 @@ class Waiting(Actor):
             assert actor.read() == 11
     with actor_server(tmp_path, "actors.py", port) as (client, _):
         assert remote.actors.Waiting.get("one", client).read() == 11
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LITTLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+)
+def test_actor_calls_another_actor_through_a_source_reference(tmp_path):
+    (tmp_path / "relay_actors.py").write_text("""from little_actors import Actor
+class Counter(Actor):
+    count: int = 0
+    def increment(self, amount: int = 1) -> int:
+        self.count += amount
+        return self.count
+class Relay(Actor):
+    def forward(self) -> int:
+        return Counter.get("target").increment(3)
+""")
+    with actor_server(tmp_path, "relay_actors.py", free_port()) as (client, _):
+        assert client.invoke("Relay", "one", "forward", []) == 3
+        assert client.invoke("Relay", "one", "forward", []) == 6
 
 
 @contextmanager

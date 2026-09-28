@@ -203,7 +203,7 @@ func (s *sdkSandbox) Snapshot(ctx context.Context) (string, error) {
 }
 
 func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string) (json.RawMessage, error) {
-	process, err := s.sb.Exec(ctx, buildCodeCommand(directory, entrypoint), &modal.SandboxExecParams{Stdout: modal.Pipe, Stderr: modal.Pipe, Timeout: time.Minute})
+	process, err := s.sb.Exec(ctx, buildCodeCommand(directory, entrypoint), &modal.SandboxExecParams{Stdout: modal.Pipe, Stderr: modal.Pipe, Timeout: actorBuildTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("start actor compiler (build image requires matching Bun and durable-actors SDK): %w", err)
 	}

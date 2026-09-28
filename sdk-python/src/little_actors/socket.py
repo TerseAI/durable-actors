@@ -8,15 +8,18 @@ from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
 from functools import partial
 from threading import get_ident
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar, cast
 
 from pydantic import TypeAdapter
+from typing_extensions import TypeVar as DefaultTypeVar
 
 from .contract import Document, decode, encode
 from .guards import is_document
 
 Metadata = TypeVar("Metadata")
 Outgoing = TypeVar("Outgoing")
+Tag = DefaultTypeVar("Tag", bound=str, default=str)
+SocketState = Literal["connecting", "open", "closed"]
 T = TypeVar("T")
 
 
@@ -26,7 +29,7 @@ class Effects(Protocol):
     def admit(self) -> None: ...
 
 
-class ActorSocket(Generic[Metadata, Outgoing]):
+class ActorSocket(Generic[Metadata, Outgoing, Tag]):
     """Actor-side handle to one typed WebSocket connection.
 
     Supplied to socket hooks or returned by Actor.get_connections(). Use the
@@ -34,15 +37,20 @@ class ActorSocket(Generic[Metadata, Outgoing]):
     metadata and tags support connection selection and application context.
     """
 
-    def __init__(self, connection: Document, scope: SocketScope, state: str = "open") -> None:
+    def __init__(
+        self, connection: Document, scope: SocketScope, state: SocketState = "open"
+    ) -> None:
         self.id: str = connection["id"]
         self._scope = scope
         self._metadata: Metadata = decode(scope.metadata, connection["metadata"])
-        self._tags = tuple(connection["tags"])
-        self._state = state
+        self._tags: tuple[Tag, ...] = cast(
+            tuple[Tag, ...],
+            tuple(scope.tag.validate_python(tag, strict=True) for tag in connection["tags"]),
+        )
+        self._state: SocketState = state
 
     @property
-    def state(self) -> str:
+    def state(self) -> SocketState:
         """Current handle state: "connecting", "open", or "closed"."""
         return self._state
 
@@ -72,7 +80,7 @@ class ActorSocket(Generic[Metadata, Outgoing]):
         self._metadata = value
 
     @property
-    def tags(self) -> tuple[str, ...]:
+    def tags(self) -> tuple[Tag, ...]:
         """Current connection tags; replace them with set_tags()."""
         return self._tags
 
@@ -101,15 +109,15 @@ class ActorSocket(Generic[Metadata, Outgoing]):
             raise ValueError("only a connecting socket can be rejected")
         self._close("reject", code, reason)
 
-    def set_tags(self, *tags: str) -> None:
+    def set_tags(self, *tags: Tag) -> None:
         """Replace tags used by Actor.broadcast() selectors.
 
         Tags are deduplicated. At most 128 nonempty tags are allowed, with up to
         256 characters per tag and 8 KiB of UTF-8 data in total.
         """
-        checked = validate_tags(tags)
+        checked = self._scope.validate_tags(tags)
         self._scope.push({"type": "set_tags", "connection_id": self.id, "tags": checked})
-        self._tags = tuple(checked)
+        self._tags = cast(tuple[Tag, ...], tuple(checked))
 
     def _close(self, kind: str, code: int, reason: str) -> None:
         if type(code) is not int or (code != 1000 and not 3000 <= code <= 4999):
@@ -128,7 +136,7 @@ class SocketScope:
         self,
         instance: object,
         actor_id: str,
-        types: tuple[Any, Any, Any],
+        types: tuple[Any, Any, Any, Any],
         effects: Effects,
         connections: list[Document] | None,
         live: bool,
@@ -138,7 +146,9 @@ class SocketScope:
         self.requests: set[asyncio.Task[Any]] = set()
         self.instance = instance
         self.actor_id = actor_id
-        self.metadata, self.incoming, self.outgoing = (TypeAdapter(hint) for hint in types)
+        self.metadata, self.incoming, self.outgoing, self.tag = (
+            TypeAdapter(hint) for hint in types
+        )
         self.effects = effects
         self.connections = connections
         self.live = live
@@ -146,11 +156,11 @@ class SocketScope:
         self.pending: list[Document] = []
         self.output: asyncio.Task[None] | None = None
         self.failure: Exception | None = None
-        self.sockets: dict[str, ActorSocket[Any, Any]] = {}
+        self.sockets: dict[str, ActorSocket[Any, Any, Any]] = {}
 
     def blocking(self, operation: Callable[[], Coroutine[Any, Any, T]]) -> T:
         if get_ident() == self.thread:
-            raise RuntimeError("async handlers must use await self.aget_connections()")
+            raise RuntimeError("blocking actor operations must run on the handler thread")
         self.ensure_active()
         return asyncio.run_coroutine_threadsafe(self.exchange(operation), self.loop).result()
 
@@ -171,7 +181,7 @@ class SocketScope:
         if self.output is not None:
             self.output.cancel()
 
-    async def get_connections(self) -> list[ActorSocket[Any, Any]]:
+    async def get_connections(self) -> list[ActorSocket[Any, Any, Any]]:
         self.ensure_active()
         connections = (
             self.connections
@@ -180,7 +190,9 @@ class SocketScope:
         )
         return [self.socket(connection) for connection in connections]
 
-    def socket(self, connection: Document, state: str = "open") -> ActorSocket[Any, Any]:
+    def socket(
+        self, connection: Document, state: SocketState = "open"
+    ) -> ActorSocket[Any, Any, Any]:
         if connection["id"] not in self.sockets:
             self.sockets[connection["id"]] = ActorSocket(connection, self, state)
         return self.sockets[connection["id"]]
@@ -195,10 +207,13 @@ class SocketScope:
                 "type": "broadcast",
                 "message": self.message(message),
                 "except_connection_ids": list(except_ids),
-                "tags": validate_tags(tags),
+                "tags": self.validate_tags(tags),
                 "tag_match": tag_match,
             }
         )
+
+    def validate_tags(self, tags: tuple[str, ...]) -> list[str]:
+        return validate_tags(tuple(self.tag.validate_python(tag, strict=True) for tag in tags))
 
     def message(self, value: Any) -> Document:
         encoded = encode(self.outgoing, value)

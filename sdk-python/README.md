@@ -31,9 +31,9 @@ class Chat(Actor):
         return self.messages
 ```
 
-Public `def` methods become RPCs; `async def` is also supported. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`. Synchronous handlers run on a worker thread, with calls serialized per actor. Socket hooks can also use ordinary `def`; `self.get_connections()` returns typed sockets. Async handlers use `await self.aget_connections()`.
+Public `def` methods become synchronous RPCs. Annotated fields persist by default. `emitted()` persists a field and broadcasts its saved changes; `ephemeral()` keeps a field temporary. Mutable defaults are copied for each actor, and both helpers accept `default_factory` for values constructed on activation. Use `ephemeral(default_factory=...)` for locks, caches, and service clients, and `ClassVar` for class constants. Classes extend `Actor` directly and use field defaults instead of constructors. Prefix helper methods with `_`. Synchronous handlers run on a worker thread, with calls serialized per actor. Socket hooks can also use ordinary `def`; `self.get_connections()` returns typed sockets.
 
-Add `@reentrant` (imported from `little_actors`) to a `def` or `async def` method to let other invocations enter before it finishes. Synchronous reentrant handlers overlap on worker threads; coordinate shared mutations and keep blocking I/O outside shared locks. Ordinary calls still serialize with each other. As in TypeScript, enabling reentrancy disables error rollback for the entire actor class. See the [execution semantics](../docs/reference/python.md#execution-and-failures) for details.
+Add `@reentrant` (imported from `little_actors`) to a `def` method to let other invocations enter before it finishes. Synchronous reentrant handlers overlap on worker threads; coordinate shared mutations and keep blocking I/O outside shared locks. Ordinary calls still serialize with each other. As in TypeScript, enabling reentrancy disables error rollback for the entire actor class. See the [execution semantics](../docs/reference/python.md#execution-and-failures) for details.
 
 ## Generate and use a client
 
@@ -82,3 +82,9 @@ The SDK receives the initial state and applies later patches in the background. 
 Pass `on_error=handler` to handle connection, validation, or callback failures. A failure stops the subscription; its exception is available as `subscription.error` and is logged if no handler is supplied. Actors with required connection metadata also require `metadata=...` when subscribing.
 
 See the [Python reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/python.md) for supported types, sockets, reentrancy, deployment, and CLI options.
+
+## Resource settings and backend helpers
+
+Use `@sandbox(cpu=2, memory_mib=2048, idle_timeout_ms=60_000, regions=["canada"])` above an actor class to override deployment defaults. Import `sandbox` from `little_actors`.
+
+Source classes also support `Chat.get("lobby")` with typed synchronous methods, including calls from other actors. Generated handles expose `broadcast(message)`; `actors.Chat.Authorization`, `actors.Chat.prepare_websocket(...)`, and `ActorProxy.handle(...)` issue typed browser access grants. `ActorSessionTransport` renews short-lived application credentials. The [Python reference](../docs/reference/python.md) covers these APIs and their docstrings.

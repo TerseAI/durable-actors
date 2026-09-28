@@ -44,7 +44,7 @@ def test_mutable_defaults_are_per_actor():
 
 def test_missing_public_annotations_are_rejected():
     class Bad(Actor):
-        async def echo(self, value):
+        def echo(self, value):
             return value
 
     with pytest.raises(ValueError, match="annotation"):
@@ -75,18 +75,14 @@ def test_reentrant_preserves_method_types_and_marks_runtime_metadata():
         def read(self) -> int:
             return 1
 
-        @reentrant
-        async def aread(self) -> int:
-            return 1
-
-    assert describe_actor(Counter).reentrant_methods == {"read", "aread"}
+    assert describe_actor(Counter).reentrant_methods == {"read"}
 
 
 def test_nested_untyped_values_are_rejected():
     from typing import Any
 
     class Bad(Actor):
-        async def echo(self, value: list[Any]) -> int:
+        def echo(self, value: list[Any]) -> int:
             return 1
 
     with pytest.raises(ValueError, match="concrete|Any"):
@@ -118,7 +114,7 @@ def test_untyped_aliases_and_non_string_dictionary_keys_are_rejected():
 
 def test_variadic_rpc_parameters_must_be_last():
     class Bad(Actor):
-        async def echo(self, *values: int, label: str = "") -> int:
+        def echo(self, *values: int, label: str = "") -> int:
             return len(values)
 
     with pytest.raises(ValueError, match="variadic"):
@@ -258,7 +254,7 @@ def misuse(actor: TypedActor) -> None:
 
 def test_subscription_method_name_is_reserved():
     class Conflicting(Actor):
-        async def subscribe(self) -> None:
+        def subscribe(self) -> None:
             pass
 
     with pytest.raises(ValueError, match="reserved"):

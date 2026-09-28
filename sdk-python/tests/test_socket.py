@@ -6,7 +6,9 @@ from little_actors.socket import SocketScope
 
 
 def scope():
-    return SocketScope(object(), "one", (JsonValue, JsonValue, JsonValue), Effects(), [], False)
+    return SocketScope(
+        object(), "one", (JsonValue, JsonValue, JsonValue, str), Effects(), [], False
+    )
 
 
 async def test_reject_defaults_to_a_supported_close_code():

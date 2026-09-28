@@ -24,12 +24,13 @@ def test_hosted_build_installs_dependencies_before_import_and_bundles_resources(
     (project / "data").mkdir()
     (project / "data/__init__.py").write_text("")
     (project / "data/message.txt").write_text("hello")
-    (project / "actors.py").write_text("""from importlib.resources import files
+    (project / "src").mkdir()
+    (project / "src/actors.py").write_text("""from importlib.resources import files
 from build_dep import initial_count
 from little_actors import Actor
 class Counter(Actor):
     count: int = initial_count
-    async def read(self) -> str:
+    def read(self) -> str:
         return f"{self.count}:{files('data').joinpath('message.txt').read_text()}"
 """)
     (project / "pyproject.toml").write_text(f"""[project]
@@ -41,7 +42,7 @@ include = ["data/*.txt"]
 """)
     output = tmp_path / "output"
     result = subprocess.run(
-        [sys.executable, "-m", "little_actors.build", str(project), "actors.py", str(output)],
+        [sys.executable, "-m", "little_actors.build", str(project), "src/actors.py", str(output)],
         capture_output=True,
         text=True,
     )
@@ -51,7 +52,7 @@ include = ["data/*.txt"]
         [
             sys.executable,
             "-c",
-            "import asyncio,sys; from pathlib import Path; from little_actors.build import load_artifact; print(asyncio.run(load_artifact(Path(sys.argv[1]))[0]().read()))",
+            "import sys; from pathlib import Path; from little_actors.build import load_artifact; print(load_artifact(Path(sys.argv[1]))[0]().read())",
             str(output / "actors.pyz"),
         ],
         cwd=tmp_path,
@@ -70,7 +71,7 @@ def test_contract_is_extracted_from_packaged_source_not_stale_bytecode(tmp_path)
     text = """from typing import Literal
 from little_actors import Actor
 class Version(Actor):
-    async def read(self) -> Literal["one"]:
+    def read(self) -> Literal["one"]:
         return "one"
 """
     source.write_text(text)

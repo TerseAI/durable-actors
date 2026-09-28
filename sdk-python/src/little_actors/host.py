@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import signal
+import socket
 import sys
+import traceback
+from contextlib import suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, cast
@@ -11,22 +14,19 @@ from typing import Any, cast
 from .build import load_artifact
 from .client import component
 from .contract import Document
-from .guards import is_document
+from .executor_wire import MAX_BYTES, Channel, serialize
 from .runtime import ActorRuntime, failed
 
-MAX_BYTES = 32 * 1024 * 1024
 message_id: ContextVar[int] = ContextVar("actor_message_id")
 
 
-class Session:
+class Session(Channel):
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self.reader = reader
-        self.writer = writer
+        super().__init__(reader, writer)
         self.runtimes: dict[str, ActorRuntime] = {}
         self.assigned: Document | None = None
         self.pending: dict[tuple[str, int], asyncio.Future[Any]] = {}
         self.tasks: set[asyncio.Task[None]] = set()
-        self.write_lock = asyncio.Lock()
         self.residency: asyncio.Task[None] | None = None
 
     async def run(self, entrypoint: str | None, generic: bool) -> None:
@@ -140,25 +140,6 @@ class Session:
             await self.send({"type": "residency", "actors": actors})
             await asyncio.sleep(1)
 
-    async def send(self, message: Document) -> None:
-        data = serialize(message)
-        if len(data) > MAX_BYTES:
-            raise ValueError("executor message exceeds 32 MiB")
-        async with self.write_lock:
-            self.writer.write(data)
-            await self.writer.drain()
-
-    async def read(self) -> Document:
-        line = await self.reader.readline()
-        if not line:
-            raise EOFError("Rust host disconnected")
-        if len(line) > MAX_BYTES:
-            raise ValueError("executor message exceeds 32 MiB")
-        value = json.loads(line)
-        if not is_document(value):
-            raise ValueError("executor messages must be objects")
-        return value
-
     async def close(self) -> None:
         if self.residency:
             self.residency.cancel()
@@ -168,9 +149,6 @@ class Session:
         tasks = list(self.tasks)
         for task in tasks:
             task.cancel()
-        await asyncio.gather(
-            *tasks, *([self.residency] if self.residency else []), return_exceptions=True
-        )
         self.writer.close()
         await self.writer.wait_closed()
 
@@ -189,17 +167,35 @@ def validate_command(message: Document) -> None:
             raise ValueError("RPC arguments must be an array")
 
 
-def serialize(value: Document) -> bytes:
-    return (json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n").encode()
-
-
 async def main() -> None:
+    if "--worker" in sys.argv:
+        channel = socket.socket(fileno=int(sys.argv[sys.argv.index("--worker") + 1]))
+        reader, writer = await asyncio.open_connection(sock=channel, limit=MAX_BYTES)
+        status = 0
+        try:
+            await Session(reader, writer).run(os.environ.get("DURABLE_ACTORS_ENTRYPOINT"), False)
+        except EOFError:
+            pass
+        except BaseException:
+            traceback.print_exc()
+            status = 1
+        finally:
+            # Only the child enters this branch; its supervisor has disconnected.
+            os._exit(status)
+    from .supervisor import Supervisor, Worker
+
+    task = asyncio.current_task()
+    assert task is not None
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, task.cancel)
     reader, writer = await asyncio.open_unix_connection(
         os.environ["DURABLE_ACTORS_EXECUTOR_SOCKET"], limit=MAX_BYTES
     )
-    await Session(reader, writer).run(
-        os.environ.get("DURABLE_ACTORS_ENTRYPOINT"), "--generic" in sys.argv
-    )
+    with suppress(asyncio.CancelledError, EOFError):
+        await Supervisor(reader, writer, Worker.start).run(
+            os.environ.get("DURABLE_ACTORS_ENTRYPOINT"), "--generic" in sys.argv
+        )
 
 
 if __name__ == "__main__":
