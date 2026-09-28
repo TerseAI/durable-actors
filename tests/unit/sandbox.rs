@@ -73,7 +73,6 @@ async fn provider_failures_do_not_affect_other_calls() -> Result<()> {
     let (_directory, provider) = test_provider()?;
     for (request, message) in [
         (serde_json::json!({"fail": true}), "test failure"),
-        (serde_json::json!({"oversized": true}), "response exceeds"),
         (
             serde_json::json!({"malformed": true}),
             "decode provider response",

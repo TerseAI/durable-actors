@@ -117,7 +117,7 @@ async fn combined_invocation_returns_pre_dispatch_rejections_for_the_client_retr
     assert_eq!(reply["outcome"], json!({"type":"unauthenticated"}));
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 1);
 
-    let mut fixture = Fixture::start(vec![]).await?;
+    let mut fixture = Fixture::start(vec![(StatusCode::OK, json!({}))]).await?;
     let host = fixture.servers.pop().unwrap();
     host.abort();
     assert!(host.await.unwrap_err().is_cancelled());
@@ -187,6 +187,40 @@ async fn combined_invocation_does_not_replay_failed_or_ambiguous_dispatches() ->
     Ok(())
 }
 
+#[tokio::test]
+async fn cold_invocation_returns_assignment_outcome_without_dispatching_again() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"first-write", "method":"clear", "args":[]}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let reply: Value = response.json().await?;
+    assert_eq!(reply["outcome"], json!({"type":"completed", "result":7}));
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_assignment_response_does_not_redispatch_to_the_now_active_owner() -> Result<()> {
+    let fixture = Fixture::start(vec![]).await?;
+    let response = fixture
+        .call(
+            "api-key",
+            json!({"requestId":"lost-response", "method":"clear", "args":[]}),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        response.json::<Value>().await?["error"]["code"],
+        "outcome_unknown"
+    );
+    assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 struct Fixture {
     origin: String,
     admin: AdminService,
@@ -197,6 +231,7 @@ struct Fixture {
 
 impl Fixture {
     async fn start(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let cold = replies.is_empty();
         let host = Arc::new(HostFixture {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
@@ -246,12 +281,36 @@ impl Fixture {
                 Some(&contract),
             )
             .await?;
+        let placements = Arc::new(LocalObjectPlacementStore::default());
+        if !cold {
+            let spec = registry.launch_spec("default").await?.unwrap();
+            let lease = HostLease {
+                route: host_origin.clone(),
+                ..test_lease(&HostId::new(format!(
+                    "host.v3.{}.fixture",
+                    spec.host_config_key()
+                )))
+            };
+            placements.set_owner(
+                &ActorKey {
+                    project_id: "default".into(),
+                    actor_name: "ChatRoom".into(),
+                    actor_id: "one".into(),
+                }
+                .storage_key(),
+                lease,
+                "north-america-east",
+            )?;
+        }
         let service = ControlPlaneService::new(
-            Arc::new(LocalObjectPlacementStore::default()),
+            placements.clone(),
             auth,
             registry,
             issuer,
-            Arc::new(InvocationProvisioner(host_origin)),
+            Arc::new(InvocationProvisioner {
+                route: host_origin,
+                placements: placements.clone(),
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -313,7 +372,10 @@ async fn host_invoke(
     (status, Json(reply)).into_response()
 }
 
-struct InvocationProvisioner(String);
+struct InvocationProvisioner {
+    route: String,
+    placements: Arc<LocalObjectPlacementStore>,
+}
 #[async_trait]
 impl HostProvisioner for InvocationProvisioner {
     fn host_idle_timeout_ms(&self) -> u64 {
@@ -337,16 +399,41 @@ impl HostProvisioner for InvocationProvisioner {
         _: &str,
         _: &ActorKey,
         _: bool,
-    ) -> Result<(HostLease, u64)> {
+        initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+        if let Some(initial) =
+            initial.filter(|initial| initial.invocation.request_id == "lost-response")
+        {
+            self.placements.set_owner(
+                &initial.invocation.actor.storage_key(),
+                HostLease {
+                    route: self.route.clone(),
+                    ..test_lease(&HostId::new(format!(
+                        "host.v3.{}.fixture",
+                        spec.host_config_key()
+                    )))
+                },
+                "north-america-east",
+            )?;
+            return Err(
+                anyhow::anyhow!("assignment response lost").context(InitialInvocationUnknown)
+            );
+        }
         Ok((
             HostLease {
-                route: self.0.clone(),
+                route: self.route.clone(),
                 ..test_lease(&HostId::new(format!(
                     "host.v3.{}.fixture",
                     spec.host_config_key()
                 )))
             },
             1,
+            initial.map(|initial| {
+                assert_eq!(initial.invocation.request_id, "first-write");
+                assert_eq!(initial.invocation.method, "clear");
+                assert!(initial.invocation.args.is_empty());
+                json!({"type":"completed", "result":7})
+            }),
         ))
     }
     async fn terminate_hosts(&self, _: &HostLaunchSpec, _: &[String]) -> Result<HostTermination> {

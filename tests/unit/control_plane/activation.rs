@@ -46,6 +46,9 @@ struct HostProvider {
 
 #[async_trait]
 impl SandboxProvider for HostProvider {
+    fn supports_initial_invocation(&self) -> bool {
+        true
+    }
     async fn build_code(
         &self,
         _: &crate::sandbox::BuildCodeRequest,
@@ -71,6 +74,7 @@ impl SandboxProvider for HostProvider {
             )
             .await?;
         Ok(ActorHostHandle {
+            initial_outcome: None,
             host_id: request.host_id.clone(),
             route: request_lease.route,
             canonical_region: request.canonical_region.clone(),
@@ -139,7 +143,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
             host_idle_timeout_ms: 60_000,
         },
         issuer.clone(),
-        None,
+        Some("image".into()),
     ));
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::File {
@@ -161,7 +165,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
         actor_id: "new".into(),
     };
     let target = service
-        .resolve_actor_route(&actor, None, None, None)
+        .resolve_actor_route(&actor, None, None, None, None)
         .await?;
     assert_eq!(target.owner_epoch, 1);
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 1);
@@ -174,7 +178,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     service.require_active_host(&principal).await?;
     assert_eq!(bucket.reads.load(Ordering::SeqCst), 2);
     let again = service
-        .resolve_actor_route(&actor, None, None, None)
+        .resolve_actor_route(&actor, None, None, None, None)
         .await?;
     assert_eq!(again.route, target.route);
     assert_eq!(
@@ -200,6 +204,7 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     wrong_actor.actor.actor_id = "other".into();
     assert!(service.require_active_host(&wrong_actor).await.is_err());
     let mut invalid = ActorHostHandle {
+        initial_outcome: None,
         lease: Some(service.require_active_host(&principal).await?),
         host_id: assignment.host_id.clone(),
         route: target.route,
@@ -213,6 +218,33 @@ async fn resolution_through_host_readiness_uses_two_bucket_operations() -> Resul
     invalid.lease.as_mut().unwrap().session_id = assignment.session_id.clone();
     invalid.lease.as_mut().unwrap().expires_at_ms = 1;
     assert!(ready_lease(&invalid, &assignment).is_err());
+    let initial = crate::actor::ActorInvocation {
+        actor: ActorKey {
+            actor_id: "missing-outcome".into(),
+            ..actor
+        },
+        request_id: "first-write".into(),
+        method: "increment".into(),
+        args: vec![],
+    };
+    let error = service
+        .resolve_actor_route(&initial.actor, None, None, None, Some(initial.clone()))
+        .await
+        .err()
+        .expect("missing result must not trigger redispatch");
+    assert!(error.is::<InitialInvocationUnknown>());
+    let assigned = provider.assigned.lock().unwrap();
+    assert_eq!(
+        assigned
+            .as_ref()
+            .unwrap()
+            .initial_invocation
+            .as_ref()
+            .unwrap()
+            .invocation,
+        initial
+    );
+
     Ok(())
 }
 

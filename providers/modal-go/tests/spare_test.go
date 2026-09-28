@@ -74,6 +74,7 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	request := testRequest()
 	request.HostIdleTimeoutMS = 75000
 	request.ActorIsNew = true
+	request.InitialInvocation = json.RawMessage(`{"invocation":{"requestId":"first","method":"increment","args":[]}}`)
 	request.Actor = json.RawMessage(`{"project_id":"default","actor_name":"Counter","actor_id":"one"}`)
 	request.CodeSnapshot = "im-code"
 	request.WorkingDirectory = "/customer"
@@ -84,6 +85,9 @@ func TestGenericAssignmentMountsCodeAndAssignsExactlyOneActor(t *testing.T) {
 	handle, err := newTestProvider(api).ensureHost(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if sb.assignment["DURABLE_ACTORS_INITIAL_INVOCATION"] != string(request.InitialInvocation) {
+		t.Fatal("assignment omitted first invocation")
 	}
 	if handle.OwnerEpoch != 42 || handle.Lease == nil || sb.assignment["DURABLE_ACTORS_ACTOR_IS_NEW"] != "true" {
 		t.Fatal("ownership epoch missing")

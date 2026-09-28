@@ -34,6 +34,7 @@ pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
+    initial_invocation: Option<crate::sandbox::InitialInvocation>,
     ready_file: Option<PathBuf>,
     pub control_plane_url: String,
     pub host_token: String,
@@ -59,6 +60,7 @@ pub struct ActorHostConfig {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct HostReadiness {
+    pub initial_outcome: Option<crate::sandbox::InitialInvocationOutcome>,
     pub host_id: super::HostId,
     pub session_id: String,
     pub route: String,
@@ -123,28 +125,9 @@ pub(super) async fn serve_assigned_host(
         config.session_id.clone(),
         invocation_auth,
         sockets.clone(),
-    )
-    .router();
-    let initialized = async {
-        let (verifier, owner_epoch) =
-            initialize_executor(&config, &executor_connection, &host, &sockets).await?;
-        let ready = HostReadiness {
-            host_id: config.host_id.clone(),
-            session_id: config.session_id.clone(),
-            route: route.clone(),
-            canonical_region: config.runtime_config.region.clone(),
-            owner_epoch,
-            lease: storage.current_lease()?,
-        };
-        if let Some(path) = &config.ready_file {
-            let temporary = path.with_extension("tmp");
-            tokio::fs::write(&temporary, serde_json::to_vec(&ready)?).await?;
-            tokio::fs::rename(temporary, path).await?;
-        }
-        anyhow::Ok((verifier, ready))
-    }
-    .await;
-    let (socket_verifier, ready) = match initialized {
+    );
+    let initialized = initialize_executor(&config, &executor_connection, &host, &sockets).await;
+    let (socket_verifier, owner_epoch) = match initialized {
         Ok(ready) => ready,
         Err(error) => {
             log_startup(&config, &timings, "failed", Some(&error));
@@ -158,12 +141,30 @@ pub(super) async fn serve_assigned_host(
         sockets.registry.clone(),
         host.queues(),
     );
+    let stop = CancellationToken::new();
+    let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
+    tokio::pin!(shutdown);
+    let initialized = tokio::select! {
+        result = complete_assignment(&config, &service, &storage, &route, owner_epoch) => result,
+        result = executor_task.as_mut() => Err(result.err().unwrap_or_else(|| anyhow::anyhow!("executor stopped during assignment"))),
+        _ = shutdown.as_mut() => Err(anyhow::anyhow!("host stopped during assignment")),
+        _ = lease_lost.changed() => Err(anyhow::anyhow!("host lease lost during assignment")),
+    };
+    let ready = match initialized {
+        Ok(ready) => ready,
+        Err(error) => {
+            stop.cancel();
+            log_startup(&config, &timings, "failed", Some(&error));
+            let _ = renewal.shutdown().await;
+            let _ = lease.unregister().await;
+            return Err(error);
+        }
+    };
     if let Some(readiness) = readiness {
         let _ = readiness.send(ready);
     }
     timings.executor_notified_at_ms = Some(timings.elapsed_ms());
     log_startup(&config, &timings, "ready", None);
-    let stop = CancellationToken::new();
     let server_stop = stop.clone();
     let socket_stop = CancellationToken::new();
     let socket_routes =
@@ -180,16 +181,13 @@ pub(super) async fn serve_assigned_host(
             ),
             stop: socket_stop.clone(),
         });
-    let routes = socket_routes.merge(service);
+    let routes = socket_routes.merge(service.router());
     let mut server = Box::pin(async move {
         axum::serve(listener, routes)
             .with_graceful_shutdown(async move { server_stop.cancelled().await })
             .await
             .context("serve actor host endpoints")
     });
-    let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
-    tokio::pin!(shutdown);
-
     info!(host_id = %config.host_id, route, "durable-actors host is ready");
     let stop_result = wait_for_host_stop(
         server.as_mut(),
@@ -211,6 +209,34 @@ pub(super) async fn serve_assigned_host(
     stop_result?;
     renewal_result?;
     unregister_result
+}
+
+async fn complete_assignment(
+    config: &ActorHostConfig,
+    service: &ActorHostHttpService,
+    storage: &super::storage::HostStorage,
+    route: &str,
+    owner_epoch: u64,
+) -> Result<HostReadiness> {
+    let initial_outcome = match &config.initial_invocation {
+        Some(initial) => Some(service.execute_initial(initial, owner_epoch).await),
+        None => None,
+    };
+    let ready = HostReadiness {
+        initial_outcome,
+        host_id: config.host_id.clone(),
+        session_id: config.session_id.clone(),
+        route: route.into(),
+        canonical_region: config.runtime_config.region.clone(),
+        owner_epoch,
+        lease: storage.current_lease()?,
+    };
+    if let Some(path) = &config.ready_file {
+        let temporary = path.with_extension("tmp");
+        tokio::fs::write(&temporary, serde_json::to_vec(&ready)?).await?;
+        tokio::fs::rename(temporary, path).await?;
+    }
+    Ok(ready)
 }
 
 async fn initialize_executor(
@@ -297,7 +323,19 @@ impl ActorHostConfig {
         if let Some(actor) = &actor {
             actor.validate()?;
         }
+        let initial_invocation: Option<crate::sandbox::InitialInvocation> =
+            get("DURABLE_ACTORS_INITIAL_INVOCATION")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?;
+        if let Some(initial) = &initial_invocation {
+            initial.invocation.validate()?;
+            ensure!(
+                actor.as_ref() == Some(&initial.invocation.actor),
+                "initial invocation belongs to another actor"
+            );
+        }
         Ok(Self {
+            initial_invocation,
             new_actor: get("DURABLE_ACTORS_ACTOR_IS_NEW")
                 .map(|value| value.parse())
                 .transpose()?

@@ -464,7 +464,7 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
 }
 
 #[tokio::test]
-async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
+async fn large_commands_and_replies_reach_the_executor() -> Result<()> {
     let root = TempDir::new_in("/tmp")?;
     let socket = root.path().join("actor-executor.sock");
     let host = ActorExecutorListener::bind(&socket).await?;
@@ -485,7 +485,7 @@ async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
                     actor_id: "counter-1".into(),
                 },
                 method: "accept".into(),
-                args: vec![json!("x".repeat(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))],
+                args: vec![json!("x".repeat(32 * 1024 * 1024))],
             },
             None,
         )
@@ -493,35 +493,11 @@ async fn oversized_commands_are_reported_as_resource_exhausted() -> Result<()> {
 
     assert!(matches!(
         outcome,
-        ActorMethodOutcome::Failed(ref failure) if failure.code == "resource_exhausted"
+        ActorMethodOutcome::Completed { ref result, .. } if result.as_str().unwrap().len() == 32 * 1024 * 1024
     ));
     shutdown.cancel();
     connection_task.await??;
     customer.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn oversized_client_messages_are_rejected_before_newline() -> Result<()> {
-    let (host, mut customer) = UnixStream::pair()?;
-    let (reader, _) = host.into_split();
-    let mut reader = BufReader::new(reader);
-    let customer = tokio::spawn(async move {
-        let chunk = vec![b'x'; 64 * 1024];
-        for _ in 0..=MAX_ACTOR_EXECUTOR_MESSAGE_BYTES / chunk.len() {
-            customer.write_all(&chunk).await?;
-        }
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
-    });
-
-    let result = timeout(Duration::from_secs(5), read_client_message(&mut reader)).await;
-    customer.abort();
-    let error = result
-        .context("oversized actor executor message was not rejected before newline")?
-        .expect_err("oversized actor executor message should fail");
-    assert!(error.to_string().contains("exceeds"));
     Ok(())
 }
 
@@ -600,11 +576,12 @@ async fn run_attached_customer(socket: PathBuf) -> Result<()> {
         read_json_line(&mut reader).await?
             == json!({ "type": "attached", "protocol": 18, "supports_residency": true })
     );
+    let invocation = read_json_line(&mut reader).await?;
+    let result = invocation["command"]["args"][0].clone();
+    assert_eq!(result.as_str().unwrap().len(), 32 * 1024 * 1024);
+    write_json_line(&mut writer, &json!({"type":"reply", "message_id":invocation["message_id"], "reply":{"type":"invoked", "result":result, "state":{}}})).await?;
     let mut trailing = String::new();
-    ensure!(
-        reader.read_line(&mut trailing).await? == 0,
-        "oversized command reached the customer actor executor"
-    );
+    assert_eq!(reader.read_line(&mut trailing).await?, 0);
     Ok(())
 }
 

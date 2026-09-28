@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::public_api::{
     ActorPath, ActorTargetReply, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
-use crate::actor::{ActorInvocation, MAX_ACTOR_EXECUTOR_MESSAGE_BYTES};
+use crate::actor::ActorInvocation;
 
 pub(super) async fn invoke(
     State(state): State<PublicApiState>,
@@ -37,16 +37,20 @@ pub(super) async fn invoke(
         args: request.args,
     };
     invocation.validate().map_err(ApiError::bad_request)?;
-    let target = resolve_actor_target(
+    let mut target = resolve_actor_target(
         &state,
         &invocation.actor,
         &headers,
         Ok(Json(FindActorRequest {
             home_region: request.home_region,
         })),
+        Some(invocation.clone()),
     )
     .await?;
-    let outcome = dispatch(&state.hosts, &target, &invocation).await?;
+    let outcome = match target.initial_outcome.take() {
+        Some(outcome) => validate_outcome(outcome)?,
+        None => dispatch(&state.hosts, &target, &invocation).await?,
+    };
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(json!({"target": target, "outcome": outcome})),
@@ -90,6 +94,10 @@ async fn dispatch(
         return Err(outcome_unknown());
     }
     let reply = read_reply(response).await?;
+    validate_outcome(reply)
+}
+
+pub(super) fn validate_outcome(reply: Value) -> Result<Value, ApiError> {
     match reply.get("type").and_then(Value::as_str) {
         Some("not_executed")
             if matches!(
@@ -99,6 +107,7 @@ async fn dispatch(
         {
             Ok(reply)
         }
+        Some("unauthenticated") => Ok(reply),
         Some("completed") if reply.get("result").is_some() => Ok(reply),
         Some("failed")
             if reply["code"].as_str().is_some_and(|code| !code.is_empty())
@@ -113,15 +122,12 @@ async fn dispatch(
 async fn read_reply(mut response: reqwest::Response) -> Result<Value, ApiError> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| outcome_unknown())? {
-        if body.len() + chunk.len() > MAX_ACTOR_EXECUTOR_MESSAGE_BYTES {
-            return Err(outcome_unknown());
-        }
         body.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&body).map_err(|_| outcome_unknown())
 }
 
-fn outcome_unknown() -> ApiError {
+pub(super) fn outcome_unknown() -> ApiError {
     ApiError::new(
         StatusCode::BAD_GATEWAY,
         "outcome_unknown",

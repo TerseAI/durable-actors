@@ -40,6 +40,7 @@ async fn assignment_is_authenticated_single_use_and_waits_for_readiness() -> any
         assigned
             .ready
             .send(super::super::process::HostReadiness {
+                initial_outcome: None,
                 host_id: HostId::new("host.v3.test.one"),
                 session_id: "session".into(),
                 route: "https://host.test".into(),

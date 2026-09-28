@@ -110,12 +110,9 @@ func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	defer process.Stdout.Close()
-	document, err := io.ReadAll(io.LimitReader(process.Stdout, maximumCommandBytes+1))
+	document, err := io.ReadAll(process.Stdout)
 	if err != nil {
 		return nil, err
-	}
-	if len(document) > maximumCommandBytes {
-		return nil, fmt.Errorf("host metadata is too large")
 	}
 	exitCode, err := process.Wait(ctx, nil)
 	if err != nil {
@@ -159,12 +156,12 @@ func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string
 	group, _ := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var err error
-		output, err = io.ReadAll(io.LimitReader(process.Stdout, maximumContractBytes+1))
+		output, err = io.ReadAll(process.Stdout)
 		return err
 	})
 	group.Go(func() error {
 		var err error
-		diagnostics, err = io.ReadAll(io.LimitReader(process.Stderr, maximumCommandBytes+1))
+		diagnostics, err = io.ReadAll(process.Stderr)
 		return err
 	})
 	group.Go(func() error { var err error; exit, err = process.Wait(ctx, nil); return err })
@@ -174,8 +171,8 @@ func (s *sdkSandbox) BuildCode(ctx context.Context, directory, entrypoint string
 	if exit != 0 {
 		return nil, fmt.Errorf("actor compilation failed: %s", diagnostics)
 	}
-	if len(output) > maximumContractBytes || !json.Valid(output) {
-		return nil, fmt.Errorf("actor compiler returned an invalid or oversized contract")
+	if !json.Valid(output) {
+		return nil, fmt.Errorf("actor compiler returned an invalid contract")
 	}
 	return json.RawMessage(output), nil
 }

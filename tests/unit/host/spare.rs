@@ -83,7 +83,7 @@ async fn run_activation(
         !code.exists(),
         "generic executor must warm without customer code"
     );
-    let environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
+    let mut environment: HashMap<String, String> = serde_json::from_value(serde_json::json!({
         "DURABLE_ACTORS_CONTROL_PLANE_URL": "http://127.0.0.1:1",
         "DURABLE_ACTORS_HOST_TOKEN": token,
         "DURABLE_ACTORS_JWT_PUBLIC_KEYS": issuer.verifier_keys_json()?,
@@ -99,6 +99,12 @@ async fn run_activation(
             "replicaSecret": "test-secret", "replicaRegions": [], "token": null
         }).to_string()
     }))?;
+    if before >= 0 {
+        environment.insert("DURABLE_ACTORS_INITIAL_INVOCATION".into(), serde_json::json!({
+            "invocation": {"actor":actor, "requestId":format!("initial-{before}"), "method":"increment", "args":[]},
+            "grant":null
+        }).to_string());
+    }
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
     let warm = WarmHost {
@@ -171,15 +177,19 @@ async fn run_activation(
     let response = tokio::time::timeout(Duration::from_secs(1), ready_response).await??;
     assert_eq!(response.host_id, host_id);
     assert_eq!(response.session_id, session);
+    let outcome = response
+        .initial_outcome
+        .expect("assignment omitted the first durable write");
+    assert_eq!(outcome.request_id, format!("initial-{before}"));
+    assert_eq!(
+        outcome.outcome,
+        serde_json::json!({"type":"completed", "result":before + 1})
+    );
     let epoch = response.owner_epoch;
     assert!(epoch > 0);
     let marker: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&ready).await?)?;
     assert_eq!(marker["ownerEpoch"], epoch);
-    for (method, expected) in [
-        ("read", before),
-        ("increment", before + 1),
-        ("read", before + 1),
-    ] {
+    for (method, expected) in [("read", before + 1)] {
         let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
         assert_eq!(
             result,

@@ -238,8 +238,9 @@ impl ControlPlaneService {
         home_region: Option<&str>,
         timings: &mut TargetResolutionTimings,
         grant: Option<super::session::InvocationGrant>,
+        initial: Option<crate::actor::ActorInvocation>,
     ) -> Result<ActorTarget> {
-        self.resolve_actor_route(actor, home_region, Some(timings), grant)
+        self.resolve_actor_route(actor, home_region, Some(timings), grant, initial)
             .await
     }
 
@@ -265,7 +266,9 @@ impl ControlPlaneService {
         super::socket_ticket::SocketTarget,
         crate::sandbox::SocketCredentials,
     )> {
-        let routed = self.route_actor(actor, region, home_region, None).await?;
+        let routed = self
+            .route_actor(actor, region, home_region, None, None)
+            .await?;
         let credentials = self
             .provisioner
             .socket_credentials(&routed.spec, &routed.placement.home_region, &routed.lease)
@@ -326,27 +329,42 @@ impl ControlPlaneService {
         home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
         grant: Option<super::session::InvocationGrant>,
+        initial: Option<crate::actor::ActorInvocation>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
         let idle_expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?
             .saturating_add(self.provisioner.host_idle_timeout_ms());
+        let initial = initial.map(|invocation| crate::sandbox::InitialInvocation {
+            invocation,
+            grant: grant.clone(),
+        });
         let target = self
             .route_actor(
                 actor,
                 self.default_region(),
                 home_region,
                 timings.as_deref_mut(),
+                initial.as_ref(),
             )
             .await?;
-        let issued = self.host_token_issuer.issue_invocation_target(
-            actor,
-            &target.lease.id,
-            &target.lease.session_id,
-            &target.spec.host_config_key(),
-            &target.placement.home_region,
-            target.placement.owner_epoch,
-            grant,
-        )?;
+        let issued = self
+            .host_token_issuer
+            .issue_invocation_target(
+                actor,
+                &target.lease.id,
+                &target.lease.session_id,
+                &target.spec.host_config_key(),
+                &target.placement.home_region,
+                target.placement.owner_epoch,
+                grant,
+            )
+            .map_err(|error| {
+                if target.initial_outcome.is_some() {
+                    error.context(InitialInvocationUnknown)
+                } else {
+                    error
+                }
+            })?;
         let expires_at_ms = issued.expires_at_ms.min(i64::try_from(
             idle_expires_at_ms.min(target.lease.expires_at_ms),
         )?);
@@ -358,6 +376,7 @@ impl ControlPlaneService {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
         }
         Ok(ActorTarget {
+            initial_outcome: target.initial_outcome,
             home_region: target.placement.home_region,
             route,
             token: issued.token,
@@ -373,6 +392,7 @@ pub(super) struct ActorTarget {
     pub token: String,
     pub owner_epoch: u64,
     pub expires_at_ms: i64,
+    pub initial_outcome: Option<serde_json::Value>,
 }
 
 pub(super) struct TargetResolutionTimings {
@@ -577,6 +597,7 @@ impl ControlPlaneService {
         storage_region: &str,
         home_region: Option<&str>,
         mut timings: Option<&mut TargetResolutionTimings>,
+        initial: Option<&crate::sandbox::InitialInvocation>,
     ) -> Result<RoutedActor> {
         self.validate_home_region(home_region)?;
         let storage_region = match home_region {
@@ -617,12 +638,15 @@ impl ControlPlaneService {
         if let Some(target) = active {
             return Ok(target);
         }
-        let (region, lease, owner_epoch) = match self
-            .ensure_actor_host(actor, &spec, current.as_ref(), &storage_region)
+        let (region, lease, owner_epoch, initial_outcome) = match self
+            .ensure_actor_host(actor, &spec, current.as_ref(), &storage_region, initial)
             .await
         {
             Ok(target) => target,
             Err(error) => {
+                if error.is::<InitialInvocationUnknown>() {
+                    return Err(error);
+                }
                 let current = self.placements.get_owner(&actor.storage_key()).await?;
                 if let Some(target) = self.active_target(&current, &spec).await? {
                     if home_region.is_some_and(|region| region != target.placement.home_region) {
@@ -654,6 +678,7 @@ impl ControlPlaneService {
             timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
         }
         Ok(RoutedActor {
+            initial_outcome,
             placement,
             lease,
             spec,
@@ -666,15 +691,16 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
         current: Option<&ObjectPlacement>,
         requested_region: &str,
-    ) -> Result<(String, HostLease, u64)> {
+        initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(String, HostLease, u64, Option<serde_json::Value>)> {
         let region = current
             .map(|p| p.home_region.clone())
             .unwrap_or_else(|| requested_region.to_owned());
-        let (lease, epoch) = self
+        let (lease, epoch, outcome) = self
             .provisioner
-            .ensure_actor_host(spec, &region, actor, current.is_none())
+            .ensure_actor_host(spec, &region, actor, current.is_none(), initial)
             .await?;
-        Ok((region, lease, epoch))
+        Ok((region, lease, epoch, outcome))
     }
 
     async fn require_active_host(&self, principal: &ActorPrincipal) -> Result<HostLease> {
@@ -723,6 +749,7 @@ impl ControlPlaneService {
         }
         self.provisioner.wait_ready(&placement.owner).await?;
         Ok(Some(RoutedActor {
+            initial_outcome: None,
             placement: placement.clone(),
             lease: lease.clone(),
             spec: spec.clone(),
@@ -738,6 +765,15 @@ fn select_target_region(current: Option<&ObjectPlacement>, requested: &str) -> R
     crate::placement::validate_region(region)?;
     Ok(region.into())
 }
+
+#[derive(Debug)]
+pub(super) struct InitialInvocationUnknown;
+impl std::fmt::Display for InitialInvocationUnknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("initial invocation outcome could not be confirmed")
+    }
+}
+impl std::error::Error for InitialInvocationUnknown {}
 
 #[derive(Debug)]
 pub(super) struct RegionConflict;
@@ -784,7 +820,8 @@ pub(crate) trait HostProvisioner: Send + Sync {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
-    ) -> Result<(HostLease, u64)>;
+        initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)>;
     async fn terminate_hosts(
         &self,
         spec: &HostLaunchSpec,
@@ -920,8 +957,9 @@ impl HostProvisioner for SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
-    ) -> Result<(HostLease, u64)> {
-        self.launch(spec, region, actor, new_actor).await
+        initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
+        self.launch(spec, region, actor, new_actor, initial).await
     }
 
     async fn terminate_hosts(
@@ -951,10 +989,19 @@ impl SandboxHostProvisioner {
         region: &str,
         actor: &ActorKey,
         new_actor: bool,
-    ) -> Result<(HostLease, u64)> {
+        initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
+        if self.provider.supports_initial_invocation()
+            && self
+                .runtime_image
+                .as_ref()
+                .is_some_and(|image| image == &spec.image_ref)
+        {
+            request.initial_invocation = initial.cloned();
+        }
         if let Some(access) = &self.runtime_access {
             access.prewarm(crate::replication::ReplicaScope {
                 actor: actor.clone(),
@@ -999,6 +1046,13 @@ impl SandboxHostProvisioner {
         if let Some(pool) = &self.pool {
             request.resources = pool.config.resources.clone();
         }
+        let unknown = |error: anyhow::Error| {
+            if request.initial_invocation.is_some() {
+                error.context(InitialInvocationUnknown)
+            } else {
+                error
+            }
+        };
         let handle = match self.provider.ensure_host(&request).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -1021,7 +1075,7 @@ impl SandboxHostProvisioner {
                     error = %format!("{error:#}"),
                     "actor host provisioning failed"
                 );
-                return Err(error);
+                return Err(unknown(error));
             }
         };
         let provisioning = handle.provisioning.clone();
@@ -1069,7 +1123,7 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
-                return Err(error);
+                return Err(unknown(error));
             }
         };
         let lease_validated_at_ms = elapsed_ms(started_at);
@@ -1099,7 +1153,22 @@ impl SandboxHostProvisioner {
             outcome = "ready",
             "actor host provisioning completed"
         );
-        Ok((lease, owner_epoch))
+        let initial_outcome = request
+            .initial_invocation
+            .as_ref()
+            .map(|initial| {
+                let result = handle
+                    .initial_outcome
+                    .context("host omitted initial invocation outcome")?;
+                ensure!(
+                    result.request_id == initial.invocation.request_id,
+                    "host returned another request's outcome"
+                );
+                Ok(result.outcome)
+            })
+            .transpose()
+            .map_err(unknown)?;
+        Ok((lease, owner_epoch, initial_outcome))
     }
 
     fn request(
@@ -1116,6 +1185,7 @@ impl SandboxHostProvisioner {
             .issue_host(&host_id, &session_id, &config_key, region, actor)?
             .token;
         Ok(EnsureHostRequest {
+            initial_invocation: None,
             actor_is_new: false,
             actor: Some(actor.clone()),
             code_snapshot: spec.code_snapshot.clone(),
@@ -1175,6 +1245,7 @@ fn ready_lease(
 }
 
 struct RoutedActor {
+    initial_outcome: Option<serde_json::Value>,
     placement: ObjectPlacement,
     lease: HostLease,
     spec: HostLaunchSpec,

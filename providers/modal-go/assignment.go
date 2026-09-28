@@ -72,12 +72,9 @@ func (a httpSpareAssigner) Assign(ctx context.Context, spare spareHandle, enviro
 	if response.StatusCode != http.StatusOK {
 		return hostHandle{}, fmt.Errorf("spare assignment returned HTTP %d", response.StatusCode)
 	}
-	document, err := io.ReadAll(io.LimitReader(response.Body, maximumCommandBytes+1))
+	document, err := io.ReadAll(response.Body)
 	if err != nil {
 		return hostHandle{}, err
-	}
-	if len(document) > maximumCommandBytes {
-		return hostHandle{}, fmt.Errorf("host readiness is too large")
 	}
 	var handle hostHandle
 	err = json.Unmarshal(document, &handle)

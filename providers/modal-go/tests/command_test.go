@@ -138,8 +138,8 @@ func TestDeploymentBuildPublishesAfterCompilationAndAlwaysStopsTheBuilder(t *tes
 	}
 }
 
-func TestBuildReplyCanCarryAContractLargerThanTheCommandLimit(t *testing.T) {
-	document, _ := json.Marshal(map[string]any{"version": 1, "actors": []any{}, "padding": strings.Repeat("a", maximumCommandBytes)})
+func TestBuildReplyPreservesALargeContract(t *testing.T) {
+	document, _ := json.Marshal(map[string]any{"version": 1, "actors": []any{}, "padding": strings.Repeat("a", 1024*1024)})
 	sb := &fakeSandbox{contract: document}
 	factory := func() (modalAPI, func(), error) { return &fakeAPI{created: sb}, func() {}, nil }
 	var output bytes.Buffer

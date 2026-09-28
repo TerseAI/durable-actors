@@ -18,14 +18,14 @@ func TestDirectAssignmentAuthenticatesAndReturnsReadiness(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&environment); err != nil || environment["actor"] != "one" {
 			t.Errorf("assignment missing actor: %v", err)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"sessionId":"session","ownerEpoch":42}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"sessionId":"session","ownerEpoch":42,"initialOutcome":{"requestId":"first","outcome":{"type":"completed","result":7}}}`))}, nil
 	})}
 	assigner := httpSpareAssigner{client: client}
 	handle, err := assigner.Assign(context.Background(), spareHandle{ControlRoute: "https://spare.w.modal.host/", ControlToken: "secret"}, map[string]string{"actor": "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handle.OwnerEpoch != 42 || handle.SessionID != "session" {
+	if handle.OwnerEpoch != 42 || handle.SessionID != "session" || string(handle.InitialOutcome) != `{"requestId":"first","outcome":{"type":"completed","result":7}}` {
 		t.Fatal(handle)
 	}
 }

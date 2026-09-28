@@ -226,6 +226,9 @@ struct RegionalProvider {
 
 #[async_trait::async_trait]
 impl SandboxProvider for RegionalProvider {
+    fn supports_initial_invocation(&self) -> bool {
+        false
+    }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         assert_eq!(request.control_plane_url.as_deref(), self.control_plane_url);
         if request.canonical_region == "slow" {

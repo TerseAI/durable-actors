@@ -17,7 +17,6 @@ pub(crate) mod pool;
 pub(crate) use local::LocalSandboxProvider;
 
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_PROVIDER_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,9 +91,24 @@ pub struct BuiltActorCode {
     pub contract: serde_json::Value,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InitialInvocation {
+    pub invocation: crate::actor::ActorInvocation,
+    pub(crate) grant: Option<crate::control_plane::session::InvocationGrant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InitialInvocationOutcome {
+    pub request_id: String,
+    pub outcome: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureHostRequest {
+    pub initial_invocation: Option<InitialInvocation>,
     pub actor_is_new: bool,
     pub actor: Option<crate::actor::ActorKey>,
     pub code_snapshot: Option<String>,
@@ -122,6 +136,7 @@ pub struct EnsureHostRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorHostHandle {
+    pub initial_outcome: Option<InitialInvocationOutcome>,
     pub lease: Option<crate::host_leases::HostLease>,
     #[serde(default)]
     pub owner_epoch: u64,
@@ -187,6 +202,7 @@ pub struct SocketCredentials {
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    fn supports_initial_invocation(&self) -> bool;
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
@@ -249,6 +265,9 @@ impl CommandSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for CommandSandboxProvider {
+    fn supports_initial_invocation(&self) -> bool {
+        self.provider_name == "modal"
+    }
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
         self.execute("build_code", request).await
     }

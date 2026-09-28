@@ -65,6 +65,9 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
+    fn supports_initial_invocation(&self) -> bool {
+        false
+    }
     async fn build_code(&self, _: &super::BuildCodeRequest) -> Result<super::BuiltActorCode> {
         anyhow::bail!("local code is prepared by the control plane")
     }
@@ -395,6 +398,7 @@ impl LocalHost {
 
 fn handle(lease: crate::host_leases::HostLease, region: &str, owner_epoch: u64) -> ActorHostHandle {
     ActorHostHandle {
+        initial_outcome: None,
         lease: Some(lease.clone()),
         owner_epoch,
         host_id: lease.id,

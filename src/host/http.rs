@@ -12,10 +12,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
-    actor::{
-        ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect,
-        MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
-    },
+    actor::{ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect},
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
 };
@@ -52,7 +49,7 @@ impl ActorHostHttpService {
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
                 post(publish),
             )
-            .layer(DefaultBodyLimit::max(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))
+            .layer(DefaultBodyLimit::disable())
             .with_state(Arc::new(self))
     }
 
@@ -85,6 +82,32 @@ impl ActorHostHttpService {
             actor,
             owner_epoch,
         )
+    }
+
+    pub(crate) async fn execute_initial(
+        &self,
+        initial: &crate::sandbox::InitialInvocation,
+        owner_epoch: u64,
+    ) -> crate::sandbox::InitialInvocationOutcome {
+        let invocation = &initial.invocation;
+        let outcome = if initial.grant.as_ref().is_some_and(|grant| {
+            crate::clock::Clock::now_ms(&crate::clock::SystemClock)
+                .map_or(true, |now| now / 1000 >= grant.expires_at.max(0) as u64)
+        }) {
+            serde_json::json!({"type":"unauthenticated"})
+        } else if let Err(error) = authorize_grant(initial.grant.as_ref(), Some(&invocation.method))
+        {
+            serde_json::to_value(InvocationReply::failed("forbidden", &error.1)).unwrap()
+        } else {
+            if let Some(grant) = &initial.grant {
+                info!(event = "delegated_actor_invocation", subject = %grant.subject, grant_id = %grant.grant_id, project_id = %invocation.actor.project_id, actor_name = %invocation.actor.actor_name, actor_id = %invocation.actor.actor_id, request_id = %invocation.request_id, method = %invocation.method);
+            }
+            serde_json::to_value(self.execute(invocation.clone(), owner_epoch).await).unwrap()
+        };
+        crate::sandbox::InitialInvocationOutcome {
+            request_id: invocation.request_id.clone(),
+            outcome,
+        }
     }
 
     async fn execute(&self, invocation: ActorInvocation, owner_epoch: u64) -> InvocationReply {

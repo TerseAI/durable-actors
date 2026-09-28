@@ -19,8 +19,6 @@ const server = http.createServer((incoming, response) => {
       response.on('close', () => clearInterval(timer));
     } else if (request.fail) {
       response.end(JSON.stringify({ status: 'failure', error: 'test failure' }));
-    } else if (request.oversized) {
-      response.end('x'.repeat(5 * 1024 * 1024 + 1));
     } else if (request.malformed) {
       response.end('not json');
     } else if (request.disconnect) {

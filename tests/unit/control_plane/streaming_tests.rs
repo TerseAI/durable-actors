@@ -918,7 +918,8 @@ impl HostProvisioner for SocketTestProvisioner {
         _region: &str,
         _actor: &ActorKey,
         _new_actor: bool,
-    ) -> Result<(HostLease, u64)> {
+        _initial: Option<&crate::sandbox::InitialInvocation>,
+    ) -> Result<(HostLease, u64, Option<serde_json::Value>)> {
         anyhow::bail!("fixture host must be active")
     }
     async fn terminate_hosts(

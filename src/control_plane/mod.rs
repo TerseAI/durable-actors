@@ -24,8 +24,7 @@ pub(crate) mod socket_ticket;
 
 use std::time::Duration;
 
-pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
+pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = usize::MAX;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub use local::{DevOptions, serve_local};

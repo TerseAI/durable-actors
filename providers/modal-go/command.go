@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-const maximumCommandBytes = 1024 * 1024
-const maximumContractBytes = 4 * 1024 * 1024
-const maximumResponseBytes = maximumContractBytes + 1024*1024
-
 type apiFactory func() (modalAPI, func(), error)
 type command struct {
 	Operation string          `json:"operation"`
@@ -103,20 +99,14 @@ func writeReply(output io.Writer, result any, failure error) error {
 	if err != nil {
 		return err
 	}
-	if len(document) >= maximumResponseBytes {
-		return fmt.Errorf("provider response is too large")
-	}
 	_, err = output.Write(append(document, '\n'))
 	return err
 }
 
 func readCommand(input io.Reader) (command, error) {
-	document, err := io.ReadAll(io.LimitReader(input, maximumCommandBytes+1))
+	document, err := io.ReadAll(input)
 	if err != nil {
 		return command{}, err
-	}
-	if len(document) > maximumCommandBytes {
-		return command{}, fmt.Errorf("provider command exceeds %d bytes", maximumCommandBytes)
 	}
 	var cmd command
 	if err := json.Unmarshal(document, &cmd); err != nil {

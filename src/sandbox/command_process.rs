@@ -8,7 +8,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use super::{MAX_PROVIDER_OUTPUT_BYTES, ProviderCommandTimings, elapsed_ms};
+use super::{ProviderCommandTimings, elapsed_ms};
 
 #[derive(Default)]
 pub(super) struct Process(Mutex<Option<Worker>>);
@@ -23,10 +23,6 @@ impl Process {
         timings: &mut ProviderCommandTimings,
     ) -> Result<Reply> {
         let document = serde_json::to_vec(request)?;
-        ensure!(
-            document.len() <= MAX_PROVIDER_OUTPUT_BYTES,
-            "sandbox provider command is too large"
-        );
         let client = self
             .client(command, environment, started_at, timings)
             .await?;
@@ -157,10 +153,6 @@ async fn read_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
         .await
         .context("read provider response; outcome may be unknown")?
     {
-        ensure!(
-            document.len() + chunk.len() <= MAX_PROVIDER_OUTPUT_BYTES,
-            "provider response exceeds {MAX_PROVIDER_OUTPUT_BYTES} bytes"
-        );
         document.extend_from_slice(&chunk);
     }
     Ok(document)

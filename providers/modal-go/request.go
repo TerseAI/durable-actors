@@ -7,6 +7,7 @@ import (
 )
 
 type ensureRequest struct {
+	InitialInvocation     json.RawMessage `json:"initialInvocation"`
 	ActorIsNew            bool            `json:"actorIsNew"`
 	Actor                 json.RawMessage `json:"actor"`
 	CodeSnapshot          string          `json:"codeSnapshot"`
@@ -30,6 +31,7 @@ type ensureRequest struct {
 	HostIdleTimeoutMS     int64           `json:"hostIdleTimeoutMs"`
 }
 type hostHandle struct {
+	InitialOutcome  json.RawMessage  `json:"initialOutcome,omitempty"`
 	Lease           *activationLease `json:"lease,omitempty"`
 	SessionID       string           `json:"sessionId,omitempty"`
 	OwnerEpoch      uint64           `json:"ownerEpoch,omitempty"`
@@ -88,6 +90,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 		"DURABLE_ACTORS_HOST_READY_FILE": readyFile, "DURABLE_ACTORS_HOST_METADATA_FILE": metadataFile,
 		"DURABLE_ACTORS_HOST_BIND":            "0.0.0.0:7101",
 		"DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+	}
+	if len(r.InitialInvocation) != 0 && string(r.InitialInvocation) != "null" {
+		env["DURABLE_ACTORS_INITIAL_INVOCATION"] = string(r.InitialInvocation)
 	}
 	env["DURABLE_ACTORS_ACTOR"] = string(r.Actor)
 	env["DURABLE_ACTORS_ACTOR_IS_NEW"] = fmt.Sprint(r.ActorIsNew)

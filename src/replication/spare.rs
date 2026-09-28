@@ -33,7 +33,7 @@ pub(super) fn routers(store: Arc<dyn ReplicaStore>, token: String) -> (Router, R
     let storage = super::server::routes(store.clone(), binding.clone());
     let assignment = Router::new()
         .route("/assign", post(assign))
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::disable())
         .with_state(Arc::new(AssignmentState {
             authorization: format!("Bearer {token}"),
             store,

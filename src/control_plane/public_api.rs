@@ -12,7 +12,6 @@ use tracing::{info, warn};
 use crate::actor::ActorKey;
 
 use super::{
-    MAX_CONTROL_PLANE_MESSAGE_BYTES,
     admin::{AdminService, HostLaunchSpec},
     contracts::PublicActorContract,
     service::{ControlPlaneService, TargetResolutionTimings},
@@ -54,7 +53,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/find-websocket",
             post(find_websocket),
         )
-        .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
+        .layer(DefaultBodyLimit::disable())
         .with_state(PublicApiState {
             invocations,
             admin,
@@ -249,7 +248,7 @@ async fn find_actor(
     headers: HeaderMap,
     request: Result<Json<FindActorRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let target = resolve_actor_target(&state, &path.into_actor(), &headers, request).await?;
+    let target = resolve_actor_target(&state, &path.into_actor(), &headers, request, None).await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(target)).into_response())
 }
 
@@ -258,6 +257,7 @@ pub(super) async fn resolve_actor_target(
     actor: &ActorKey,
     headers: &HeaderMap,
     request: Result<Json<FindActorRequest>, JsonRejection>,
+    initial: Option<crate::actor::ActorInvocation>,
 ) -> Result<ActorTargetReply, ApiError> {
     let mut timings = TargetResolutionTimings::new();
     let request_id = headers
@@ -320,10 +320,17 @@ pub(super) async fn resolve_actor_target(
         };
         let target = state
             .invocations
-            .resolve_actor_target_timed(actor, request.home_region.as_deref(), &mut timings, grant)
+            .resolve_actor_target_timed(
+                actor,
+                request.home_region.as_deref(),
+                &mut timings,
+                grant,
+                initial,
+            )
             .await
             .map_err(ApiError::routing)?;
         Ok(ActorTargetReply {
+            initial_outcome: target.initial_outcome,
             home_region: target.home_region,
             route: target.route,
             token: target.token,
@@ -450,6 +457,8 @@ struct DeploymentReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ActorTargetReply {
+    #[serde(skip)]
+    pub initial_outcome: Option<serde_json::Value>,
     home_region: String,
     pub route: String,
     pub token: String,
@@ -486,7 +495,9 @@ impl ApiError {
     }
 
     pub(super) fn routing(error: anyhow::Error) -> Self {
-        if error.is::<super::service::RegionConflict>() {
+        if error.is::<super::service::InitialInvocationUnknown>() {
+            super::invocation::outcome_unknown()
+        } else if error.is::<super::service::RegionConflict>() {
             Self::conflict(error.to_string())
         } else {
             Self::unavailable(format!("actor host is unavailable: {error:#}"))
