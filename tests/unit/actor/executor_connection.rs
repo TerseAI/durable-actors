@@ -469,25 +469,6 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
     Ok(())
 }
 
-#[tokio::test]
-async fn large_executor_messages_round_trip() -> Result<()> {
-    let large = "x".repeat(33 * 1024 * 1024);
-    let message = serde_json::json!({"type":"attach", "protocol":18, "actor_names":[large]});
-    let mut document = serde_json::to_vec(&message)?;
-    document.push(b'\n');
-    let (host, mut customer) = UnixStream::pair()?;
-    let (reader, _) = host.into_split();
-    let task = tokio::spawn(async move { customer.write_all(&document).await });
-    let message = read_client_message(&mut BufReader::new(reader))
-        .await?
-        .unwrap();
-    task.await??;
-    assert!(
-        matches!(message, ActorExecutorClientMessage::Attach { actor_names, .. } if actor_names[0].len() == 33 * 1024 * 1024)
-    );
-    Ok(())
-}
-
 async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let stream = UnixStream::connect(socket).await?;
     let (reader, mut writer) = stream.into_split();

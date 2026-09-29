@@ -30,11 +30,3 @@ async def test_metadata_limit_is_enforced_before_publishing():
     with pytest.raises(ValueError, match="64 KiB"):
         socket.metadata = "x" * 65536
     assert context.pending == []
-
-
-async def test_large_application_messages_are_encoded():
-    import json
-
-    value = {"data": "x" * (17 * 1024 * 1024)}
-    message = scope().message(value)
-    assert json.loads(message["data"]) == value

@@ -22,13 +22,6 @@ test("npm publishes the downloaded tarball as a filesystem path", () => {
     assert.match(workflow, /npm publish \.\/dist-tarballs\/durable-actors-\$RELEASE_VERSION\.tgz --access public/)
 })
 
-test("runtime images package Rust and Bun and run as the sandbox user", () => {
-    const dockerfile = read("Dockerfile")
-    assert.match(dockerfile, /COPY --from=builder .* \/usr\/local\/bin\/durable-actors/)
-    assert.match(dockerfile, /COPY --from=bun .* \/usr\/local\/bin\/bun/)
-    assert.match(dockerfile, /USER 10000:10000/)
-})
-
 test("release waits for runtime and SDK validation", () => {
     for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
 })

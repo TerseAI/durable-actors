@@ -285,7 +285,3 @@ pub async fn restore_replica() -> Result<()> {
 #[cfg(test)]
 #[path = "../../tests/unit/replicas/server.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/support/replica_cluster.rs"]
-pub(crate) mod benchmark;

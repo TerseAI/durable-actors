@@ -5,6 +5,3 @@ mod record;
 mod server;
 mod store;
 pub use server::{restore_replica, serve_replica};
-
-#[cfg(test)]
-pub(crate) use server::benchmark::ReplicaCluster;

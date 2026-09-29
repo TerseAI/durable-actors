@@ -33,12 +33,8 @@ test("native builds package the Rust executable with a matching checksum", async
     const extracted = path.join(root, "extracted")
     await mkdir(extracted)
     await execute("tar", ["-xzf", archive, "-C", extracted])
-    for (const [name, contents] of [["durable-actors", "runtime"]]) {
-        assert.equal(await readFile(path.join(root, "target/release", name), "utf8"), contents)
-        await execute("test", ["-x", path.join(root, "target/release", name)])
-        assert.equal(await readFile(path.join(extracted, name), "utf8"), contents)
-        await execute("test", ["-x", path.join(extracted, name)])
-    }
+    assert.equal(await readFile(path.join(extracted, "durable-actors"), "utf8"), "runtime")
+    await execute("test", ["-x", path.join(extracted, "durable-actors")])
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

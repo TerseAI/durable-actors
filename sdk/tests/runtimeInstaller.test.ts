@@ -8,7 +8,7 @@ import { c } from "tar"
 
 import { RuntimeInstaller } from "../src/runtimeInstaller.js"
 
-test("installs both executables from a verified release and reuses the cache offline", async t => {
+test("installs the runtime from a verified release and reuses the cache offline", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "ldo-install-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const archive = await fixture(directory)

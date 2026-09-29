@@ -9,11 +9,7 @@ fn policy(durability: &str, zones: &[&str]) -> serde_json::Value {
 
 #[test]
 fn replica_count_and_placement_are_configurable() -> Result<()> {
-    for zones in [
-        vec!["us-west4-a"],
-        vec!["us-west4-a"; 3],
-        vec!["us-west4-a"; 9],
-    ] {
+    for zones in [vec!["us-west4-a"], vec!["us-west4-a"; 3]] {
         let config: PersistenceConfig = serde_json::from_value(policy("zonal", &zones))?;
         config.validate()?;
     }

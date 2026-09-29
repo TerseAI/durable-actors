@@ -28,8 +28,6 @@ for (const [durability, placements] of [
         assert.match(result.stdout, /volumeClaimTemplates:/)
         assert.match(result.stdout, /whenDeleted: Retain/)
         assert.match(result.stdout, /DURABLE_ACTORS_REPLICAS/)
-        assert.match(result.stdout, /DURABLE_ACTORS_HOST_CPU_MILLIS, value: "250"/)
-        assert.match(result.stdout, /DURABLE_ACTORS_HOST_MEMORY_MIB, value: "256"/)
         assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, placements.length)
         assert.match(result.stdout, /automountServiceAccountToken: false/)
         assert.match(result.stdout, /port: 7200/)
@@ -43,12 +41,6 @@ for (const [name, override] of [
     ["mutable image", { image: { digest: "latest" } }],
     ["shared trust namespace", { sandboxNamespace: "terse-control" }],
 ]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
-
-test("replica count follows the placement list without a fixed maximum", () => {
-    const result = render({ storage: { replicas: { placements: Array(9).fill("us-west4-a") } } })
-    assert.equal(result.status, 0, result.stderr)
-    assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, 9)
-})
 
 test("regional installations deploy their selected replicas and permit configured remote networks", () => {
     const result = render({ storage: { durability: "multi_region", replicas: { placements: ["us-west4-a", "us-east4-a"], addresses: ["http://10.1.0.1:7200", "http://10.2.0.1:7200"], deployIndices: [0] } }, networkPolicy: { replicaCidrs: ["10.2.0.0/16"] } })

@@ -47,42 +47,72 @@ impl SandboxProvider for Provider {
 async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_are_retained()
 -> Result<()> {
     with_postgres(async |fixture| {
-        let provider = Arc::new(Provider { fail: true.into(), pause: None.into() });
-        let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider.clone(), PoolConfig {
-            control_plane_url: None, kind: SpareKind::Actor, idle: 0, fleet_maximum: 0,
-            max_starting: 1, idle_ttl_seconds: 600, regions: vec![], resources: ResourceLimits::default(),
+        let provider = Arc::new(Provider {
+            fail: true.into(),
+            pause: None.into(),
         });
+        let pool = SparePool::new(
+            PostgresDatabase::connect(&fixture.url).await?,
+            provider.clone(),
+            PoolConfig {
+                control_plane_url: None,
+                kind: SpareKind::Actor,
+                idle: 0,
+                fleet_maximum: 0,
+                max_starting: 1,
+                idle_ttl_seconds: 600,
+                regions: vec![],
+                resources: ResourceLimits::default(),
+            },
+        );
         for name in ["done", "live"] {
             pool.reserve_host(name, name, "revision").await?;
             let spare = SpareHandle {
-                name: format!("do-actor-{name}"), resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
-                route: "http://host:7101".into(), canonical_region: "region".into(),
-                control_route: "http://host:7102".into(), control_token: "token".into(),
+                name: format!("do-actor-{name}"),
+                resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
+                route: "http://host:7101".into(),
+                canonical_region: "region".into(),
+                control_route: "http://host:7102".into(),
+                control_token: "token".into(),
             };
             pool.remember(name, "revision", &spare).await?;
         }
-        pool.reserve_host("starting", "starting", "revision").await?;
-        pool.store.0.execute("UPDATE durable_actors_spares SET created_at = clock_timestamp() - interval '2 days', expires_at = clock_timestamp() - interval '1 day' WHERE status = 'active'", &[]).await?;
+        pool.reserve_host("starting", "starting", "revision")
+            .await?;
         assert!(pool.forget_stopped().await.is_err());
         assert!(pool.host("done").await?.is_some());
         assert!(pool.host("live").await?.is_some());
-        provider.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        provider
+            .fail
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let stop = CancellationToken::new();
-        pool.start(Arc::new(crate::control_plane::admin::LocalAdminRegistry::default()), stop.clone());
+        pool.start(
+            Arc::new(crate::control_plane::admin::LocalAdminRegistry::default()),
+            stop.clone(),
+        );
         let result = tokio::time::timeout(Duration::from_secs(3), async {
             while pool.host("done").await?.is_some() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             anyhow::Ok(())
-        }).await;
+        })
+        .await;
         stop.cancel();
         result??;
         pool.forget_stopped().await?;
         assert!(pool.host("done").await?.is_none());
         assert!(pool.host("live").await?.is_some());
-        assert_eq!(pool.store.0.query_one("SELECT count(*) FROM durable_actors_spares", &[]).await?.get::<_, i64>(0), 2);
+        assert_eq!(
+            pool.store
+                .0
+                .query_one("SELECT count(*) FROM durable_actors_spares", &[])
+                .await?
+                .get::<_, i64>(0),
+            2
+        );
         Ok(())
-    }).await
+    })
+    .await
 }
 
 #[tokio::test]

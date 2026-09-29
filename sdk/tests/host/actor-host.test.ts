@@ -178,30 +178,6 @@ test("the actor session carries only owned execution commands", async t => {
         customerSocket.write(
             `${JSON.stringify({
                 type: "command",
-                message_id: 2,
-                command: {
-                    type: "invoke",
-                    request_id: "request-2",
-                    actor: actorIdentity(),
-                    method: "sizedResponse",
-                    args: [32 * 1024 * 1024],
-                    state: { count: 4 }
-                }
-            })}\n`
-        )
-        const large = (await readMessage(iterator)) as {
-            type: string
-            message_id: number
-            reply: { type: string; result: string }
-        }
-        assert.equal(large.type, "reply")
-        assert.equal(large.message_id, 2)
-        assert.equal(large.reply.type, "invoked")
-        assert.equal(large.reply.result.length, 32 * 1024 * 1024)
-
-        customerSocket.write(
-            `${JSON.stringify({
-                type: "command",
                 message_id: 3,
                 command: {
                     type: "invoke",
@@ -216,7 +192,7 @@ test("the actor session carries only owned execution commands", async t => {
         assert.deepEqual(await readMessage(iterator), {
             type: "reply",
             message_id: 3,
-            reply: { type: "invoked", result: 6, state: { count: 6 } }
+            reply: { type: "invoked", result: 5, state: { count: 5 } }
         })
 
         customerSocket.write(

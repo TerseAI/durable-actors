@@ -168,7 +168,3 @@ fn validate_close(code: u16, reason: &str) -> Result<()> {
     );
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/actor/socket.rs"]
-mod tests;

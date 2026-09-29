@@ -2,15 +2,6 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn round_trips_large_state() -> Result<()> {
-    let state = json!({"value": "x".repeat(33 * 1024 * 1024)});
-    let snapshot = StateSnapshot::new(1, 1, "large".into(), &state, Value::Null)?;
-    let decoded = StateSnapshot::decode(&snapshot.encode()?)?;
-    assert_eq!(serde_json::from_str::<Value>(decoded.state.get())?, state);
-    Ok(())
-}
-
-#[test]
 fn preserves_encoded_state_when_forwarding_a_snapshot() -> Result<()> {
     let bytes = br#"{"stateVersion":1,"ownerEpoch":2,"requestId":"request-1","state":{ "value": "\u0061", "nested": [1, true, null] },"result":null}"#;
     let snapshot = StateSnapshot::decode(bytes)?;

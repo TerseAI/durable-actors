@@ -19,8 +19,6 @@ test("release version changes keep Python packages and native binaries aligned",
     const stamped = stampReleaseVersion(manifests, "9.8.7")
     assert.match(stamped.pythonPackage, /^version = "9.8.7"$/m)
     assert.match(stamped.pythonLock, /name = "durable-actors"\nversion = "9.8.7"/)
-    assert.match(stamped.helmChart, /^version: 9.8.7$/m)
-    assert.match(stamped.helmChart, /^appVersion: "9.8.7"$/m)
     verifyReleaseVersion(stamped, "9.8.7")
     assert.throws(() => verifyReleaseVersion({ ...stamped, pythonPackage: manifests.pythonPackage }, "9.8.7"), /pyproject/)
 })

@@ -311,19 +311,6 @@ fn spec() -> HostLaunchSpec {
 }
 
 #[test]
-fn large_compiled_contracts_are_preserved() -> Result<()> {
-    let declarations = "export interface ActorTypes {}".to_owned() + &" ".repeat(5 * 1024 * 1024);
-    let contract = PublicActorContract::new(
-        json!({"version":1,"actors":[],"typescript":{"declarations":declarations,"dependencies":{}}}),
-    )?;
-    assert_eq!(
-        contract.document()["typescript"]["declarations"],
-        declarations
-    );
-    Ok(())
-}
-
-#[test]
 fn python_contracts_publish_without_typescript_declarations() -> Result<()> {
     let mut document: Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"

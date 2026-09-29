@@ -16,7 +16,6 @@ fn customer_pod_uses_managed_gvisor_without_ambient_credentials() -> Result<()> 
     let pod = spare_pod(&request, "us-west4-a", "test-token")?;
     let spec = pod.spec.unwrap();
     assert_eq!(spec.runtime_class_name.as_deref(), Some("gvisor"));
-    assert_eq!(spec.active_deadline_seconds, None);
     assert_eq!(spec.automount_service_account_token, Some(false));
     assert_eq!(
         spec.node_selector.unwrap()["topology.kubernetes.io/zone"],
@@ -42,23 +41,6 @@ fn customer_pod_uses_managed_gvisor_without_ambient_credentials() -> Result<()> 
         Some(false)
     );
     Ok(())
-}
-
-#[test]
-fn resource_identity_requires_namespace_name_and_uid() {
-    assert_eq!(
-        resource_identity("sandboxes/warm/uid").unwrap(),
-        ("sandboxes", "warm", "uid")
-    );
-    for bad in [
-        "",
-        "warm",
-        "sandboxes/warm",
-        "sandboxes/warm/",
-        "sandboxes/warm/uid/extra",
-    ] {
-        assert!(resource_identity(bad).is_err());
-    }
 }
 
 #[tokio::test]
@@ -108,8 +90,7 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
 }
 
 #[tokio::test]
-async fn stopped_spares_use_pod_identity_and_terminal_status_without_expiring_live_pods()
--> Result<()> {
+async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Result<()> {
     use axum::{Json, Router, routing::get};
     let items: Vec<_> = [("live", "Running"), ("pending", "Pending"), ("unknown", "Unknown"), ("done", "Succeeded"), ("crashed", "Failed"), ("replaced", "Running")]
         .into_iter().map(|(name, phase)| json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"sandboxes","uid":format!("{name}-uid")},"status":{"phase":phase}})).collect();

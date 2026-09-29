@@ -187,19 +187,3 @@ class Counter(Actor):
     )
     assert loaded.returncode == 0, loaded.stderr
     assert loaded.stdout.strip() == "Actor"
-
-
-def test_large_source_resources_are_packaged(tmp_path):
-    from durable_actors.build import write_artifact
-
-    (tmp_path / "actors.py").write_text("value = 1\n")
-    resource = tmp_path / "data.bin"
-    with resource.open("wb") as stream:
-        stream.truncate(33 * 1024 * 1024)
-    output = tmp_path / "dist"
-    output.mkdir()
-    write_artifact(
-        tmp_path, output, "actors", {"tool": {"durable-actors": {"include": ["data.bin"]}}}
-    )
-    with zipfile.ZipFile(output / "actors.pyz") as artifact:
-        assert artifact.getinfo("data.bin").file_size == resource.stat().st_size

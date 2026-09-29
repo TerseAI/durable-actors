@@ -45,7 +45,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 }
 
 #[test]
-fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Result<()> {
+fn pool_capacity_is_configurable_and_validated() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
