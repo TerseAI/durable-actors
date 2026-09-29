@@ -1,0 +1,284 @@
+{
+  "summary": {
+    "cold_write": {
+      "n": 20,
+      "p50_ms": 227.79114550000122,
+      "p95_ms": 267.6744159999944,
+      "min_ms": 194.52441700000054,
+      "max_ms": 271.03504200000316
+    },
+    "cold_read": {
+      "n": 20,
+      "p50_ms": 236.12541649999548,
+      "p95_ms": 289.5961249999964,
+      "min_ms": 193.5818750000035,
+      "max_ms": 292.3721669999941
+    },
+    "hot_write": {
+      "n": 200,
+      "p50_ms": 40.76225000000704,
+      "p95_ms": 92.122457999998,
+      "min_ms": 34.8885420000006,
+      "max_ms": 123.08529099999578
+    },
+    "hot_read": {
+      "n": 200,
+      "p50_ms": 37.169771000000765,
+      "p95_ms": 90.04729200000293,
+      "min_ms": 30.680458999999246,
+      "max_ms": 123.55304199999955
+    },
+    "resume_write": {
+      "n": 20,
+      "p50_ms": 312.94329150000704,
+      "p95_ms": 372.578125,
+      "min_ms": 269.6485419999808,
+      "max_ms": 390.8519999999844
+    },
+    "resume_read": {
+      "n": 20,
+      "p50_ms": 315.9458540000196,
+      "p95_ms": 389.4177079999936,
+      "min_ms": 282.3071250000212,
+      "max_ms": 399.43383300001733
+    }
+  },
+  "host_startup": {
+    "cold_write": {
+      "n": 20,
+      "p50_ms": 144.2715475,
+      "p95_ms": 165.310902,
+      "min_ms": 121.444771,
+      "max_ms": 176.63808
+    },
+    "cold_read": {
+      "n": 20,
+      "p50_ms": 147.5111015,
+      "p95_ms": 168.11101,
+      "min_ms": 121.38592,
+      "max_ms": 168.426543
+    },
+    "resume_write": {
+      "n": 20,
+      "p50_ms": 218.9390525,
+      "p95_ms": 265.13784499999997,
+      "min_ms": 185.44879699999998,
+      "max_ms": 282.561943
+    },
+    "resume_read": {
+      "n": 20,
+      "p50_ms": 224.1845105,
+      "p95_ms": 239.788465,
+      "min_ms": 187.227343,
+      "max_ms": 244.99711299999998
+    }
+  },
+  "hot_route_counts": {
+    "hot_write": {
+      "cached_target": 200,
+      "control_plane_resolution": 0
+    },
+    "hot_read": {
+      "cached_target": 200,
+      "control_plane_resolution": 0
+    }
+  },
+  "validation": {
+    "operations": 528,
+    "measured_operations": 480,
+    "verified_activations": 88,
+    "replicas": 3,
+    "archived_epochs_per_replica": 44,
+    "errors": 0,
+    "all_activations_prewarmed_gvisor": true,
+    "resume_recovered_archived_state_on_new_hosts": true
+  },
+  "host_request": {
+    "cold_write": {
+      "n": 20,
+      "p50_ms": 9.372702,
+      "p95_ms": 13.787304
+    },
+    "cold_read": {
+      "n": 20,
+      "p50_ms": 9.567324499999998,
+      "p95_ms": 10.773599
+    },
+    "hot_write": {
+      "n": 200,
+      "p50_ms": 6.6384355,
+      "p95_ms": 8.356149
+    },
+    "hot_read": {
+      "n": 200,
+      "p50_ms": 1.6472449999999998,
+      "p95_ms": 2.733889
+    },
+    "resume_write": {
+      "n": 20,
+      "p50_ms": 9.415850500000001,
+      "p95_ms": 10.51507
+    },
+    "resume_read": {
+      "n": 20,
+      "p50_ms": 4.1440855,
+      "p95_ms": 6.0004610000000005
+    }
+  },
+  "control_plane_resolution": {
+    "cold_write": {
+      "n": 20,
+      "p50_ms": 177.101257,
+      "p95_ms": 201.179447
+    },
+    "cold_read": {
+      "n": 20,
+      "p50_ms": 177.580354,
+      "p95_ms": 199.822816
+    },
+    "resume_write": {
+      "n": 20,
+      "p50_ms": 265.11218700000006,
+      "p95_ms": 308.081559
+    },
+    "resume_read": {
+      "n": 20,
+      "p50_ms": 269.5632385,
+      "p95_ms": 299.79456999999996
+    }
+  },
+  "date": "2026-09-29",
+  "run_id": "live-1790700541150",
+  "runtime_commit": "25bc6ad",
+  "chart_commit": "b3a53cd",
+  "images": {
+    "url": "https://34.98.93.27.sslip.io",
+    "ip": "34.98.93.27",
+    "runtime_image": "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/lifecycle-0929@sha256:f6869e377a4fa5eb0286ad0d9eae4bd51d2b840f57cc69d351aabece3cc3ca8a",
+    "fixture_image": "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/lifecycle-0929@sha256:da2d4cbb1d70d64b15161db59c18a1a6e821bcbf32b34eb2c7cfce5726e5368a",
+    "project_id": "lifecycle-benchmark"
+  },
+  "configuration": {
+    "cloud_project": "fluid-analogy-473415-c2",
+    "zone": "us-west4-a",
+    "durability": "zonal",
+    "required_replicas": 3,
+    "storage_class": "premium-rwo",
+    "disk_type": "pd-ssd",
+    "replica_disk_gib": 100,
+    "regular_nodes": {
+      "count": 3,
+      "machine_type": "e2-standard-4"
+    },
+    "sandbox_nodes": {
+      "count": 2,
+      "machine_type": "e2-standard-8"
+    },
+    "actor_resources": {
+      "cpu_millis": 1000,
+      "memory_mib": 1024
+    },
+    "prewarmed_idle": 5,
+    "control_plane_pods": 2,
+    "postgres": "16-bookworm, in cluster, 10 GiB premium-rwo",
+    "gke_version": "1.35.8-gke.1225000",
+    "gcs": {
+      "class": "STANDARD",
+      "location": "US-WEST4",
+      "buckets": [
+        "owner",
+        "code",
+        "archive"
+      ]
+    },
+    "archive_batch_bytes": 16777216,
+    "archive_batch_age_ms": 10000,
+    "host_idle_timeout_ms": 10000,
+    "node_client": "24.19.0",
+    "bun": "1.4.2",
+    "client_os": "macOS 15.7.3",
+    "tls": "public Google HTTPS load balancer, benchmark self-signed certificate explicitly trusted by the client",
+    "warmups_per_activation_case": 2,
+    "measured_samples_per_activation_case": 20,
+    "measured_samples_per_hot_case": 200
+  },
+  "health_baseline": {
+    "url": "https://34.98.93.27.sslip.io/healthz",
+    "n": 50,
+    "p50": 32.325833500000044,
+    "p95": 39.048333999999954,
+    "samples": [
+      32.657708000000014,
+      33.18920800000001,
+      31.976249999999936,
+      58.67274999999995,
+      39.048333999999954,
+      32.170208,
+      34.274875000000065,
+      36.161500000000046,
+      31.82233300000007,
+      31.42120799999998,
+      32.96170900000004,
+      33.51241600000003,
+      34.563625,
+      37.86558400000001,
+      33.57570800000008,
+      32.77099999999996,
+      35.955999999999904,
+      30.97745800000007,
+      30.77237500000001,
+      40.064375000000155,
+      31.94666700000016,
+      30.682165999999825,
+      29.450207999999975,
+      30.53716700000018,
+      31.849958000000015,
+      34.99295899999993,
+      32.392249999999876,
+      37.34520799999996,
+      37.000375000000076,
+      33.32591600000001,
+      32.26491699999997,
+      30.51666699999987,
+      31.5082910000001,
+      31.451000000000022,
+      31.034374999999955,
+      33.18908299999998,
+      29.735916999999972,
+      30.235957999999982,
+      32.38675000000012,
+      34.776083999999855,
+      33.47016600000006,
+      33.77937500000007,
+      30.35283299999992,
+      34.785541000000194,
+      31.452332999999953,
+      31.94095799999991,
+      31.62670899999989,
+      31.52808300000015,
+      31.966750000000047,
+      31.13745800000015
+    ]
+  },
+  "cleanup": {
+    "completed": true,
+    "audit_categories": [
+      "clusters",
+      "instances",
+      "disks",
+      "addresses",
+      "forwarding_rules",
+      "https_proxies",
+      "http_proxies",
+      "url_maps",
+      "ssl_certificates",
+      "backend_services",
+      "health_checks",
+      "network_endpoint_groups",
+      "firewall_rules",
+      "service_accounts",
+      "buckets"
+    ],
+    "remaining_resources": 0
+  }
+}

@@ -6,6 +6,8 @@ The fixture uses the actual Rust assigned-host implementation, a prewarmed gener
 
 The workload increments or reads one persisted integer. The compiled artifact is 7,960 bytes. Requests are serial; this is not a throughput, large-state, or failure-domain benchmark. The Rust test build is unoptimized, running on macOS 15.7.3 with Bun 1.4.2.
 
+The subsequent [live GKE benchmark](actor-lifecycle-gke-benchmark.md) measures the public SDK path with real GCS and independent replica disks.
+
 ## Case definitions
 
 - **Cold write/read:** a different never-activated actor for each case. The generic Bun process is ready before timing begins, with no customer code installed. The timer includes local code installation, host initialization, ownership acquisition, actor hydration, and the first HTTP operation through receipt and validation of its result. Pod creation, generic runtime warmup, token issuance, and control-plane assignment transport are outside the timer.
@@ -42,4 +44,4 @@ CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 \
 
 The harness lives in `tests/unit/host/lifecycle.rs`, with the replica fixture in `tests/support/replica_cluster.rs`. It uses temporary directories and loopback listeners; no production data or deployment is changed.
 
-The outstanding live run needs an isolated GKE Sandbox deployment with prewarmed capacity, the release image, real GCS ownership/code/archive buckets, and replicas on distinct nodes using the selected Persistent Disk class. Measure these same six independent cases through the public SDK endpoint from the laptop, and report the internal activation interval separately. These local results do not establish production latency or regional/multi-region durability.
+The [subsequent live run](actor-lifecycle-gke-benchmark.md) used an isolated GKE Sandbox deployment with prewarmed capacity, the release image, real GCS ownership/code/archive buckets, and replicas on distinct nodes using the selected Persistent Disk class. It measured the same six independent cases through the public SDK endpoint from the laptop and reported the internal activation interval separately. These local results do not establish production latency or regional/multi-region durability.
