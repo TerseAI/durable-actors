@@ -10,6 +10,7 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         write_json_line(&mut socket, &json!({"type":"warm","protocol":20})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
+        assert_eq!(load["environment"]["CUSTOMER_KEY"], "value");
         write_json_line(
             &mut socket,
             &json!({"type":"attach","protocol":20,"actor_names":["counter"]}),
@@ -27,7 +28,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         anyhow::Ok(())
     });
     let warm = listener.accept_warm().await?;
-    let connection = warm.load("/customer/actors.mjs").await?;
+    let connection = warm
+        .load(
+            "/customer/actors.mjs",
+            &HashMap::from([("CUSTOMER_KEY".into(), "value".into())]),
+        )
+        .await?;
     connection.mark_ready(None, None).await?;
     connection
         .executor()

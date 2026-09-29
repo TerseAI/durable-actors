@@ -8,7 +8,10 @@ const manifestFiles = {
     cargoLock: "Cargo.lock",
     cargoToml: "Cargo.toml",
     npmPackage: "sdk/package.json",
-    observerPackage: "packages/observer-ui/package.json"
+    observerPackage: "packages/observer-ui/package.json",
+    pythonPackage: "sdk-python/pyproject.toml",
+    pythonLock: "sdk-python/uv.lock",
+    helmChart: "charts/terse/Chart.yaml"
 }
 
 export const releaseManifestPaths = Object.values(manifestFiles)
@@ -49,6 +52,14 @@ export function stampReleaseVersion(manifests, version) {
         cargoLock: replaceOne(manifests.cargoLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.lock"),
         cargoToml: replaceOne(manifests.cargoToml, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.toml"),
         npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json"),
+        pythonPackage: replaceOne(manifests.pythonPackage, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/pyproject.toml"),
+        pythonLock: replaceOne(manifests.pythonLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/uv.lock"),
+        helmChart: replaceOne(
+            replaceOne(manifests.helmChart, /^version: .+$/mu, `version: ${version}`, "charts/terse/Chart.yaml"),
+            /^appVersion: .+$/mu,
+            `appVersion: "${version}"`,
+            "charts/terse/Chart.yaml"
+        ),
         observerPackage: replaceOne(manifests.observerPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "packages/observer-ui/package.json")
     }
 }
@@ -76,6 +87,10 @@ function manifestVersions(manifests) {
             path: manifestFiles.cargoLock,
             version: matchVersion(manifests.cargoLock, /^\[\[package\]\]\nname = "durable-actors"\nversion = "([^"]+)"/mu, manifestFiles.cargoLock)
         },
+        { path: manifestFiles.pythonPackage, version: matchVersion(manifests.pythonPackage, /^version = "([^"]+)"/mu, manifestFiles.pythonPackage) },
+        { path: manifestFiles.pythonLock, version: matchVersion(manifests.pythonLock, /^\[\[package\]\]\nname = "durable-actors"\nversion = "([^"]+)"/mu, manifestFiles.pythonLock) },
+        { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^version: ([^\s]+)$/mu, manifestFiles.helmChart) },
+        { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^appVersion: "([^"]+)"$/mu, manifestFiles.helmChart) },
         { path: manifestFiles.npmPackage, version: JSON.parse(manifests.npmPackage).version },
         { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version }
     ]

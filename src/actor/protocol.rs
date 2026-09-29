@@ -4,8 +4,6 @@ use serde_json::Value;
 
 use crate::{actor::ActorSocketEffect, actor_state::ActorStorageKey};
 
-pub(crate) const MAX_ACTOR_INVOCATION_BYTES: usize = 32 * 1024 * 1024;
-
 const MAX_ACTOR_NAME_BYTES: usize = 48;
 const MAX_ACTOR_ID_BYTES: usize = 128;
 const MAX_METHOD_BYTES: usize = 128;

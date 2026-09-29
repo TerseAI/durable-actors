@@ -9,7 +9,7 @@ import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
 import { parseActorSessionServerMessage } from "./protocol.js"
-import type { ActorSessionClientMessage } from "./protocol.js"
+import type { ActorExecutorCommand, ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
 import type { ActorCommandHandler, ActorHostSettings, ActorWorkerSupervisorFactory } from "./types.js"
 import { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
@@ -203,16 +203,15 @@ class ActorSessionConnection {
                     this.attachedReject = undefined
                     break
                 case "command":
-                    this.send({
-                        type: "reply",
-                        message_id: message.message_id,
-                        reply: await this.commandHandler(
+                    await this.reply(
+                        message.message_id,
+                        await this.commandHandler(
                             message.command,
                             () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
                             effects => this.publish(message.message_id, effects),
                             () => this.getConnections(message.message_id)
                         )
-                    })
+                    )
                     break
                 case "socket_connections": {
                     const pending = this.loadingConnections.get(message.message_id)
@@ -266,6 +265,10 @@ class ActorSessionConnection {
                 reject(sessionError(error))
             }
         })
+    }
+
+    private reply(messageId: number, reply: ActorExecutorReply): void {
+        this.send({ type: "reply", message_id: messageId, reply })
     }
 
     private send(message: ActorSessionClientMessage): void {

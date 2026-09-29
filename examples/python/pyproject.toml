@@ -1,0 +1,8 @@
+[project]
+name = "durable-actors-python-example"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["durable-actors[codegen]"]
+
+[tool.uv.sources]
+durable-actors = { path = "../../sdk-python", editable = true }

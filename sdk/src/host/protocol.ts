@@ -157,6 +157,7 @@ interface EvictedReply {
 
 interface ActorWorkerData {
     readonly moduleUrl: string
+    readonly environment?: Readonly<Record<string, string>>
 }
 
 type ActorWorkerRequest =

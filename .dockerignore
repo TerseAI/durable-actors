@@ -13,9 +13,6 @@
 !docs
 !docs/reference
 !docs/reference/openapi.yaml
-!providers
-!providers/modal-go
-!providers/modal-go/**
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
@@ -42,3 +39,9 @@
 !examples/ai-chat/package.json
 !examples/documents
 !examples/documents/package.json
+!sdk-python
+!sdk-python/pyproject.toml
+!sdk-python/src
+!sdk-python/src/**
+!sdk-python/README.md
+!sdk-python/LICENSE.md

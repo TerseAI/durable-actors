@@ -1,9 +1,6 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
-use crate::{ltx::SqliteCapture, replication::SnapshotRef, state_log::SqliteSnapshot};
+use crate::{ltx::SqliteCapture, state_log::SqliteSnapshot, storage::SnapshotRef};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -18,13 +15,10 @@ use crate::{
         validate_socket_effects,
     },
     state_log::StateSnapshot,
-    state_transport::StateWrite,
     storage::WritePlan,
 };
 
 use super::HostEndpoint;
-
-const STATE_WRITE_TICKET_SAFETY: Duration = Duration::from_secs(5);
 
 #[async_trait]
 pub(crate) trait ActorStorage: Send + Sync {
@@ -728,10 +722,7 @@ impl ActorRuntime {
         let ticket = match cached.next_write.take() {
             Some(ticket)
                 if ticket.state_version == next_version
-                    && ticket.expires_at_ms
-                        > unix_millis()?.saturating_add(i64::try_from(
-                            STATE_WRITE_TICKET_SAFETY.as_millis(),
-                        )?) =>
+                    && ticket.stream.owner_epoch == owner_epoch =>
             {
                 ticket
             }
@@ -782,21 +773,15 @@ impl ActorRuntime {
             .pending
             .as_ref()
             .expect("pending write was installed");
-        let write = self.state.write_snapshot(&pending.ticket, bytes).await?;
+        self.state.write_snapshot(&pending.ticket, bytes).await?;
         cached
             .pending
             .as_mut()
             .expect("pending write was installed")
             .durable = true;
         timings.snapshot_persisted_at_ms = Some(timings.elapsed_ms());
-        timings.durability_proof = Some(if write == StateWrite::Replicated {
-            "replicas"
-        } else {
-            "object_storage"
-        });
-        if write != StateWrite::Replicated {
-            timings.snapshot_uploaded_at_ms = timings.snapshot_persisted_at_ms;
-        }
+        timings.durability_proof = Some("object_storage");
+        timings.snapshot_uploaded_at_ms = timings.snapshot_persisted_at_ms;
         self.finish_pending_commit(invocation, cached).await?;
         timings.state_finalized_at_ms = Some(timings.elapsed_ms());
         Ok(ActorExecutionResult::Completed {
@@ -869,23 +854,21 @@ impl ActorRuntime {
             return Ok(());
         };
         if !pending.durable {
-            if pending.ticket.expires_at_ms <= unix_millis()?.saturating_add(5000) {
-                let renewed = self
-                    .storage
-                    .prepare_state_write(
-                        &invocation.actor,
-                        &self.endpoint.id,
-                        cached.owner_epoch,
-                        cached.state_version,
-                    )
-                    .await?;
-                ensure!(
-                    renewed.stream == pending.ticket.stream
-                        && renewed.object_name == pending.ticket.object_name,
-                    "pending writer has been fenced"
-                );
-                pending.ticket = renewed;
-            }
+            let renewed = self
+                .storage
+                .prepare_state_write(
+                    &invocation.actor,
+                    &self.endpoint.id,
+                    cached.owner_epoch,
+                    cached.state_version,
+                )
+                .await?;
+            ensure!(
+                renewed.stream == pending.ticket.stream
+                    && renewed.object_name == pending.ticket.object_name,
+                "pending writer has been fenced"
+            );
+            pending.ticket = renewed;
             self.state
                 .write_snapshot(&pending.ticket, pending.snapshot.encode()?)
                 .await?;

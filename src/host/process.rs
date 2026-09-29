@@ -32,6 +32,8 @@ const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
+    artifact: Option<crate::artifacts::ArtifactManifest>,
+    customer_environment: std::collections::HashMap<String, String>,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
@@ -83,6 +85,7 @@ pub async fn serve_actor_host<F>(config: ActorHostConfig, shutdown: F) -> Result
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    super::protect_runtime_credentials()?;
     serve_assigned_host(config, None, shutdown).await
 }
 
@@ -189,6 +192,9 @@ pub(super) async fn serve_assigned_host(
             .context("serve actor host endpoints")
     });
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
+    let shutdown = async {
+        tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
+    };
     tokio::pin!(shutdown);
 
     info!(host_id = %config.host_id, route, "durable-actors host is ready");
@@ -308,6 +314,13 @@ impl ActorHostConfig {
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
+            customer_environment: get("DURABLE_ACTORS_CUSTOMER_ENV")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?
+                .unwrap_or_default(),
+            artifact: get("DURABLE_ACTORS_CODE_ARTIFACT")
+                .map(|value| crate::artifacts::ArtifactManifest::decode(&value))
+                .transpose()?,
             runtime_config,
             control_plane_url,
             host_token,
@@ -394,40 +407,40 @@ async fn prepare_actor_host(
     )?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
     let control_plane = Arc::new(control_plane);
-    let scope = crate::replication::ReplicaScope {
-        actor: config.actor.clone().context("actor identity missing")?,
-        host: config.host_id.clone(),
-        session: config.session_id.clone(),
-        region: config.runtime_config.region.clone(),
-    };
     let stop = CancellationToken::new();
     let credentials = stop.clone().drop_guard();
-    let transport = crate::state_transport::GrpcStateTransport::new();
-    let initial = super::replication::InitialReplication::start(
-        control_plane.clone(),
-        scope.clone(),
-        !config.runtime_config.replica_regions.is_empty(),
-        stop.clone(),
-        transport.clone(),
-    );
-    let started = timings.started_at;
-    let storage_ready = async {
-        let result = prepare_storage(
-            config,
-            &endpoint,
+    let storage = Arc::new(
+        super::storage::HostStorage::new(
+            config.runtime_config.clone(),
+            config.host_id.clone(),
+            config.session_id.clone(),
             control_plane.clone(),
             stop,
             warm_storage,
-            transport,
         )
-        .await;
+        .await?
+        .with_actor(
+            config.actor.clone(),
+            config.new_actor,
+            config.owner_hint.clone(),
+        ),
+    );
+    let started = timings.started_at;
+    let storage_ready = async {
+        let result = prepare_storage(config, &endpoint, storage.clone()).await;
         timings.storage_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
     let executor_ready = async {
+        if let Some(artifact) = &config.artifact {
+            storage.install_code(artifact).await?;
+        }
         let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
-            let connection =
-                tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
+            let connection = tokio::time::timeout(
+                Duration::from_secs(60),
+                executor.load(&entrypoint, &config.customer_environment),
+            )
+            .await??;
             Ok((connection, javascript))
         } else {
             connect_executor(
@@ -440,8 +453,8 @@ async fn prepare_actor_host(
         timings.executor_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
-    let (storage, executor) = tokio::join!(storage_ready, executor_ready);
-    let (storage, lease, renewal) = storage?;
+    let (lease, executor) = tokio::join!(storage_ready, executor_ready);
+    let (lease, renewal) = lease?;
     let (executor_connection, javascript) = match executor {
         Ok(executor) => executor,
         Err(error) => {
@@ -456,12 +469,7 @@ async fn prepare_actor_host(
             endpoint,
             executor_connection.executor(),
             storage.clone(),
-            super::replication::ActorReplication::start(
-                storage.clone(),
-                scope,
-                storage.stop.clone(),
-                initial,
-            ),
+            super::persistence::ActorPersistence::new(storage.clone()),
             sockets.clone(),
         )
         .with_traces(crate::request_traces::TraceSender::start(
@@ -489,33 +497,8 @@ async fn prepare_actor_host(
 async fn prepare_storage(
     config: &ActorHostConfig,
     endpoint: &HostEndpoint,
-    control_plane: Arc<ControlPlaneClient>,
-    stop: CancellationToken,
-    warm: Option<crate::bucket::WarmGcs>,
-    transport: crate::state_transport::GrpcStateTransport,
-) -> Result<(
-    Arc<super::storage::HostStorage>,
-    Arc<HostLeaseMaintainer>,
-    LeaseRenewalTask,
-)> {
-    let storage = Arc::new(
-        super::storage::HostStorage::new(
-            config.runtime_config.clone(),
-            config.host_id.clone(),
-            config.session_id.clone(),
-            config.control_plane_url.clone(),
-            control_plane,
-            stop,
-            warm,
-            transport,
-        )
-        .await?
-        .with_actor(
-            config.actor.clone(),
-            config.new_actor,
-            config.owner_hint.clone(),
-        ),
-    );
+    storage: Arc<super::storage::HostStorage>,
+) -> Result<(Arc<HostLeaseMaintainer>, LeaseRenewalTask)> {
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint.clone(),
         config.session_id.clone(),
@@ -525,7 +508,7 @@ async fn prepare_storage(
         config.renew_every,
     )?);
     let renewal = lease.clone().start().await?;
-    Ok((storage, lease, renewal))
+    Ok((lease, renewal))
 }
 
 async fn bind_host_listener(
@@ -644,7 +627,9 @@ async fn connect_executor(
     javascript_spawned_at_ms: &mut Option<f64>,
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(socket).await?;
-    let javascript = spawn_javascript_process(false, &socket.display().to_string())?;
+    let entrypoint = std::env::var("DURABLE_ACTORS_ENTRYPOINT").ok();
+    let javascript =
+        spawn_executor_process(false, &socket.display().to_string(), entrypoint.as_deref())?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -727,24 +712,44 @@ async fn stop_host_tasks(
     .await;
 }
 
-pub(super) fn spawn_javascript_process(
+pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
+    entrypoint: Option<&str>,
 ) -> Result<tokio::process::Child> {
-    Command::new("bun")
-        .args([
+    let mut command = if entrypoint.is_some_and(|path| path.ends_with(".pyz")) {
+        let mut command = Command::new(
+            std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
+        );
+        command.args(["-m", "durable_actors.host"]);
+        if generic {
+            command.arg("--generic");
+        }
+        command
+    } else {
+        let mut command = Command::new("bun");
+        command.args([
             "--eval",
             "import(process.env.DURABLE_ACTORS_SDK_HOST ?? \"durable-actors/host\").then(module => module[process.env.DURABLE_ACTORS_GENERIC_EXECUTOR === \"1\" ? \"runGenericHost\" : \"runActorHost\"]())",
-        ])
-        .env("DURABLE_ACTORS_GENERIC_EXECUTOR", if generic { "1" } else { "0" })
+        ]);
+        command
+    };
+    command
+        .env(
+            "DURABLE_ACTORS_GENERIC_EXECUTOR",
+            if generic { "1" } else { "0" },
+        )
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
         .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
+        .env_remove("DURABLE_ACTORS_RUNTIME_CONFIG")
+        .env_remove("DURABLE_ACTORS_HOST_TOKEN")
+        .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
-        .context("start JavaScript actor executor")
+        .context("start actor executor")
 }
 
 fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

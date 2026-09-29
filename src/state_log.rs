@@ -1,4 +1,4 @@
-use crate::replication::SnapshotRef;
+use crate::storage::SnapshotRef;
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};

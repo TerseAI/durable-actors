@@ -303,9 +303,13 @@ pub(crate) struct WarmExecutor {
 }
 
 impl WarmExecutor {
-    pub(crate) async fn load(mut self, entrypoint: &str) -> Result<ActorExecutorConnection> {
+    pub(crate) async fn load(
+        mut self,
+        entrypoint: &str,
+        environment: &HashMap<String, String>,
+    ) -> Result<ActorExecutorConnection> {
         let mut bytes = serde_json::to_vec(&serde_json::json!({
-            "type": "load", "entrypoint": entrypoint
+            "type": "load", "entrypoint": entrypoint, "environment": environment
         }))?;
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await?;

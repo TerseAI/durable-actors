@@ -15,7 +15,4 @@ pub use self::{
 pub(crate) use executor_connection::{
     ActorExecutorConnection, ActorExecutorListener, ActorSocketPublisher, WarmExecutor,
 };
-pub(crate) use protocol::MAX_ACTOR_INVOCATION_BYTES;
-pub(crate) use socket::{
-    ActorSocketSource, MAX_SOCKET_MESSAGE_BYTES, validate_socket_effects, validate_socket_metadata,
-};
+pub(crate) use socket::{ActorSocketSource, validate_socket_effects, validate_socket_metadata};

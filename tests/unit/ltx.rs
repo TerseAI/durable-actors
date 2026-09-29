@@ -86,33 +86,13 @@ fn rejects_torn_or_corrupt_wal_without_advancing_capture() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn replicas_retain_ltx_dependencies_until_a_compacted_checkpoint() -> Result<()> {
-    use crate::replication::{FileReplicaStore, ReplicaStore, ReplicaStream};
-    use crate::state_log::{SqliteSnapshot, StateSnapshot};
+#[test]
+fn checkpoints_compact_ltx_history_and_restore_independently() -> Result<()> {
     let source = tempfile::tempdir()?;
     let path = source.path().join("actor.sqlite");
     let database = rusqlite::Connection::open(&path)?;
     database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE entries (value INTEGER)")?;
-    let actor = crate::actor::ActorKey {
-        project_id: "test".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-    };
-    let stream = ReplicaStream {
-        prefix: format!("{}1/", crate::storage_paths::snapshots(&actor)?),
-        session: "session".into(),
-        owner_epoch: 1,
-        base_version: 0,
-    };
-    let store_path = source.path().join("replica");
-    let store = FileReplicaStore::open(store_path.clone(), 8 * 1024 * 1024).await?;
-    store.initialize_session(&stream.session).await?;
-    let empty = FileReplicaStore::open(source.path().join("empty"), 8 * 1024 * 1024).await?;
-    empty.initialize_session(&stream.session).await?;
     let mut capture = SqliteCapture::new()?;
-    let mut parent = None;
-    let mut first_object = String::new();
     let mut checkpoint = None;
     for txid in 1..=128 {
         if txid > 1 {
@@ -120,54 +100,12 @@ async fn replicas_retain_ltx_dependencies_until_a_compacted_checkpoint() -> Resu
                 .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); INSERT INTO entries VALUES (1)")?;
         }
         let ltx = capture.capture(&wal_state(&path, txid - 1, txid)?)?;
-        if is_checkpoint(&ltx)? {
-            parent = None;
-        }
-        let mut snapshot = StateSnapshot::new(
-            txid,
-            1,
-            format!("request-{txid}"),
-            serde_json::json!({"count": txid}),
-            serde_json::Value::Null,
-        )?;
-        snapshot.sqlite = Some(SqliteSnapshot {
-            object: stream.object(txid),
-            txid,
-            parent: parent.clone(),
-            ltx: Some(STANDARD.encode(&ltx)),
-        });
-        let bytes = snapshot.encode()?;
-        if txid == 2 {
-            assert!(empty.append(&stream, &bytes).await.is_err());
-        }
-        store.append(&stream, &bytes).await?;
-        if txid == 1 {
-            first_object = stream.object(txid);
-        }
-        if txid == 127 {
-            assert!(store.read(&first_object).await?.is_some());
-        }
-        if txid == 128 {
-            assert!(is_checkpoint(&ltx)?);
-            assert!(store.read(&first_object).await?.is_none());
-            empty.append(&stream, &bytes).await?;
-            checkpoint = Some(ltx);
-        }
-        parent = Some(stream.snapshot(&bytes)?);
+        assert_eq!(is_checkpoint(&ltx)?, txid == 1 || txid == 128);
+        checkpoint = Some(ltx);
     }
-    drop(store);
-    let reopened = FileReplicaStore::open(store_path, 8 * 1024 * 1024).await?;
-    assert_eq!(
-        reopened
-            .stream_head(&stream)
-            .await?
-            .latest
-            .unwrap()
-            .state_version,
-        128
-    );
     let mut recovered = SqliteCapture::new()?;
     recovered.apply(&checkpoint.unwrap())?;
+    assert_eq!(recovered.txid(), 128);
     assert_eq!(
         rusqlite::Connection::open(recovered.path())?.query_row(
             "SELECT count(*) FROM entries",

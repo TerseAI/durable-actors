@@ -9,7 +9,6 @@ pub mod host_leases;
 mod ltx;
 pub mod placement;
 mod postgres;
-pub mod replication;
 pub mod sandbox;
 pub mod state_log;
 pub mod state_transport;
@@ -17,5 +16,8 @@ pub mod storage;
 
 pub mod storage_paths;
 
+pub(crate) mod artifacts;
 mod request_traces;
 mod sockets;
+
+pub mod replicas;

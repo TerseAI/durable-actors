@@ -1,32 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bytes::Bytes;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateWrite {
     Written,
     AlreadyExists,
-    Replicated,
-}
-
-#[async_trait]
-pub trait StateTransport: Send + Sync {
-    async fn read(&self, signed_url: &str) -> Result<Bytes>;
-    async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {
-        self.write_bundle(signed_url, bytes, Vec::new()).await
-    }
-    async fn write_bundle(
-        &self,
-        signed_url: &str,
-        bytes: Vec<u8>,
-        dependencies: Vec<SnapshotDependency>,
-    ) -> Result<StateWrite>;
-}
-
-#[derive(Clone)]
-pub struct SnapshotDependency {
-    pub object: String,
-    pub bytes: Vec<u8>,
 }
 
 #[async_trait]
@@ -37,85 +15,3 @@ pub trait SnapshotWriter: Send + Sync {
         bytes: Vec<u8>,
     ) -> Result<StateWrite>;
 }
-
-#[derive(Clone, Default)]
-pub struct GrpcStateTransport {
-    channels: crate::grpc::transport::Channels,
-}
-
-impl GrpcStateTransport {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) async fn preconnect(&self, origin: &str) -> Result<()> {
-        tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            self.channels.preconnect(origin),
-        )
-        .await??;
-        Ok(())
-    }
-
-    pub(crate) async fn capability(
-        &self,
-        url: &str,
-    ) -> Result<(tonic::transport::Channel, String)> {
-        self.channels.capability(url).await
-    }
-}
-
-#[async_trait]
-impl StateTransport for GrpcStateTransport {
-    async fn read(&self, signed_url: &str) -> Result<Bytes> {
-        let (channel, token) = self.capability(signed_url).await?;
-        let response = storage_client(channel)
-            .read(crate::grpc::transport::request(
-                crate::grpc::proto::Empty {},
-                &token,
-            )?)
-            .await?;
-        Ok(Bytes::from(response.into_inner().data))
-    }
-
-    async fn write_bundle(
-        &self,
-        signed_url: &str,
-        bytes: Vec<u8>,
-        dependencies: Vec<SnapshotDependency>,
-    ) -> Result<StateWrite> {
-        let (channel, token) = self.capability(signed_url).await?;
-        let response = storage_client(channel)
-            .write(crate::grpc::transport::request(
-                crate::grpc::proto::SnapshotData {
-                    data: bytes,
-                    dependencies: dependencies
-                        .into_iter()
-                        .map(|entry| crate::grpc::proto::SnapshotDependency {
-                            object: entry.object,
-                            data: entry.bytes,
-                        })
-                        .collect(),
-                },
-                &token,
-            )?)
-            .await?;
-        Ok(if response.into_inner().already_exists {
-            StateWrite::AlreadyExists
-        } else {
-            StateWrite::Written
-        })
-    }
-}
-
-fn storage_client(
-    channel: tonic::transport::Channel,
-) -> crate::grpc::proto::snapshot_service_client::SnapshotServiceClient<tonic::transport::Channel> {
-    crate::grpc::proto::snapshot_service_client::SnapshotServiceClient::new(channel)
-        .max_decoding_message_size(usize::MAX)
-        .max_encoding_message_size(usize::MAX)
-}
-
-#[cfg(test)]
-#[path = "../tests/unit/state_transport.rs"]
-mod tests;

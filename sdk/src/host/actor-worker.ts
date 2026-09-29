@@ -43,6 +43,7 @@ async function initialize(data: ActorWorkerData): Promise<void> {
     try {
         if (assigned) throw new Error("customer code already assigned")
         assigned = true
+        Object.assign(process.env, data.environment)
         const actorNames = await loadActorEntrypoint(data.moduleUrl)
         port!.on("message", (message: ActorWorkerRequest) => {
             if (message.type === "load") throw new Error("customer code already assigned")

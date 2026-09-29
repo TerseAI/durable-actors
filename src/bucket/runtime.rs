@@ -4,17 +4,10 @@ use std::{
     time::Duration,
 };
 
-use crate::grpc::{
-    proto,
-    transport::{token, unavailable},
-};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use axum::Router;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
-use tonic::{Request, Response, Status};
 
 use crate::{
     actor::ActorKey,
@@ -25,46 +18,35 @@ use crate::{
         ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
         ActorResidency, ObjectPlacement, ObjectPlacementStore,
     },
-    replication::{
-        ReplicaAccess, ReplicaGrant, ReplicaProvisioner, ReplicaScope, ReplicaStream,
-        ReplicaTarget, ReplicationTicket, SnapshotRef,
-    },
-    state_log::StateSnapshot,
-    storage::{SnapshotReader, WritePlan, snapshot_object_name, snapshot_prefix},
+    storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
 
-use super::{Bucket, ReplicaPeers, peers::grant, replace};
+use super::{Bucket, replace};
 
 mod activation;
 mod history;
 pub(crate) use history::ActorStateReader;
-mod repair;
 mod session;
-mod startup;
-pub use repair::ReplicaMembership;
 
 #[cfg(test)]
 #[path = "../../tests/unit/bucket/activation.rs"]
 mod activation_tests;
-#[cfg(test)]
-#[path = "../../tests/unit/bucket/repair.rs"]
-mod repair_tests;
-
 pub struct RuntimeStorage {
-    clock: Arc<dyn crate::clock::Clock>,
+    reader: RuntimeStorageReader,
     owned: Mutex<HashMap<String, Ownership>>,
-    uploads: tokio_util::task::TaskTracker,
     uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
-    sessions: Mutex<HashMap<String, Vec<ReplicaTarget>>>,
+}
+
+pub struct RuntimeStorageReader {
+    clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
-    fleet: Arc<dyn ReplicaProvisioner>,
-    peers: Arc<dyn ReplicaPeers>,
-    access: ReplicaAccess,
-    origin: String,
+    snapshots: Arc<dyn super::SnapshotStore>,
+    pub(crate) persistence: super::PersistenceConfig,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    persistence: super::PersistenceConfig,
     #[serde(default)]
     sealed: bool,
     inventory: ActivationInventory,
@@ -104,15 +86,6 @@ struct LoadedSnapshot {
 }
 
 impl Ownership {
-    fn scope(&self) -> ReplicaScope {
-        ReplicaScope {
-            actor: self.actor.clone(),
-            host: self.lease.id.clone(),
-            session: self.lease.session_id.clone(),
-            region: self.region.clone(),
-        }
-    }
-
     fn placement(&self) -> ObjectPlacement {
         let mut placement = ObjectPlacement {
             lease: self.lease.clone(),
@@ -128,10 +101,10 @@ impl Ownership {
         placement
     }
 
-    fn stream(&self) -> Result<ReplicaStream> {
+    fn stream(&self) -> Result<StateStream> {
         let name = snapshot_object_name(&self.actor, 1, &format!("{:032x}", self.epoch))?;
-        Ok(ReplicaStream {
-            session: session::identity(&self.lease.id, &self.lease.session_id),
+        Ok(StateStream {
+            session: self.lease.session_id.clone(),
             prefix: name.strip_suffix("1.json").unwrap().into(),
             owner_epoch: self.epoch,
             base_version: self.base.as_ref().map_or(0, |base| base.state_version),
@@ -140,46 +113,55 @@ impl Ownership {
 }
 
 impl RuntimeStorage {
-    pub fn new(
-        authority: Arc<dyn Bucket>,
-        fleet: Arc<dyn ReplicaProvisioner>,
-        peers: Arc<dyn ReplicaPeers>,
-        access: ReplicaAccess,
-        origin: String,
-        clock: Arc<dyn crate::clock::Clock>,
-    ) -> Result<Self> {
-        ensure!(
-            fleet.replica_regions().len() <= crate::replication::MAX_REPLICAS,
-            "invalid runtime storage configuration"
-        );
+    pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
         Ok(Self {
-            clock,
+            reader: RuntimeStorageReader::new(authority, clock)?,
             owned: Mutex::new(HashMap::new()),
-            uploads: tokio_util::task::TaskTracker::new(),
             uploaded: Mutex::new(HashMap::new()),
-            sessions: Mutex::new(HashMap::new()),
-            authority,
-            fleet,
-            peers,
-            access,
-            origin,
         })
     }
 
-    pub fn router(self: Arc<Self>) -> Router {
-        let service = RuntimeStorageService(self);
-        tonic::service::Routes::from(Router::new())
-            .add_service(
-                proto::snapshot_service_server::SnapshotServiceServer::new(service)
-                    .max_decoding_message_size(usize::MAX)
-                    .max_encoding_message_size(usize::MAX),
-            )
-            .into_axum_router()
+    pub(crate) fn with_persistence(
+        mut self,
+        config: super::PersistenceConfig,
+        snapshots: Arc<dyn super::SnapshotStore>,
+    ) -> Result<Self> {
+        self.reader = self.reader.with_persistence(config, snapshots)?;
+        Ok(self)
+    }
+}
+
+impl std::ops::Deref for RuntimeStorage {
+    type Target = RuntimeStorageReader;
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+
+impl RuntimeStorageReader {
+    pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
+        Ok(Self {
+            clock,
+            snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
+            persistence: super::PersistenceConfig::Local,
+            authority,
+        })
+    }
+
+    pub(crate) fn with_persistence(
+        mut self,
+        config: super::PersistenceConfig,
+        snapshots: Arc<dyn super::SnapshotStore>,
+    ) -> Result<Self> {
+        config.validate()?;
+        self.persistence = config;
+        self.snapshots = snapshots;
+        Ok(self)
     }
 }
 
 #[async_trait]
-impl ObjectPlacementStore for RuntimeStorage {
+impl ObjectPlacementStore for RuntimeStorageReader {
     async fn get_owner_with_hint(
         &self,
         object: &ActorStorageKey,
@@ -201,24 +183,15 @@ impl ObjectPlacementStore for RuntimeStorage {
 }
 
 #[async_trait]
-impl SnapshotReader for RuntimeStorage {
-    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
-        self.fetch_snapshot(&grant("RUNTIME_READ", region, object, 60_000)?)
-            .await
+impl SnapshotReader for RuntimeStorageReader {
+    async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Bytes> {
+        self.read_persisted(object)
+            .await?
+            .context("snapshot unavailable")
     }
 }
 
 impl RuntimeStorage {
-    pub(crate) fn upload_tracker(&self) -> tokio_util::task::TaskTracker {
-        self.uploads.clone()
-    }
-
-    pub async fn read_url(&self, region: &str, object: &str) -> Result<String> {
-        self.access.url(
-            &self.origin,
-            &grant("RUNTIME_READ", region, object, 60_000)?,
-        )
-    }
     pub(crate) async fn activate_actor(
         &self,
         actor: &ActorKey,
@@ -278,8 +251,7 @@ impl RuntimeStorage {
                 && record.epoch == epoch,
             "actor ownership changed"
         );
-        let replicas = self.local_replica_members(&record.scope());
-        self.write_plan(&record, version, &replicas)
+        self.write_plan(&record, version)
     }
 
     async fn load_actor(&self, record: Ownership) -> Result<LoadedActor> {
@@ -300,211 +272,61 @@ impl RuntimeStorage {
         }
     }
 
-    fn write_plan(
-        &self,
-        record: &Ownership,
-        version: u64,
-        replicas: &[ReplicaTarget],
-    ) -> Result<WritePlan> {
+    fn write_plan(&self, record: &Ownership, version: u64) -> Result<WritePlan> {
         ensure!(version > 0, "state version must be positive");
         let stream = record.stream()?;
-        let mut capability = grant("APPEND", &record.region, &stream.prefix, 60_000)?;
-        capability.stream = Some(stream.clone());
-        let expires_at_ms = i64::try_from(capability.expires_at_ms)?;
-        let targets = replicas
-            .iter()
-            .map(|peer| {
-                Ok(ReplicaTarget {
-                    host_id: peer.host_id.clone(),
-                    region: peer.region.clone(),
-                    url: self.access.url(
-                        &peer.url,
-                        &ReplicaGrant {
-                            host_id: peer.host_id.clone(),
-                            ..capability.clone()
-                        },
-                    )?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
         Ok(WritePlan {
             state_version: version,
             object_name: stream.object(version),
-            expires_at_ms,
             stream,
-            replication: (!targets.is_empty()).then_some(ReplicationTicket { replicas: targets }),
         })
     }
+}
 
+impl RuntimeStorageReader {
     async fn latest(
         &self,
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let newest = self.latest_snapshot_key(record).await?;
-        let replicas = self.replica_members(&record.scope()).await?;
-        self.load_latest(record, known, newest, &replicas).await
-    }
-
-    async fn latest_snapshot_key(&self, record: &Ownership) -> Result<Option<String>> {
-        Ok(self
-            .authority
-            .list(&record.stream()?.prefix)
+        let latest = self
+            .snapshots
+            .latest(&record.stream()?.prefix)
             .await?
-            .into_iter()
-            .filter_map(|key| {
-                snapshot_position(&key)
-                    .filter(|(epoch, _)| *epoch == record.epoch)
-                    .map(|position| (position, key))
-            })
-            .max_by_key(|(position, _)| *position)
-            .map(|(_, key)| key))
+            .map(|(key, bytes)| decode_snapshot(key, bytes.to_vec()))
+            .transpose()?;
+        self.load_latest(record, latest.or(known)).await
     }
 
     async fn load_latest(
         &self,
         record: &Ownership,
-        known: Option<LoadedSnapshot>,
-        newest: Option<String>,
-        replicas: &[ReplicaTarget],
+        mut loaded: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
-        let stream = record.stream()?;
-        let mut loaded = match newest {
-            Some(key)
-                if known.as_ref().is_some_and(|s| {
-                    snapshot_position(&s.reference.object) >= snapshot_position(&key)
-                }) =>
-            {
-                known
-            }
-            Some(key) => {
-                let object = self
-                    .authority
-                    .get(&key)
-                    .await?
-                    .context("listed snapshot disappeared")?;
-                Some(decode_snapshot(key, object.bytes)?)
-            }
-            None => known,
-        };
         let mut candidate = record.base.clone();
         advance(&mut candidate, loaded.as_ref().map(|s| s.reference.clone()))?;
-        let mut pending = JoinSet::new();
-        for target in replicas {
-            let (peers, target, stream) = (self.peers.clone(), target.clone(), stream.clone());
-            pending.spawn(async move { peers.head(&target, &stream).await });
-        }
-        let mut witnesses = 0;
-        while let Some(result) = pending.join_next().await {
-            if let Ok(Ok(head)) = result {
-                ensure!(head.stream == stream, "replica returned another stream");
-                witnesses += 1;
-                advance(&mut candidate, head.latest)?;
-            }
-        }
-        ensure!(
-            replicas.is_empty() || witnesses > 0,
-            "no complete replica witness; refusing to lose acknowledged state"
-        );
         if let Some(snapshot) = candidate
             && loaded.as_ref().is_none_or(|s| s.reference != snapshot)
         {
-            let bytes = self.recover_snapshot(replicas, &snapshot).await?;
+            let bytes = self
+                .read_persisted(&snapshot.object)
+                .await?
+                .context("acknowledged snapshot is unavailable")?;
+            snapshot.verify(&bytes)?;
             loaded = Some(LoadedSnapshot {
                 reference: snapshot,
-                bytes: bytes.into(),
+                bytes,
             });
         }
         Ok(loaded)
     }
 
-    async fn recover_snapshot(
-        &self,
-        replicas: &[ReplicaTarget],
-        snapshot: &SnapshotRef,
-    ) -> Result<Vec<u8>> {
-        let mut current = snapshot.clone();
-        let mut missing = Vec::new();
-        loop {
-            if let Some(object) = self.authority.get(&current.object).await? {
-                current.verify(&object.bytes)?;
-                if missing.is_empty() {
-                    return Ok(object.bytes);
-                }
-                break;
-            }
-            let mut recovered = None;
-            for peer in replicas {
-                if let Ok(bytes) = self.peers.read(peer, &current.object).await {
-                    current.verify(&bytes)?;
-                    recovered = Some(bytes);
-                    break;
-                }
-            }
-            let bytes = recovered.context("acknowledged snapshot is unavailable")?;
-            let decoded = StateSnapshot::decode(&bytes)?;
-            decoded.validate_object(&current.object)?;
-            ensure!(
-                decoded.state_version == current.state_version,
-                "SQLite dependency version mismatch"
-            );
-            let parent = decoded.sqlite.and_then(|sqlite| sqlite.parent);
-            missing.push((current.object, bytes));
-            let Some(parent) = parent else {
-                break;
-            };
-            current = parent;
-        }
-        let bytes = missing
-            .first()
-            .context("missing recovered snapshot")?
-            .1
-            .clone();
-        for (object, data) in missing.into_iter().rev() {
-            self.persist(&object, data).await?;
-        }
-        Ok(bytes)
-    }
-
-    async fn snapshot_dependencies(
-        &self,
-        bytes: &[u8],
-        replicas: &[ReplicaTarget],
-    ) -> Result<Vec<crate::state_transport::SnapshotDependency>> {
-        let mut snapshot = StateSnapshot::decode(bytes)?;
-        let mut dependencies = Vec::new();
-        while let Some(parent) = snapshot
-            .sqlite
-            .as_ref()
-            .and_then(|sqlite| sqlite.parent.clone())
-        {
-            snapshot.validate_object(
-                &snapshot
-                    .sqlite
-                    .as_ref()
-                    .context("SQLite state missing")?
-                    .object,
-            )?;
-            let bytes = self.recover_snapshot(replicas, &parent).await?;
-            snapshot = StateSnapshot::decode(&bytes)?;
-            ensure!(
-                snapshot.state_version == parent.state_version,
-                "SQLite dependency version mismatch"
-            );
-            dependencies.push(crate::state_transport::SnapshotDependency {
-                object: parent.object,
-                bytes,
-            });
-        }
-        Ok(dependencies)
-    }
-
     async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {
-        ensure!(
-            replace(self.authority.as_ref(), object, None, bytes).await?,
-            "conflicting immutable snapshot"
-        );
-        Ok(())
+        self.snapshots.put(object, bytes.into()).await
+    }
+
+    async fn read_persisted(&self, object: &str) -> Result<Option<Bytes>> {
+        self.snapshots.get(object).await
     }
 
     async fn current_placement(&self, record: &Ownership) -> Result<ObjectPlacement> {
@@ -523,62 +345,37 @@ impl RuntimeStorage {
         self.authority
             .get(&ownership_key(object)?)
             .await?
-            .map(|value| Ok((value.generation, serde_json::from_slice(&value.bytes)?)))
+            .map(|value| {
+                let record: Ownership = serde_json::from_slice(&value.bytes)?;
+                ensure!(record.persistence == self.persistence, "actor persistence configuration changed; an explicit state migration is required");
+                Ok((value.generation, record))
+            })
             .transpose()
-    }
-
-    async fn fetch_snapshot(&self, grant: &ReplicaGrant) -> Result<Bytes> {
-        if let Some(object) = self.authority.get(&grant.object).await? {
-            return Ok(Bytes::from(object.bytes));
-        }
-        let actor = actor_from_object(&grant.object)?;
-        let (_, record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("missing ownership")?;
-        let mut pending = JoinSet::new();
-        for peer in self.replica_members(&record.scope()).await? {
-            let peers = self.peers.clone();
-            let object = grant.object.clone();
-            pending.spawn(async move { peers.read(&peer, &object).await });
-        }
-        while let Some(result) = pending.join_next().await {
-            if let Ok(Ok(bytes)) = result {
-                return Ok(Bytes::from(bytes));
-            }
-        }
-        anyhow::bail!("snapshot unavailable")
     }
 }
 
-#[derive(Clone)]
-struct RuntimeStorageService(Arc<RuntimeStorage>);
-
-#[tonic::async_trait]
-impl proto::snapshot_service_server::SnapshotService for RuntimeStorageService {
-    async fn read(
+#[async_trait]
+impl ObjectPlacementStore for RuntimeStorage {
+    async fn get_owner_with_hint(
         &self,
-        request: Request<proto::Empty>,
-    ) -> Result<Response<proto::SnapshotData>, Status> {
-        let grant = self
-            .0
-            .access
-            .verify(token(&request)?, "RUNTIME_READ")
-            .map_err(|_| Status::permission_denied("snapshot read capability rejected"))?;
-        let data = self.0.fetch_snapshot(&grant).await.map_err(unavailable)?;
-        Ok(Response::new(proto::SnapshotData {
-            data: data.to_vec(),
-            dependencies: Vec::new(),
-        }))
+        object: &ActorStorageKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        self.reader.get_owner_with_hint(object).await
     }
-
-    async fn write(
-        &self,
-        _: Request<proto::SnapshotData>,
-    ) -> Result<Response<proto::SnapshotWriteReply>, Status> {
-        Err(Status::unimplemented(
-            "write snapshots directly to the bucket",
-        ))
+    async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
+        self.reader.get(object).await
+    }
+}
+#[async_trait]
+impl SnapshotReader for RuntimeStorage {
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
+        self.reader.read_snapshot(region, object).await
+    }
+}
+#[async_trait]
+impl ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(&self, project: &str) -> Result<Vec<ActorInventory>> {
+        self.reader.actor_inventory(project).await
     }
 }
 
@@ -631,10 +428,6 @@ fn decode_snapshot(object: String, bytes: Vec<u8>) -> Result<LoadedSnapshot> {
     })
 }
 
-fn actor_from_object(object: &str) -> Result<ActorKey> {
-    crate::storage_paths::actor_from_snapshot(object)
-}
-
 #[async_trait]
 impl crate::state_transport::SnapshotWriter for RuntimeStorage {
     async fn write_snapshot(
@@ -648,25 +441,22 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
             snapshot.object == plan.object_name && snapshot.state_version == plan.state_version,
             "write plan does not match snapshot"
         );
+        if let Some(parent) = crate::state_log::StateSnapshot::decode(&bytes)?
+            .sqlite
+            .and_then(|sqlite| sqlite.parent)
+        {
+            let bytes = self
+                .read_persisted(&parent.object)
+                .await?
+                .context("SQLite dependency missing")?;
+            parent.verify(&bytes)?;
+        }
         self.uploaded
             .lock()
             .unwrap()
             .entry(stream.session.clone())
             .or_default()
             .started += 1;
-        if let Some(parent) = StateSnapshot::decode(&bytes)?
-            .sqlite
-            .and_then(|sqlite| sqlite.parent)
-        {
-            let replicas = self
-                .sessions
-                .lock()
-                .unwrap()
-                .get(&stream.session)
-                .cloned()
-                .unwrap_or_default();
-            self.recover_snapshot(&replicas, &parent).await?;
-        }
         self.persist(&snapshot.object, bytes).await?;
         let mut uploaded = self.uploaded.lock().unwrap();
         let uploaded = uploaded.entry(stream.session.clone()).or_default();
@@ -677,7 +467,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
 }
 
 #[async_trait]
-impl ActorInventoryReader for RuntimeStorage {
+impl ActorInventoryReader for RuntimeStorageReader {
     async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>> {
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);

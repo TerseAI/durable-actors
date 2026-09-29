@@ -289,7 +289,7 @@ test("database handles cannot write after their invocation completes", async () 
 test("a WAL capture failure prevents further execution until the actor is reloaded", async () => {
     const { SqliteActorDatabase, SqliteCaptureError } = await import("../../src/host/sqlite.js")
     class BrokenCapture extends SqliteActorDatabase {
-        override snapshot() {
+        override snapshot(): never {
             super.snapshot()
             throw new SqliteCaptureError("WAL read failed")
         }
