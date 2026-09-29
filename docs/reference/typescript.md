@@ -13,34 +13,10 @@ Open `.artifacts/api/index.html` in your browser. The documentation covers the S
 
 Rerun `pnpm docs:build` after changing the SDK to refresh the documentation.
 
-## SQLite and object fields
+## SQLite
 
-Each actor has a protected `this.db` handle for its own SQLite database. 
+Each actor has its own database through protected `this.db.exec<Row>(sql, ...bindings)`. Calls synchronously execute one statement and return rows. Bind values with `?` placeholders; supported values are strings, numbers, bigints, byte arrays, and `null`. Actor method results must satisfy the JSON result contract.
 
-```ts
-import { Actor, Persisted } from "durable-actors"
+SQL and `@Persisted` fields commit together after successful methods or socket hooks. Failed ordinary calls roll both back. Overlapping `@Reentrant` calls share state, and a failed call cannot roll back another call's changes.
 
-export class Notebook extends Actor {
-    @Persisted edits = 0
-
-    async add(text: string): Promise<number> {
-        this.db.exec("CREATE TABLE IF NOT EXISTS notes (text TEXT NOT NULL)")
-        this.db.exec("INSERT INTO notes VALUES (?)", text)
-        return ++this.edits
-    }
-
-    async list(): Promise<{ text: string }[]> {
-        return this.db.exec<{ text: string }>("SELECT text FROM notes ORDER BY rowid")
-    }
-}
-```
-
-`db.exec` synchronously prepares and executes one statement and returns an array of rows. Pass one statement per call. Bind values with `?` placeholders; bindings accept strings, numbers, bigints, byte arrays, and `null`. Queries returned through an actor method must still satisfy the usual JSON result contract.
-
-After a successful method or socket hook, the runtime detects changes to JSON fields and committed SQLite WAL pages. Changes to either, including SQLite table definitions and `PRAGMA user_version`, produce one durable commit containing the JSON fields and the SQLite recovery reference. SQL writes include an LTX page delta encoded with `litetx`. Reads that leave both unchanged do not create another version. Existing actors with only JSON state acquire a database when they first use it.
-
-Failed ordinary calls roll back SQL and object changes. Actors with `@Reentrant` methods retain the existing shared-state behavior: a successful overlapping call captures the current fields and SQL together, and a failed call cannot roll back another call's changes.
-
-The runtime manages transactions and database files. Transaction control, attached databases, vacuuming, and storage-related pragmas are unavailable through `db.exec`. Database access is available only during the owning actor's invocation, after construction. SQLite tables are not automatically emitted over sockets.
-
-SQLite uses WAL mode. The host captures committed WAL pages as checksummed LTX segments; field-only commits reuse the previous SQLite reference. WAL checkpointing follows durable acknowledgement. Recovery replays the LTX chain, and periodic LTX checkpoints compact that chain. Replicas retain the referenced segments and copy them when replacing a replica. There is no configured snapshot size cap; JSON fields are still serialized in full, and initial SQLite persistence, compaction, and recovery scale with database size. SQLite uses Bun's native driver in hosted actors and Node's built-in driver when running actors on Node.js 22.19+. Deploy matching SDK and Rust runtime versions together; the executor protocol rejects incompatible versions.
+Database access is available during actor invocations, after construction. The runtime owns transactions and database files; transaction control, attached databases, vacuuming, and storage-related pragmas are unavailable. SQLite on Node.js requires 22.19+. Deploy matching SDK and runtime versions.

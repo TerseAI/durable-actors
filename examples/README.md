@@ -1,9 +1,5 @@
 # Examples
 
-For a small actor-only project using this checkout's SQLite support, see the [SQLite playground](sqlite/README.md). It includes a command-line demo and a restart/recovery test.
-
-For a complete app using SQLite, try [Courtside](basketball/README.md), a single-player basketball practice tracker with shot counting, undo, and per-session analytics. Run its app on port `3003` and actor runtime on `7104`.
-
 Each example includes an app and a local actor runtime:
 
 | Example | What it demonstrates | Create a project |
