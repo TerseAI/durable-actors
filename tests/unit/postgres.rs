@@ -260,7 +260,8 @@ async fn check_concurrent_connections(url: &str) -> Result<()> {
 }
 
 #[tokio::test]
-async fn notifications_reach_an_independent_control_plane_connection() -> Result<()> {
+async fn notifications_recover_from_initial_connection_failure_and_reach_another_instance()
+-> Result<()> {
     testing::with_postgres(async |fixture| {
         let stop = tokio_util::sync::CancellationToken::new();
         let _guard = stop.clone().drop_guard();
@@ -268,11 +269,41 @@ async fn notifications_reach_an_independent_control_plane_connection() -> Result
         let first =
             notifications::ChangeFeed::postgres(database.clone(), &fixture.url, stop.clone())
                 .await?;
-        let second = notifications::ChangeFeed::postgres(database, &fixture.url, stop).await?;
+        let (proxy_url, _proxy) = reset_first_connection(&fixture.url).await?;
+        let second = notifications::ChangeFeed::postgres(database, &proxy_url, stop).await?;
         let mut changes = second.subscribe();
         first.notify().await;
         tokio::time::timeout(Duration::from_secs(2), changes.changed()).await??;
         Ok(())
     })
     .await
+}
+
+async fn reset_first_connection(
+    url: &str,
+) -> Result<(String, tokio_util::task::AbortOnDropHandle<Result<()>>)> {
+    let mut url = reqwest::Url::parse(url)?;
+    let target = format!(
+        "{}:{}",
+        url.host_str().context("PostgreSQL host")?,
+        url.port().unwrap_or(5432)
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    url.set_host(Some("127.0.0.1"))?;
+    url.set_port(Some(listener.local_addr()?.port())).unwrap();
+    let task = tokio::spawn(async move {
+        drop(listener.accept().await?.0);
+        let mut connections = tokio::task::JoinSet::new();
+        while let Ok((mut downstream, _)) = listener.accept().await {
+            let mut upstream = tokio::net::TcpStream::connect(&target).await?;
+            connections.spawn(async move {
+                tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await
+            });
+        }
+        Ok(())
+    });
+    Ok((
+        url.to_string(),
+        tokio_util::task::AbortOnDropHandle::new(task),
+    ))
 }

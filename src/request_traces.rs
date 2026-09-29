@@ -203,11 +203,6 @@ impl TraceStore {
             traces.iter().all(|trace| trace.project_id == project_id),
             "trace project does not match host"
         );
-        if dropped > 0 {
-            self.persistence
-                .record_status(project_id, dropped, false)
-                .await?;
-        }
         let events = traces
             .into_iter()
             .map(|trace| TraceEvent {
@@ -217,7 +212,7 @@ impl TraceStore {
                 trace,
             })
             .collect();
-        self.persist_detached(project_id, events).await
+        self.persist_detached(project_id, events, dropped).await
     }
 
     pub(crate) async fn replay(&self, project_id: &str, query: &ReplayQuery) -> Result<TracePage> {
@@ -282,10 +277,14 @@ impl TraceStore {
         }
     }
 
-    async fn persist_detached(&self, project: &str, events: Vec<TraceEvent>) -> Result<()> {
+    async fn persist_detached(
+        &self,
+        project: &str,
+        events: Vec<TraceEvent>,
+        dropped: u64,
+    ) -> Result<()> {
         if events.is_empty() {
-            self.changes.notify().await;
-            return Ok(());
+            return self.publish_status(project, dropped).await;
         }
         let permit = match self.pending.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -301,9 +300,7 @@ impl TraceStore {
         tokio::spawn(async move {
             let _permit = permit;
             match store.persistence.append(&events).await {
-                Ok(()) => {
-                    store.changes.notify().await;
-                }
+                Ok(()) => store.publish_status(&project, dropped).await?,
                 Err(error) => {
                     store
                         .report_persistence_failure(&project, &error, events.len())
@@ -314,6 +311,16 @@ impl TraceStore {
             Ok(())
         })
         .await?
+    }
+
+    async fn publish_status(&self, project: &str, dropped: u64) -> Result<()> {
+        if dropped > 0 {
+            self.persistence
+                .record_status(project, dropped, false)
+                .await?;
+        }
+        self.changes.notify().await;
+        Ok(())
     }
 
     async fn report_persistence_failure(

@@ -27,6 +27,8 @@ impl ChangeFeed {
         stop: CancellationToken,
     ) -> Result<Self> {
         let config = Config::from_str(url)?;
+        let stop = stop.child_token();
+        let startup = stop.clone().drop_guard();
         let changes = watch::channel(()).0;
         let feed = Self {
             changes: changes.clone(),
@@ -38,7 +40,7 @@ impl ChangeFeed {
             loop {
                 let result = tokio::select! {
                     _ = stop.cancelled() => return,
-                    result = connect(&config, changes.clone(), ready.take(), stop.clone()) => result,
+                    result = connect(&config, changes.clone(), &mut ready, stop.clone()) => result,
                 };
                 if let Err(error) = result {
                     tracing::warn!(%error, "PostgreSQL change listener disconnected; polling remains active");
@@ -49,6 +51,7 @@ impl ChangeFeed {
         tokio::time::timeout(Duration::from_secs(10), listening)
             .await
             .context("PostgreSQL change listener startup timed out")??;
+        startup.disarm();
         Ok(feed)
     }
 
@@ -72,7 +75,7 @@ impl ChangeFeed {
 async fn connect(
     config: &Config,
     changes: watch::Sender<()>,
-    ready: Option<oneshot::Sender<()>>,
+    ready: &mut Option<oneshot::Sender<()>>,
     stop: CancellationToken,
 ) -> Result<()> {
     match config.get_ssl_mode() {
@@ -92,7 +95,7 @@ async fn listen<S>(
     client: tokio_postgres::Client,
     mut connection: Connection<Socket, S>,
     changes: watch::Sender<()>,
-    ready: Option<oneshot::Sender<()>>,
+    ready: &mut Option<oneshot::Sender<()>>,
     stop: CancellationToken,
 ) -> Result<()>
 where
@@ -113,7 +116,7 @@ where
         .batch_execute("LISTEN durable_actors_changes")
         .await?;
     changes.send_replace(());
-    if let Some(ready) = ready {
+    if let Some(ready) = ready.take() {
         let _ = ready.send(());
     }
     tokio::select! { _ = stop.cancelled() => Ok(()), result = &mut driver => result? }

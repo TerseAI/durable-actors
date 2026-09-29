@@ -276,18 +276,42 @@ fn boundary(
             Some(code.bucket.as_str()) == artifact_bucket,
             "code artifact belongs to another bucket"
         );
-        let objects: Vec<_> = code
-            .files
-            .iter()
-            .map(|file| format!("projects/_/buckets/{}/objects/{}", code.bucket, file.object))
-            .collect();
+        let prefix = format!(
+            "projects/_/buckets/{}/objects/{}",
+            code.bucket,
+            artifact_prefix(code)?,
+        );
         rules.push(rule(
             &code.bucket,
             &["storage.objectViewer"],
-            format!("resource.name in {}", serde_json::to_string(&objects)?),
+            format!(
+                "resource.name.startsWith({})",
+                serde_json::to_string(&prefix)?
+            ),
         ));
     }
     Ok(json!({"accessBoundary": {"accessBoundaryRules": rules}}))
+}
+
+fn artifact_prefix(code: &crate::artifacts::ArtifactManifest) -> Result<String> {
+    let root = format!("{}artifacts/", crate::storage_paths::ROOT);
+    let first = code.files.first().context("code artifact is empty")?;
+    let relative = first
+        .object
+        .strip_prefix(&root)
+        .context("invalid artifact location")?;
+    let (deployment, _) = relative
+        .split_once('/')
+        .context("artifact deployment missing")?;
+    uuid::Uuid::parse_str(deployment).context("invalid artifact deployment")?;
+    let prefix = format!("{root}{deployment}/");
+    ensure!(
+        code.files
+            .iter()
+            .all(|file| file.object == format!("{prefix}{}", file.path)),
+        "code files must belong to one artifact deployment"
+    );
+    Ok(prefix)
 }
 
 fn rule(bucket: &str, roles: &[&str], expression: String) -> Value {

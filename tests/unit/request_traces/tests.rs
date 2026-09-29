@@ -385,7 +385,17 @@ async fn failed_persistence_is_not_published_and_reports_the_failure() -> Result
             .replay("default", &ReplayQuery::default())
             .await?
             .dropped,
-        2
+        0
+    );
+    store
+        .record("default", "host", "session", vec![], 3)
+        .await?;
+    assert_eq!(
+        store
+            .replay("default", &ReplayQuery::default())
+            .await?
+            .dropped,
+        3
     );
     assert_eq!(
         store
