@@ -80,7 +80,7 @@ test("uses a Google-managed certificate on the HTTPS gateway", () => {
     const result = render({ gateway: { tlsSecret: "", preSharedCert: "actors-production" } })
     assert.equal(result.status, 0, result.stderr)
     const gateway = result.stdout.split("---").find(document => document.includes("kind: Gateway"))
-    assert.match(gateway, /networking.gke.io\/pre-shared-certs: "actors-production"/)
+    assert.match(gateway, /networking\.gke\.io\/pre-shared-certs: "actors-production"/)
     assert.doesNotMatch(gateway, /certificateRefs/)
 })
 
