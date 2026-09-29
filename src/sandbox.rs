@@ -11,6 +11,7 @@ use crate::host::HostId;
 
 mod command_process;
 mod local;
+pub(crate) mod gke;
 mod local_store;
 pub(crate) mod pool;
 

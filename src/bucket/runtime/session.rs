@@ -41,6 +41,11 @@ impl RuntimeStorage {
             record.lease.id == *host && record.lease.session_id == session,
             "actor ownership changed"
         );
+        if self.persistence.is_rapid() {
+            self.snapshots.seal(&record.stream()?.prefix).await?;
+            let checkpoint = self.upload_checkpoint(&record)?;
+            return self.release_with_checkpoint(actor, host, session, Some(checkpoint)).await;
+        }
         let checkpoint = self.upload_checkpoint(&record)?;
         self.seal_owned_session(&record.scope()).await?;
         self.release_with_checkpoint(actor, host, session, Some(checkpoint))

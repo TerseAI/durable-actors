@@ -16,6 +16,28 @@ struct Storage {
     second_finished: Semaphore,
 }
 
+#[tokio::test]
+async fn required_replicas_do_not_acknowledge_a_bucket_only_write() -> Result<()> {
+    let storage = Arc::new(Storage { bucket: Semaphore::new(1), second: Semaphore::new(0), second_finished: Semaphore::new(0) });
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage.clone()).require_replicas();
+    let ticket = ticket();
+    let mut write = Box::pin(transport.write_snapshot(&ticket, b"snapshot".to_vec()));
+    assert!(tokio::time::timeout(Duration::from_millis(30), &mut write).await.is_err());
+    storage.second.close();
+    assert!(write.await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn required_replicas_reject_an_incomplete_membership() -> Result<()> {
+    let storage = Arc::new(Storage { bucket: Semaphore::new(1), second: Semaphore::new(1), second_finished: Semaphore::new(0) });
+    let transport = ReplicatedStateTransport::new(storage.clone(), storage).require_replicas();
+    let mut plan = ticket();
+    plan.replication = None;
+    assert!(transport.write_snapshot(&plan, b"snapshot".to_vec()).await.is_err());
+    Ok(())
+}
+
 #[async_trait]
 impl StateTransport for Storage {
     async fn read(&self, _: &str) -> Result<Bytes> {

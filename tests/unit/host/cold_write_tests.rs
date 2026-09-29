@@ -200,6 +200,7 @@ impl Fixture {
             runtime.clone(),
         )?);
         let storage = Arc::new(HostStorage {
+        objects: None,
             observer: Arc::new(
                 ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?,
             ),

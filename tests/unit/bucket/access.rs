@@ -1,33 +1,24 @@
 use super::*;
 
 #[test]
-fn one_bucket_scopes_mutable_metadata_and_immutable_snapshots_separately() -> Result<()> {
-    let boundary = boundary("actors");
-    let rules = boundary["accessBoundary"]["accessBoundaryRules"]
-        .as_array()
-        .unwrap();
-    assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0]["availableResource"], rules[1]["availableResource"]);
-    assert!(
-        rules[0]["availabilityCondition"]["expression"]
-            .as_str()
-            .unwrap()
-            .contains("durable-actors/v3/owners/")
-    );
-    assert_eq!(
-        rules[1]["availablePermissions"],
-        json!([
-            "inRole:roles/storage.objectViewer",
-            "inRole:roles/storage.objectCreator"
-        ])
-    );
-    assert!(
-        rules[1]["availabilityCondition"]["expression"]
-            .as_str()
-            .unwrap()
-            .contains("durable-actors/v3/snapshots/")
-    );
-    Ok(())
+fn scoped_credentials_cover_the_required_rapid_copies_and_read_only_code() {
+    let config = crate::bucket::PersistenceConfig::Rapid {
+        durability: crate::bucket::Durability::Regional,
+        buckets: vec![
+            crate::bucket::RapidBucket { name: "rapid-a".into(), zone: "us-west4-a".into() },
+            crate::bucket::RapidBucket { name: "rapid-b".into(), zone: "us-west4-b".into() },
+        ],
+    };
+    let boundary = boundary("authority", &config, Some("code"));
+    let rules = boundary["accessBoundary"]["accessBoundaryRules"].as_array().unwrap();
+    assert_eq!(rules.len(), 4);
+    for (rule, name) in rules.iter().zip(["authority", "rapid-a", "rapid-b", "code"]) {
+        assert_eq!(rule["availableResource"], format!("//storage.googleapis.com/projects/_/buckets/{name}"));
+    }
+    assert!(rules[0]["availabilityCondition"]["expression"].as_str().unwrap().contains("/owners/"));
+    assert!(rules[1]["availabilityCondition"]["expression"].as_str().unwrap().contains("/snapshots/"));
+    assert_eq!(rules[3]["availablePermissions"], json!(["inRole:roles/storage.objectViewer"]));
+    assert!(rules[3]["availabilityCondition"]["expression"].as_str().unwrap().contains("/artifacts/"));
 }
 
 #[tokio::test(start_paused = true)]

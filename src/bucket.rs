@@ -2,6 +2,13 @@ pub(crate) mod access;
 mod file;
 mod gcs;
 mod peers;
+mod rapid;
+mod rapid_set;
+pub(crate) use rapid_set::RapidSet;
+mod snapshots;
+pub use snapshots::{Durability, PersistenceConfig, RapidBucket};
+pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
+pub(crate) use rapid::RapidSnapshots;
 mod runtime;
 
 use anyhow::Result;

@@ -22,6 +22,7 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
+    pub persistence: super::PersistenceConfig,
     pub region: String,
     pub replica_secret: String,
     pub replica_regions: Vec<String>,
@@ -31,7 +32,7 @@ pub(crate) struct HostStorageConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum BucketLocation {
-    Gcs { bucket: String },
+    Gcs { bucket: String, artifact_bucket: String },
     File { directory: PathBuf },
 }
 
@@ -69,9 +70,11 @@ impl RuntimeAccess {
     ) -> Result<Self> {
         Ok(Self {
             tokens: match &location {
-                BucketLocation::Gcs { bucket } => Some(StorageTokens::new(
+                BucketLocation::Gcs { bucket, artifact_bucket } => Some(StorageTokens::new(
                     Arc::new(GcsTokenSource {
                         bucket: bucket.clone(),
+                        persistence: storage.persistence.clone(),
+                        artifact_bucket: artifact_bucket.clone(),
                         credentials: StorageCredentials::new()?,
                         http: reqwest::Client::builder()
                             .timeout(Duration::from_secs(20))
@@ -99,6 +102,7 @@ impl RuntimeAccess {
     pub async fn bootstrap(&self, region: &str) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
             bucket: self.location.clone(),
+            persistence: self.storage.persistence.clone(),
             region: region.into(),
             replica_secret: self.replicas.secret().to_owned(),
             replica_regions: self.fleet.replica_regions(),
@@ -245,6 +249,8 @@ trait StorageTokenSource: Send + Sync {
 
 struct GcsTokenSource {
     bucket: String,
+    persistence: super::PersistenceConfig,
+    artifact_bucket: String,
     credentials: StorageCredentials,
     http: reqwest::Client,
 }
@@ -252,7 +258,7 @@ struct GcsTokenSource {
 #[async_trait]
 impl StorageTokenSource for GcsTokenSource {
     async fn exchange(&self) -> Result<StorageToken> {
-        let boundary = boundary(&self.bucket);
+        let boundary = boundary(&self.bucket, &self.persistence, Some(&self.artifact_bucket));
         let source = self.credentials.token().await?;
         let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
         form.query_pairs_mut().extend_pairs([
@@ -334,12 +340,17 @@ impl StorageCredentials {
     }
 }
 
-fn boundary(bucket: &str) -> Value {
+fn boundary(bucket: &str, persistence: &super::PersistenceConfig, artifact_bucket: Option<&str>) -> Value {
     let prefix = crate::storage_paths::ROOT;
-    json!({"accessBoundary": {"accessBoundaryRules": [
-        rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"]),
-        rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])
-    ]}})
+    let mut rules = vec![rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"])];
+    match persistence {
+        super::PersistenceConfig::Rapid { buckets, .. } => {
+            for bucket in buckets { rules.push(rule(&bucket.name, &[format!("{prefix}snapshots/")], &["storage.objectUser"])); }
+        }
+        super::PersistenceConfig::Local => rules.push(rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])),
+    }
+    if let Some(bucket) = artifact_bucket { rules.push(rule(bucket, &[format!("{prefix}artifacts/")], &["storage.objectViewer"])); }
+    json!({"accessBoundary": {"accessBoundaryRules": rules}})
 }
 
 fn rule(bucket: &str, prefixes: &[String], roles: &[&str]) -> Value {

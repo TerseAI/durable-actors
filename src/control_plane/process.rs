@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, future::Future, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, env, future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
@@ -7,7 +7,7 @@ use crate::{
     bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
     postgres::PostgresDatabase,
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
-    sandbox::{CommandSandboxProvider, HostSandboxRuntimeConfig},
+    sandbox::{HostSandboxRuntimeConfig, gke::{GkeConfig, GkeSandboxProvider}},
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -36,15 +36,14 @@ pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
     pub trace_retention: Duration,
     pub bucket: String,
-    pub replica_regions: Vec<String>,
+    pub persistence: crate::bucket::PersistenceConfig,
+    pub artifact_bucket: String,
 }
 
 pub struct SandboxProviderConfig {
     pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
-    pub provider_name: String,
-    pub command: String,
-    pub environment: HashMap<String, String>,
+    pub(crate) gke: GkeConfig,
     pub runtime: HostSandboxRuntimeConfig,
 }
 
@@ -124,24 +123,18 @@ async fn control_plane_routes(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let (fleet, access) = super::replication::fleet(
-        registry.clone(),
-        &config.sandbox_provider,
-        &config.jwt_signing_key,
-        config.storage.replica_regions,
-        database.clone(),
-        stop.clone(),
-    )?;
+    let clients = authority.clients();
+    crate::bucket::RapidSet::verify_placements(&config.storage.persistence, &clients).await?;
+    let snapshots = Arc::new(crate::bucket::RapidSet::from_config(&config.storage.persistence, clients.clone())?);
+    let fleet = Arc::new(crate::replication::ReplicaSet::default());
+    let access = crate::replication::ReplicaAccess::new(&config.jwt_signing_key, Arc::new(crate::clock::SystemClock));
     let storage = Arc::new(RuntimeStorage::new(
-        authority,
-        fleet.clone(),
-        Arc::new(GrpcReplicaPeers::new(access.clone())?),
-        access.clone(),
-        config.sandbox_provider.runtime.control_plane_url.clone(),
-        std::sync::Arc::new(crate::clock::SystemClock),
-    )?);
+        authority, fleet.clone(), Arc::new(GrpcReplicaPeers::new(access.clone())?), access.clone(),
+        config.sandbox_provider.runtime.control_plane_url.clone(), Arc::new(crate::clock::SystemClock),
+    )?.with_persistence(config.storage.persistence, snapshots)?);
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
+            artifact_bucket: config.storage.artifact_bucket.clone(),
             bucket: config.storage.bucket.clone(),
         },
         fleet.clone(),
@@ -149,7 +142,6 @@ async fn control_plane_routes(
         storage.clone(),
     )?);
     let placements = storage.clone();
-    fleet.start(storage.clone(), stop.clone());
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
@@ -157,7 +149,8 @@ async fn control_plane_routes(
         database,
         registry.clone(),
         stop,
-    )?;
+        clients.storage,
+    ).await?;
     let socket_events = config
         .socket_event_sink
         .map(|sink| {
@@ -190,19 +183,16 @@ async fn control_plane_routes(
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
 
-fn sandbox_provisioner(
+async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
+    storage: google_cloud_storage::client::Storage,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(CommandSandboxProvider::new(
-        config.provider_name,
-        config.command,
-        config.environment,
-    )?);
+    let provider = Arc::new(GkeSandboxProvider::new(config.gke, storage).await?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
     pool.start(registry, stop);
     Ok(Arc::new(
@@ -255,13 +245,20 @@ impl ControlPlaneProcessConfig {
         }
         let bucket = required(&mut get, "DURABLE_ACTORS_BUCKET")?;
         crate::storage::validate_bucket(&bucket)?;
-        let replica_regions = crate::replication::replica_regions(&mut get)?;
+        let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
+        crate::storage::validate_bucket(&artifact_bucket)?;
+        let persistence = crate::bucket::PersistenceConfig::Rapid {
+            buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
+            durability: serde_json::from_value(serde_json::Value::String(get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into())))?,
+        };
+        persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");
         if let Some(region) = &region {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
-            replica_regions,
+            persistence,
+            artifact_bucket,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             trace_retention: trace_retention(&mut get)?,
             bucket,
@@ -316,30 +313,14 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let provider_name = required(get, "DURABLE_ACTORS_SANDBOX_PROVIDER")?;
-    ensure!(
-        provider_name == "modal",
-        "unsupported sandbox provider {provider_name:?}"
-    );
-    let mut environment = HashMap::from([
-        (
-            "MODAL_TOKEN_ID".into(),
-            provider_credential(get, "MODAL_TOKEN_ID")?,
-        ),
-        (
-            "MODAL_TOKEN_SECRET".into(),
-            provider_credential(get, "MODAL_TOKEN_SECRET")?,
-        ),
-    ]);
-    if let Some(value) = get("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK") {
-        let enabled: bool = value
-            .parse()
-            .context("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK must be true or false")?;
-        environment.insert(
-            "DURABLE_ACTORS_MODAL_MUTABLE_NETWORK".into(),
-            enabled.to_string(),
-        );
+    let zones: BTreeMap<String, String> = serde_json::from_str(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
+    ensure!(!zones.is_empty(), "at least one GKE placement zone is required");
+    for (region, zone) in &zones {
+        ensure!(super::regions::storage_region(zone)? == region, "GKE zone does not match canonical region {region}");
     }
+    let public_origin = validated_http_url(&required(get, "DURABLE_ACTORS_PUBLIC_URL")?, "DURABLE_ACTORS_PUBLIC_URL")?;
+    let public_url = reqwest::Url::parse(&public_origin)?;
+    ensure!(public_url.scheme() == "https" && public_url.path() == "/" && public_url.query().is_none() && public_url.fragment().is_none() && public_url.username().is_empty() && public_url.password().is_none(), "public gateway must be an HTTPS origin");
     let control_plane_url = validated_http_url(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
@@ -350,21 +331,11 @@ fn sandbox_provider_config(
         idle <= fleet_maximum,
         "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
     );
-    let regions = get("DURABLE_ACTORS_SPARE_REGIONS")
-        .unwrap_or_else(|| "north-america-east".into())
-        .split(',')
-        .map(|region| region.trim().to_owned())
-        .collect::<Vec<_>>();
-    for region in &regions {
-        super::regions::storage_region(region)?;
-    }
+    let regions = zones.keys().cloned().collect();
     Ok(SandboxProviderConfig {
         runtime_image: {
             let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
-            ensure!(
-                image.starts_with("im-") && image.len() > 3 && image.len() <= 255,
-                "DURABLE_ACTORS_RUNTIME_IMAGE must be a published Modal runtime image ID"
-            );
+            crate::sandbox::gke::validate_image(&image)?;
             image
         },
         pool: crate::sandbox::pool::PoolConfig {
@@ -380,10 +351,11 @@ fn sandbox_provider_config(
                 memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 1024, 128, 262144)?,
             },
         },
-        provider_name,
-        command: get("DURABLE_ACTORS_SANDBOX_COMMAND")
-            .unwrap_or_else(|| "durable-actors-modal-go".into()),
-        environment,
+        gke: GkeConfig {
+            namespace: get("DURABLE_ACTORS_GKE_NAMESPACE").unwrap_or_else(|| "terse-sandboxes".into()),
+            zones, public_origin,
+            artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
+        },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
             jwt_issuer: jwt_issuer.into(),
@@ -409,12 +381,6 @@ fn pool_number(
         (min..=max).contains(&value),
         "{name} must be between {min} and {max}"
     );
-    Ok(value)
-}
-
-fn provider_credential(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
-    let value = required(get, name)?;
-    ensure!(value.trim() == value, "{name} has surrounding whitespace");
     Ok(value)
 }
 

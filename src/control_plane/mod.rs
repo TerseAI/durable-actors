@@ -17,7 +17,6 @@ mod process;
 mod protocol;
 mod public_api;
 mod regions;
-mod replication;
 mod service;
 pub(crate) mod session;
 pub(crate) mod socket_ticket;

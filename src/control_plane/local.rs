@@ -242,13 +242,14 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
             directory: directory.canonicalize()?.join("objects"),
         },
         DevStorage::Gcs => BucketLocation::Gcs {
+            artifact_bucket: std::env::var("DURABLE_ACTORS_BUCKET").context("GCS bucket required")?,
             bucket: std::env::var("DURABLE_ACTORS_BUCKET")
                 .context("DURABLE_ACTORS_STORAGE=gcs requires DURABLE_ACTORS_BUCKET")?,
         },
     };
     let bucket: Arc<dyn Bucket> = match &location {
         BucketLocation::File { directory } => Arc::new(FileBucket::new(directory.clone())?),
-        BucketLocation::Gcs { bucket } => Arc::new(GcsBucket::new(bucket).await?),
+        BucketLocation::Gcs { bucket, .. } => Arc::new(GcsBucket::new(bucket).await?),
     };
     let access = crate::replication::ReplicaAccess::new(
         &uuid::Uuid::new_v4().to_string(),

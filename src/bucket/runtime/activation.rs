@@ -53,6 +53,7 @@ impl RuntimeStorage {
                 )
                 .await?;
             let mut record = Ownership {
+                persistence: self.persistence.clone(),
                 sealed: false,
                 inventory: ActivationInventory::default(),
                 actor: actor.clone(),
@@ -76,6 +77,7 @@ impl RuntimeStorage {
                 ensure!(hint.is_some(), "actor activation changed concurrently");
                 continue;
             }
+            self.snapshots.prepare(&record.stream()?.prefix).await?;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -179,6 +181,7 @@ impl RuntimeStorage {
         let Some(record) = current else {
             return Ok(ActivationRecovery::default());
         };
+        ensure!(record.persistence == self.persistence, "actor persistence configuration changed; an explicit state migration is required");
         ensure!(
             record.actor == *actor && record.region == region,
             "ownership scope cannot change"
@@ -198,6 +201,12 @@ impl RuntimeStorage {
                 snapshot_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
                 session_ms: None,
             });
+        }
+        if self.persistence.is_rapid() {
+            let started = Instant::now();
+            self.snapshots.seal(&record.stream()?.prefix).await?;
+            let snapshot = self.latest(record, None).await?;
+            return Ok(ActivationRecovery { snapshot, session_ms: Some(started.elapsed().as_secs_f64() * 1_000.0), snapshot_ms: None });
         }
         let mut recovery = ActivationRecovery::default();
         let recover = async {

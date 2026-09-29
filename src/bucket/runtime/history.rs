@@ -97,7 +97,7 @@ impl RuntimeStorage {
     async fn stored_versions(&self, actor: &ActorKey) -> Result<Vec<((u64, u64), String)>> {
         let prefix = crate::storage_paths::snapshots(actor)?;
         let mut versions: Vec<_> = self
-            .authority
+            .snapshots
             .list(&prefix)
             .await?
             .into_iter()
@@ -116,11 +116,10 @@ impl RuntimeStorage {
     }
 
     async fn read_stored_state(&self, key: &str) -> Result<Option<InspectedState>> {
-        self.authority
-            .get(key)
+        self.read_persisted(key)
             .await?
-            .map(|object| {
-                decode_snapshot(key.to_owned(), object.bytes)
+            .map(|bytes| {
+                decode_snapshot(key.to_owned(), bytes.to_vec())
                     .and_then(|loaded| StateSnapshot::decode(&loaded.bytes))
                     .map(inspected)
             })

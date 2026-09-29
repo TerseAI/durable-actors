@@ -1,6 +1,25 @@
 use super::*;
 
 #[tokio::test]
+async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
+    let mut f = Fixture::new()?;
+    let directory = tempfile::tempdir()?;
+    let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
+    f.runtime = f.runtime.with_persistence(crate::bucket::PersistenceConfig::Local, Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())))?;
+    let active = f.runtime.register_activation(&f.actor, &request("first"), "us-east", true, None).await?;
+    let plan = f.runtime.prepare_actor_write(&f.actor, &active.placement.lease, 1, 1).await?;
+    let bytes = crate::state_log::StateSnapshot::new(1, 1, "write".into(), serde_json::json!({"count":42}), serde_json::json!(42))?.encode()?;
+    f.runtime.write_snapshot(&plan, bytes.clone()).await?;
+    assert!(f.bucket.get(&plan.object_name).await?.is_none());
+    assert_eq!(snapshots.get(&plan.object_name).await?.unwrap().bytes, bytes);
+    f.clock.0.store(11_000, Ordering::SeqCst);
+    let resumed = f.runtime.register_activation(&f.actor, &request("next"), "us-east", false, None).await?;
+    assert_eq!(resumed.state.unwrap().as_ref(), bytes);
+    Ok(())
+}
+
+#[tokio::test]
 async fn first_write_commits_without_waiting_for_replica_provisioning() -> Result<()> {
     use crate::{
         state_log::StateSnapshot,

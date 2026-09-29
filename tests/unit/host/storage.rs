@@ -65,6 +65,7 @@ async fn host_registers_claims_reads_and_writes_without_a_control_plane() -> Res
     )?);
     let host = HostId::new("host.v3.revision.host");
     let storage = HostStorage {
+        objects: None,
         observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
         stop: CancellationToken::new(),
         runtime,

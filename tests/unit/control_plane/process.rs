@@ -4,6 +4,7 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::*;
+use std::collections::HashMap;
 
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
@@ -170,36 +171,11 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn mutable_modal_network_requires_explicit_boolean_configuration() -> Result<()> {
-    let mut values = HashMap::from([
-        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
-        (
-            "DURABLE_ACTORS_CONTROL_PLANE_URL",
-            "https://control.example",
-        ),
-        ("MODAL_TOKEN_ID", "id"),
-        ("MODAL_TOKEN_SECRET", "secret"),
-    ]);
-    let configure = |values: &HashMap<&str, &str>| {
-        sandbox_provider_config(
-            &mut |name| values.get(name).map(|v| (*v).into()),
-            "issuer",
-            "audience",
-        )
-    };
-    assert!(
-        !configure(&values)?
-            .environment
-            .contains_key("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK")
-    );
-    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "true");
-    assert_eq!(
-        configure(&values)?.environment["DURABLE_ACTORS_MODAL_MUTABLE_NETWORK"],
-        "true"
-    );
-    values.insert("DURABLE_ACTORS_MODAL_MUTABLE_NETWORK", "yes");
-    assert!(configure(&values).is_err());
+fn production_defaults_to_zonal_rapid_and_gke() -> Result<()> {
+    let values = process_environment();
+    let config = ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))?;
+    assert!(matches!(config.storage.persistence, crate::bucket::PersistenceConfig::Rapid { durability: crate::bucket::Durability::Zonal, .. }));
+    assert_eq!(config.sandbox_provider.gke.zones["north-america-west"], "us-west4-a");
     Ok(())
 }
 
@@ -234,14 +210,15 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
-        ("DURABLE_ACTORS_SANDBOX_PROVIDER", "modal"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "im-runtime"),
+        ("DURABLE_ACTORS_RUNTIME_IMAGE", "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
+        ("DURABLE_ACTORS_RAPID_BUCKETS", r#"[{"name":"rapid-west","zone":"us-west4-a"}]"#),
+        ("DURABLE_ACTORS_GKE_ZONES", r#"{"north-america-west":"us-west4-a"}"#),
+        ("DURABLE_ACTORS_PUBLIC_URL", "https://actors.example.com"),
         (
             "DURABLE_ACTORS_CONTROL_PLANE_URL",
             "https://objects.example.com",
         ),
-        ("MODAL_TOKEN_ID", "modal-token-id"),
-        ("MODAL_TOKEN_SECRET", "modal-token-secret"),
         (
             "DURABLE_ACTORS_POSTGRES_URL",
             "postgresql://localhost/actors",

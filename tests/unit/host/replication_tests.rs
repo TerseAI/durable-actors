@@ -182,6 +182,7 @@ async fn writes_continue_during_provisioning_seeding_and_membership_cas_then_rep
         Arc::new(SystemClock),
     )?);
     let storage = Arc::new(HostStorage {
+        objects: None,
         observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
         runtime: runtime.clone(),
         transport: Default::default(),

@@ -56,6 +56,8 @@ pub struct RuntimeStorage {
     uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
     sessions: Mutex<HashMap<String, Vec<ReplicaTarget>>>,
     authority: Arc<dyn Bucket>,
+    snapshots: Arc<dyn super::SnapshotStore>,
+    pub(crate) persistence: super::PersistenceConfig,
     fleet: Arc<dyn ReplicaProvisioner>,
     peers: Arc<dyn ReplicaPeers>,
     access: ReplicaAccess,
@@ -64,6 +66,7 @@ pub struct RuntimeStorage {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Ownership {
+    persistence: super::PersistenceConfig,
     #[serde(default)]
     sealed: bool,
     inventory: ActivationInventory,
@@ -157,6 +160,8 @@ impl RuntimeStorage {
             uploads: tokio_util::task::TaskTracker::new(),
             uploaded: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
+            persistence: super::PersistenceConfig::Local,
             authority,
             fleet,
             peers,
@@ -174,6 +179,13 @@ impl RuntimeStorage {
                     .max_encoding_message_size(MAX_STORAGE_MESSAGE_BYTES),
             )
             .into_axum_router()
+    }
+
+    pub(crate) fn with_persistence(mut self, config: super::PersistenceConfig, snapshots: Arc<dyn super::SnapshotStore>) -> Result<Self> {
+        config.validate()?;
+        self.persistence = config;
+        self.snapshots = snapshots;
+        Ok(self)
     }
 }
 
@@ -340,16 +352,19 @@ impl RuntimeStorage {
         record: &Ownership,
         known: Option<LoadedSnapshot>,
     ) -> Result<Option<LoadedSnapshot>> {
+        if self.persistence.is_rapid() {
+            let latest = self.snapshots.latest(&record.stream()?.prefix).await?
+                .map(|(key, bytes)| decode_snapshot(key, bytes.to_vec())).transpose()?;
+            return self.load_latest(record, latest.or(known), None, &[]).await;
+        }
         let newest = self.latest_snapshot_key(record).await?;
         let replicas = self.replica_members(&record.scope()).await?;
         self.load_latest(record, known, newest, &replicas).await
     }
 
     async fn latest_snapshot_key(&self, record: &Ownership) -> Result<Option<String>> {
-        Ok(self
-            .authority
-            .list(&record.stream()?.prefix)
-            .await?
+        let keys = self.snapshots.list(&record.stream()?.prefix).await?;
+        Ok(keys
             .into_iter()
             .filter_map(|key| {
                 snapshot_position(&key)
@@ -377,12 +392,11 @@ impl RuntimeStorage {
                 known
             }
             Some(key) => {
-                let object = self
-                    .authority
-                    .get(&key)
+                let bytes = self
+                    .read_persisted(&key)
                     .await?
                     .context("listed snapshot disappeared")?;
-                Some(decode_snapshot(key, object.bytes)?)
+                Some(decode_snapshot(key, bytes.to_vec())?)
             }
             None => known,
         };
@@ -422,14 +436,14 @@ impl RuntimeStorage {
         replicas: &[ReplicaTarget],
         snapshot: &SnapshotRef,
     ) -> Result<Vec<u8>> {
-        if let Some(object) = self.authority.get(&snapshot.object).await? {
-            snapshot.verify(&object.bytes)?;
-            return Ok(object.bytes);
+        if let Some(bytes) = self.read_persisted(&snapshot.object).await? {
+            snapshot.verify(&bytes)?;
+            return Ok(bytes.to_vec());
         }
         for peer in replicas {
             if let Ok(bytes) = self.peers.read(peer, &snapshot.object).await {
                 snapshot.verify(&bytes)?;
-                self.persist(&snapshot.object, bytes.clone()).await?;
+                ensure!(replace(self.authority.as_ref(), &snapshot.object, None, bytes.clone()).await?, "conflicting recovered snapshot");
                 return Ok(bytes);
             }
         }
@@ -437,11 +451,11 @@ impl RuntimeStorage {
     }
 
     async fn persist(&self, object: &str, bytes: Vec<u8>) -> Result<()> {
-        ensure!(
-            replace(self.authority.as_ref(), object, None, bytes).await?,
-            "conflicting immutable snapshot"
-        );
-        Ok(())
+        self.snapshots.put(object, bytes.into()).await
+    }
+
+    async fn read_persisted(&self, object: &str) -> Result<Option<Bytes>> {
+        self.snapshots.get(object).await
     }
 
     async fn current_placement(&self, record: &Ownership) -> Result<ObjectPlacement> {
@@ -460,13 +474,17 @@ impl RuntimeStorage {
         self.authority
             .get(&ownership_key(object)?)
             .await?
-            .map(|value| Ok((value.generation, serde_json::from_slice(&value.bytes)?)))
+            .map(|value| {
+                let record: Ownership = serde_json::from_slice(&value.bytes)?;
+                ensure!(record.persistence == self.persistence, "actor persistence configuration changed; an explicit state migration is required");
+                Ok((value.generation, record))
+            })
             .transpose()
     }
 
     async fn fetch_snapshot(&self, grant: &ReplicaGrant) -> Result<Bytes> {
-        if let Some(object) = self.authority.get(&grant.object).await? {
-            return Ok(Bytes::from(object.bytes));
+        if let Some(bytes) = self.read_persisted(&grant.object).await? {
+            return Ok(bytes);
         }
         let actor = actor_from_object(&grant.object)?;
         let (_, record) = self

@@ -32,6 +32,7 @@ const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
+    artifact: Option<crate::artifacts::ArtifactManifest>,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
@@ -308,6 +309,8 @@ impl ActorHostConfig {
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
+            artifact: get("DURABLE_ACTORS_CODE_ARTIFACT")
+                .map(|value| crate::artifacts::ArtifactManifest::decode(&value)).transpose()?,
             runtime_config,
             control_plane_url,
             host_token,
@@ -410,21 +413,18 @@ async fn prepare_actor_host(
         stop.clone(),
         transport.clone(),
     );
+    let storage = Arc::new(super::storage::HostStorage::new(
+        config.runtime_config.clone(), config.host_id.clone(), config.session_id.clone(),
+        config.control_plane_url.clone(), control_plane.clone(), stop, warm_storage, transport,
+    ).await?.with_actor(config.actor.clone(), config.new_actor, config.owner_hint.clone()));
     let started = timings.started_at;
     let storage_ready = async {
-        let result = prepare_storage(
-            config,
-            &endpoint,
-            control_plane.clone(),
-            stop,
-            warm_storage,
-            transport,
-        )
-        .await;
+        let result = prepare_storage(config, &endpoint, storage.clone()).await;
         timings.storage_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
     let executor_ready = async {
+        if let Some(artifact) = &config.artifact { storage.install_code(artifact).await?; }
         let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection =
                 tokio::time::timeout(Duration::from_secs(60), executor.load(&entrypoint)).await??;
@@ -440,8 +440,8 @@ async fn prepare_actor_host(
         timings.executor_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
-    let (storage, executor) = tokio::join!(storage_ready, executor_ready);
-    let (storage, lease, renewal) = storage?;
+    let (lease, executor) = tokio::join!(storage_ready, executor_ready);
+    let (lease, renewal) = lease?;
     let (executor_connection, javascript) = match executor {
         Ok(executor) => executor,
         Err(error) => {
@@ -489,33 +489,8 @@ async fn prepare_actor_host(
 async fn prepare_storage(
     config: &ActorHostConfig,
     endpoint: &HostEndpoint,
-    control_plane: Arc<ControlPlaneClient>,
-    stop: CancellationToken,
-    warm: Option<crate::bucket::WarmGcs>,
-    transport: crate::state_transport::GrpcStateTransport,
-) -> Result<(
-    Arc<super::storage::HostStorage>,
-    Arc<HostLeaseMaintainer>,
-    LeaseRenewalTask,
-)> {
-    let storage = Arc::new(
-        super::storage::HostStorage::new(
-            config.runtime_config.clone(),
-            config.host_id.clone(),
-            config.session_id.clone(),
-            config.control_plane_url.clone(),
-            control_plane,
-            stop,
-            warm,
-            transport,
-        )
-        .await?
-        .with_actor(
-            config.actor.clone(),
-            config.new_actor,
-            config.owner_hint.clone(),
-        ),
-    );
+    storage: Arc<super::storage::HostStorage>,
+) -> Result<(Arc<HostLeaseMaintainer>, LeaseRenewalTask)> {
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint.clone(),
         config.session_id.clone(),
@@ -525,7 +500,7 @@ async fn prepare_storage(
         config.renew_every,
     )?);
     let renewal = lease.clone().start().await?;
-    Ok((storage, lease, renewal))
+    Ok((lease, renewal))
 }
 
 async fn bind_host_listener(

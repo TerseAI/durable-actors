@@ -1,0 +1,183 @@
+use std::collections::BTreeMap;
+
+use k8s_openapi::api::core::v1::{Pod, Secret};
+use kube::{Api, Client, ResourceExt, api::{AttachParams, DeleteParams, PostParams, Preconditions}, runtime::wait::await_condition};
+use serde_json::json;
+use tokio::io::AsyncWrite;
+
+use super::*;
+
+#[derive(Clone, Debug)]
+pub(crate) struct GkeConfig {
+    pub namespace: String,
+    pub zones: BTreeMap<String, String>,
+    pub public_origin: String,
+    pub artifact_bucket: String,
+}
+
+pub(super) struct Kubernetes { pods: Api<Pod>, secrets: Api<Secret>, config: GkeConfig }
+impl Kubernetes {
+    pub fn new(client: Client, config: GkeConfig) -> Self {
+        Self { pods: Api::namespaced(client.clone(), &config.namespace), secrets: Api::namespaced(client, &config.namespace), config }
+    }
+
+    async fn start(&self, pod: Pod) -> Result<Pod> {
+        let created = self.pods.create(&PostParams::default(), &pod).await?;
+        let mut cleanup = PodCleanup::new(self.pods.clone(), &created)?;
+        let ready = tokio::time::timeout(Duration::from_secs(120), await_condition(
+            self.pods.clone(), &created.name_any(), |pod: Option<&Pod>| pod.is_none_or(terminal_or_ready),
+        )).await.context("sandbox pod readiness timed out")??.context("sandbox pod disappeared")?;
+        ensure!(ready.uid() == created.uid(), "sandbox pod was replaced during startup");
+        ensure!(is_ready(&ready), "sandbox pod failed: {:?}", ready.status);
+        cleanup.disarm();
+        Ok(ready)
+    }
+
+    async fn copy_file(&self, pod: &str, path: &str, destination: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
+        let mut process = self.pods.exec(pod, ["/bin/cat", path], &AttachParams::default().container("runtime").stderr(false)).await?;
+        let status = process.take_status().context("exec status missing")?;
+        tokio::io::copy(&mut process.stdout().context("exec stdout missing")?, destination).await?;
+        let status = status.await.context("exec status was not received")?;
+        ensure!(status.status.as_deref() == Some("Success"), "artifact read failed: {:?}", status.message);
+        process.join().await?;
+        Ok(())
+    }
+
+    fn zone(&self, region: &str) -> Result<&str> {
+        self.config.zones.get(region).map(String::as_str).with_context(|| format!("no GKE zone configured for {region}"))
+    }
+}
+
+#[async_trait]
+impl SandboxCluster for Kubernetes {
+    async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
+        ensure!(request.kind == SpareKind::Actor, "GKE storage replication uses Rapid buckets");
+        let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let pod = spare_pod(request, self.zone(&request.canonical_region)?, &token)?;
+        let ready = self.start(pod).await?;
+        let ip: std::net::IpAddr = ready.status.as_ref().and_then(|status| status.pod_ip.as_deref()).context("ready pod has no IP")?.parse()?;
+        let authority = if ip.is_ipv6() { format!("[{ip}]") } else { ip.to_string() };
+        Ok(SpareHandle {
+            name: ready.name_any(), resource_id: format!("{}/{}/{}", self.config.namespace, ready.name_any(), ready.uid().context("pod UID missing")?),
+            control_route: format!("http://{authority}:7102"), control_token: token,
+            route: format!("http://{authority}:7101"), canonical_region: request.canonical_region.clone(),
+        })
+    }
+
+    async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
+        ensure!(namespace == self.config.namespace && name == spare.name, "sandbox resource identity mismatch");
+        delete_pod(&self.pods, name, uid).await
+    }
+
+    async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>> {
+        let loaded = futures_util::future::try_join_all(names.iter().map(|name| self.secrets.get(name))).await?;
+        let mut environment = HashMap::new();
+        for secret in loaded {
+            ensure!(secret.labels().get("terse.ai/customer-secret").is_some_and(|value| value == "true"), "secret is not marked for customer code");
+            for (name, value) in secret.data.unwrap_or_default() {
+                ensure!(!environment.contains_key(&name), "duplicate customer environment variable {name}");
+                environment.insert(name, String::from_utf8(value.0).context("customer secret must be UTF-8")?);
+            }
+        }
+        Ok(environment)
+    }
+
+    async fn build_code(&self, request: &BuildCodeRequest) -> Result<CompiledCode> {
+        let pod = build_pod(request, self.zone(&request.canonical_region)?)?;
+        let ready = self.start(pod).await?;
+        let cleanup = PodCleanup::new(self.pods.clone(), &ready)?;
+        let directory = tempfile::tempdir()?;
+        let mut artifact = tokio::fs::File::create(directory.path().join("actors.mjs")).await?;
+        let mut contract = Vec::new();
+        let name = ready.name_any();
+        tokio::try_join!(self.copy_file(&name, "/tmp/build/actors.mjs", &mut artifact),
+            self.copy_file(&name, "/tmp/build/contract.json", &mut contract))?;
+        let contract = serde_json::from_slice(&contract).context("decode compiled actor contract")?;
+        cleanup.delete().await?;
+        Ok(CompiledCode { directory, contract })
+    }
+}
+
+fn spare_pod(request: &CreateSpareRequest, zone: &str, token: &str) -> Result<Pod> {
+    let mut pod = base_pod(&request.name, &request.image_ref, zone, &request.resources);
+    pod["spec"]["containers"][0]["env"] = json!([
+        {"name":"DURABLE_ACTORS_PROCESS_ROLE", "value":"spare"},
+        {"name":"DURABLE_ACTORS_SPARE_TOKEN", "value":token},
+        {"name":"DURABLE_ACTORS_CONTROL_PLANE_URL", "value":request.control_plane_url.as_ref().context("spare control plane URL required")?}
+    ]);
+    pod["spec"]["containers"][0]["readinessProbe"] = json!({"exec":{"command":["/usr/bin/test", "-f", "/tmp/durable-actors-spare-ready"]}, "periodSeconds":1, "failureThreshold":3});
+    Ok(serde_json::from_value(pod)?)
+}
+
+fn build_pod(request: &BuildCodeRequest, zone: &str) -> Result<Pod> {
+    let mut pod = base_pod(&format!("do-build-{}", uuid::Uuid::new_v4()), &request.image_ref, zone, &ResourceLimits::default());
+    pod["metadata"]["labels"]["terse.ai/purpose"] = json!("build");
+    pod["spec"]["activeDeadlineSeconds"] = json!(120);
+    pod["spec"]["containers"][0]["command"] = json!(["/bin/sh", "-ec", "mkdir -p /tmp/build; bun /opt/durable-actors/sdk/dist/compiler/deployment-build.js \"$1\" \"$2\" /tmp/build > /tmp/build/contract.json; touch /tmp/build/ready; exec sleep infinity", "build", request.working_directory, request.actor_entrypoint]);
+    pod["spec"]["containers"][0]["readinessProbe"] = json!({"exec":{"command":["/usr/bin/test", "-f", "/tmp/build/ready"]}, "periodSeconds":1});
+    // Build images contain the source at /customer; only runtime pods replace it with emptyDir.
+    pod["spec"]["containers"][0]["volumeMounts"].as_array_mut().unwrap().retain(|mount| mount["name"] != "customer");
+    Ok(serde_json::from_value(pod)?)
+}
+
+fn base_pod(name: &str, image: &str, zone: &str, resources: &ResourceLimits) -> serde_json::Value {
+    json!({
+        "apiVersion":"v1", "kind":"Pod", "metadata":{"name":name, "labels":{"app.kubernetes.io/managed-by":"terse", "terse.ai/purpose":"actor"}},
+        "spec":{
+            "runtimeClassName":"gvisor", "automountServiceAccountToken":false, "serviceAccountName":"sandbox",
+            "restartPolicy":"Never", "terminationGracePeriodSeconds":15, "activeDeadlineSeconds":86400,
+            "nodeSelector":{"topology.kubernetes.io/zone":zone, "sandbox.gke.io/runtime":"gvisor"},
+            "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
+            "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/usr/local/bin/durable-actors"],
+                "securityContext":{"allowPrivilegeEscalation":false, "readOnlyRootFilesystem":true, "capabilities":{"drop":["ALL"]}},
+                "resources":{"requests":{"cpu":format!("{}m", resources.cpu_millis),"memory":format!("{}Mi", resources.memory_mib)},"limits":{"cpu":format!("{}m", resources.cpu_millis),"memory":format!("{}Mi", resources.memory_mib)}},
+                "volumeMounts":[{"name":"tmp","mountPath":"/tmp"},{"name":"customer","mountPath":"/customer"}]
+            }], "volumes":[{"name":"tmp","emptyDir":{}},{"name":"customer","emptyDir":{}}]
+        }
+    })
+}
+
+fn terminal_or_ready(pod: &Pod) -> bool {
+    is_ready(pod) || pod.status.as_ref().and_then(|status| status.phase.as_deref()).is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+}
+fn is_ready(pod: &Pod) -> bool {
+    pod.status.as_ref().and_then(|status| status.conditions.as_ref()).is_some_and(|conditions| conditions.iter().any(|condition| condition.type_ == "Ready" && condition.status == "True"))
+}
+fn resource_identity(resource: &str) -> Result<(&str, &str, &str)> {
+    let mut parts = resource.split('/');
+    let namespace = parts.next().context("namespace missing")?;
+    let name = parts.next().context("pod name missing")?;
+    let uid = parts.next().context("pod UID missing")?;
+    ensure!(!namespace.is_empty() && !name.is_empty() && !uid.is_empty() && parts.next().is_none(), "invalid pod identity");
+    Ok((namespace, name, uid))
+}
+async fn delete_pod(pods: &Api<Pod>, name: &str, uid: &str) -> Result<()> {
+    let params = DeleteParams { preconditions: Some(Preconditions { uid: Some(uid.into()), resource_version: None }), ..DeleteParams::default() };
+    match pods.delete(name, &params).await {
+        Ok(_) => Ok(()), Err(kube::Error::Api(error)) if error.code == 404 => Ok(()), Err(error) => Err(error.into()),
+    }
+}
+struct PodCleanup { pods: Api<Pod>, identity: Option<(String, String)> }
+impl PodCleanup {
+    fn new(pods: Api<Pod>, pod: &Pod) -> Result<Self> { Ok(Self { pods, identity: Some((pod.name_any(), pod.uid().context("pod UID missing")?)) }) }
+    fn disarm(&mut self) { self.identity = None; }
+    async fn delete(mut self) -> Result<()> {
+        let (name, uid) = self.identity.as_ref().unwrap();
+        delete_pod(&self.pods, name, uid).await?;
+        self.disarm();
+        Ok(())
+    }
+}
+impl Drop for PodCleanup {
+    fn drop(&mut self) {
+        if let Some((name, uid)) = self.identity.take() {
+            let pods = self.pods.clone();
+            tokio::spawn(async move { if let Err(error) = delete_pod(&pods, &name, &uid).await { tracing::warn!(%error, %name, "sandbox cleanup failed"); } });
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/unit/sandbox/kubernetes.rs"]
+mod tests;

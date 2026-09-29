@@ -603,6 +603,7 @@ impl Stack {
         let storage = Arc::new(
             crate::host::storage::HostStorage::new(
                 crate::bucket::access::HostStorageConfig {
+                    persistence: crate::bucket::PersistenceConfig::Local,
                     bucket: crate::bucket::access::BucketLocation::File {
                         directory: runtime.directory.path().into(),
                     },

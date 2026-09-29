@@ -36,13 +36,14 @@ impl ActorReplication {
     ) -> Arc<Self> {
         let (failures, reports) = mpsc::unbounded_channel();
         let (ready, initial_ready) = watch::channel(false);
-        let this = Arc::new(Self {
-            writer: ReplicatedStateTransport::new(
+        let writer = ReplicatedStateTransport::new(
                 storage.runtime.clone(),
                 Arc::new(storage.transport.clone()),
             )
             .with_upload_tracker(storage.runtime.upload_tracker())
-            .with_failure_reports(failures),
+            .with_failure_reports(failures);
+        let this = Arc::new(Self {
+            writer,
             storage,
             writing: Mutex::new(()),
             latest: StdMutex::new(None),

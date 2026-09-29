@@ -17,6 +17,7 @@ pub struct ReplicatedStateTransport {
     bucket: Arc<dyn SnapshotWriter>,
     transport: Arc<dyn StateTransport>,
     failures: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    required: bool,
 }
 
 impl ReplicatedStateTransport {
@@ -26,6 +27,7 @@ impl ReplicatedStateTransport {
             bucket,
             transport,
             failures: None,
+            required: false,
         }
     }
 
@@ -41,6 +43,11 @@ impl ReplicatedStateTransport {
         self.failures = Some(failures);
         self
     }
+
+    pub fn require_replicas(mut self) -> Self {
+        self.required = true;
+        self
+    }
 }
 
 #[async_trait]
@@ -49,12 +56,19 @@ impl SnapshotWriter for ReplicatedStateTransport {
         let _writing = self.uploads.token();
         ensure!(!self.uploads.is_closed(), "snapshot uploads stopped");
         let Some(replication) = &ticket.replication else {
+            ensure!(!self.required, "required replica membership is unavailable");
             return self.bucket.write_snapshot(ticket, bytes).await;
         };
         replication.validate()?;
         let started = Instant::now();
         let replica_task =
             self.start_replication(ticket.clone(), replication.clone(), bytes.clone(), started);
+        if self.required {
+            let bucket = self.bucket.clone();
+            let plan = ticket.clone();
+            self.uploads.spawn(async move { bucket.write_snapshot(&plan, bytes).await });
+            return replica_task.await.context("required replication task failed")?;
+        }
         self.race(
             ticket,
             bytes,
@@ -72,6 +86,11 @@ impl ReplicatedStateTransport {
         bytes: Vec<u8>,
         ready: impl Future<Output = Result<WritePlan>> + Send,
     ) -> Result<StateWrite> {
+        if self.required {
+            let plan = ready.await?;
+            ensure!(plan.stream == ticket.stream && plan.state_version == ticket.state_version && plan.object_name == ticket.object_name, "initial replication changed the write");
+            return self.write_snapshot(&plan, bytes).await;
+        }
         let _writing = self.uploads.token();
         ensure!(!self.uploads.is_closed(), "snapshot uploads stopped");
         let started = Instant::now();
