@@ -48,6 +48,8 @@ async fn only_live_claims_can_become_routable() -> Result<()> {
         );
         pool.remember("host", "revision", &spare).await?;
         pool.wait_ready("host").await?;
+        pool.store.0.execute("UPDATE durable_actors_spares SET created_at = clock_timestamp() - interval '2 days', expires_at = clock_timestamp() - interval '1 day'", &[]).await?;
+        pool.store.retire_unwanted(&[], false).await?;
         assert_eq!(pool.host("host").await?, Some(spare.clone()));
         pool.failed("host").await?;
         assert!(pool.remember("host", "revision", &spare).await.is_err());

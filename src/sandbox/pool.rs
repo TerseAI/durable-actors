@@ -97,7 +97,7 @@ impl SparePool {
 
     pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
         let updated = self.store.0.execute(
-            "UPDATE durable_actors_spares SET status = 'active', handle = $2, expires_at = created_at + interval '24 hours' \
+            "UPDATE durable_actors_spares SET status = 'active', handle = $2 \
              WHERE name = $1 AND host_id = $3 AND host_config_key = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
             &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
         ).await?;
@@ -368,9 +368,9 @@ impl PoolStore {
     }
 
     async fn retire_unwanted(&self, keys: &[String], enabled: bool) -> Result<()> {
-        // Keep unfinished builds counted and out of cleanup until they publish or their lease expires.
+        // Active hosts retire through their ownership lease and explicit shutdown.
         self.0.execute(
-            "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND (kind = 'actor' OR status != 'active')) \
+            "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND status != 'active') \
              OR (status = 'ready' AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
             &[&keys, &enabled, &self.1.as_str()],
         ).await?;

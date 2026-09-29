@@ -312,7 +312,7 @@ fn base_pod(name: &str, image: &str, zone: &str, resources: &ResourceLimits) -> 
         "apiVersion":"v1", "kind":"Pod", "metadata":{"name":name, "labels":{"app.kubernetes.io/managed-by":"terse", "terse.ai/purpose":"actor"}},
         "spec":{
             "runtimeClassName":"gvisor", "automountServiceAccountToken":false, "serviceAccountName":"sandbox",
-            "restartPolicy":"Never", "terminationGracePeriodSeconds":15, "activeDeadlineSeconds":86400,
+            "restartPolicy":"Never", "terminationGracePeriodSeconds":15,
             "nodeSelector":{"topology.kubernetes.io/zone":zone, "sandbox.gke.io/runtime":"gvisor"},
             "securityContext":{"runAsNonRoot":true, "runAsUser":10000, "runAsGroup":10000, "fsGroup":10000},
             "containers":[{"name":"runtime", "image":image, "imagePullPolicy":"IfNotPresent", "command":["/usr/local/bin/durable-actors"],

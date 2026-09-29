@@ -357,6 +357,30 @@ jobs:
                   subject-name: ${{ env.IMAGE }}
                   subject-digest: ${{ steps.manifest.outputs.digest }}
 
+    helm:
+        name: Publish Helm chart
+        needs: [preflight, image]
+        permissions:
+            contents: write
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Install Helm
+              run: |
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
+                  curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  sha256sum --check helm-v3.19.0-linux-amd64.tar.gz.sha256sum
+                  tar -xzf helm-v3.19.0-linux-amd64.tar.gz
+                  sudo install linux-amd64/helm /usr/local/bin/helm
+            - run: helm lint charts/terse -f charts/terse/tests/values.yaml
+            - run: node --test charts/terse/tests/chart.test.mjs
+            - run: helm package charts/terse --destination .artifacts/charts
+            - name: Upload the validated Helm chart
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+              run: gh release upload "$RELEASE_TAG" .artifacts/charts/*.tgz --clobber
+
     npm:
         name: Publish npm packages
         needs: [preflight, image, native-publish]

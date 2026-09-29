@@ -16,6 +16,7 @@ fn customer_pod_uses_managed_gvisor_without_ambient_credentials() -> Result<()> 
     let pod = spare_pod(&request, "us-west4-a", "test-token")?;
     let spec = pod.spec.unwrap();
     assert_eq!(spec.runtime_class_name.as_deref(), Some("gvisor"));
+    assert_eq!(spec.active_deadline_seconds, None);
     assert_eq!(spec.automount_service_account_token, Some(false));
     assert_eq!(
         spec.node_selector.unwrap()["topology.kubernetes.io/zone"],

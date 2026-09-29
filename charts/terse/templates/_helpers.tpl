@@ -5,6 +5,7 @@
 {{- printf "%s@sha256:%s" .Values.image.repository (required "image.digest must be the published runtime sha256 digest" .Values.image.digest) -}}
 {{- end -}}
 {{- define "terse.validate" -}}
+{{- if and .Values.gateway.enabled (eq (empty .Values.gateway.tlsSecret) (empty .Values.gateway.preSharedCert)) }}{{ fail "gateway requires exactly one of tlsSecret or preSharedCert" }}{{ end -}}
 {{- if eq .Values.sandboxNamespace .Release.Namespace }}{{ fail "sandboxNamespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if not (hasKey .Values.zones .Values.region) }}{{ fail "region must have a configured placement zone" }}{{ end -}}
 {{- $zones := dict -}}{{- $regions := dict -}}

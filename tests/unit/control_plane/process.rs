@@ -53,11 +53,11 @@ fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Resu
     let defaults = parse(&values)?.sandbox_provider.pool;
     assert_eq!(
         (defaults.idle, defaults.fleet_maximum, defaults.max_starting),
-        (5, 64, 8)
+        (64, 256, 32)
     );
     values.extend([
-        ("DURABLE_ACTORS_SPARE_IDLE", "2"),
-        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "20"),
+        ("DURABLE_ACTORS_SPARE_IDLE", "128"),
+        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "512"),
         ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
     ]);
     let configured = parse(&values)?.sandbox_provider.pool;
@@ -67,11 +67,11 @@ fn fixed_pool_capacity_and_build_limits_are_configurable_and_validated() -> Resu
             configured.fleet_maximum,
             configured.max_starting
         ),
-        (2, 20, 4)
+        (128, 512, 4)
     );
     values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "1");
     assert!(parse(&values).is_err());
-    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "20");
+    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "512");
     values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "0");
     assert!(parse(&values).is_err());
     Ok(())

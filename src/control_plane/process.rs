@@ -365,8 +365,8 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
-    let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 5, 0, 32)?;
-    let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 64, 0, 4096)?;
+    let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 64, 0, u32::MAX)?;
+    let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 256, 0, u32::MAX)?;
     ensure!(
         idle <= fleet_maximum,
         "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
@@ -383,7 +383,7 @@ fn sandbox_provider_config(
             kind: crate::sandbox::SpareKind::Actor,
             idle,
             fleet_maximum,
-            max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 8, 1, 128)?,
+            max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 32, 1, u32::MAX)?,
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {
