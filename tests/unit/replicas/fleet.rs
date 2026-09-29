@@ -243,7 +243,7 @@ struct ActivationPeers {
 #[async_trait]
 impl ReplicaPeers for ActivationPeers {
     async fn assign(&self, _: &ReplicaPlacement, assignment: &Assignment) -> Result<()> {
-        self.assigned.fetch_add(1, Ordering::SeqCst);
+        let assigned = self.assigned.fetch_add(1, Ordering::SeqCst);
         match self.action {
             DuringAssignment::Nothing => {}
             DuringAssignment::Fence => self.owner.value.lock().unwrap()["epoch"] = 2.into(),
@@ -253,7 +253,8 @@ impl ReplicaPeers for ActivationPeers {
             DuringAssignment::Close => {
                 self.registry.close(&assignment.prefix).await?;
             }
-            DuringAssignment::Fail => anyhow::bail!("replica unavailable"),
+            DuringAssignment::Fail if assigned > 0 => anyhow::bail!("replica unavailable"),
+            DuringAssignment::Fail => {}
         }
         Ok(())
     }
@@ -320,6 +321,17 @@ impl ActivationFixture {
             peers,
             prefix,
         })
+    }
+    async fn warm_spares(&self) -> Result<()> {
+        self.fleet
+            .registry
+            .reserve_spares(&self.fleet.zones, 3, 3)
+            .await?;
+        for pod in self.fleet.registry.unassigned().await? {
+            let ready = self.fleet.pods.ensure(&pod, None, &[]).await?;
+            self.fleet.registry.update_pod(&ready).await?;
+        }
+        Ok(())
     }
     async fn activate(&self) -> Result<DirectoryReply> {
         let command = DirectoryCommand::Prepare {
@@ -389,8 +401,12 @@ async fn activation_never_publishes_ready_after_fencing_expiry_closure_or_partia
     ] {
         with_postgres(async |db| {
             let fixture = ActivationFixture::new(&db.url, action)?;
+            fixture.warm_spares().await?;
             assert!(fixture.activate().await.is_err());
             assert!(fixture.peers.assigned.load(Ordering::SeqCst) > 0);
+            if matches!(action, DuringAssignment::Fail) {
+                assert_eq!(fixture.peers.assigned.load(Ordering::SeqCst), 2);
+            }
             let group = fixture.fleet.registry.lookup(&fixture.prefix).await?;
             assert!(!group.ever_ready);
             assert_ne!(group.state, "ready");
@@ -399,4 +415,39 @@ async fn activation_never_publishes_ready_after_fencing_expiry_closure_or_partia
         .await?;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn preparing_an_unchanged_claimed_pod_needs_no_database_connection() -> Result<()> {
+    with_postgres(async |db| {
+        let fixture = ActivationFixture::new(&db.url, DuringAssignment::Nothing)?;
+        let claimed = fixture
+            .fleet
+            .registry
+            .claim(&fixture.prefix, &fixture.fleet.zones)
+            .await?;
+        let pod = fixture
+            .fleet
+            .pods
+            .ensure(&claimed.pods[0], Some(&fixture.prefix), &[])
+            .await?;
+        fixture.fleet.registry.update_pod(&pod).await?;
+        let database = PostgresDatabase::connect(&db.url).await?;
+        let mut occupied = Vec::new();
+        for _ in 0..8 {
+            occupied.push(database.connection().await?);
+        }
+        let fleet = ReplicaFleet {
+            registry: Registry::new(database),
+            ..fixture.fleet
+        };
+        let prepared = tokio::time::timeout(
+            Duration::from_secs(1),
+            fleet.prepare_pod(&pod, &fixture.prefix, &[]),
+        )
+        .await??;
+        assert_eq!(prepared, pod);
+        Ok(())
+    })
+    .await
 }

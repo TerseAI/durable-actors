@@ -208,7 +208,7 @@ impl ReplicaFleet {
         self.authority.require_live(prefix).await?;
         let ownership_recheck_ms = elapsed_ms(phase);
         let phase = Instant::now();
-        let group = directory_group(self.registry.ready(prefix).await?);
+        self.registry.ready(prefix).await?;
         tracing::info!(
             event = "replica_activation",
             prefix,
@@ -221,24 +221,31 @@ impl ReplicaFleet {
             duration_ms = elapsed_ms(started),
             "replica group ready"
         );
-        Ok(group)
+        Ok(Group {
+            prefix: group.prefix,
+            replicas: assignment.replicas,
+            archived: false,
+            checkpoint: group.checkpoint,
+        })
     }
 
     async fn prepare_pod(
         &self,
-        pod: &PodRecord,
+        expected: &PodRecord,
         prefix: &str,
         excluded: &[String],
     ) -> Result<PodRecord> {
         let started = Instant::now();
-        let pod = self.pods.ensure(pod, Some(prefix), excluded).await?;
+        let pod = self.pods.ensure(expected, Some(prefix), excluded).await?;
         let ensure_ms = elapsed_ms(started);
         let phase = Instant::now();
-        if let Err(error) = self.registry.update_pod(&pod).await {
-            if self.registry.lookup(prefix).await?.state == "archived" {
-                self.pods.retire(&pod).await?;
+        if pod != *expected {
+            if let Err(error) = self.registry.update_pod(&pod).await {
+                if self.registry.lookup(prefix).await?.state == "archived" {
+                    self.pods.retire(&pod).await?;
+                }
+                return Err(error);
             }
-            return Err(error);
         }
         let registration_ms = elapsed_ms(phase);
         let phase = Instant::now();

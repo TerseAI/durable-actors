@@ -221,3 +221,33 @@ async fn wait_for_blocked_query(
     }).await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn claims_bind_all_slots_together_preserving_zone_order_and_skipping_locked_nodes()
+-> Result<()> {
+    with_postgres(async |db| {
+        let registry = Registry::new(PostgresDatabase::connect(&db.url).await?);
+        let client = db.pool.get().await?;
+        for (name, zone, node) in [("a1", "a", "one"), ("a2", "a", "one"), ("a3", "a", "two"), ("b1", "b", "three")] {
+            let pod = PodRecord { name: name.into(), zone: zone.into(), uid: Some(name.into()), node: Some(node.into()), placement: Some(ReplicaPlacement { id: name.into(), address: format!("http://{name}:7200"), zone: zone.into() }) };
+            client.execute("INSERT INTO durable_actors_replication_pods(name,zone,state,config) VALUES($1,$2,'ready',$3)", &[&name,&zone,&serde_json::to_string(&pod)?]).await?;
+        }
+        client.batch_execute("CREATE TABLE claim_statements (id integer); CREATE FUNCTION count_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO claim_statements VALUES (1); RETURN NULL; END $$; CREATE TRIGGER count_claim BEFORE INSERT ON durable_actors_replication_pods FOR EACH STATEMENT EXECUTE FUNCTION count_claim()").await?;
+        let mut blocker = db.pool.get().await?;
+        let lock = blocker.transaction().await?;
+        lock.query_one("SELECT name FROM durable_actors_replication_pods WHERE name='a3' FOR UPDATE", &[]).await?;
+        let zones = vec!["a".into(), "b".into(), "a".into()];
+        let group = tokio::time::timeout(std::time::Duration::from_secs(2), registry.claim("batch/", &zones)).await??;
+        assert_eq!(group.pods.iter().map(|p| p.zone.clone()).collect::<Vec<_>>(), zones);
+        assert_eq!(group.pods[0].name, "a1");
+        assert_eq!(group.pods[1].name, "b1");
+        assert!(group.pods[2].placement.is_none());
+        assert_eq!(registry.lookup("batch/").await?.pods, group.pods);
+        let statements: i64 = client.query_one("SELECT count(*) FROM claim_statements", &[]).await?.get(0);
+        assert_eq!(statements, 1, "all slots must bind in one statement");
+        let repeated = registry.claim("batch/", &zones).await?;
+        assert_eq!(repeated.pods, group.pods);
+        lock.rollback().await?;
+        Ok(())
+    }).await
+}
