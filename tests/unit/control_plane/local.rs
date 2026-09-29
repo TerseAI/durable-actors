@@ -75,6 +75,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
                     actor_name: "Counter".into(),
                     actor_id: "one".into(),
                 },
+                None,
             )
             .await?,
     )?;

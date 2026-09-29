@@ -1,6 +1,7 @@
 use crate::bucket::{ReplicaPlacement, ReplicaSet, SnapshotStore};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -38,7 +39,7 @@ impl DirectoryCommand {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct DirectoryReply {
     pub groups: Vec<Group>,
-    pub data: Option<Vec<u8>>,
+    pub data: Option<String>,
     pub keys: Vec<String>,
 }
 
@@ -50,16 +51,36 @@ pub(crate) trait ReplicaDirectory: Send + Sync {
 pub(crate) struct DedicatedSnapshots {
     directory: Arc<dyn ReplicaDirectory>,
     token: String,
-    groups: moka::future::Cache<String, Arc<ReplicaSet>>,
+    groups: Option<moka::future::Cache<String, Arc<ReplicaSet>>>,
+    http: reqwest::Client,
 }
 impl DedicatedSnapshots {
-    pub fn new(directory: Arc<dyn ReplicaDirectory>, token: String) -> Self {
-        Self {
+    pub fn new(directory: Arc<dyn ReplicaDirectory>, token: String) -> Result<Self> {
+        Ok(Self {
             directory,
             token,
-            groups: moka::future::Cache::builder()
-                .time_to_idle(std::time::Duration::from_secs(300))
-                .build(),
+            http: super::client::ReplicaClient::http()?,
+            groups: Some(
+                moka::future::Cache::builder()
+                    .time_to_idle(std::time::Duration::from_secs(300))
+                    .build(),
+            ),
+        })
+    }
+
+    pub fn for_control_plane(directory: Arc<dyn ReplicaDirectory>, token: String) -> Result<Self> {
+        Ok(Self {
+            directory,
+            token,
+            http: super::client::ReplicaClient::http()?,
+            groups: None,
+        })
+    }
+
+    async fn cached(&self, prefix: &str) -> Option<Arc<ReplicaSet>> {
+        match &self.groups {
+            Some(groups) => groups.get(prefix).await,
+            None => None,
         }
     }
 
@@ -77,16 +98,17 @@ impl DedicatedSnapshots {
 
     async fn live(&self, group: &Group) -> Result<Arc<ReplicaSet>> {
         ensure!(!group.archived, "replica group is archived");
-        if let Some(store) = self.groups.get(&group.prefix).await {
+        if let Some(store) = self.cached(&group.prefix).await {
             return Ok(store);
         }
         let store = Arc::new(ReplicaSet::from_replicas(
             &group.replicas,
             self.token.clone(),
+            self.http.clone(),
         )?);
-        self.groups
-            .insert(group.prefix.clone(), store.clone())
-            .await;
+        if let Some(groups) = &self.groups {
+            groups.insert(group.prefix.clone(), store.clone()).await;
+        }
         Ok(store)
     }
 
@@ -98,7 +120,8 @@ impl DedicatedSnapshots {
             })
             .await?
             .data
-            .map(Bytes::from))
+            .map(|bytes| STANDARD.decode(bytes).map(Bytes::from))
+            .transpose()?)
     }
 
     async fn archive_list(&self, prefix: &str) -> Result<Vec<String>> {
@@ -135,13 +158,15 @@ impl SnapshotStore for DedicatedSnapshots {
                 prefix: prefix.into(),
             })
             .await?;
-        self.groups.invalidate(prefix).await;
+        if let Some(groups) = &self.groups {
+            groups.invalidate(prefix).await;
+        }
         Ok(())
     }
 
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
         let (prefix, _) = super::client::position(object)?;
-        let store = match self.groups.get(&prefix).await {
+        let store = match self.cached(&prefix).await {
             Some(store) => store,
             None => self.live(&self.lookup(&prefix).await?).await?,
         };

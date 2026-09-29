@@ -253,7 +253,7 @@ async fn local_storage(options: &DevOptions, directory: &Path) -> Result<LocalSt
         BucketLocation::Gcs { bucket, .. } => Arc::new(GcsBucket::new(bucket).await?),
     };
     let runtime = Arc::new(RuntimeStorage::new(bucket, Arc::new(SystemClock))?);
-    let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.clone())?);
+    let bootstrap = Arc::new(RuntimeAccess::new(location, runtime.persistence.clone())?);
     Ok(LocalState {
         traces: crate::request_traces::TraceStore::open(Arc::new(
             crate::request_traces::persistence::sqlite::SqliteTracePersistence::new(

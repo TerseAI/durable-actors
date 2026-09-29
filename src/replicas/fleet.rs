@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -47,6 +47,13 @@ struct PodHealth {
     current_image: bool,
 }
 
+struct ObservedPod {
+    pod: PodRecord,
+    prefix: Option<String>,
+    health: PodHealth,
+}
+type PodInventory = HashMap<String, ObservedPod>;
+
 #[async_trait]
 trait ReplicaPods: Send + Sync {
     async fn ensure(
@@ -55,8 +62,8 @@ trait ReplicaPods: Send + Sync {
         group: Option<&str>,
         excluded_nodes: &[String],
     ) -> Result<PodRecord>;
-    async fn health(&self, pod: &PodRecord) -> Result<PodHealth>;
-    async fn observed(&self) -> Result<Vec<(PodRecord, Option<String>)>>;
+    async fn health(&self, pod: &PodRecord, inventory: &PodInventory) -> Result<PodHealth>;
+    async fn observed(&self) -> Result<PodInventory>;
     async fn protect(&self, pod: &PodRecord, group: &str) -> Result<()>;
     async fn retire(&self, pod: &PodRecord) -> Result<()>;
 }
@@ -269,6 +276,7 @@ impl ReplicaFleet {
     }
 
     async fn reconcile(&self) -> Result<()> {
+        let inventory = &self.pods.observed().await?;
         self.registry
             .reserve_spares(&self.zones, self.idle, self.max_starting)
             .await?;
@@ -279,7 +287,7 @@ impl ReplicaFleet {
                 .enumerate()
                 .map(|(index, pod)| async move {
                     if pod.placement.is_some() {
-                        let health = self.pods.health(&pod).await?;
+                        let health = self.pods.health(&pod, inventory).await?;
                         if index >= self.idle
                             || !health.live
                             || health.draining
@@ -305,7 +313,7 @@ impl ReplicaFleet {
         )
         .buffer_unordered(self.max_starting)
         .collect::<Vec<Result<()>>>();
-        let groups = self.reconcile_groups();
+        let groups = self.reconcile_groups(inventory);
         let (spares, groups) = tokio::join!(work, groups);
         for result in spares {
             if let Err(error) = result {
@@ -313,15 +321,15 @@ impl ReplicaFleet {
             }
         }
         groups?;
-        self.reconcile_orphans().await
+        self.reconcile_orphans(inventory).await
     }
 
-    async fn reconcile_groups(&self) -> Result<()> {
+    async fn reconcile_groups(&self, inventory: &PodInventory) -> Result<()> {
         let groups = self.registry.maintenance().await?;
         let results = stream::iter(
             groups
                 .into_iter()
-                .map(|prefix| async move { self.reconcile_group(&prefix).await }),
+                .map(|prefix| async move { self.reconcile_group(&prefix, inventory).await }),
         )
         .buffer_unordered(self.max_starting)
         .collect::<Vec<_>>()
@@ -334,13 +342,13 @@ impl ReplicaFleet {
         Ok(())
     }
 
-    async fn reconcile_group(&self, prefix: &str) -> Result<()> {
+    async fn reconcile_group(&self, prefix: &str, inventory: &PodInventory) -> Result<()> {
         let mut group = self.registry.lookup(prefix).await?;
         if group.state != "archived" && group.state != "closing" {
             let mut disrupted = false;
             for pod in &group.pods {
                 if pod.uid.is_some() {
-                    let health = self.pods.health(&pod).await?;
+                    let health = self.pods.health(&pod, inventory).await?;
                     disrupted |= !health.live || health.draining;
                 }
             }
@@ -358,9 +366,11 @@ impl ReplicaFleet {
         Ok(())
     }
 
-    async fn reconcile_orphans(&self) -> Result<()> {
+    async fn reconcile_orphans(&self, inventory: &PodInventory) -> Result<()> {
         let registered = self.registry.registered_names().await?;
-        for (pod, prefix) in self.pods.observed().await? {
+        for observed in inventory.values() {
+            let pod = &observed.pod;
+            let prefix = &observed.prefix;
             if registered.contains(&pod.name) || self.registry.registered(&pod.name).await? {
                 continue;
             }
@@ -395,7 +405,12 @@ impl ReplicaDirectory for ReplicaFleet {
             DirectoryCommand::Finish { prefix } => reply.groups.push(self.finish(&prefix).await?),
             DirectoryCommand::ReadArchive { object } => {
                 let (prefix, version) = position(&object)?;
-                reply.data = self.archive.get(&prefix, version).await?;
+                use base64::{Engine, engine::general_purpose::STANDARD};
+                reply.data = self
+                    .archive
+                    .get(&prefix, version)
+                    .await?
+                    .map(|bytes| STANDARD.encode(bytes));
             }
             DirectoryCommand::ListArchive { prefix } => {
                 reply.keys = self.archive.list(&prefix).await?

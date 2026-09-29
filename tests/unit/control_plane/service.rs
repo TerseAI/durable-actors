@@ -273,11 +273,25 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
 
     replacement.image_ref = "image-2".into();
 
-    assert!(service.register_deployment(&admin, &first, None).await?);
+    assert!(
+        service
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &first,
+                None
+            )
+            .await?
+    );
     assert!(retired_rx.try_recv().is_err());
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await
             .is_err()
     );
@@ -300,7 +314,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         .store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await?
     );
     assert_eq!(
@@ -319,7 +338,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
     );
     assert!(
         service
-            .register_deployment(&admin, &replacement, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &replacement,
+                None
+            )
             .await?
     );
     assert_eq!(retired_rx.try_recv()?.0, replacement);
@@ -327,7 +351,12 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
     secret_update.secret_refs = vec!["project-secrets-updated".into()];
     assert!(
         service
-            .register_deployment(&admin, &secret_update, None)
+            .register_deployment(
+                &admin,
+                admin.lock_deployment("default").await?.as_mut(),
+                &secret_update,
+                None
+            )
             .await?
     );
     assert_eq!(

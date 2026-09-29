@@ -35,9 +35,8 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
-    deployment_update: Arc<tokio::sync::Mutex<()>>,
     pub(super) traces: crate::request_traces::TraceStore,
-    pub(super) changes: tokio::sync::watch::Sender<()>,
+    pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(crate) replicas: Option<Arc<crate::replicas::fleet::ReplicaFleet>>,
@@ -76,9 +75,8 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
-            deployment_update: Arc::new(tokio::sync::Mutex::new(())),
             traces: crate::request_traces::TraceStore::default(),
-            changes: tokio::sync::watch::channel(()).0,
+            changes: Default::default(),
             runtime_access: None,
             replicas: None,
             gateway: None,
@@ -126,6 +124,7 @@ impl ControlPlaneService {
     pub(super) async fn register_deployment(
         &self,
         admin: &AdminService,
+        update: &mut dyn super::admin::DeploymentUpdate,
         spec: &HostLaunchSpec,
         contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
@@ -135,8 +134,8 @@ impl ControlPlaneService {
         if let Some(previous) = previous {
             self.terminate_deployment_hosts(&previous).await?;
         }
-        let changed = admin.register_deployment(spec, contract).await?;
-        self.changes.send_replace(());
+        let changed = update.register(spec, contract).await?;
+        self.changes.notify().await;
         Ok(changed || replacing)
     }
 
@@ -146,8 +145,8 @@ impl ControlPlaneService {
         source: &HostLaunchSpec,
         supplied_contract: Option<&super::contracts::PublicActorContract>,
     ) -> Result<bool> {
-        let _update = self.deployment_update.lock().await;
         source.validate()?;
+        let mut update = admin.lock_deployment(&source.project_id).await?;
         let previous = admin.current_deployment(&source.project_id).await?;
         let local_build = match &self.local_builds {
             Some(builds) => Some(builds.prepare(source).await?),
@@ -183,7 +182,9 @@ impl ControlPlaneService {
             .map(|contract| contract.sandboxes())
             .transpose()?
             .unwrap_or_default();
-        let changed = self.register_deployment(admin, &prepared, contract).await?;
+        let changed = self
+            .register_deployment(admin, update.as_mut(), &prepared, contract)
+            .await?;
         if let Some(build) = local_build {
             build.commit().await;
         }
@@ -195,13 +196,13 @@ impl ControlPlaneService {
         admin: &AdminService,
         project_id: &str,
     ) -> Result<bool> {
-        let _update = self.deployment_update.lock().await;
+        let mut update = admin.lock_deployment(project_id).await?;
         let Some(previous) = admin.current_deployment(project_id).await? else {
             return Ok(false);
         };
         self.terminate_deployment_hosts(&previous).await?;
-        admin.remove_deployment(project_id).await?;
-        self.changes.send_replace(());
+        update.remove().await?;
+        self.changes.notify().await;
         Ok(true)
     }
 
@@ -482,7 +483,7 @@ impl ControlPlaneService {
                         && owner.lease.session_id == principal.session_id),
                     "host session does not match"
                 );
-                self.changes.send_replace(());
+                self.changes.notify().await;
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::SocketMessage { actor, event } => {
@@ -492,11 +493,20 @@ impl ControlPlaneService {
             }
             ControlPlaneCommand::RefreshStorageAccess => {
                 self.require_active_host(principal).await?;
+                let spec = self
+                    .registry
+                    .launch_spec(&principal.actor.project_id)
+                    .await?
+                    .context("deployment removed")?;
+                ensure!(
+                    principal.host_config_key.as_deref() == Some(spec.host_config_key().as_str()),
+                    "host deployment changed"
+                );
                 let token = self
                     .runtime_access
                     .as_ref()
                     .context("direct storage is not configured")?
-                    .issue()
+                    .issue(&principal.actor, spec.code_snapshot.as_deref())
                     .await?;
                 let replacement_token = self
                     .host_token_issuer
@@ -1002,7 +1012,11 @@ impl SandboxHostProvisioner {
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
         let token = async {
             match &self.runtime_access {
-                Some(access) => Ok(Some(access.bootstrap(region, actor).await?)),
+                Some(access) => Ok(Some(
+                    access
+                        .bootstrap(region, actor, spec.code_snapshot.as_deref())
+                        .await?,
+                )),
                 None => anyhow::Ok(None),
             }
         };

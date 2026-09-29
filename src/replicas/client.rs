@@ -53,15 +53,25 @@ pub(crate) struct ReplicaClient {
 }
 impl ReplicaClient {
     pub fn new(placement: ReplicaPlacement, token: String) -> Result<Self> {
-        Ok(Self {
+        Ok(Self::with_http(placement, token, Self::http()?))
+    }
+    pub(crate) fn http() -> Result<reqwest::Client> {
+        Ok(reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?)
+    }
+    pub(crate) fn with_http(
+        placement: ReplicaPlacement,
+        token: String,
+        http: reqwest::Client,
+    ) -> Self {
+        Self {
             placement,
             token,
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            http,
             latest: Mutex::new(BTreeMap::new()),
-        })
+        }
     }
     pub(super) async fn send(&self, command: Command) -> Result<Reply> {
         let flushing = matches!(command, Command::Flush { .. });

@@ -42,7 +42,7 @@ pub(crate) trait ActorStateReader: Send + Sync {
 }
 
 #[async_trait]
-impl ActorStateReader for RuntimeStorage {
+impl ActorStateReader for RuntimeStorageReader {
     async fn inspect_state(
         &self,
         actor: &ActorKey,
@@ -93,7 +93,7 @@ impl ActorStateReader for RuntimeStorage {
     }
 }
 
-impl RuntimeStorage {
+impl RuntimeStorageReader {
     async fn stored_versions(&self, actor: &ActorKey) -> Result<Vec<((u64, u64), String)>> {
         let prefix = crate::storage_paths::snapshots(actor)?;
         let mut versions: Vec<_> = self
@@ -153,6 +153,25 @@ impl RuntimeStorage {
         )
         .await??;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ActorStateReader for RuntimeStorage {
+    async fn inspect_state(
+        &self,
+        actor: &ActorKey,
+        version: Option<u64>,
+    ) -> Result<Option<InspectedState>> {
+        self.reader.inspect_state(actor, version).await
+    }
+    async fn state_history(
+        &self,
+        actor: &ActorKey,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<StateHistoryPage> {
+        self.reader.state_history(actor, before, limit).await
     }
 }
 

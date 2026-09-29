@@ -24,15 +24,15 @@ impl ReplicaPods for Nodes {
         });
         Ok(pod)
     }
-    async fn health(&self, _: &PodRecord) -> Result<PodHealth> {
+    async fn health(&self, _: &PodRecord, _: &PodInventory) -> Result<PodHealth> {
         Ok(PodHealth {
             live: true,
             draining: false,
             current_image: true,
         })
     }
-    async fn observed(&self) -> Result<Vec<(PodRecord, Option<String>)>> {
-        Ok(vec![])
+    async fn observed(&self) -> Result<PodInventory> {
+        Ok(PodInventory::new())
     }
     async fn protect(&self, _: &PodRecord, _: &str) -> Result<()> {
         Ok(())
@@ -144,9 +144,9 @@ async fn retirement_keeps_original_copies_until_final_archive_is_verified_and_su
         archive.fail.store(false,Ordering::SeqCst);
         let restored = ReplicaFleet { registry: Registry::new(PostgresDatabase::lazy(&db.url)?), ..fleet };
         restored.finish(&prefix).await?;
-        restored.reconcile_group(&prefix).await?;
+        restored.reconcile_group(&prefix, &PodInventory::new()).await?;
         assert_eq!(nodes.deleted.lock().unwrap().len(),3);
-        let snapshots = super::super::directory::DedicatedSnapshots::new(Arc::new(restored),"unused-after-archive".into());
+        let snapshots = super::super::directory::DedicatedSnapshots::new(Arc::new(restored),"unused-after-archive".into())?;
         assert_eq!(snapshots.latest(&prefix).await?.unwrap().1,bytes);
         Ok(())
     }).await
@@ -195,4 +195,12 @@ async fn losing_all_original_copies_never_turns_an_old_archive_into_a_final_chec
         Ok(())
     })
     .await
+}
+
+#[test]
+fn archived_state_uses_compact_binary_encoding_on_the_directory_protocol() -> Result<()> {
+    let reply: DirectoryReply =
+        serde_json::from_value(serde_json::json!({"groups":[],"keys":[],"data":"AAEC/w=="}))?;
+    assert_eq!(serde_json::to_value(reply)?["data"], "AAEC/w==");
+    Ok(())
 }

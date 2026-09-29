@@ -1,4 +1,4 @@
-use super::{PodHealth, PodRecord, ReplicaPods};
+use super::{ObservedPod, PodHealth, PodInventory, PodRecord, ReplicaPods};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{Node, Pod};
@@ -10,7 +10,6 @@ use kube::{
 use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
     time::Duration,
 };
 
@@ -29,7 +28,6 @@ pub(crate) struct KubernetesReplicas {
     http: reqwest::Client,
     secret: String,
     config: ReplicaPodConfig,
-    inventory: moka::future::Cache<(), Arc<Inventory>>,
 }
 impl KubernetesReplicas {
     pub fn new(client: Client, config: ReplicaPodConfig, secret: String) -> Result<Self> {
@@ -43,34 +41,7 @@ impl KubernetesReplicas {
                 .build()?,
             secret,
             config,
-            inventory: moka::future::Cache::builder()
-                .time_to_live(Duration::from_secs(3))
-                .build(),
         })
-    }
-
-    async fn inventory(&self) -> Result<Arc<Inventory>> {
-        self.inventory
-            .try_get_with((), async {
-                let pod_params = ListParams::default().labels("terse.ai/purpose=replica");
-                let node_params = ListParams::default();
-                let (pods, nodes) =
-                    tokio::try_join!(self.pods.list(&pod_params), self.nodes.list(&node_params))?;
-                Ok::<_, anyhow::Error>(Arc::new(Inventory {
-                    pods: pods
-                        .items
-                        .into_iter()
-                        .map(|pod| (pod.name_any(), pod))
-                        .collect(),
-                    nodes: nodes
-                        .items
-                        .into_iter()
-                        .map(|node| (node.name_any(), node))
-                        .collect(),
-                }))
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("{error:#}"))
     }
 
     async fn register(&self, expected: &PodRecord, ready: Pod) -> Result<PodRecord> {
@@ -165,63 +136,60 @@ impl ReplicaPods for KubernetesReplicas {
         self.register(expected, ready).await
     }
 
-    async fn health(&self, expected: &PodRecord) -> Result<PodHealth> {
-        let inventory = self.inventory().await?;
-        let pod = match inventory.pods.get(&expected.name) {
-            Some(pod) => Some(pod.clone()),
-            None => self.pods.get_opt(&expected.name).await?,
-        };
-        let Some(pod) = pod else {
+    async fn health(&self, expected: &PodRecord, inventory: &PodInventory) -> Result<PodHealth> {
+        if let Some(observed) = inventory.get(&expected.name) {
+            let mut health = observed.health;
+            health.live &= expected.uid.is_some() && expected.uid == observed.pod.uid;
+            return Ok(health);
+        }
+        // A group may have been registered after this reconciliation's inventory read.
+        let Some(pod) = self.pods.get_opt(&expected.name).await? else {
             return Ok(PodHealth {
                 live: false,
                 draining: false,
                 current_image: true,
             });
         };
-        let matching = expected
-            .uid
-            .as_ref()
-            .is_some_and(|uid| pod.uid().as_ref() == Some(uid));
         let node = match pod.spec.as_ref().and_then(|s| s.node_name.as_deref()) {
-            Some(name) => inventory.nodes.get(name),
+            Some(name) => self.nodes.get_opt(name).await?,
             None => None,
         };
-        let draining = pod.metadata.deletion_timestamp.is_some()
-            || node.as_ref().is_some_and(|node| {
-                node.spec
-                    .as_ref()
-                    .is_some_and(|s| s.unschedulable == Some(true))
-            });
-        let current_image = pod
-            .spec
-            .as_ref()
-            .and_then(|s| s.containers.first())
-            .and_then(|c| c.image.as_ref())
-            == Some(&self.config.image);
-        Ok(PodHealth {
-            live: matching && !terminal(&pod),
-            draining,
-            current_image,
-        })
+        let mut health = pod_health(&pod, node.as_ref(), &self.config.image);
+        health.live &= expected.uid.is_some() && expected.uid == pod.uid();
+        Ok(health)
     }
 
-    async fn observed(&self) -> Result<Vec<(PodRecord, Option<String>)>> {
-        let inventory = self.inventory().await?;
-        Ok(inventory
-            .pods
-            .values()
+    async fn observed(&self) -> Result<PodInventory> {
+        let pod_params = ListParams::default().labels("terse.ai/purpose=replica");
+        let node_params = ListParams::default();
+        let (pods, nodes) =
+            tokio::try_join!(self.pods.list(&pod_params), self.nodes.list(&node_params))?;
+        let nodes: HashMap<_, _> = nodes
+            .items
+            .into_iter()
+            .map(|node| (node.name_any(), node))
+            .collect();
+        Ok(pods
+            .items
+            .into_iter()
             .map(|pod| {
-                let prefix = pod.annotations().get("terse.ai/replica-prefix").cloned();
-                (
-                    PodRecord {
+                let node = pod
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.node_name.as_ref())
+                    .and_then(|name| nodes.get(name));
+                let observed = ObservedPod {
+                    health: pod_health(&pod, node, &self.config.image),
+                    prefix: pod.annotations().get("terse.ai/replica-prefix").cloned(),
+                    pod: PodRecord {
                         name: pod.name_any(),
                         zone: String::new(),
                         uid: pod.uid(),
                         node: pod.spec.as_ref().and_then(|s| s.node_name.clone()),
                         placement: None,
                     },
-                    prefix,
-                )
+                };
+                (pod.name_any(), observed)
             })
             .collect())
     }
@@ -332,7 +300,22 @@ fn is_ready(pod: &Pod) -> bool {
         .is_some_and(|cs| cs.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
 }
 
-struct Inventory {
-    pods: HashMap<String, Pod>,
-    nodes: HashMap<String, Node>,
+fn pod_health(pod: &Pod, node: Option<&Node>, image: &str) -> PodHealth {
+    PodHealth {
+        live: !terminal(pod),
+        draining: pod.metadata.deletion_timestamp.is_some()
+            || node
+                .and_then(|n| n.spec.as_ref())
+                .is_some_and(|s| s.unschedulable == Some(true)),
+        current_image: pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.containers.first())
+            .and_then(|c| c.image.as_deref())
+            == Some(image),
+    }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/replicas/kubernetes.rs"]
+mod tests;

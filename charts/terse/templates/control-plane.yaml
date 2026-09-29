@@ -122,6 +122,8 @@ spec:
             - {name: DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET, value: {{ .Values.storage.replicas.credentialsSecret | quote }}}
             - {name: DURABLE_ACTORS_REPLICA_RESOURCES, value: {{ .Values.storage.replicas.resources | toJson | quote }}}
             - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
+            - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
+              value: {{ .Values.serviceAccount.googleServiceAccount | quote }}
             - name: DURABLE_ACTORS_REPLICA_SECRET
               valueFrom:
                 secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: replica-key}

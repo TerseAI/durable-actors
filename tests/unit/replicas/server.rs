@@ -175,7 +175,8 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
             })
             .await?;
     }
-    let store = ReplicaSet::from_replicas(&placements, access().admin().into())?;
+    let store =
+        ReplicaSet::from_replicas(&placements, access().admin().into(), ReplicaClient::http()?)?;
     store.prepare(prefix()).await?;
     store
         .put(&format!("{}1.json", prefix()), data(1).into())
@@ -191,7 +192,8 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
             .await
             .is_err()
     );
-    let recovered = ReplicaSet::from_replicas(&placements, access().admin().into())?;
+    let recovered =
+        ReplicaSet::from_replicas(&placements, access().admin().into(), ReplicaClient::http()?)?;
     recovered.seal(prefix()).await?;
     assert!(recovered.latest(prefix()).await?.is_some());
     for server in &servers[1..] {

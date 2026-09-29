@@ -32,9 +32,13 @@ mod session;
 #[path = "../../tests/unit/bucket/activation.rs"]
 mod activation_tests;
 pub struct RuntimeStorage {
-    clock: Arc<dyn crate::clock::Clock>,
+    reader: RuntimeStorageReader,
     owned: Mutex<HashMap<String, Ownership>>,
     uploaded: Mutex<HashMap<String, UploadedSnapshots>>,
+}
+
+pub struct RuntimeStorageReader {
+    clock: Arc<dyn crate::clock::Clock>,
     authority: Arc<dyn Bucket>,
     snapshots: Arc<dyn super::SnapshotStore>,
     pub(crate) persistence: super::PersistenceConfig,
@@ -111,9 +115,33 @@ impl Ownership {
 impl RuntimeStorage {
     pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
         Ok(Self {
-            clock,
+            reader: RuntimeStorageReader::new(authority, clock)?,
             owned: Mutex::new(HashMap::new()),
             uploaded: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub(crate) fn with_persistence(
+        mut self,
+        config: super::PersistenceConfig,
+        snapshots: Arc<dyn super::SnapshotStore>,
+    ) -> Result<Self> {
+        self.reader = self.reader.with_persistence(config, snapshots)?;
+        Ok(self)
+    }
+}
+
+impl std::ops::Deref for RuntimeStorage {
+    type Target = RuntimeStorageReader;
+    fn deref(&self) -> &Self::Target {
+        &self.reader
+    }
+}
+
+impl RuntimeStorageReader {
+    pub fn new(authority: Arc<dyn Bucket>, clock: Arc<dyn crate::clock::Clock>) -> Result<Self> {
+        Ok(Self {
+            clock,
             snapshots: Arc::new(super::BucketSnapshots(authority.clone())),
             persistence: super::PersistenceConfig::Local,
             authority,
@@ -133,7 +161,7 @@ impl RuntimeStorage {
 }
 
 #[async_trait]
-impl ObjectPlacementStore for RuntimeStorage {
+impl ObjectPlacementStore for RuntimeStorageReader {
     async fn get_owner_with_hint(
         &self,
         object: &ActorStorageKey,
@@ -155,7 +183,7 @@ impl ObjectPlacementStore for RuntimeStorage {
 }
 
 #[async_trait]
-impl SnapshotReader for RuntimeStorage {
+impl SnapshotReader for RuntimeStorageReader {
     async fn read_snapshot(&self, _region: &str, object: &str) -> Result<Bytes> {
         self.read_persisted(object)
             .await?
@@ -253,7 +281,9 @@ impl RuntimeStorage {
             stream,
         })
     }
+}
 
+impl RuntimeStorageReader {
     async fn latest(
         &self,
         record: &Ownership,
@@ -321,6 +351,31 @@ impl RuntimeStorage {
                 Ok((value.generation, record))
             })
             .transpose()
+    }
+}
+
+#[async_trait]
+impl ObjectPlacementStore for RuntimeStorage {
+    async fn get_owner_with_hint(
+        &self,
+        object: &ActorStorageKey,
+    ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+        self.reader.get_owner_with_hint(object).await
+    }
+    async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
+        self.reader.get(object).await
+    }
+}
+#[async_trait]
+impl SnapshotReader for RuntimeStorage {
+    async fn read_snapshot(&self, region: &str, object: &str) -> Result<Bytes> {
+        self.reader.read_snapshot(region, object).await
+    }
+}
+#[async_trait]
+impl ActorInventoryReader for RuntimeStorage {
+    async fn actor_inventory(&self, project: &str) -> Result<Vec<ActorInventory>> {
+        self.reader.actor_inventory(project).await
     }
 }
 
@@ -402,7 +457,7 @@ impl crate::state_transport::SnapshotWriter for RuntimeStorage {
 }
 
 #[async_trait]
-impl ActorInventoryReader for RuntimeStorage {
+impl ActorInventoryReader for RuntimeStorageReader {
     async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>> {
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);

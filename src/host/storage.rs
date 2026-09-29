@@ -71,7 +71,7 @@ impl HostStorage {
             let snapshots = crate::replicas::directory::DedicatedSnapshots::new(
                 client.clone(),
                 config.replica_token.context("replica capability missing")?,
-            );
+            )?;
             runtime = runtime.with_persistence(config.persistence, Arc::new(snapshots))?;
         }
         Ok(Self {

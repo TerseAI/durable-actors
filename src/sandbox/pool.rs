@@ -29,7 +29,6 @@ pub(crate) struct SparePool {
     store: PoolStore,
     provider: Arc<dyn SandboxProvider>,
     pub config: PoolConfig,
-    wake: tokio::sync::Notify,
 }
 
 impl SparePool {
@@ -42,7 +41,6 @@ impl SparePool {
             store: PoolStore(database, config.kind),
             provider,
             config,
-            wake: tokio::sync::Notify::new(),
         })
     }
 
@@ -64,7 +62,6 @@ impl SparePool {
                 &spec.host_config_key(),
             )
             .await?;
-        self.wake.notify_one();
         Ok(result)
     }
 
@@ -126,7 +123,6 @@ impl SparePool {
                 &[&host],
             )
             .await?;
-        self.wake.notify_one();
         Ok(())
     }
 
@@ -163,7 +159,6 @@ impl SparePool {
                     match result {
                         Ok(Background::Build(result)) => {
                             report(result);
-                            self.wake.notify_one();
                         }
                         Ok(Background::Reap(result)) => {
                             reaping = false;
@@ -183,7 +178,6 @@ impl SparePool {
                     jobs.spawn(async move { Background::Reap(pool.forget_stopped().await) });
                     continue;
                 }
-                () = self.wake.notified() => {},
                 _ = interval.tick() => {},
             }
             let plans = tokio::select! {

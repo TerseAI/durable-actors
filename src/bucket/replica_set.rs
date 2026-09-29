@@ -25,17 +25,22 @@ impl ReplicaSet {
         })
     }
 
-    pub fn from_replicas(replicas: &[super::ReplicaPlacement], token: String) -> Result<Self> {
+    pub fn from_replicas(
+        replicas: &[super::ReplicaPlacement],
+        token: String,
+        http: reqwest::Client,
+    ) -> Result<Self> {
         Self::new(
             replicas
                 .iter()
                 .map(|replica| {
-                    Ok(Arc::new(crate::replicas::client::ReplicaClient::new(
+                    Arc::new(crate::replicas::client::ReplicaClient::with_http(
                         replica.clone(),
                         token.clone(),
-                    )?) as Arc<dyn SnapshotStore>)
+                        http.clone(),
+                    )) as Arc<dyn SnapshotStore>
                 })
-                .collect::<Result<_>>()?,
+                .collect(),
         )
     }
 

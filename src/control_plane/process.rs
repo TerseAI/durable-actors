@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
 
 use crate::{
-    bucket::{GcsBucket, RuntimeStorage},
+    bucket::{GcsBucket, RuntimeStorageReader},
     postgres::PostgresDatabase,
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
@@ -37,6 +37,7 @@ pub struct ControlPlaneProcessConfig {
 
 pub struct ControlPlaneStorageConfig {
     pub postgres_url: String,
+    pub token_issuer: String,
     pub trace_retention: Duration,
     pub bucket: String,
     pub persistence: crate::bucket::PersistenceConfig,
@@ -126,7 +127,14 @@ async fn control_plane_routes(
         database.clone(),
         config.storage.trace_retention,
     ));
-    let traces = TraceStore::open(trace_persistence.clone()).await?;
+    let changes = crate::postgres::notifications::ChangeFeed::postgres(
+        database.clone(),
+        &config.storage.postgres_url,
+        stop.clone(),
+    )
+    .await?;
+    let mut traces = TraceStore::open(trace_persistence.clone()).await?;
+    traces.changes = changes.clone();
     trace_persistence.start_retention(stop.clone());
     let authority = Arc::new(GcsBucket::new(&config.storage.bucket).await?);
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
@@ -158,12 +166,14 @@ async fn control_plane_routes(
         Arc::new(crate::clock::SystemClock),
     )?);
     fleet.start(stop.clone());
-    let snapshots = Arc::new(crate::replicas::directory::DedicatedSnapshots::new(
-        fleet.clone(),
-        config.storage.replica_secret.clone(),
-    ));
+    let snapshots = Arc::new(
+        crate::replicas::directory::DedicatedSnapshots::for_control_plane(
+            fleet.clone(),
+            config.storage.replica_secret.clone(),
+        )?,
+    );
     let storage = Arc::new(
-        RuntimeStorage::new(authority, Arc::new(crate::clock::SystemClock))?
+        RuntimeStorageReader::new(authority, Arc::new(crate::clock::SystemClock))?
             .with_persistence(config.storage.persistence, snapshots)?,
     );
     let runtime_access = Arc::new(
@@ -172,8 +182,13 @@ async fn control_plane_routes(
                 artifact_bucket: config.storage.artifact_bucket.clone(),
                 bucket: config.storage.bucket.clone(),
             },
-            storage.clone(),
+            storage.persistence.clone(),
         )?
+        .with_token_cache(
+            database.clone(),
+            config.storage.token_issuer.clone(),
+            stop.clone(),
+        )
         .with_replica_secret(config.storage.replica_secret.clone())?,
     );
     let placements = storage.clone();
@@ -206,6 +221,7 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    service.changes = changes;
     service.replicas = Some(fleet);
     service.gateway = Some(gateway);
     service.region = config.region;
@@ -309,6 +325,7 @@ impl ControlPlaneProcessConfig {
             archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
             persistence,
             artifact_bucket,
+            token_issuer: required(&mut get, "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT")?,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
             trace_retention: trace_retention(&mut get)?,
             bucket,

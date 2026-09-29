@@ -258,3 +258,21 @@ async fn check_concurrent_connections(url: &str) -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn notifications_reach_an_independent_control_plane_connection() -> Result<()> {
+    testing::with_postgres(async |fixture| {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _guard = stop.clone().drop_guard();
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let first =
+            notifications::ChangeFeed::postgres(database.clone(), &fixture.url, stop.clone())
+                .await?;
+        let second = notifications::ChangeFeed::postgres(database, &fixture.url, stop).await?;
+        let mut changes = second.subscribe();
+        first.notify().await;
+        tokio::time::timeout(Duration::from_secs(2), changes.changed()).await??;
+        Ok(())
+    })
+    .await
+}
