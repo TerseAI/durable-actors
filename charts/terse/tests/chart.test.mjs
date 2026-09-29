@@ -58,3 +58,17 @@ test("regional installations deploy their selected replicas and permit configure
 test("rejects out of range replica deployment indices", () => {
     assert.notEqual(render({ storage: { replicas: { deployIndices: [3] } } }).status, 0)
 })
+
+test("sandboxes can resolve DNS through kube-dns and GKE NodeLocal DNS pods", () => {
+    const result = render()
+    assert.equal(result.status, 0, result.stderr)
+    const policy = result.stdout.split("---").find(document =>
+        document.includes("kind: NetworkPolicy") && document.includes("namespace: terse-sandboxes"))
+    assert.ok(policy)
+    const dnsRule = policy.slice(policy.indexOf("kubernetes.io/metadata.name: kube-system"))
+    const destinations = dnsRule.slice(0, dnsRule.indexOf("ports:"))
+    assert.match(destinations, /kube-dns/)
+    assert.match(destinations, /node-local-dns/)
+    assert.match(dnsRule, /protocol: UDP, port: 53/)
+    assert.match(dnsRule, /protocol: TCP, port: 53/)
+})
