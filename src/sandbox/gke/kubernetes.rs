@@ -169,6 +169,37 @@ impl SandboxCluster for Kubernetes {
         delete_pod(&self.pods, name, uid).await
     }
 
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+        let pods: HashMap<_, _> = self
+            .pods
+            .list(&ListParams::default())
+            .await?
+            .items
+            .into_iter()
+            .map(|pod| (pod.name_any(), pod))
+            .collect();
+        let mut stopped = Vec::new();
+        for spare in spares {
+            let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
+            ensure!(
+                namespace == self.config.namespace && name == spare.name,
+                "sandbox resource identity mismatch"
+            );
+            let live = pods.get(name).is_some_and(|pod| {
+                pod.uid().as_deref() == Some(uid)
+                    && !pod
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.phase.as_deref())
+                        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+            });
+            if !live {
+                stopped.push(spare.resource_id.clone());
+            }
+        }
+        Ok(stopped)
+    }
+
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>> {
         let loaded =
             futures_util::future::try_join_all(names.iter().map(|name| self.secrets.get(name)))

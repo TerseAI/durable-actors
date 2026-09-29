@@ -381,6 +381,9 @@ impl Default for BuildProvider {
 
 #[async_trait]
 impl SandboxProvider for BuildProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        anyhow::bail!("unexpected spare inspection")
+    }
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
         let mut builds = self.builds.lock().unwrap();
         builds.push(serde_json::to_value(request)?);

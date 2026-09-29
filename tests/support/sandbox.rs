@@ -3,6 +3,9 @@ use super::*;
 pub(crate) struct UnusedSandboxProvider;
 #[async_trait]
 impl SandboxProvider for UnusedSandboxProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        anyhow::bail!("unexpected spare inspection")
+    }
     async fn build_code(&self, _: &BuildCodeRequest) -> Result<BuiltActorCode> {
         anyhow::bail!("unexpected code build")
     }

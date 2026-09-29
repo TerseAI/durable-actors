@@ -65,6 +65,9 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        anyhow::bail!("local hosts use their own process registry")
+    }
     async fn build_code(&self, _: &super::BuildCodeRequest) -> Result<super::BuiltActorCode> {
         anyhow::bail!("local code is prepared by the control plane")
     }

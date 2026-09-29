@@ -10,6 +10,7 @@ use crate::{
     postgres::PostgresDatabase,
 };
 
+mod cleanup;
 mod replenishment;
 
 #[derive(Clone)]
@@ -149,6 +150,9 @@ impl SparePool {
     async fn run(self: Arc<Self>, registry: Arc<dyn AdminRegistry>, stop: CancellationToken) {
         let mut jobs = tokio::task::JoinSet::new();
         let mut cleaning = false;
+        let mut reaping = false;
+        let mut reap_interval = tokio::time::interval(Duration::from_secs(30));
+        reap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -161,12 +165,22 @@ impl SparePool {
                             report(result);
                             self.wake.notify_one();
                         }
+                        Ok(Background::Reap(result)) => {
+                            reaping = false;
+                            report(result);
+                        }
                         Ok(Background::Cleanup(result)) => {
                             cleaning = false;
                             report(result);
                         }
                         Err(error) => warn!(%error, "spare maintenance task stopped"),
                     }
+                    continue;
+                }
+                _ = reap_interval.tick(), if !reaping => {
+                    reaping = true;
+                    let pool = self.clone();
+                    jobs.spawn(async move { Background::Reap(pool.forget_stopped().await) });
                     continue;
                 }
                 () = self.wake.notified() => {},
@@ -334,6 +348,7 @@ struct Build {
 }
 
 enum Background {
+    Reap(Result<()>),
     Build(Result<()>),
     Cleanup(Result<()>),
 }

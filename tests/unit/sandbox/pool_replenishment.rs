@@ -227,6 +227,9 @@ struct RegionalProvider {
 
 #[async_trait::async_trait]
 impl SandboxProvider for RegionalProvider {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         assert_eq!(request.control_plane_url.as_deref(), self.control_plane_url);
         if request.canonical_region == "slow" {

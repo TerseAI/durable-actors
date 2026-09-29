@@ -188,6 +188,8 @@ pub trait SandboxProvider: Send + Sync {
     async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
         anyhow::bail!("provider does not support generic spares")
     }
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
+
     async fn socket_credentials(
         &self,
         request: &SocketCredentialsRequest,

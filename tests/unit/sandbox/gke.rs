@@ -6,6 +6,9 @@ struct Cluster {
 }
 #[async_trait]
 impl SandboxCluster for Cluster {
+    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     async fn create_spare(&self, _: &CreateSpareRequest) -> Result<SpareHandle> {
         self.creates.fetch_add(1, Ordering::SeqCst);
         anyhow::bail!("unexpected pod creation")
