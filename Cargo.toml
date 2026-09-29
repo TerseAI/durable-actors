@@ -13,6 +13,8 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+chrono = "0.4"
+saffron = "0.1"
 zstd = "0.13"
 walkdir = "2"
 kube = { version = "2.0.1", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "runtime", "ws"] }

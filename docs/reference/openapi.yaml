@@ -857,6 +857,17 @@ components:
                             actorName: { type: string }
                             description: { type: string, description: Actor documentation for generated clients. }
                             sandbox: { $ref: "#/components/schemas/SandboxOptions" }
+                            crons:
+                                type: array
+                                description: Per-instance UTC schedules compiled from method decorators. Handlers receive the original expression and scheduledTime in Unix milliseconds on every retry.
+                                items:
+                                    type: object
+                                    additionalProperties: false
+                                    required: [method, expression]
+                                    properties:
+                                        method: { type: string, minLength: 1 }
+                                        expression: { type: string, minLength: 1, maxLength: 1024, description: Cloudflare-compatible five-field UTC cron expression. }
+                                        retries: { type: integer, minimum: 0, maximum: 2147483647, default: 0, description: Additional attempts after confirmed handler failures. Delivery recovery does not consume this budget. }
                             socket:
                                 type: object
                                 additionalProperties: false

@@ -207,6 +207,7 @@ async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_con
             route: route.clone(),
             expires_at_ms: u64::MAX,
         })),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let actor = ActorKey {
         project_id: "default".into(),
@@ -258,6 +259,7 @@ async fn deploying_replaces_running_hosts_even_when_configuration_is_unchanged()
         registry,
         issuer,
         provisioner.clone(),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let first = HostLaunchSpec {
         sandboxes: Default::default(),
@@ -403,6 +405,7 @@ async fn accepted_socket_messages_are_delivered_to_the_configured_event_sink() -
         Arc::new(LocalAdminRegistry::default()),
         issuer,
         Arc::new(UnavailableProvisioner),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     )
     .with_socket_event_sink(Some(Arc::new(FakeSocketEventSink {
         delivered: delivered_tx,
@@ -544,8 +547,16 @@ async fn sandbox_regions_constrain_new_and_existing_actors() -> Result<()> {
             failed_regions: failures,
             calls: Mutex::new(vec![]),
         });
-        let mut service =
-            ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+        let mut service = ControlPlaneService::new(
+            placements,
+            auth,
+            registry,
+            issuer,
+            provisioner.clone(),
+            std::sync::Arc::new(
+                crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap(),
+            ),
+        );
         service.region = Some("north-america-east".into());
         let result = service
             .route_actor(&actor, "north-america-east", assigned, None)
@@ -719,7 +730,14 @@ async fn a_losing_activation_routes_to_the_ready_winner() -> Result<()> {
         actor: actor.clone(),
         waited: false.into(),
     });
-    let service = ControlPlaneService::new(placements, auth, registry, issuer, provisioner.clone());
+    let service = ControlPlaneService::new(
+        placements,
+        auth,
+        registry,
+        issuer,
+        provisioner.clone(),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
+    );
     let target = service
         .route_actor(&actor, "north-america-east", None, None)
         .await?;
@@ -871,6 +889,9 @@ async fn provisioning_never_changes_the_assigned_region() -> Result<()> {
             registry.clone(),
             issuer,
             provisioner.clone(),
+            std::sync::Arc::new(
+                crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap(),
+            ),
         );
         let spec = registry.launch_spec("default").await?.unwrap();
         let result = service
@@ -957,6 +978,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
             failed_regions: vec![],
             calls: Mutex::new(vec![]),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let routes = super::super::public_api::router(service, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1052,6 +1074,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
             failed_regions: vec![],
             calls: Mutex::new(vec![]),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let routes = super::super::public_api::router(service, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1205,6 +1228,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
             failed_regions: vec![],
             calls: Mutex::new(vec![]),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let routes = super::super::public_api::router(service, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1325,6 +1349,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
             retired,
             fail: std::sync::atomic::AtomicBool::new(false),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let routes = super::super::public_api::router(service, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1411,6 +1436,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
             retired,
             fail: std::sync::atomic::AtomicBool::new(false),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let routes = super::super::public_api::router(service, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1548,6 +1574,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
             retired,
             fail: std::sync::atomic::AtomicBool::new(false),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
@@ -1672,6 +1699,9 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     registry,
                     issuer.clone(),
                     provisioner.clone(),
+                    std::sync::Arc::new(
+                        crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap(),
+                    ),
                 );
                 service.region = Some("north-america-west".into());
                 let routes = super::super::public_api::router(service, admin);

@@ -340,6 +340,7 @@ fn fixture_with_idle_timeout(
         registry,
         issuer,
         provisioner,
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     Ok((service, admin, provider))
 }

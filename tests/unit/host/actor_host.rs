@@ -350,9 +350,12 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
         Arc::new(EmptySocketPublisher),
     );
     assert_eq!(invoke(&host, "first").await?, completed(1));
-    for request in ["fail-application", "fail-fatal"] {
+    for (request, code) in [
+        ("fail-application", "actor_method_failed"),
+        ("fail-fatal", "actor_error"),
+    ] {
         assert!(
-            matches!(invoke(&host, request).await?, ActorExecutionResult::Failed { failure } if failure.code == "actor_error")
+            matches!(invoke(&host, request).await?, ActorExecutionResult::Failed { failure } if failure.code == code)
         );
         assert_eq!(
             executor.evictions.load(Ordering::Relaxed),

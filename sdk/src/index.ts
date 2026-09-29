@@ -1,5 +1,7 @@
 /** @module durable-actors */
 export { Actor } from "./actor/actor.js"
+export { Cron } from "./actor/cron.js"
+export type { CronEvent, CronOptions } from "./actor/cron.js"
 export { Sandbox } from "./actor/sandbox.js"
 export type { SandboxOptions, SandboxRegion } from "./actor/sandbox.js"
 export { Emittable, Ephemeral, Persisted, Reentrant } from "./actor/decorators.js"

@@ -1,5 +1,6 @@
 import type { SocketContract } from "../wire/contract.js"
 
+import type { CronSchedule } from "./cron.js"
 import type { SandboxOptions } from "./sandbox.js"
 
 const ACTOR_ARTIFACT_VERSION = 1
@@ -20,6 +21,7 @@ interface ActorFieldSchema {
 interface ActorSchema {
     readonly actorName: string
     readonly fields: readonly ActorFieldSchema[]
+    readonly crons?: readonly CronSchedule[]
     readonly sandbox?: SandboxOptions
     readonly reentrantMethods?: readonly string[]
     readonly contract?: SocketContract

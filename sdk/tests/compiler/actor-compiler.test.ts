@@ -8,6 +8,53 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("compiles multiple cron methods, stacked schedules, and event types", async () => {
+    const root = await createProject()
+    try {
+        const entrypoint = path.join(root, "src/actors.ts")
+        await writeFile(
+            entrypoint,
+            `import { Actor, Cron as Scheduled, type CronEvent } from "durable-actors"
+            export class Jobs extends Actor {
+                @Scheduled("*/5 * * * *", { retries: 3 }) @Scheduled("0 0 * * *")
+                async refresh(event: CronEvent): Promise<void> {}
+                @Scheduled("59 23 LW * *")
+                async cleanup(event: CronEvent): Promise<void> {}
+            }`
+        )
+        const contract = new ActorCompiler().compileContract(entrypoint)
+        assert.deepEqual(contract.actors[0].crons, [
+            { method: "cleanup", expression: "59 23 LW * *" },
+            { method: "refresh", expression: "*/5 * * * *", retries: 3 },
+            { method: "refresh", expression: "0 0 * * *" }
+        ])
+        assert.match(JSON.stringify(contract.actors[0].rpc.schema), /scheduledTime/u)
+        assert.match(contract.typescript.declarations, /scheduledTime/u)
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
+test("rejects invalid cron methods and nonliteral schedules", () => {
+    for (const member of [
+        '@Cron("* * * * *") async run() {}',
+        '@Cron("* * * * *") static async run(event: unknown) {}',
+        '@Cron("* * * * *") private async run(event: unknown) {}',
+        '@Cron("* * * * *") run(event: unknown) {}',
+        '@Cron("* * * *") async run(event: unknown) {}',
+        '@Cron(String("* * * * *")) async run(event: unknown) {}',
+        '@Cron("* * * * *") @Cron("* * * * *") async run(event: unknown) {}',
+        '@Cron("* * * * *") async onConnect(event: unknown) {}',
+        ...["-1", "1.5", "true", '"3"', "2147483648", "Math.random()"].map(
+            retries => `@Cron("* * * * *", { retries: ${retries} }) async run(event: unknown) {}`
+        ),
+        '@Cron("* * * * *", { ...options }) async run(event: unknown) {}'
+    ]) {
+        const result = analyze(`import { Actor, Cron } from "./sdk.js"; export class Jobs extends Actor { ${member} }`)
+        assert.ok(result.diagnostics.length, member)
+    }
+})
+
 test("rejects invalid or dynamic sandbox overrides", () => {
     for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
         const result = analyze(`import { Actor, Sandbox } from "./sdk.js"
@@ -463,6 +510,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Reentrant(...args: unknown[]) {}
+            export function Cron(...args: unknown[]) {}
             export function Sandbox(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra

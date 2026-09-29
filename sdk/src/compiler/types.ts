@@ -10,6 +10,7 @@ interface CompilerOptions {
 
 interface SdkSymbols {
     readonly Actor: ts.Symbol
+    readonly Cron?: ts.Symbol
     readonly Persisted: ts.Symbol
     readonly Ephemeral: ts.Symbol
     readonly Emittable: ts.Symbol
@@ -18,6 +19,7 @@ interface SdkSymbols {
 }
 
 enum AnnotationKind {
+    Cron = "cron",
     Persistence = "persistence",
     Emission = "emission",
     Reentrancy = "reentrancy",
@@ -32,6 +34,12 @@ interface PersistenceAnnotation {
 
 type Annotation =
     | PersistenceAnnotation
+    | {
+          readonly kind: AnnotationKind.Cron
+          readonly node: ts.Decorator
+          readonly expression: string
+          readonly retries: number
+      }
     | { readonly kind: AnnotationKind.Sandbox; readonly node: ts.Decorator; readonly options: SandboxOptions }
     | { readonly kind: AnnotationKind.Emission | AnnotationKind.Reentrancy; readonly node: ts.Decorator }
 

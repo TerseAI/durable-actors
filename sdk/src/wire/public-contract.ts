@@ -1,5 +1,6 @@
 import type { JSONSchema7 } from "json-schema"
 
+import type { CronSchedule } from "../actor/cron.js"
 import type { SandboxOptions } from "../actor/sandbox.js"
 
 import type { SocketContract } from "./contract.js"
@@ -17,6 +18,7 @@ interface TypeScriptContract {
 
 interface ActorApi {
     readonly actorName: string
+    readonly crons?: readonly CronSchedule[]
     readonly description?: string
     readonly sandbox?: SandboxOptions
     readonly socket: SocketContract

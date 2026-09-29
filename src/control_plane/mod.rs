@@ -3,6 +3,7 @@ mod auth;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;
+mod cron;
 pub(crate) use client::LeaseFence;
 mod event_sink;
 mod gateway;

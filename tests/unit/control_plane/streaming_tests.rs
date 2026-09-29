@@ -582,6 +582,9 @@ impl Stack {
             registry.clone(),
             issuer.clone(),
             Arc::new(SocketTestProvisioner),
+            std::sync::Arc::new(
+                crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap(),
+            ),
         );
         let control_plane = serve_control_plane(&mut tasks, service.clone()).await?;
         let gateway = serve_gateway(

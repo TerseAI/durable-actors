@@ -192,6 +192,7 @@ async fn control_plane_routes(
         .with_replica_secret(config.storage.replica_secret.clone())?,
     );
     let placements = storage.clone();
+    let crons = Arc::new(super::cron::PostgresCronStore::new(database.clone()));
     let gateway =
         super::gateway::Gateway::new(&issuer, config.sandbox_provider.gke.public_origin.clone())?;
     let provisioner = sandbox_provisioner(
@@ -200,7 +201,7 @@ async fn control_plane_routes(
         runtime_access.clone(),
         database,
         registry.clone(),
-        stop,
+        stop.clone(),
         clients.storage,
     )
     .await?;
@@ -217,6 +218,7 @@ async fn control_plane_routes(
         registry.clone(),
         issuer.clone(),
         provisioner,
+        crons.clone(),
     )
     .with_runtime_access(runtime_access)
     .with_traces(traces)
@@ -225,6 +227,13 @@ async fn control_plane_routes(
     service.replicas = Some(fleet);
     service.gateway = Some(gateway);
     service.region = config.region;
+    super::cron::CronScheduler::new(
+        crons,
+        registry.clone(),
+        Arc::new(super::cron::HttpCronDispatcher::new(service.clone())?),
+        Arc::new(crate::clock::SystemClock),
+    )
+    .start(stop);
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector = super::inspection::ActorInspector::new(
         storage.clone(),
