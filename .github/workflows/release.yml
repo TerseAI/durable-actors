@@ -157,36 +157,13 @@ jobs:
                   if-no-files-found: error
                   retention-days: 7
 
-    go-ci:
-        name: Test Modal Go provider
-        needs: preflight
-        runs-on: blacksmith-4vcpu-ubuntu-2404
-        defaults:
-            run:
-                working-directory: providers/modal-go
-        steps:
-            - name: Checkout the tagged commit
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  ref: ${{ github.sha }}
-            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-              with:
-                  go-version: "1.27.1"
-                  cache-dependency-path: providers/modal-go/go.sum
-            - run: test -z "$(gofmt -l .)"
-            - run: go test -race -mod=readonly -overlay tests/overlay.json ./...
-            - run: go vet -mod=readonly -overlay tests/overlay.json ./...
-            - name: Verify provider image packaging
-              working-directory: .
-              run: node --test tests/scripts/release-workflow.test.mjs
-
     native:
         needs: preflight
         uses: ./.github/workflows/native-build.yml
 
     native-publish:
         name: Verify and publish native runtime (${{ matrix.runner }})
-        needs: [preflight, rust, npm-ci, go-ci, native]
+        needs: [preflight, rust, npm-ci, native]
         strategy:
             fail-fast: false
             matrix:
@@ -287,7 +264,7 @@ jobs:
 
     image-push:
         name: Push runtime image (${{ matrix.arch }})
-        needs: [preflight, rust, npm-ci, go-ci, image-build]
+        needs: [preflight, rust, npm-ci, image-build]
         strategy:
             fail-fast: false
             matrix:

@@ -4,10 +4,13 @@ use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
 
 use crate::{
-    bucket::{GcsBucket, GrpcReplicaPeers, RuntimeStorage},
+    bucket::{GcsBucket, RuntimeStorage},
     postgres::PostgresDatabase,
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
-    sandbox::{HostSandboxRuntimeConfig, gke::{GkeConfig, GkeSandboxProvider}},
+    sandbox::{
+        HostSandboxRuntimeConfig,
+        gke::{GkeConfig, GkeSandboxProvider},
+    },
 };
 
 use super::{ActorJwtVerifier, ControlPlaneService};
@@ -125,23 +128,24 @@ async fn control_plane_routes(
     ));
     let clients = authority.clients();
     crate::bucket::RapidSet::verify_placements(&config.storage.persistence, &clients).await?;
-    let snapshots = Arc::new(crate::bucket::RapidSet::from_config(&config.storage.persistence, clients.clone())?);
-    let fleet = Arc::new(crate::replication::ReplicaSet::default());
-    let access = crate::replication::ReplicaAccess::new(&config.jwt_signing_key, Arc::new(crate::clock::SystemClock));
-    let storage = Arc::new(RuntimeStorage::new(
-        authority, fleet.clone(), Arc::new(GrpcReplicaPeers::new(access.clone())?), access.clone(),
-        config.sandbox_provider.runtime.control_plane_url.clone(), Arc::new(crate::clock::SystemClock),
-    )?.with_persistence(config.storage.persistence, snapshots)?);
+    let snapshots = Arc::new(crate::bucket::RapidSet::from_config(
+        &config.storage.persistence,
+        clients.clone(),
+    )?);
+    let storage = Arc::new(
+        RuntimeStorage::new(authority, Arc::new(crate::clock::SystemClock))?
+            .with_persistence(config.storage.persistence, snapshots)?,
+    );
     let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
         crate::bucket::access::BucketLocation::Gcs {
             artifact_bucket: config.storage.artifact_bucket.clone(),
             bucket: config.storage.bucket.clone(),
         },
-        fleet.clone(),
-        access,
         storage.clone(),
     )?);
     let placements = storage.clone();
+    let gateway =
+        super::gateway::Gateway::new(&issuer, config.sandbox_provider.gke.public_origin.clone())?;
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
@@ -150,7 +154,8 @@ async fn control_plane_routes(
         registry.clone(),
         stop,
         clients.storage,
-    ).await?;
+    )
+    .await?;
     let socket_events = config
         .socket_event_sink
         .map(|sink| {
@@ -168,6 +173,7 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    service.gateway = Some(gateway);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector = super::inspection::ActorInspector::new(
@@ -177,8 +183,7 @@ async fn control_plane_routes(
     )
     .with_traces(service.traces.clone());
     let public_api = super::public_api::router(service.clone(), admin.clone())
-        .merge(super::inspection::router(inspector, admin))
-        .merge(storage.router());
+        .merge(super::inspection::router(inspector, admin));
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }
@@ -249,7 +254,9 @@ impl ControlPlaneProcessConfig {
         crate::storage::validate_bucket(&artifact_bucket)?;
         let persistence = crate::bucket::PersistenceConfig::Rapid {
             buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
-            durability: serde_json::from_value(serde_json::Value::String(get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into())))?,
+            durability: serde_json::from_value(serde_json::Value::String(
+                get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into()),
+            ))?,
         };
         persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");
@@ -265,6 +272,21 @@ impl ControlPlaneProcessConfig {
         };
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
+        let region = region.or_else(|| sandbox_provider.gke.zones.keys().next().cloned());
+        ensure!(
+            region
+                .as_ref()
+                .is_some_and(|region| sandbox_provider.gke.zones.contains_key(region)),
+            "default region has no configured GKE zone"
+        );
+        if let crate::bucket::PersistenceConfig::Rapid { buckets, .. } = &storage.persistence {
+            for zone in sandbox_provider.gke.zones.values() {
+                ensure!(
+                    buckets.iter().any(|bucket| &bucket.zone == zone),
+                    "each compute zone requires a local Rapid bucket"
+                );
+            }
+        }
         let socket_event_sink = socket_event_sink_config(&mut get)?;
         Ok(Self {
             bind,
@@ -313,14 +335,32 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let zones: BTreeMap<String, String> = serde_json::from_str(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
-    ensure!(!zones.is_empty(), "at least one GKE placement zone is required");
+    let zones: BTreeMap<String, String> =
+        serde_json::from_str(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
+    ensure!(
+        !zones.is_empty(),
+        "at least one GKE placement zone is required"
+    );
     for (region, zone) in &zones {
-        ensure!(super::regions::storage_region(zone)? == region, "GKE zone does not match canonical region {region}");
+        ensure!(
+            super::regions::storage_region(zone)? == region,
+            "GKE zone does not match canonical region {region}"
+        );
     }
-    let public_origin = validated_http_url(&required(get, "DURABLE_ACTORS_PUBLIC_URL")?, "DURABLE_ACTORS_PUBLIC_URL")?;
+    let public_origin = validated_http_url(
+        &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
+        "DURABLE_ACTORS_PUBLIC_URL",
+    )?;
     let public_url = reqwest::Url::parse(&public_origin)?;
-    ensure!(public_url.scheme() == "https" && public_url.path() == "/" && public_url.query().is_none() && public_url.fragment().is_none() && public_url.username().is_empty() && public_url.password().is_none(), "public gateway must be an HTTPS origin");
+    ensure!(
+        public_url.scheme() == "https"
+            && public_url.path() == "/"
+            && public_url.query().is_none()
+            && public_url.fragment().is_none()
+            && public_url.username().is_empty()
+            && public_url.password().is_none(),
+        "public gateway must be an HTTPS origin"
+    );
     let control_plane_url = validated_http_url(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
@@ -352,8 +392,10 @@ fn sandbox_provider_config(
             },
         },
         gke: GkeConfig {
-            namespace: get("DURABLE_ACTORS_GKE_NAMESPACE").unwrap_or_else(|| "terse-sandboxes".into()),
-            zones, public_origin,
+            namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
+                .unwrap_or_else(|| "terse-sandboxes".into()),
+            zones,
+            public_origin,
             artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
         },
         runtime: HostSandboxRuntimeConfig {

@@ -608,17 +608,13 @@ impl Stack {
                         directory: runtime.directory.path().into(),
                     },
                     region: "us-east".into(),
-                    replica_secret: runtime.access.secret().to_owned(),
-                    replica_regions: vec![],
                     token: None,
                 },
                 host_id.clone(),
                 "00000000-0000-4000-8000-000000000001".into(),
-                "http://unused".into(),
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
                 None,
-                Default::default(),
             )
             .await?
             .with_actor(Some(actor.clone()), true, None),
@@ -911,7 +907,6 @@ impl HostProvisioner for SocketTestProvisioner {
     ) -> Result<crate::sandbox::SocketCredentials> {
         Ok(crate::sandbox::SocketCredentials {
             url: lease.route.clone(),
-            token: String::new(),
         })
     }
     async fn ensure_actor_host(
@@ -1100,6 +1095,7 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
                 expires_at: expiry,
                 methods: vec!["readHistory".into()],
             }),
+            "http://10.1.2.3:7101",
         )?
         .token;
     for method in ["change", "onConnect", "onMessage", "onDisconnect"] {

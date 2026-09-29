@@ -18,8 +18,8 @@ use crate::{
     host_leases::HostLease,
     placement::{ObjectPlacement, ObjectPlacementStore},
     sandbox::{
-        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, ProviderCommandFailure,
-        SandboxProvider, TerminateHostsRequest,
+        EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, SandboxProvider,
+        TerminateHostsRequest,
     },
 };
 
@@ -40,6 +40,7 @@ pub struct ControlPlaneService {
     pub(super) changes: tokio::sync::watch::Sender<()>,
     pub(super) region: Option<String>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
+    pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
     auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
@@ -78,6 +79,7 @@ impl ControlPlaneService {
             traces: crate::request_traces::TraceStore::default(),
             changes: tokio::sync::watch::channel(()).0,
             runtime_access: None,
+            gateway: None,
             region: None,
             placements,
             auth,
@@ -268,6 +270,7 @@ impl ControlPlaneService {
         Ok((
             routed.placement.home_region,
             super::socket_ticket::SocketTarget {
+                route: routed.lease.route.clone(),
                 host_id: routed.lease.id,
                 session_id: routed.lease.session_id,
                 owner_epoch: routed.placement.owner_epoch,
@@ -348,6 +351,7 @@ impl ControlPlaneService {
             &target.placement.home_region,
             target.placement.owner_epoch,
             grant,
+            &target.lease.route,
         )?;
         let expires_at_ms = issued.expires_at_ms.min(i64::try_from(
             idle_expires_at_ms.min(target.lease.expires_at_ms),
@@ -435,56 +439,6 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
-            ControlPlaneCommand::PrepareReplicaConnections => {
-                let targets = self
-                    .runtime_access
-                    .as_ref()
-                    .context("direct storage is not configured")?
-                    .initial_replica_targets(&crate::replication::ReplicaScope {
-                        actor: principal.actor.clone(),
-                        host: principal.host_id.clone(),
-                        session: principal.session_id.clone(),
-                        region: principal.region.clone(),
-                    })
-                    .await?;
-                Ok(ControlPlaneCommandReply::Replicas { targets })
-            }
-            ControlPlaneCommand::PrepareInitialReplicas => {
-                let membership = self
-                    .runtime_access
-                    .as_ref()
-                    .context("direct storage is not configured")?
-                    .initial_replicas(&crate::replication::ReplicaScope {
-                        actor: principal.actor.clone(),
-                        host: principal.host_id.clone(),
-                        session: principal.session_id.clone(),
-                        region: principal.region.clone(),
-                    })
-                    .await?;
-                Ok(ControlPlaneCommandReply::InitialReplicas { membership })
-            }
-            ControlPlaneCommand::EnsureReplicas { failed } => {
-                self.require_active_host(principal).await?;
-                ensure!(
-                    failed.len() <= crate::replication::MAX_REPLICAS,
-                    "too many failed replicas"
-                );
-                let targets = self
-                    .runtime_access
-                    .as_ref()
-                    .context("direct storage is not configured")?
-                    .replicas(
-                        &crate::replication::ReplicaScope {
-                            actor: principal.actor.clone(),
-                            host: principal.host_id.clone(),
-                            session: principal.session_id.clone(),
-                            region: principal.region.clone(),
-                        },
-                        &failed,
-                    )
-                    .await?;
-                Ok(ControlPlaneCommandReply::Replicas { targets })
-            }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {
                 self.require_active_host(principal).await?;
                 ensure!(
@@ -998,7 +952,7 @@ impl HostProvisioner for SandboxHostProvisioner {
     ) -> Result<HostTermination> {
         if let Some(pool) = &self.pool {
             return Ok(HostTermination {
-                provider: "modal".into(),
+                provider: "gke".into(),
                 resource_ids: pool.retire_config(&spec.host_config_key()).await?,
             });
         }
@@ -1024,14 +978,6 @@ impl SandboxHostProvisioner {
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
-        if let Some(access) = &self.runtime_access {
-            access.prewarm(crate::replication::ReplicaScope {
-                actor: actor.clone(),
-                host: request.host_id.clone(),
-                session: request.session_id.clone(),
-                region: region.into(),
-            });
-        }
         let token = async {
             match &self.runtime_access {
                 Some(access) => Ok(Some(access.bootstrap(region).await?)),
@@ -1074,17 +1020,12 @@ impl SandboxHostProvisioner {
                 if let Some(pool) = &self.pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
-                let command = error.downcast_ref::<ProviderCommandFailure>();
                 warn!(
                     event = "actor_host_provisioning",
                     project_id = %spec.project_id,
                     region,
                     host_id = %request.host_id,
                     started_at_ms = 0,
-                    provider_process_spawned_at_ms = command.and_then(ProviderCommandFailure::spawned_at_ms),
-                    provider_request_written_at_ms = command.and_then(ProviderCommandFailure::request_written_at_ms),
-                    provider_process_completed_at_ms = command.and_then(ProviderCommandFailure::process_completed_at_ms),
-                    provider_response_decoded_at_ms = command.and_then(ProviderCommandFailure::response_decoded_at_ms),
                     completed_at_ms = elapsed_ms(started_at),
                     outcome = "provider_failed",
                     error = %format!("{error:#}"),
@@ -1155,14 +1096,14 @@ impl SandboxHostProvisioner {
             provider_request_written_at_ms = provisioning.as_ref().and_then(|value| value.request_written_at_ms),
             provider_process_completed_at_ms = provisioning.as_ref().and_then(|value| value.process_completed_at_ms),
             provider_response_decoded_at_ms = provisioning.as_ref().and_then(|value| value.response_decoded_at_ms),
-            modal_provider_started_at_ms = provisioning.as_ref().map(|value| value.started_at_ms),
-            modal_input_parsed_at_ms = provisioning.as_ref().and_then(|value| value.input_parsed_at_ms),
-            modal_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
-            modal_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
-            modal_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
-            modal_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
-            modal_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
-            modal_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),
+            provider_provider_started_at_ms = provisioning.as_ref().map(|value| value.started_at_ms),
+            provider_input_parsed_at_ms = provisioning.as_ref().and_then(|value| value.input_parsed_at_ms),
+            provider_sdk_loaded_at_ms = provisioning.as_ref().and_then(|value| value.sdk_loaded_at_ms),
+            provider_resources_resolved_at_ms = provisioning.as_ref().and_then(|value| value.resources_resolved_at_ms),
+            provider_sandbox_scheduled_at_ms = provisioning.as_ref().and_then(|value| value.sandbox_scheduled_at_ms),
+            provider_host_ready_observed_at_ms = provisioning.as_ref().and_then(|value| value.host_ready_observed_at_ms),
+            provider_route_read_at_ms = provisioning.as_ref().and_then(|value| value.route_read_at_ms),
+            provider_provider_completed_at_ms = provisioning.as_ref().map(|value| value.completed_at_ms),
             lease_validated_at_ms,
             completed_at_ms = elapsed_ms(started_at),
             outcome = "ready",
@@ -1324,4 +1265,4 @@ mod deployment_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/service.rs"]
-mod tests;
+pub(crate) mod tests;

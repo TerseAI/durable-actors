@@ -13,7 +13,7 @@
         "actors",
         "distributed-systems",
         "durable-actors",
-        "modal",
+        "kubernetes",
         "serverless"
     ],
     "repository": {
@@ -89,7 +89,6 @@
         "build:client": "node scripts/build-client-runtime.mjs"
     },
     "dependencies": {
-        "@discoveryjs/json-ext": "^1.1.0",
         "@types/json-schema": "^7.0.15",
         "ajv": "^8.20.0",
         "chokidar": "^4.0.3",

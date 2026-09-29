@@ -4,7 +4,7 @@ mod tests;
 use std::path::{Component, Path};
 
 use anyhow::{Context, Result, ensure};
-use aws_lc_rs::digest::{Context as Digest, SHA256, digest};
+use aws_lc_rs::digest::{Context as Digest, SHA256};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{Stream, TryStreamExt};
@@ -31,11 +31,20 @@ pub(crate) struct ArtifactFile {
 impl ArtifactManifest {
     pub fn encode(&self) -> Result<String> {
         self.validate()?;
-        Ok(format!("gcs:{}", URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?)))
+        Ok(format!(
+            "gcs:{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?)
+        ))
     }
 
     pub fn decode(encoded: &str) -> Result<Self> {
-        let value: Self = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded.strip_prefix("gcs:").context("GCS artifact reference required")?)?)?;
+        let value: Self = serde_json::from_slice(
+            &URL_SAFE_NO_PAD.decode(
+                encoded
+                    .strip_prefix("gcs:")
+                    .context("GCS artifact reference required")?,
+            )?,
+        )?;
         value.validate()?;
         Ok(value)
     }
@@ -44,12 +53,20 @@ impl ArtifactManifest {
         self.validate()?;
         let bucket = format!("projects/_/buckets/{}", self.bucket);
         futures_util::future::try_join_all(self.files.iter().map(|file| async {
-            let response = storage.read_object(&bucket, &file.object).set_generation(file.generation).send().await?;
+            let response = storage
+                .read_object(&bucket, &file.object)
+                .set_generation(file.generation)
+                .send()
+                .await?;
             let chunks = futures_util::stream::try_unfold(response, |mut response| async {
-                match response.next().await { Some(chunk) => Ok(Some((chunk?, response))), None => anyhow::Ok(None) }
+                match response.next().await {
+                    Some(chunk) => Ok(Some((chunk?, response))),
+                    None => anyhow::Ok(None),
+                }
             });
             install_file(root, file, chunks).await
-        })).await?;
+        }))
+        .await?;
         Ok(())
     }
 
@@ -59,31 +76,68 @@ impl ArtifactManifest {
         for file in &self.files {
             validate_path(&file.path)?;
             ensure!(paths.insert(&file.path), "duplicate artifact path");
-            ensure!(file.generation > 0 && !file.object.is_empty() && URL_SAFE_NO_PAD.decode(&file.sha256)?.len() == 32, "invalid artifact identity");
+            ensure!(
+                file.generation > 0
+                    && !file.object.is_empty()
+                    && URL_SAFE_NO_PAD.decode(&file.sha256)?.len() == 32,
+                "invalid artifact identity"
+            );
         }
-        ensure!(paths.contains(&"actors.mjs".to_owned()), "actor artifact has no entrypoint");
+        ensure!(
+            paths.contains(&"actors.mjs".to_owned()),
+            "actor artifact has no entrypoint"
+        );
         Ok(())
     }
 }
 
-pub(crate) async fn publish(storage: &Storage, bucket: &str, path: &Path) -> Result<ArtifactManifest> {
+pub(crate) async fn publish(
+    storage: &Storage,
+    bucket: &str,
+    path: &Path,
+) -> Result<ArtifactManifest> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(path).await?;
     let mut hash = Digest::new(&SHA256);
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let count = file.read(&mut buffer).await?;
-        if count == 0 { break; }
+        if count == 0 {
+            break;
+        }
         hash.update(&buffer[..count]);
     }
     let sha256 = URL_SAFE_NO_PAD.encode(hash.finish().as_ref());
-    let object = format!("{}artifacts/{}/actors.mjs", crate::storage_paths::ROOT, uuid::Uuid::new_v4());
-    let uploaded = storage.write_object(format!("projects/_/buckets/{bucket}"), &object, tokio::fs::File::open(path).await?)
-        .set_if_generation_match(0).send_unbuffered().await?;
-    Ok(ArtifactManifest { bucket: bucket.into(), files: vec![ArtifactFile { path: "actors.mjs".into(), object, generation: uploaded.generation, sha256 }] })
+    let object = format!(
+        "{}artifacts/{}/actors.mjs",
+        crate::storage_paths::ROOT,
+        uuid::Uuid::new_v4()
+    );
+    let uploaded = storage
+        .write_object(
+            format!("projects/_/buckets/{bucket}"),
+            &object,
+            tokio::fs::File::open(path).await?,
+        )
+        .set_if_generation_match(0)
+        .send_unbuffered()
+        .await?;
+    Ok(ArtifactManifest {
+        bucket: bucket.into(),
+        files: vec![ArtifactFile {
+            path: "actors.mjs".into(),
+            object,
+            generation: uploaded.generation,
+            sha256,
+        }],
+    })
 }
 
-async fn install_file(root: &Path, artifact: &ArtifactFile, chunks: impl Stream<Item = Result<Bytes>>) -> Result<()> {
+async fn install_file(
+    root: &Path,
+    artifact: &ArtifactFile,
+    chunks: impl Stream<Item = Result<Bytes>>,
+) -> Result<()> {
     validate_path(&artifact.path)?;
     let destination = root.join(&artifact.path);
     let parent = destination.parent().context("artifact parent missing")?;
@@ -97,16 +151,22 @@ async fn install_file(root: &Path, artifact: &ArtifactFile, chunks: impl Stream<
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
-    ensure!(URL_SAFE_NO_PAD.encode(hash.finish().as_ref()) == artifact.sha256, "artifact digest mismatch");
+    ensure!(
+        URL_SAFE_NO_PAD.encode(hash.finish().as_ref()) == artifact.sha256,
+        "artifact digest mismatch"
+    );
     drop(file);
     temporary.persist(destination)?;
     Ok(())
 }
 
 fn validate_path(path: &str) -> Result<()> {
-    ensure!(!path.is_empty() && Path::new(path).components().all(|part| matches!(part, Component::Normal(_))), "artifact path must stay inside the customer directory");
+    ensure!(
+        !path.is_empty()
+            && Path::new(path)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+        "artifact path must stay inside the customer directory"
+    );
     Ok(())
 }
-
-#[cfg(test)]
-fn checksum(bytes: &[u8]) -> String { URL_SAFE_NO_PAD.encode(digest(&SHA256, bytes).as_ref()) }

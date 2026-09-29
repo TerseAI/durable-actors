@@ -11,7 +11,6 @@ use crate::{
 };
 
 mod replenishment;
-mod replica;
 
 #[derive(Clone)]
 pub(crate) struct PoolConfig {
@@ -53,10 +52,7 @@ impl SparePool {
         host: &str,
         resources: &ResourceLimits,
     ) -> Result<Option<SpareHandle>> {
-        if spec.code_snapshot.is_none()
-            || !spec.secret_refs.is_empty()
-            || resources != &self.config.resources
-        {
+        if spec.code_snapshot.is_none() || resources != &self.config.resources {
             return Ok(None);
         }
         let result = self
@@ -206,10 +202,7 @@ impl SparePool {
         let deployments = registry.launch_specs().await?;
         let images: std::collections::BTreeSet<_> = deployments
             .iter()
-            .filter(|spec| {
-                self.config.kind == SpareKind::Replica
-                    || (spec.code_snapshot.is_some() && spec.secret_refs.is_empty())
-            })
+            .filter(|spec| spec.code_snapshot.is_some())
             .map(|spec| spec.image_ref.as_str())
             .collect();
         let keys: Vec<String> = images

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { parseSocketEffects } from "../../src/actor/socketProtocol.js"
-import { receivedMessage } from "../../src/actor/socketValidation.js"
+import { outgoingMessage, receivedMessage } from "../../src/actor/socketValidation.js"
 import { ActorProtocolError } from "../../src/errors.js"
 
 test("retains committed state versions and accepts automatic state control messages", () => {
@@ -26,4 +26,12 @@ test("rejects malformed socket effects", () => {
         () => parseSocketEffects({ type: "set_tags", connection_id: "socket-1", tags: [] }),
         ActorProtocolError
     )
+})
+
+test("large socket payloads and public state remain valid", () => {
+    const data = "x".repeat(33 * 1024 * 1024)
+    assert.equal(outgoingMessage(data), data)
+    const effects = [{ type: "send", connection_id: "socket", message: { type: "text", data } }]
+    assert.deepEqual(parseSocketEffects(effects), effects)
+    assert.deepEqual(receivedMessage({ type: "state", state: { data } }), { type: "state", state: { data } })
 })

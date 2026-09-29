@@ -29,7 +29,9 @@ pub(crate) struct GcsClients {
 }
 
 impl GcsBucket {
-    pub(crate) fn clients(&self) -> GcsClients { self.clients.clone() }
+    pub(crate) fn clients(&self) -> GcsClients {
+        self.clients.clone()
+    }
 
     pub async fn new(bucket: &str) -> Result<Self> {
         Self::with_credentials(
@@ -63,7 +65,11 @@ impl WarmGcs {
             .storage
             .read_object("projects/_/buckets/durable-actors-warmup", "connection")
             .send();
-        let bidi = self.clients.storage.open_object("projects/_/buckets/durable-actors-warmup", "connection").send();
+        let bidi = self
+            .clients
+            .storage
+            .open_object("projects/_/buckets/durable-actors-warmup", "connection")
+            .send();
         let _ = tokio::join!(
             tokio::time::timeout(Duration::from_millis(250), probe),
             tokio::time::timeout(Duration::from_millis(250), bidi),

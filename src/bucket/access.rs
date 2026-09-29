@@ -13,10 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{
-    clock::{Clock, SystemClock},
-    replication::{ReplicaAccess, ReplicaProvisioner, ReplicaScope, ReplicaTarget},
-};
+use crate::clock::{Clock, SystemClock};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,16 +21,19 @@ pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
     pub persistence: super::PersistenceConfig,
     pub region: String,
-    pub replica_secret: String,
-    pub replica_regions: Vec<String>,
     pub token: Option<StorageToken>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum BucketLocation {
-    Gcs { bucket: String, artifact_bucket: String },
-    File { directory: PathBuf },
+    Gcs {
+        bucket: String,
+        artifact_bucket: String,
+    },
+    File {
+        directory: PathBuf,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,24 +53,18 @@ impl std::fmt::Debug for StorageToken {
 
 pub(crate) struct RuntimeAccess {
     location: BucketLocation,
-    fleet: Arc<dyn ReplicaProvisioner>,
-    replicas: ReplicaAccess,
     tokens: Option<StorageTokens>,
     storage: Arc<super::RuntimeStorage>,
-    initial: moka::future::Cache<String, super::ReplicaMembership>,
-    targets: moka::future::Cache<String, Vec<ReplicaTarget>>,
 }
 
 impl RuntimeAccess {
-    pub fn new(
-        location: BucketLocation,
-        fleet: Arc<dyn ReplicaProvisioner>,
-        replicas: ReplicaAccess,
-        storage: Arc<super::RuntimeStorage>,
-    ) -> Result<Self> {
+    pub fn new(location: BucketLocation, storage: Arc<super::RuntimeStorage>) -> Result<Self> {
         Ok(Self {
             tokens: match &location {
-                BucketLocation::Gcs { bucket, artifact_bucket } => Some(StorageTokens::new(
+                BucketLocation::Gcs {
+                    bucket,
+                    artifact_bucket,
+                } => Some(StorageTokens::new(
                     Arc::new(GcsTokenSource {
                         bucket: bucket.clone(),
                         persistence: storage.persistence.clone(),
@@ -85,17 +79,7 @@ impl RuntimeAccess {
                 BucketLocation::File { .. } => None,
             },
             location,
-            fleet,
-            replicas,
             storage,
-            initial: moka::future::Cache::builder()
-                .max_capacity(10_000)
-                .time_to_live(Duration::from_secs(300))
-                .build(),
-            targets: moka::future::Cache::builder()
-                .max_capacity(10_000)
-                .time_to_live(Duration::from_secs(300))
-                .build(),
         })
     }
 
@@ -104,52 +88,8 @@ impl RuntimeAccess {
             bucket: self.location.clone(),
             persistence: self.storage.persistence.clone(),
             region: region.into(),
-            replica_secret: self.replicas.secret().to_owned(),
-            replica_regions: self.fleet.replica_regions(),
             token: self.issue().await?,
         })?)
-    }
-
-    pub fn prewarm(self: &Arc<Self>, scope: ReplicaScope) {
-        if self.fleet.replica_regions().is_empty() {
-            return;
-        }
-        let access = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = access.initial_replicas(&scope).await {
-                tracing::warn!(%error, actor = %scope.actor.storage_key(), "actor replica provisioning failed");
-            }
-        });
-    }
-
-    pub async fn initial_replicas(&self, scope: &ReplicaScope) -> Result<super::ReplicaMembership> {
-        self.initial
-            .try_get_with(scope.identity(), async {
-                let replicas = self.initial_replica_targets(scope).await?;
-                self.storage
-                    .register_initial_replicas(scope, replicas)
-                    .await
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("initial replica registration failed: {error:#}"))
-    }
-
-    pub async fn initial_replica_targets(
-        &self,
-        scope: &ReplicaScope,
-    ) -> Result<Vec<ReplicaTarget>> {
-        self.targets
-            .try_get_with(scope.identity(), self.fleet.ensure(scope))
-            .await
-            .map_err(|error| anyhow::anyhow!("initial replica assignment failed: {error:#}"))
-    }
-
-    pub async fn replicas(
-        &self,
-        scope: &ReplicaScope,
-        failed: &[String],
-    ) -> Result<Vec<ReplicaTarget>> {
-        self.fleet.repair(scope, failed).await
     }
 
     pub async fn issue(&self) -> Result<Option<StorageToken>> {
@@ -340,16 +280,40 @@ impl StorageCredentials {
     }
 }
 
-fn boundary(bucket: &str, persistence: &super::PersistenceConfig, artifact_bucket: Option<&str>) -> Value {
+fn boundary(
+    bucket: &str,
+    persistence: &super::PersistenceConfig,
+    artifact_bucket: Option<&str>,
+) -> Value {
     let prefix = crate::storage_paths::ROOT;
-    let mut rules = vec![rule(bucket, &[format!("{prefix}owners/"), format!("{prefix}hosts/")], &["storage.objectUser"])];
+    let mut rules = vec![rule(
+        bucket,
+        &[format!("{prefix}owners/"), format!("{prefix}hosts/")],
+        &["storage.objectUser"],
+    )];
     match persistence {
         super::PersistenceConfig::Rapid { buckets, .. } => {
-            for bucket in buckets { rules.push(rule(&bucket.name, &[format!("{prefix}snapshots/")], &["storage.objectUser"])); }
+            for bucket in buckets {
+                rules.push(rule(
+                    &bucket.name,
+                    &[format!("{prefix}snapshots/")],
+                    &["storage.objectUser"],
+                ));
+            }
         }
-        super::PersistenceConfig::Local => rules.push(rule(bucket, &[format!("{prefix}snapshots/")], &["storage.objectViewer", "storage.objectCreator"])),
+        super::PersistenceConfig::Local => rules.push(rule(
+            bucket,
+            &[format!("{prefix}snapshots/")],
+            &["storage.objectViewer", "storage.objectCreator"],
+        )),
     }
-    if let Some(bucket) = artifact_bucket { rules.push(rule(bucket, &[format!("{prefix}artifacts/")], &["storage.objectViewer"])); }
+    if let Some(bucket) = artifact_bucket {
+        rules.push(rule(
+            bucket,
+            &[format!("{prefix}artifacts/")],
+            &["storage.objectViewer"],
+        ));
+    }
     json!({"accessBoundary": {"accessBoundaryRules": rules}})
 }
 

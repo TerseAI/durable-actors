@@ -39,4 +39,3 @@ fn rejects_invalid_snapshots_at_decode() {
     }
     assert!(StateSnapshot::decode(br#"{"stateVersion":1,"ownerEpoch":1,"requestId":"r","state":{"value":},"result":null}"#).is_err());
 }
-

@@ -151,3 +151,15 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
     })
     .await
 }
+
+#[test]
+fn compiled_deployment_uses_an_immutable_gcs_manifest() -> Result<()> {
+    let mut deployment = spec("registry/runtime@sha256:test");
+    deployment.working_directory = "/customer".into();
+    deployment.actor_entrypoint = Some("actors.mjs".into());
+    deployment.code_snapshot = Some(crate::sandbox::testing::code_artifact(1));
+    deployment.validate()?;
+    deployment.actor_entrypoint = Some("different.mjs".into());
+    assert!(deployment.validate().is_err());
+    Ok(())
+}

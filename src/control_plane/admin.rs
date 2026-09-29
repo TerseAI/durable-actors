@@ -75,24 +75,15 @@ impl HostLaunchSpec {
         }
         validate_component("project ID", &self.project_id, 64)?;
         if let Some(snapshot) = &self.code_snapshot {
-            ensure!(
-                snapshot.starts_with("im-") && snapshot.len() <= 255,
-                "invalid Modal code snapshot"
-            );
+            crate::artifacts::ArtifactManifest::decode(snapshot)?;
             ensure!(
                 self.working_directory == "/customer",
                 "snapshot deployments must use /customer"
             );
             let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
             ensure!(
-                entrypoint.ends_with(".mjs")
-                    && !std::path::Path::new(entrypoint)
-                        .components()
-                        .any(|part| matches!(
-                            part,
-                            std::path::Component::ParentDir | std::path::Component::RootDir
-                        )),
-                "snapshot entrypoint must be a relative compiled module path"
+                entrypoint == "actors.mjs",
+                "compiled entrypoint must be actors.mjs"
             );
         }
         ensure!(
@@ -214,10 +205,6 @@ impl AdminService {
             .map_err(|_| anyhow::anyhow!("invalid socket endpoint"))?;
         let home_region = grant.region.clone();
         let (key, connect_by_ms, authorized_until_ms) = self.issuer.issue_socket(grant)?;
-        if !credentials.token.is_empty() {
-            url.query_pairs_mut()
-                .append_pair("_modal_connect_token", &credentials.token);
-        }
         url.query_pairs_mut().append_pair("key", &key);
         Ok(
             serde_json::json!({ "homeRegion": home_region, "websocketUrl": url.as_str(), "connectByMs": connect_by_ms, "authorizedUntilMs": authorized_until_ms }),

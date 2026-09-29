@@ -173,9 +173,20 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 #[test]
 fn production_defaults_to_zonal_rapid_and_gke() -> Result<()> {
     let values = process_environment();
-    let config = ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))?;
-    assert!(matches!(config.storage.persistence, crate::bucket::PersistenceConfig::Rapid { durability: crate::bucket::Durability::Zonal, .. }));
-    assert_eq!(config.sandbox_provider.gke.zones["north-america-west"], "us-west4-a");
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert!(matches!(
+        config.storage.persistence,
+        crate::bucket::PersistenceConfig::Rapid {
+            durability: crate::bucket::Durability::Zonal,
+            ..
+        }
+    ));
+    assert_eq!(
+        config.sandbox_provider.gke.zones["north-america-west"],
+        "us-west4-a"
+    );
     Ok(())
 }
 
@@ -210,10 +221,19 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_JWT_SIGNING_KEY", "c2lnbmluZw=="),
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
-        ("DURABLE_ACTORS_RUNTIME_IMAGE", "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        (
+            "DURABLE_ACTORS_RUNTIME_IMAGE",
+            "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
-        ("DURABLE_ACTORS_RAPID_BUCKETS", r#"[{"name":"rapid-west","zone":"us-west4-a"}]"#),
-        ("DURABLE_ACTORS_GKE_ZONES", r#"{"north-america-west":"us-west4-a"}"#),
+        (
+            "DURABLE_ACTORS_RAPID_BUCKETS",
+            r#"[{"name":"rapid-west","zone":"us-west4-a"}]"#,
+        ),
+        (
+            "DURABLE_ACTORS_GKE_ZONES",
+            r#"{"north-america-west":"us-west4-a"}"#,
+        ),
         ("DURABLE_ACTORS_PUBLIC_URL", "https://actors.example.com"),
         (
             "DURABLE_ACTORS_CONTROL_PLANE_URL",
@@ -245,5 +265,26 @@ fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
         values.insert("DURABLE_ACTORS_ANALYTICS_RETENTION_DAYS", invalid);
         assert!(parse(&values).is_err());
     }
+    Ok(())
+}
+
+#[test]
+fn default_region_and_compute_zones_match_the_rapid_topology() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(
+        parse(&values)?.region.as_deref(),
+        Some("north-america-west")
+    );
+    values.insert("DURABLE_ACTORS_REGION", "north-america-east");
+    assert!(parse(&values).is_err());
+    values.remove("DURABLE_ACTORS_REGION");
+    values.insert(
+        "DURABLE_ACTORS_GKE_ZONES",
+        r#"{"north-america-west":"us-west4-b"}"#,
+    );
+    assert!(parse(&values).is_err());
     Ok(())
 }

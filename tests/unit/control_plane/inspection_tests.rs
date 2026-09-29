@@ -421,7 +421,7 @@ async fn inventory_includes_unused_deployed_types_without_loading_actors() -> Re
                 sandboxes: Default::default(),
                 project_id: "default".into(),
                 source: None,
-                code_snapshot: Some("im-code".into()),
+                code_snapshot: Some(crate::sandbox::testing::code_artifact(1)),
                 image_ref: "test-image".into(),
                 working_directory: "/customer".into(),
                 actor_entrypoint: Some("actors.mjs".into()),

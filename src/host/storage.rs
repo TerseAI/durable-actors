@@ -15,24 +15,18 @@ use super::{
 use crate::{
     actor::ActorKey,
     bucket::{
-        Bucket, GcsBucket, GrpcReplicaPeers, RuntimeStorage, WarmGcs,
+        Bucket, GcsBucket, RuntimeStorage, WarmGcs,
         access::{HostStorageConfig, StorageToken},
     },
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
-    replication::ReplicaAccess,
     storage::WritePlan,
 };
-
-#[cfg(test)]
-#[path = "../../tests/unit/host/cold_write_tests.rs"]
-mod cold_write_tests;
 
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
     objects: Option<google_cloud_storage::client::Storage>,
-    pub transport: crate::state_transport::GrpcStateTransport,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
     host: HostId,
@@ -51,11 +45,9 @@ impl HostStorage {
         config: HostStorageConfig,
         host: HostId,
         session: String,
-        origin: String,
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
         warm: Option<WarmGcs>,
-        transport: crate::state_transport::GrpcStateTransport,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let (authority, clients): (Arc<dyn Bucket>, _) = match config.bucket {
@@ -71,23 +63,12 @@ impl HostStorage {
                 (Arc::new(crate::bucket::FileBucket::new(directory)?), None)
             }
         };
-        let access = ReplicaAccess::new(&config.replica_secret, Arc::new(SystemClock));
-        let mut runtime = RuntimeStorage::new(
-            authority,
-            Arc::new(super::replica_provisioner::HostReplicaProvisioner {
-                client: client.clone(),
-                regions: config.replica_regions,
-            }),
-            Arc::new(GrpcReplicaPeers::with_transport(
-                access.clone(),
-                transport.clone(),
-            )),
-            access,
-            origin,
-            std::sync::Arc::new(crate::clock::SystemClock),
-        )?;
+        let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
         if config.persistence.is_rapid() {
-            let snapshots = crate::bucket::RapidSet::from_config(&config.persistence, clients.clone().context("Rapid requires GCS clients")?)?;
+            let snapshots = crate::bucket::RapidSet::from_config(
+                &config.persistence,
+                clients.clone().context("Rapid requires GCS clients")?,
+            )?;
             runtime = runtime.with_persistence(config.persistence, Arc::new(snapshots))?;
         }
         Ok(Self {
@@ -95,7 +76,6 @@ impl HostStorage {
             observer: client,
             stop,
             runtime: Arc::new(runtime),
-            transport,
             host,
             session,
             region: config.region,
@@ -108,8 +88,18 @@ impl HostStorage {
         })
     }
 
-    pub(crate) async fn install_code(&self, artifact: &crate::artifacts::ArtifactManifest) -> Result<()> {
-        artifact.install(std::path::Path::new("/customer"), self.objects.as_ref().context("GCS artifact client missing")?).await
+    pub(crate) async fn install_code(
+        &self,
+        artifact: &crate::artifacts::ArtifactManifest,
+    ) -> Result<()> {
+        artifact
+            .install(
+                std::path::Path::new("/customer"),
+                self.objects
+                    .as_ref()
+                    .context("GCS artifact client missing")?,
+            )
+            .await
     }
 
     pub(crate) fn with_actor(
@@ -155,6 +145,10 @@ impl HostStorage {
 #[async_trait]
 impl ActorStorage for HostStorage {
     fn ensure_authority(&self) -> Result<()> {
+        ensure!(
+            !self.stop.is_cancelled(),
+            "host session is permanently fenced"
+        );
         self.fence
             .lock()
             .map_err(|_| anyhow::anyhow!("lease fence poisoned"))?
@@ -420,10 +414,6 @@ impl CredentialsProvider for HostCredentials {
         Some("googleapis.com".into())
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/host/replication_tests.rs"]
-mod replication_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/host/storage.rs"]

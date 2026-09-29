@@ -17,9 +17,8 @@ async function main(): Promise<void> {
     const artifact = path.join(output, "actors.mjs")
     const contract = parsePublicContract(await buildActor(entrypoint, artifact, { local: mode === "local" }))
     const document = JSON.stringify(contract)
-    if (Buffer.byteLength(document) > 4 * 1024 * 1024) throw new Error("Public actor contract exceeds 4 MiB")
     const { size } = await stat(artifact)
-    if (size === 0 || size > 32 * 1024 * 1024) throw new Error("Compiled customer code must contain 1–33554432 bytes")
+    if (size === 0) throw new Error("Compiled customer code is empty")
     if (mode === "local") await validateArtifact(artifact, entrypoint)
     process.stdout.write(document)
 }

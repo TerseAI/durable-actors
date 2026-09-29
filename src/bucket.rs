@@ -1,14 +1,13 @@
 pub(crate) mod access;
 mod file;
 mod gcs;
-mod peers;
 mod rapid;
 mod rapid_set;
 pub(crate) use rapid_set::RapidSet;
 mod snapshots;
-pub use snapshots::{Durability, PersistenceConfig, RapidBucket};
-pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
 pub(crate) use rapid::RapidSnapshots;
+pub(crate) use snapshots::{BucketSnapshots, SnapshotStore};
+pub use snapshots::{Durability, PersistenceConfig, RapidBucket};
 mod runtime;
 
 use anyhow::Result;
@@ -17,9 +16,8 @@ use async_trait::async_trait;
 pub use file::FileBucket;
 pub use gcs::GcsBucket;
 pub(crate) use gcs::WarmGcs;
-pub use peers::{GrpcReplicaPeers, ReplicaPeers};
 pub(crate) use runtime::ActorStateReader;
-pub use runtime::{LoadedActor, OwnershipHint, ReplicaMembership, RuntimeStorage};
+pub use runtime::{LoadedActor, OwnershipHint, RuntimeStorage};
 
 #[derive(Clone, Debug)]
 pub struct BucketObject {

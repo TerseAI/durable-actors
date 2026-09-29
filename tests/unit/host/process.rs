@@ -209,7 +209,7 @@ fn values() -> HashMap<String, String> {
             "DURABLE_ACTORS_RUNTIME_CONFIG".into(),
             serde_json::json!({
                 "bucket": {"type":"file", "directory":"/tmp/actor-test-bucket"},
-                "persistence":{"type":"local"}, "region":"north-america-east", "replicaSecret":"secret", "replicaRegions":[],
+                "persistence":{"type":"local"}, "region":"north-america-east",
                 "token":null
             })
             .to_string(),
@@ -236,7 +236,9 @@ fn host_decodes_pinned_code_artifact_before_assignment() -> Result<()> {
     let manifest = crate::artifacts::ArtifactManifest {
         bucket: "customer-code".into(),
         files: vec![crate::artifacts::ArtifactFile {
-            path: "actors.mjs".into(), object: "artifacts/test".into(), generation: 7,
+            path: "actors.mjs".into(),
+            object: "artifacts/test".into(),
+            generation: 7,
             sha256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
         }],
     };

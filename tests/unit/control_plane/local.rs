@@ -64,7 +64,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         ready_fd: None,
         sdk_host: None,
     };
-    let state = local_storage(&options, relative, "http://localhost:7100").await?;
+    let state = local_storage(&options, relative).await?;
     let config: crate::bucket::access::HostStorageConfig =
         serde_json::from_str(&state.access.bootstrap(&state.region).await?)?;
     let BucketLocation::File {
@@ -107,7 +107,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         .event_id
         .clone();
     drop(state);
-    let restored = local_storage(&options, relative, "http://localhost:7100").await?;
+    let restored = local_storage(&options, relative).await?;
     assert_eq!(
         restored
             .traces
