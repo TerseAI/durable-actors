@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{bucket::ReplicaPlacement, postgres::PostgresDatabase};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct PodRecord {
     pub name: String,
     pub zone: String,
@@ -50,101 +50,95 @@ impl Registry {
     pub async fn claim(&self, prefix: &str, zones: &[String]) -> Result<GroupRecord> {
         let mut connection = self.0.connection().await?;
         let tx = connection.transaction().await?;
-        tx.query_one(
-            "SELECT pg_advisory_xact_lock(hashtext('replica-group'), hashtext($1))",
-            &[&prefix],
-        )
-        .await?;
-        if let Some(row) = tx
-            .query_opt(
-                "SELECT state FROM durable_actors_replication_groups WHERE prefix=$1 FOR UPDATE",
-                &[&prefix],
-            )
-            .await?
-        {
+        let lock = tx
+            .prepare_cached("SELECT pg_advisory_xact_lock(hashtext('replica-group'), hashtext($1))")
+            .await?;
+        tx.query_one(&lock, &[&prefix]).await?;
+        let select = tx.prepare_cached("SELECT state,ever_ready,checkpoint FROM durable_actors_replication_groups WHERE prefix=$1 FOR UPDATE").await?;
+        let group = if let Some(row) = tx.query_opt(&select, &[&prefix]).await? {
             ensure!(
                 matches!(row.get::<_, &str>(0), "creating" | "ready"),
                 "replica group is permanently closed"
             );
+            let pods = tx.prepare_cached("SELECT config FROM durable_actors_replication_pods WHERE group_prefix=$1 ORDER BY slot").await?;
+            let pods = tx
+                .query(&pods, &[&prefix])
+                .await?
+                .iter()
+                .map(|row| serde_json::from_str(row.get(0)))
+                .collect::<Result<Vec<_>, _>>()?;
+            record(prefix, &row, pods)?
         } else {
-            tx.execute(
-                "INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'creating')",
-                &[&prefix],
-            )
-            .await?;
-            let mut used_nodes: Vec<String> = Vec::new();
-            for (slot, zone) in zones.iter().enumerate() {
-                let selected = tx.query_opt(
-                    "SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state='ready' AND zone=$1 AND NOT ((config::jsonb->>'node') = ANY($2::text[])) ORDER BY name LIMIT 1 FOR UPDATE SKIP LOCKED",
-                    &[zone, &used_nodes],
-                ).await?;
-                let pod: PodRecord = match selected {
-                    Some(row) => serde_json::from_str(row.get(0))?,
-                    None => PodRecord::pending(zone),
-                };
-                if let Some(node) = &pod.node {
-                    used_nodes.push(node.clone());
-                }
-                let state = if pod.placement.is_some() {
-                    "bound"
-                } else {
-                    "starting"
-                };
-                tx.execute("INSERT INTO durable_actors_replication_pods(name,zone,state,config,group_prefix,slot) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(name) DO UPDATE SET state=EXCLUDED.state,group_prefix=EXCLUDED.group_prefix,slot=EXCLUDED.slot", &[&pod.name, &pod.zone, &state, &serde_json::to_string(&pod)?, &prefix, &i32::try_from(slot)?]).await?;
-            }
-        }
+            let insert = tx.prepare_cached("INSERT INTO durable_actors_replication_groups(prefix,state) VALUES($1,'creating') RETURNING state,ever_ready,checkpoint").await?;
+            let row = tx.query_one(&insert, &[&prefix]).await?;
+            record(prefix, &row, claim_pods(&tx, prefix, zones).await?)?
+        };
         tx.commit().await?;
-        drop(connection);
-        self.lookup(prefix).await
+        Ok(group)
     }
 
     pub async fn lookup(&self, prefix: &str) -> Result<GroupRecord> {
-        let client = self.0.connection().await?;
-        let row = client.query_opt("SELECT state,ever_ready,checkpoint FROM durable_actors_replication_groups WHERE prefix=$1", &[&prefix]).await?.context("replica group missing")?;
-        let pods = client.query("SELECT config FROM durable_actors_replication_pods WHERE group_prefix=$1 ORDER BY slot", &[&prefix]).await?.iter().map(|row| serde_json::from_str(row.get(0)).map_err(Into::into)).collect::<Result<_>>()?;
-        Ok(GroupRecord {
-            prefix: prefix.into(),
-            state: row.get(0),
-            ever_ready: row.get(1),
-            checkpoint: row
-                .get::<_, Option<&str>>(2)
-                .map(serde_json::from_str)
-                .transpose()?,
-            pods,
-        })
+        let row = self
+            .0
+            .query_opt(include_str!("lookup.sql"), &[&prefix])
+            .await?
+            .context("replica group missing")?;
+        record(prefix, &row, serde_json::from_value(row.get(3))?)
     }
 
     pub async fn update_pod(&self, pod: &PodRecord) -> Result<()> {
-        let mut client = self.0.connection().await?;
-        let tx = client.transaction().await?;
-        let row = tx.query_opt("SELECT config,group_prefix,state FROM durable_actors_replication_pods WHERE name=$1 FOR UPDATE", &[&pod.name]).await?.context("replica registration was removed")?;
-        let previous: PodRecord = serde_json::from_str(row.get(0))?;
-        ensure!(
-            previous.uid.is_none() || previous.uid == pod.uid,
-            "replica pod was replaced"
-        );
-        ensure!(
-            previous.placement.is_none() || previous.placement == pod.placement,
-            "replica disk identity changed"
-        );
-        ensure!(row.get::<_, &str>(2) != "retiring", "replica is retiring");
-        let state = if row.get::<_, Option<String>>(1).is_some() {
-            "bound"
-        } else {
-            "ready"
-        };
-        tx.execute(
-            "UPDATE durable_actors_replication_pods SET config=$2,state=$3 WHERE name=$1",
-            &[&pod.name, &serde_json::to_string(pod)?, &state],
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
+        let client = self.0.connection().await?;
+        let select = client.prepare_cached("SELECT config,group_prefix,state FROM durable_actors_replication_pods WHERE name=$1").await?;
+        let config = serde_json::to_string(pod)?;
+        loop {
+            let row = client
+                .query_opt(&select, &[&pod.name])
+                .await?
+                .context("replica registration was removed")?;
+            let previous: PodRecord = serde_json::from_str(row.get(0))?;
+            ensure!(
+                previous.uid.is_none() || previous.uid == pod.uid,
+                "replica pod was replaced"
+            );
+            ensure!(
+                previous.placement.is_none() || previous.placement == pod.placement,
+                "replica disk identity changed"
+            );
+            let previous_state: &str = row.get(2);
+            ensure!(previous_state != "retiring", "replica is retiring");
+            let group: Option<&str> = row.get(1);
+            let state = if group.is_some() { "bound" } else { "ready" };
+            if previous == *pod && previous_state == state {
+                return Ok(());
+            }
+            let update = client.prepare_cached("UPDATE durable_actors_replication_pods SET config=$2,state=$3 WHERE name=$1 AND config=$4 AND state=$5 AND group_prefix IS NOT DISTINCT FROM $6").await?;
+            if client
+                .execute(
+                    &update,
+                    &[
+                        &pod.name,
+                        &config,
+                        &state,
+                        &row.get::<_, &str>(0),
+                        &previous_state,
+                        &group,
+                    ],
+                )
+                .await?
+                == 1
+            {
+                return Ok(());
+            }
+        }
     }
 
-    pub async fn ready(&self, prefix: &str) -> Result<()> {
-        ensure!(self.0.execute("UPDATE durable_actors_replication_groups SET state='ready',ever_ready=TRUE,updated_at=clock_timestamp() WHERE prefix=$1 AND state IN ('creating','ready')", &[&prefix]).await? == 1, "replica group was closed during initialization");
-        Ok(())
+    pub async fn ready(&self, prefix: &str) -> Result<GroupRecord> {
+        let row = self
+            .0
+            .query_opt(include_str!("ready.sql"), &[&prefix])
+            .await?
+            .context("replica group was closed during initialization")?;
+        record(prefix, &row, serde_json::from_value(row.get(3))?)
     }
 
     pub async fn close(&self, prefix: &str) -> Result<GroupRecord> {
@@ -249,6 +243,58 @@ impl Registry {
         self.0.execute("DELETE FROM durable_actors_replication_pods p WHERE name=$1 AND ((group_prefix IS NULL AND state='retiring') OR EXISTS(SELECT 1 FROM durable_actors_replication_groups g WHERE g.prefix=p.group_prefix AND g.state='archived'))", &[&name]).await?;
         Ok(())
     }
+}
+
+async fn claim_pods(
+    tx: &deadpool_postgres::Transaction<'_>,
+    prefix: &str,
+    zones: &[String],
+) -> Result<Vec<PodRecord>> {
+    let select = tx.prepare_cached("SELECT config FROM durable_actors_replication_pods WHERE group_prefix IS NULL AND state='ready' AND zone=$1 AND NOT ((config::jsonb->>'node') = ANY($2::text[])) ORDER BY name LIMIT 1 FOR UPDATE SKIP LOCKED").await?;
+    let bind = tx.prepare_cached("INSERT INTO durable_actors_replication_pods(name,zone,state,config,group_prefix,slot) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(name) DO UPDATE SET state=EXCLUDED.state,group_prefix=EXCLUDED.group_prefix,slot=EXCLUDED.slot").await?;
+    let mut used_nodes: Vec<String> = Vec::new();
+    let mut pods = Vec::with_capacity(zones.len());
+    for (slot, zone) in zones.iter().enumerate() {
+        let pod: PodRecord = match tx.query_opt(&select, &[zone, &used_nodes]).await? {
+            Some(row) => serde_json::from_str(row.get(0))?,
+            None => PodRecord::pending(zone),
+        };
+        if let Some(node) = &pod.node {
+            used_nodes.push(node.clone());
+        }
+        let state = if pod.placement.is_some() {
+            "bound"
+        } else {
+            "starting"
+        };
+        tx.execute(
+            &bind,
+            &[
+                &pod.name,
+                &pod.zone,
+                &state,
+                &serde_json::to_string(&pod)?,
+                &prefix,
+                &i32::try_from(slot)?,
+            ],
+        )
+        .await?;
+        pods.push(pod);
+    }
+    Ok(pods)
+}
+
+fn record(prefix: &str, row: &tokio_postgres::Row, pods: Vec<PodRecord>) -> Result<GroupRecord> {
+    Ok(GroupRecord {
+        prefix: prefix.into(),
+        state: row.get(0),
+        ever_ready: row.get(1),
+        checkpoint: row
+            .get::<_, Option<&str>>(2)
+            .map(serde_json::from_str)
+            .transpose()?,
+        pods,
+    })
 }
 
 #[cfg(test)]
