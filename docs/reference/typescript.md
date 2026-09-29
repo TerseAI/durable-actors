@@ -15,7 +15,7 @@ Rerun `pnpm docs:build` after changing the SDK to refresh the documentation.
 
 ## SQLite and object fields
 
-Each actor has a protected `this.db` handle for its own SQLite database. Keep using `@Persisted` for JSON fields and `@Ephemeral` for in-memory fields; `db` is provided by the runtime and must not be declared or decorated.
+Each actor has a protected `this.db` handle for its own SQLite database. 
 
 ```ts
 import { Actor, Persisted } from "durable-actors"
