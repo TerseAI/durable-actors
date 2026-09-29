@@ -91,6 +91,8 @@ Use the existing deployment API with an OCI digest in `imageRef`, `/customer` as
 
 `pool.idle`, `pool.fleetMaximum`, `pool.maxStarting`, CPU and memory control prewarming. Defaults maintain 64 ready spares per runtime/region, permit 32 concurrent starts, and cap the unassigned spare fleet at 256; active actors do not consume this spare budget. Each default actor requests and is limited to 0.25 CPU and 256 MiB. Keep enough nodes and ready spares for bursts. Resource overrides that differ from the configured pool currently create a pod on demand; these requests include pod startup latency. Running out of ready spares also uses this cold path. Large code and state payloads have no application byte ceiling; node/container resources and upstream service limits still apply.
 
+Configure node-pool autoscaling separately from the chart. Actor pods permit cluster-autoscaler eviction; the control plane reconciles missing warm and active pods every 30 seconds. Eviction can interrupt calls and sockets, and the next activation recovers acknowledged state from the storage replicas. Keep storage replicas on a separate node pool and plan their maintenance explicitly.
+
 Validate the assembled architecture on staging before production cutover: workload identity, persistent-volume provisioning, warm invocations, node loss, paused uploads, restore, actor fencing, and cross-region routing.
 
 References: [GKE Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods), [GKE Gateway TLS](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/secure-gateway).

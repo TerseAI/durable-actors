@@ -285,6 +285,8 @@ async fn reap_completed(pods: &Api<Pod>) -> Result<()> {
 
 fn spare_pod(request: &CreateSpareRequest, zone: &str, token: &str) -> Result<Pod> {
     let mut pod = base_pod(&request.name, &request.image_ref, zone, &request.resources);
+    pod["metadata"]["annotations"] =
+        json!({"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"});
     pod["spec"]["containers"][0]["env"] = json!([
         {"name":"DURABLE_ACTORS_PROCESS_ROLE", "value":"spare"},
         {"name":"DURABLE_ACTORS_SPARE_TOKEN", "value":token},

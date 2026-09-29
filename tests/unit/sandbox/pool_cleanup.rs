@@ -25,7 +25,7 @@ impl SandboxProvider for Provider {
         }
         Ok(spares
             .iter()
-            .filter(|spare| spare.name == "do-actor-done")
+            .filter(|spare| spare.name == "do-actor-done" || spare.name == "do-actor-evicted")
             .map(|spare| spare.resource_id.clone())
             .collect())
     }
@@ -170,4 +170,30 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
         Ok(())
     })
     .await
+}
+
+#[tokio::test]
+async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Result<()> {
+    with_postgres(async |fixture| {
+        let provider = Arc::new(Provider { fail: false.into(), pause: None.into() });
+        let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
+            control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
+            max_starting: 2, idle_ttl_seconds: 600, regions: vec![], resources: ResourceLimits::default(),
+        });
+        for name in ["evicted", "warm"] {
+            let spare = SpareHandle {
+                name: format!("do-actor-{name}"),
+                resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
+                route: "http://host:7101".into(),
+                canonical_region: "region".into(),
+                control_route: "http://host:7102".into(),
+                control_token: "token".into(),
+            };
+            pool.store.0.execute("INSERT INTO durable_actors_spares (name, pool_key, status, handle, expires_at) VALUES ($1, 'warm', 'ready', $2, clock_timestamp() + interval '10 minutes')", &[&spare.name, &serde_json::to_string(&spare)?]).await?;
+        }
+        pool.forget_stopped().await?;
+        assert_eq!(pool.store.claim("warm", "next", "revision").await?.unwrap().name, "do-actor-warm");
+        assert!(pool.store.claim("warm", "another", "revision").await?.is_none());
+        Ok(())
+    }).await
 }
