@@ -13,6 +13,65 @@ use std::{
 };
 
 #[tokio::test]
+async fn crons_register_on_access_and_dispatch_original_events_with_scoped_credentials()
+-> Result<()> {
+    use crate::control_plane::cron::{CronDispatcher, CronOutcome, CronStore, HttpCronDispatcher};
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    document["actors"][0]["rpc"]["schema"]["definitions"]["CronEvent"] = json!({"type":"object",
+        "properties":{"cron":{"type":"string"},"scheduledTime":{"type":"number"}},"required":["cron","scheduledTime"]});
+    document["actors"][0]["rpc"]["methods"].as_array_mut().unwrap().push(json!({"name":"refresh",
+        "parameters":[{"name":"event","optional":false,"rest":false,"type":{"$ref":"#/definitions/CronEvent"}}],"result":{"kind":"void"}}));
+    document["actors"][0]["crons"] =
+        json!([{"method":"refresh","expression":"* * * * *","retries":1}]);
+    let contract = crate::control_plane::contracts::PublicActorContract::new(document)?;
+    let definitions = contract.crons()?;
+    let mut fixture = Fixture::start_with_contract(
+        vec![
+            (StatusCode::OK, json!({"type":"completed","result":null})),
+            (
+                StatusCode::OK,
+                json!({"type":"failed","code":"actor_method_failed","message":"retry"}),
+            ),
+            (StatusCode::OK, json!({"type":"completed","result":null})),
+        ],
+        contract,
+    )
+    .await?;
+    assert!(fixture.crons.projects().await?.is_empty());
+    fixture.call("api-key", json!({"requestId":"create","method":"clear","args":[],"homeRegion":"north-america-east"})).await?.error_for_status()?;
+    assert_eq!(fixture.crons.projects().await?, vec!["default"]);
+    let now = i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?)?;
+    fixture.crons.publish("default", &definitions, now).await?;
+    let due = (now / 60_000 + 1) * 60_000;
+    let first = fixture.crons.claim(due, 1).await?.pop().unwrap();
+    fixture.service.region = Some("europe-west".into());
+    let dispatcher = HttpCronDispatcher::new(fixture.service.clone())?;
+    assert_eq!(
+        dispatcher.dispatch(&first).await?,
+        CronOutcome::HandlerFailed
+    );
+    fixture
+        .crons
+        .finish(&first, due, CronOutcome::HandlerFailed)
+        .await?;
+    let retry = fixture.crons.claim(due + 1_000, 1).await?.pop().unwrap();
+    dispatcher.dispatch(&retry).await?;
+    let requests = fixture.host.requests.lock().unwrap();
+    assert_eq!(requests[1].1, requests[2].1);
+    assert_eq!(
+        requests[1].1["args"],
+        json!([{"cron":"* * * * *","scheduledTime":due}])
+    );
+    let principal = fixture
+        .verifier
+        .authenticate_authorization(&requests[2].0)?;
+    assert_eq!(principal.actor.actor_id, "one");
+    Ok(())
+}
+
+#[tokio::test]
 async fn combined_invocation_resolves_and_dispatches_with_a_scoped_host_token() -> Result<()> {
     let fixture = Fixture::start(vec![(
         StatusCode::OK,
@@ -282,6 +341,8 @@ async fn gateway_forwards_socket_effects_with_the_original_capability() -> Resul
 }
 
 struct Fixture {
+    service: ControlPlaneService,
+    crons: Arc<crate::control_plane::cron::SqliteCronStore>,
     origin: String,
     admin: AdminService,
     verifier: ActorJwtVerifier,
@@ -291,6 +352,17 @@ struct Fixture {
 
 impl Fixture {
     async fn start(replies: Vec<(StatusCode, Value)>) -> Result<Self> {
+        let contract =
+            crate::control_plane::contracts::PublicActorContract::new(serde_json::from_str(
+                include_str!("../../../sdk/tests/fixtures/public-contract.json"),
+            )?)?;
+        Self::start_with_contract(replies, contract).await
+    }
+
+    async fn start_with_contract(
+        replies: Vec<(StatusCode, Value)>,
+        contract: crate::control_plane::contracts::PublicActorContract,
+    ) -> Result<Self> {
         let host = Arc::new(HostFixture {
             replies: Mutex::new(replies.into()),
             calls: AtomicUsize::new(0),
@@ -326,10 +398,6 @@ impl Fixture {
         )?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
-        let contract =
-            super::super::super::contracts::PublicActorContract::new(serde_json::from_str(
-                include_str!("../../../sdk/tests/fixtures/public-contract.json"),
-            )?)?;
         admin
             .register_deployment(
                 &HostLaunchSpec {
@@ -345,12 +413,16 @@ impl Fixture {
                 Some(&contract),
             )
             .await?;
+        let crons = Arc::new(crate::control_plane::cron::SqliteCronStore::open(
+            ":memory:",
+        )?);
         let mut service = ControlPlaneService::new(
             Arc::new(LocalObjectPlacementStore::default()),
             auth,
             registry,
             issuer.clone(),
             Arc::new(InvocationProvisioner(host_origin)),
+            crons.clone(),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -358,9 +430,11 @@ impl Fixture {
             &issuer,
             origin.clone(),
         )?);
-        let routes = super::super::super::public_api::router(service, admin.clone());
+        let routes = super::super::super::public_api::router(service.clone(), admin.clone());
         let server = tokio::spawn(async move { axum::serve(listener, routes).await });
         Ok(Self {
+            service,
+            crons,
             origin,
             admin,
             verifier,

@@ -12,6 +12,39 @@ use crate::{
 };
 
 #[test]
+fn cron_contracts_validate_schedules_and_handler_signatures() -> Result<()> {
+    let mut document: Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/fixtures/public-contract.json"
+    ))?;
+    let actor = &mut document["actors"][0];
+    actor["rpc"]["schema"]["definitions"]["CronEvent"] = json!({
+        "type":"object", "properties":{"cron":{"type":"string"},"scheduledTime":{"type":"integer"}},
+        "required":["cron","scheduledTime"]
+    });
+    actor["rpc"]["methods"].as_array_mut().unwrap().push(json!({"name":"refresh",
+        "parameters":[{"name":"event","optional":false,"rest":false,"type":{"$ref":"#/definitions/CronEvent"}}],
+        "result":{"kind":"void"}}));
+    actor["crons"] = json!([{"method":"refresh","expression":"59 23 LW * *"}]);
+    assert_eq!(
+        PublicActorContract::new(document.clone())?.crons()?[0].method,
+        "refresh"
+    );
+    for schedules in [
+        json!([{"method":"refresh","expression":"60 * * * *"}]),
+        json!([{"method":"refresh","expression":"* * * * *","retries":-1}]),
+        json!([{"method":"refresh","expression":"* * * * *","retries":1.5}]),
+        json!([{"method":"refresh","expression":"* * * * *","retries":2147483648u64}]),
+        json!([{"method":"missing","expression":"* * * * *"}]),
+        json!([{"method":"clear","expression":"* * * * *"}]),
+        json!([{"method":"refresh","expression":"* * * * *"},{"method":"refresh","expression":"* * * * *"}]),
+    ] {
+        document["actors"][0]["crons"] = schedules;
+        assert!(PublicActorContract::new(document.clone()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn published_declarations_and_dependencies_are_preserved_and_hashed() -> Result<()> {
     let mut document: Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"

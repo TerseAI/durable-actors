@@ -3,6 +3,7 @@ import type { JSONSchema7, JSONSchema7Definition } from "json-schema"
 import ts from "typescript"
 import { z } from "zod"
 
+import { cronOptionsSchema } from "../actor/cron.js"
 import { sandboxOptionsSchema } from "../actor/sandbox.js"
 import type { SocketContract } from "../wire/contract.js"
 import type { ActorApi, PublicActorContract, RpcContract } from "../wire/public-contract.js"
@@ -24,6 +25,19 @@ function validateActor(actor: ActorApi): void {
     if (actor.actorName !== actor.socket.actorName) throw new Error("actor and socket contract names must match")
     validateSocket(actor.socket)
     validateRpc(actor.rpc)
+    const schedules = new Set<string>()
+    for (const cron of actor.crons ?? []) {
+        unique(schedules, JSON.stringify([cron.method, cron.expression]), "cron schedule")
+        const method = actor.rpc.methods.find(method => method.name === cron.method)
+        if (
+            !method ||
+            method.parameters.length !== 1 ||
+            method.parameters[0].optional ||
+            method.parameters[0].rest ||
+            method.result.kind !== "void"
+        )
+            throw new Error("cron method requires one event parameter and a void result")
+    }
 }
 
 function validateSocket(socket: SocketContract): void {
@@ -142,6 +156,19 @@ const documentSchema = z.strictObject({
             actorName: component,
             description: z.string().optional(),
             sandbox: sandboxOptionsSchema.optional(),
+            crons: z
+                .array(
+                    cronOptionsSchema.extend({
+                        method: component,
+                        expression: z
+                            .string()
+                            .refine(
+                                value => value.trim().split(/\s+/u).length === 5,
+                                "five-field cron expression required"
+                            )
+                    })
+                )
+                .optional(),
             socket: z.strictObject({
                 version: z.literal(1),
                 actorName: component,

@@ -193,6 +193,7 @@ async fn fixture(
             failed_regions: vec![],
             calls: Mutex::new(vec![]),
         }),
+        std::sync::Arc::new(crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap()),
     );
     let now = unix_seconds()?;
     let expiry = now + 25;

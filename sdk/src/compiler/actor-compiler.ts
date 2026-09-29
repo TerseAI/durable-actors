@@ -7,6 +7,7 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { DeclarationCompiler } from "./declarations.js"
+import { readCron, validateCrons } from "./features/cron.js"
 import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
 import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
 import { readSandbox, validateSandbox } from "./features/sandbox.js"
@@ -52,6 +53,7 @@ class ActorCompiler {
                 )
                 .map(schema => ({
                     actorName: schema.actorName,
+                    ...(schema.crons === undefined ? {} : { crons: schema.crons }),
                     ...(schema.sandbox === undefined ? {} : { sandbox: schema.sandbox }),
                     socket: {
                         ...schema.contract,
@@ -299,6 +301,8 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readEmission(use)
         case sdk.Reentrant:
             return readReentrancy(use)
+        case sdk.Cron:
+            return readCron(use)
         case sdk.Sandbox:
             return readSandbox(use)
         default:
@@ -317,9 +321,12 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...reentrancy.diagnostics)
         const sandbox = validateSandbox(actor)
         diagnostics.push(...sandbox.diagnostics)
+        const crons = validateCrons(actor)
+        diagnostics.push(...crons.diagnostics)
         schemas.push({
             actorName: actor.name,
             fields: persistence.fields,
+            ...(crons.schedules.length ? { crons: crons.schedules } : {}),
             ...(sandbox.options === undefined ? {} : { sandbox: sandbox.options }),
             ...(reentrancy.methods.length ? { reentrantMethods: reentrancy.methods } : {})
         })
@@ -337,8 +344,10 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
     }
     const reentrant = exports.find(symbol => symbol.name === "Reentrant")
     const sandbox = exports.find(symbol => symbol.name === "Sandbox")
+    const cron = exports.find(symbol => symbol.name === "Cron")
     return {
         Actor: resolve("Actor"),
+        ...(cron === undefined ? {} : { Cron: canonicalSymbol(checker, cron) }),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),

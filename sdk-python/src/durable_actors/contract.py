@@ -12,6 +12,7 @@ from pydantic.json_schema import JsonSchemaMode
 from typing_extensions import TypeAliasType
 
 from .actor import Actor
+from .cron import cron_contract
 from .guards import is_document, is_field, is_list
 from .json import JsonValue
 from .sandbox import sandbox_contract
@@ -77,6 +78,7 @@ def describe_actor(actor: type[Actor[Any, Any, Any, Any]]) -> Definition:
 
 
 def _describe_actor(actor: type[Actor[Any, Any, Any, Any]]) -> Definition:
+    cron_contract(actor)
     if Actor not in actor.__bases__:
         raise ValueError("actors must extend Actor directly")
     if actor.__init__ is not Actor.__init__:
@@ -186,6 +188,7 @@ def actor_contract(definition: Definition) -> Document:
         "actorName": definition.actor.__name__,
         **documentation(definition.actor),
         **sandbox_contract(definition.actor),
+        **cron_contract(definition.actor),
         "rpc": {"schema": rpc_schema, "methods": methods},
         "socket": {
             "version": 1,

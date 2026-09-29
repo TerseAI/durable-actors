@@ -35,6 +35,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
+    crons: Arc<dyn super::cron::CronStore>,
     pub(super) traces: crate::request_traces::TraceStore,
     pub(super) changes: crate::postgres::notifications::ChangeFeed,
     pub(super) region: Option<String>,
@@ -73,8 +74,10 @@ impl ControlPlaneService {
         registry: Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
         provisioner: Arc<dyn HostProvisioner>,
+        crons: Arc<dyn super::cron::CronStore>,
     ) -> Self {
         Self {
+            crons,
             traces: crate::request_traces::TraceStore::default(),
             changes: Default::default(),
             runtime_access: None,
@@ -135,6 +138,16 @@ impl ControlPlaneService {
             self.terminate_deployment_hosts(&previous).await?;
         }
         let changed = update.register(spec, contract).await?;
+        self.crons
+            .publish(
+                &spec.project_id,
+                &contract
+                    .map(|contract| contract.crons())
+                    .transpose()?
+                    .unwrap_or_default(),
+                i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?)?,
+            )
+            .await?;
         self.changes.notify().await;
         Ok(changed || replacing)
     }
@@ -202,6 +215,7 @@ impl ControlPlaneService {
         };
         self.terminate_deployment_hosts(&previous).await?;
         update.remove().await?;
+        self.crons.remove_project(project_id).await?;
         self.changes.notify().await;
         Ok(true)
     }
@@ -596,6 +610,7 @@ impl ControlPlaneService {
             timings.lease_checked_at_ms = Some(timings.elapsed_ms());
         }
         if let Some(target) = active {
+            self.register_cron_instance(actor, &target).await?;
             return Ok(target);
         }
         let target = self
@@ -613,7 +628,18 @@ impl ControlPlaneService {
         if let Some(timings) = timings {
             timings.placement_claimed_at_ms = Some(timings.elapsed_ms());
         }
+        self.register_cron_instance(actor, &target).await?;
         Ok(target)
+    }
+
+    async fn register_cron_instance(&self, actor: &ActorKey, target: &RoutedActor) -> Result<()> {
+        self.crons
+            .register(
+                actor,
+                &target.placement.home_region,
+                i64::try_from(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?)?,
+            )
+            .await
     }
 
     async fn provision_in_regions(

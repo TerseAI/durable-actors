@@ -270,7 +270,7 @@ const counter = actors.Counter.get('counter-1', transport);
 assert.equal(await counter.readHistory(), '');
 assert.equal(await counter.appendHistory(), 'saved');
 assert.equal(await counter.readHistory(), 'saved');
-await assert.rejects(counter.fail(), error => error instanceof ActorInvocationError && error.code === 'actor_error');
+await assert.rejects(counter.fail(), error => error instanceof ActorInvocationError && error.code === 'actor_method_failed');
 const grant = await actors.Counter.prepareWebsocket({{actorId:'counter-1',metadata:{{user:'one'}}}},
     {{projectId:'default',controlPlaneUrl:{gateway},apiKey:'test-api-key'}});
 assert.ok(new URL(grant.websocketUrl).searchParams.get('key'));
@@ -582,6 +582,9 @@ impl Stack {
             registry.clone(),
             issuer.clone(),
             Arc::new(SocketTestProvisioner),
+            std::sync::Arc::new(
+                crate::control_plane::cron::SqliteCronStore::open(":memory:").unwrap(),
+            ),
         );
         let control_plane = serve_control_plane(&mut tasks, service.clone()).await?;
         let gateway = serve_gateway(

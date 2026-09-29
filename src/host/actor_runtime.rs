@@ -541,6 +541,7 @@ impl ActorRuntime {
                     self.evict(&invocation.actor).await;
                 }
                 let code = match failure.code.as_str() {
+                    "actor_method_failed" => "actor_method_failed",
                     "resource_exhausted" => "resource_exhausted",
                     _ => "actor_error",
                 };

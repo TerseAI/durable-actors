@@ -106,6 +106,8 @@ pub async fn serve_local(
         )
         .await?,
     );
+    let cron_stop = CancellationToken::new();
+    let _cron_guard = cron_stop.clone().drop_guard();
     let routes = local_routes(
         &options,
         &project,
@@ -113,9 +115,10 @@ pub async fn serve_local(
         &storage,
         provider.clone(),
         &directory,
+        cron_stop.clone(),
     )
     .await?;
-    let server = LocalServer::start(listener, routes, provider);
+    let server = LocalServer::start(listener, routes, provider, cron_stop);
     let ready = notify_launcher(
         &origin,
         options.api_key.as_deref(),
@@ -138,6 +141,7 @@ pub async fn serve_local(
 }
 
 struct LocalServer {
+    cron_stop: CancellationToken,
     provider: Arc<LocalSandboxProvider>,
     stop: CancellationToken,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -148,6 +152,7 @@ impl LocalServer {
         listener: TcpListener,
         routes: tonic::service::Routes,
         provider: Arc<LocalSandboxProvider>,
+        cron_stop: CancellationToken,
     ) -> Self {
         let stop = CancellationToken::new();
         let stopped = stop.clone();
@@ -157,6 +162,7 @@ impl LocalServer {
                 .await
         });
         Self {
+            cron_stop,
             provider,
             stop,
             server,
@@ -178,6 +184,7 @@ impl LocalServer {
             Err(error) => Err(error),
         };
         // Hosts unregister their leases through this server while draining.
+        self.cron_stop.cancel();
         self.provider.shutdown().await;
         self.stop.cancel();
         if !self.server.is_finished()
@@ -274,6 +281,7 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     directory: &Path,
+    cron_stop: CancellationToken,
 ) -> Result<tonic::service::Routes> {
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
@@ -294,6 +302,9 @@ async fn local_routes(
         secret_refs: vec![],
     };
     let registry = Arc::new(LocalAdminRegistry::default());
+    let crons = Arc::new(super::cron::SqliteCronStore::open(
+        directory.join("crons.sqlite3"),
+    )?);
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
@@ -312,6 +323,7 @@ async fn local_routes(
         registry.clone(),
         issuer.clone(),
         provisioner,
+        crons.clone(),
     )
     .with_runtime_access(storage.access.clone())
     .with_local_builds(Arc::new(super::local_build::LocalBuilds::new(
@@ -322,8 +334,15 @@ async fn local_routes(
         )),
     )))
     .with_traces(storage.traces.clone());
-    let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
+    let admin = AdminService::new(options.api_key.clone(), registry.clone(), issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
+    super::cron::CronScheduler::new(
+        crons,
+        registry,
+        Arc::new(super::cron::HttpCronDispatcher::new(service.clone())?),
+        Arc::new(SystemClock),
+    )
+    .start(cron_stop);
     let inspector = super::inspection::ActorInspector::new(
         storage.runtime.clone(),
         storage.runtime.clone(),

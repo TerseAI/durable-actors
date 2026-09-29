@@ -13,6 +13,10 @@ pub(crate) struct PublicActorContract {
 }
 
 impl PublicActorContract {
+    pub(super) fn crons(&self) -> Result<Vec<super::cron::CronDefinition>> {
+        cron_definitions(&self.document)
+    }
+
     pub(crate) fn sandboxes(&self) -> Result<BTreeMap<String, SandboxOptions>> {
         let document: ContractDocument = serde_json::from_value(self.document.clone())?;
         Ok(document
@@ -56,6 +60,10 @@ pub(crate) struct PublishedContract {
 }
 
 impl PublishedContract {
+    pub(super) fn crons(&self) -> Result<Vec<super::cron::CronDefinition>> {
+        cron_definitions(&self.contract)
+    }
+
     pub(crate) fn rpc_methods(&self, actor_name: &str) -> Result<Vec<String>> {
         let document: ContractDocument = serde_json::from_value(self.contract.clone())?;
         let actor = document
@@ -153,6 +161,7 @@ impl ContractDocument {
                 );
             }
             actor.rpc.validate()?;
+            actor.validate_crons()?;
         }
         Ok(())
     }
@@ -162,11 +171,60 @@ impl ContractDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActorApi {
     actor_name: String,
+    #[serde(default)]
+    crons: Vec<super::cron::CronSchedule>,
     #[serde(rename = "description")]
     _description: Option<String>,
     sandbox: Option<SandboxOptions>,
     socket: SocketContract,
     rpc: RpcContract,
+}
+
+impl ActorApi {
+    fn validate_crons(&self) -> Result<()> {
+        let mut seen = HashSet::new();
+        for cron in &self.crons {
+            ensure!(cron.retries >= 0, "cron retries must be nonnegative");
+            super::cron::next_after(&cron.expression, 0)?;
+            ensure!(
+                seen.insert((&cron.method, &cron.expression)),
+                "duplicate cron schedule"
+            );
+            let method = self
+                .rpc
+                .methods
+                .iter()
+                .find(|method| method.name == cron.method)
+                .context("cron method is not in the actor contract")?;
+            ensure!(
+                method.parameters.len() == 1
+                    && !method.parameters[0].optional
+                    && !method.parameters[0].rest
+                    && matches!(method.result, RpcResult::Void),
+                "cron method requires one event parameter and a void result"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn cron_definitions(document: &Value) -> Result<Vec<super::cron::CronDefinition>> {
+    let document: ContractDocument = serde_json::from_value(document.clone())?;
+    Ok(document
+        .actors
+        .into_iter()
+        .flat_map(|actor| {
+            actor
+                .crons
+                .into_iter()
+                .map(move |cron| super::cron::CronDefinition {
+                    actor_name: actor.actor_name.clone(),
+                    method: cron.method,
+                    expression: cron.expression,
+                    retries: cron.retries,
+                })
+        })
+        .collect())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
