@@ -60,33 +60,62 @@
             "multi_region"
           ]
         },
-        "rapidBuckets": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 3
-              },
-              "zone": {
+        "archiveBucket": {
+          "type": "string",
+          "minLength": 3
+        },
+        "replicas": {
+          "type": "object",
+          "properties": {
+            "placements": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
                 "type": "string",
                 "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
               }
             },
-            "required": [
-              "name",
-              "zone"
-            ]
-          }
+            "addresses": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^https?://[^/?#@]+/?$"
+              }
+            },
+            "deployIndices": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "storageClassName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "diskSize": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(Gi|Ti)$"
+            }
+          },
+          "required": [
+            "placements",
+            "storageClassName",
+            "diskSize"
+          ]
         }
       },
       "required": [
         "authorityBucket",
         "artifactBucket",
+        "archiveBucket",
         "durability",
-        "rapidBuckets"
+        "replicas"
       ]
     },
     "serviceAccount": {
@@ -106,6 +135,12 @@
       "properties": {
         "enabled": {
           "const": true
+        },
+        "replicaCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

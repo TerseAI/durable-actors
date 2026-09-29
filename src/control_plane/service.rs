@@ -980,7 +980,7 @@ impl SandboxHostProvisioner {
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
         let token = async {
             match &self.runtime_access {
-                Some(access) => Ok(Some(access.bootstrap(region).await?)),
+                Some(access) => Ok(Some(access.bootstrap(region, actor).await?)),
                 None => anyhow::Ok(None),
             }
         };

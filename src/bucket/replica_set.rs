@@ -11,63 +11,36 @@ use tokio::sync::Mutex;
 
 use super::SnapshotStore;
 
-pub(crate) struct RapidSet {
+pub(crate) struct ReplicaSet {
     copies: Vec<Arc<dyn SnapshotStore>>,
     epochs: Mutex<BTreeMap<String, Arc<Mutex<bool>>>>,
 }
 
-impl RapidSet {
+impl ReplicaSet {
     pub fn new(copies: Vec<Arc<dyn SnapshotStore>>) -> Result<Self> {
-        ensure!(!copies.is_empty(), "Rapid requires a persistence bucket");
+        ensure!(!copies.is_empty(), "replica requires a persistence bucket");
         Ok(Self {
             copies,
             epochs: Mutex::new(BTreeMap::new()),
         })
     }
 
-    pub fn from_config(
-        config: &super::PersistenceConfig,
-        clients: super::gcs::GcsClients,
-    ) -> Result<Self> {
+    pub fn from_config(config: &super::PersistenceConfig, token: String) -> Result<Self> {
         config.validate()?;
-        let super::PersistenceConfig::Rapid { buckets, .. } = config else {
-            anyhow::bail!("Rapid persistence configuration required");
+        let super::PersistenceConfig::Replicated { replicas, .. } = config else {
+            anyhow::bail!("replicated persistence required");
         };
         Self::new(
-            buckets
+            replicas
                 .iter()
-                .map(|bucket| {
-                    Ok(Arc::new(super::RapidSnapshots::with_clients(
-                        &bucket.name,
-                        clients.clone(),
+                .map(|replica| {
+                    Ok(Arc::new(crate::replicas::client::ReplicaClient::new(
+                        replica.clone(),
+                        token.clone(),
                     )?) as Arc<dyn SnapshotStore>)
                 })
                 .collect::<Result<_>>()?,
         )
-    }
-
-    pub async fn verify_placements(
-        config: &super::PersistenceConfig,
-        clients: &super::gcs::GcsClients,
-    ) -> Result<()> {
-        config.validate()?;
-        let super::PersistenceConfig::Rapid { buckets, .. } = config else {
-            anyhow::bail!("production requires Rapid persistence");
-        };
-        for result in join_all(buckets.iter().map(|bucket| async {
-            let actual = clients
-                .control
-                .get_bucket()
-                .set_name(format!("projects/_/buckets/{}", bucket.name))
-                .send()
-                .await?;
-            bucket.validate_placement(&actual)
-        }))
-        .await
-        {
-            result?;
-        }
-        Ok(())
     }
 
     async fn epoch(&self, prefix: &str) -> Arc<Mutex<bool>> {
@@ -81,13 +54,13 @@ impl RapidSet {
 }
 
 #[async_trait]
-impl SnapshotStore for RapidSet {
+impl SnapshotStore for ReplicaSet {
     async fn prepare(&self, prefix: &str) -> Result<()> {
         let epoch = self.epoch(prefix).await;
         let mut healthy = epoch.lock().await;
         ensure!(
             *healthy,
-            "Rapid epoch has an ambiguous write; recovery is required"
+            "replica epoch has an ambiguous write; recovery is required"
         );
         *healthy = false;
         for result in join_all(self.copies.iter().map(|copy| copy.prepare(prefix))).await {
@@ -104,18 +77,18 @@ impl SnapshotStore for RapidSet {
         let results = join_all(self.copies.iter().map(|copy| copy.seal(prefix))).await;
         ensure!(
             results.iter().any(Result::is_ok),
-            "no Rapid copy could be sealed for recovery"
+            "no replica copy could be sealed for recovery"
         );
         Ok(())
     }
 
     async fn put(&self, object: &str, bytes: Bytes) -> Result<()> {
-        let (prefix, _) = object.rsplit_once('/').context("Rapid epoch missing")?;
+        let (prefix, _) = object.rsplit_once('/').context("replica epoch missing")?;
         let epoch = self.epoch(&format!("{prefix}/")).await;
         let mut healthy = epoch.lock().await;
         ensure!(
             *healthy,
-            "Rapid epoch has an ambiguous write; recovery is required"
+            "replica epoch has an ambiguous write; recovery is required"
         );
         // Cancellation must fence subsequent writes even when a remote copy persisted the record.
         *healthy = false;
@@ -143,12 +116,12 @@ impl SnapshotStore for RapidSet {
             if let Some(bytes) = bytes {
                 ensure!(
                     selected.as_ref().is_none_or(|previous| previous == &bytes),
-                    "conflicting Rapid copies"
+                    "conflicting replica copies"
                 );
                 selected = Some(bytes);
             }
         }
-        ensure!(available, "no Rapid copy is available for recovery");
+        ensure!(available, "no replica copy is available for recovery");
         Ok(selected)
     }
 
@@ -164,7 +137,7 @@ impl SnapshotStore for RapidSet {
                 if let Some(previous) = &selected {
                     ensure!(
                         previous.0 != candidate.0 || previous.1 == candidate.1,
-                        "conflicting Rapid copies"
+                        "conflicting replica copies"
                     );
                     if super::snapshots::version(&previous.0)
                         >= super::snapshots::version(&candidate.0)
@@ -175,7 +148,7 @@ impl SnapshotStore for RapidSet {
                 selected = Some(candidate);
             }
         }
-        ensure!(available, "no Rapid copy is available for recovery");
+        ensure!(available, "no replica copy is available for recovery");
         Ok(selected)
     }
 
@@ -188,11 +161,11 @@ impl SnapshotStore for RapidSet {
                 keys.extend(copy);
             }
         }
-        ensure!(available, "no Rapid copy is available for recovery");
+        ensure!(available, "no replica copy is available for recovery");
         Ok(keys.into_iter().collect())
     }
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/bucket/rapid_set.rs"]
+#[path = "../../tests/unit/bucket/replica_set.rs"]
 mod tests;

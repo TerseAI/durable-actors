@@ -16,26 +16,45 @@ function render(overrides = {}) {
     } finally { rmSync(directory, { recursive: true }) }
 }
 
-for (const [durability, zones] of [
-    ["zonal", ["us-west4-a"]],
-    ["regional", ["us-west4-a", "us-west4-b"]],
+for (const [durability, placements] of [
+    ["zonal", ["us-west4-a", "us-west4-a", "us-west4-a"]],
+    ["regional", ["us-west4-a", "us-west4-b", "us-west4-c"]],
     ["multi_region", ["us-west4-a", "us-east4-a"]],
 ]) {
-    test(`renders ${durability} storage with a private sandbox namespace and HTTPS ingress`, () => {
-        const result = render({ storage: { durability, rapidBuckets: zones.map((zone, i) => ({ name: `test-copy-${i}`, zone })) } })
+    test(`renders ${durability} replicas with persistent disks and HTTPS ingress`, () => {
+        const result = render({ storage: { durability, replicas: { placements } } })
         assert.equal(result.status, 0, result.stderr)
         assert.match(result.stdout, /kind: Gateway/)
-        assert.match(result.stdout, /kind: NetworkPolicy/)
+        assert.match(result.stdout, /volumeClaimTemplates:/)
+        assert.match(result.stdout, /whenDeleted: Retain/)
+        assert.match(result.stdout, /DURABLE_ACTORS_REPLICAS/)
+        assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, placements.length)
         assert.match(result.stdout, /automountServiceAccountToken: false/)
-        assert.match(result.stdout, /DURABLE_ACTORS_RAPID_BUCKETS/)
+        assert.match(result.stdout, /port: 7200/)
     })
 }
 for (const [name, override] of [
     ["regional copies in one zone", { storage: { durability: "regional" } }],
     ["multi-region copies in one region", { storage: { durability: "multi_region" } }],
-    ["duplicate buckets", { storage: { rapidBuckets: [{name:"same",zone:"us-west4-a"},{name:"same",zone:"us-west4-a"}] } }],
+    ["empty replica set", { storage: { replicas: { placements: [] } } }],
     ["unknown policy", { storage: { durability: "best_effort" } }],
     ["mutable image", { image: { digest: "latest" } }],
     ["shared trust namespace", { sandboxNamespace: "terse-control" }],
-    ["compute without a local copy", { zones: { "north-america-west": "us-west4-b" } }],
 ]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
+
+test("replica count follows the placement list without a fixed maximum", () => {
+    const result = render({ storage: { replicas: { placements: Array(9).fill("us-west4-a") } } })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, 9)
+})
+
+test("regional installations deploy their selected replicas and permit configured remote networks", () => {
+    const result = render({ storage: { durability: "multi_region", replicas: { placements: ["us-west4-a", "us-east4-a"], addresses: ["http://10.1.0.1:7200", "http://10.2.0.1:7200"], deployIndices: [0] } }, networkPolicy: { replicaCidrs: ["10.2.0.0/16"] } })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, 1)
+    assert.match(result.stdout, /cidr: "10.2.0.0\/16"/)
+})
+
+test("rejects out of range replica deployment indices", () => {
+    assert.notEqual(render({ storage: { replicas: { deployIndices: [3] } } }).status, 0)
+})

@@ -1,3 +1,5 @@
+> Historical research: production now uses all-replica disk acknowledgements and batched Standard GCS archival. See [the deployment contract](../../charts/terse/README.md). These Rapid measurements are not replica latency measurements.
+
 # Rapid persistence across two zones
 
 Measured September 28, 2026. This follow-up tests replacing passive sandbox storage replicas with parallel durable appends to independent Rapid buckets. It measures the storage primitive, not a complete actor invocation or a production replication protocol.

@@ -1,3 +1,5 @@
+> Historical research: production now uses all-replica disk acknowledgements and batched Standard GCS archival. See [the deployment contract](../../charts/terse/README.md). These Rapid measurements are not replica latency measurements.
+
 # Rapid persistence across two regions
 
 Measured September 28, 2026. This experiment tests a single Rust process keeping append streams open to Rapid buckets in two regions and requiring durable flushes from both before acknowledging each write. It follows the [two-zone experiment](gcs-rapid-multizone-benchmark.md).

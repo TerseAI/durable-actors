@@ -171,14 +171,14 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn production_defaults_to_zonal_rapid_and_gke() -> Result<()> {
+fn production_defaults_to_zonal_replicas_and_gke() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
     })?;
     assert!(matches!(
         config.storage.persistence,
-        crate::bucket::PersistenceConfig::Rapid {
+        crate::bucket::PersistenceConfig::Replicated {
             durability: crate::bucket::Durability::Zonal,
             ..
         }
@@ -226,9 +226,14 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
             "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
+        ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
         (
-            "DURABLE_ACTORS_RAPID_BUCKETS",
-            r#"[{"name":"rapid-west","zone":"us-west4-a"}]"#,
+            "DURABLE_ACTORS_REPLICA_SECRET",
+            "0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "DURABLE_ACTORS_REPLICAS",
+            r#"[{"id":"replica-a","address":"http://replica-a:7200","zone":"us-west4-a"}]"#,
         ),
         (
             "DURABLE_ACTORS_GKE_ZONES",
@@ -269,7 +274,7 @@ fn analytics_retention_is_configurable_and_bounded() -> Result<()> {
 }
 
 #[test]
-fn default_region_and_compute_zones_match_the_rapid_topology() -> Result<()> {
+fn default_region_requires_a_configured_compute_zone() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
@@ -285,6 +290,6 @@ fn default_region_and_compute_zones_match_the_rapid_topology() -> Result<()> {
         "DURABLE_ACTORS_GKE_ZONES",
         r#"{"north-america-west":"us-west4-b"}"#,
     );
-    assert!(parse(&values).is_err());
+    assert!(parse(&values).is_ok());
     Ok(())
 }

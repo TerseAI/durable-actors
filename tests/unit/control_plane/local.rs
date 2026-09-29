@@ -65,8 +65,19 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
         sdk_host: None,
     };
     let state = local_storage(&options, relative).await?;
-    let config: crate::bucket::access::HostStorageConfig =
-        serde_json::from_str(&state.access.bootstrap(&state.region).await?)?;
+    let config: crate::bucket::access::HostStorageConfig = serde_json::from_str(
+        &state
+            .access
+            .bootstrap(
+                &state.region,
+                &crate::actor::ActorKey {
+                    project_id: "default".into(),
+                    actor_name: "Counter".into(),
+                    actor_id: "one".into(),
+                },
+            )
+            .await?,
+    )?;
     let BucketLocation::File {
         directory: configured,
     } = config.bucket

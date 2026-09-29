@@ -3,8 +3,7 @@ image:
 storage:
   authorityBucket: test-authority
   artifactBucket: test-code
-  rapidBuckets:
-    - name: test-west-a
-      zone: us-west4-a
+  archiveBucket: test-archive
+
 serviceAccount:
   googleServiceAccount: test-control@test-project.iam.gserviceaccount.com

@@ -41,6 +41,8 @@ pub struct ControlPlaneStorageConfig {
     pub bucket: String,
     pub persistence: crate::bucket::PersistenceConfig,
     pub artifact_bucket: String,
+    pub replica_secret: String,
+    pub archive_bucket: String,
 }
 
 pub struct SandboxProviderConfig {
@@ -127,22 +129,26 @@ async fn control_plane_routes(
         database.clone(),
     ));
     let clients = authority.clients();
-    crate::bucket::RapidSet::verify_placements(&config.storage.persistence, &clients).await?;
-    let snapshots = Arc::new(crate::bucket::RapidSet::from_config(
+    let archive = GcsBucket::new(&config.storage.archive_bucket).await?;
+    archive.require_standard().await?;
+    let snapshots = Arc::new(crate::bucket::ReplicaSet::from_config(
         &config.storage.persistence,
-        clients.clone(),
+        config.storage.replica_secret.clone(),
     )?);
     let storage = Arc::new(
         RuntimeStorage::new(authority, Arc::new(crate::clock::SystemClock))?
             .with_persistence(config.storage.persistence, snapshots)?,
     );
-    let runtime_access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        crate::bucket::access::BucketLocation::Gcs {
-            artifact_bucket: config.storage.artifact_bucket.clone(),
-            bucket: config.storage.bucket.clone(),
-        },
-        storage.clone(),
-    )?);
+    let runtime_access = Arc::new(
+        crate::bucket::access::RuntimeAccess::new(
+            crate::bucket::access::BucketLocation::Gcs {
+                artifact_bucket: config.storage.artifact_bucket.clone(),
+                bucket: config.storage.bucket.clone(),
+            },
+            storage.clone(),
+        )?
+        .with_replica_secret(config.storage.replica_secret.clone())?,
+    );
     let placements = storage.clone();
     let gateway =
         super::gateway::Gateway::new(&issuer, config.sandbox_provider.gke.public_origin.clone())?;
@@ -252,8 +258,8 @@ impl ControlPlaneProcessConfig {
         crate::storage::validate_bucket(&bucket)?;
         let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
         crate::storage::validate_bucket(&artifact_bucket)?;
-        let persistence = crate::bucket::PersistenceConfig::Rapid {
-            buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
+        let persistence = crate::bucket::PersistenceConfig::Replicated {
+            replicas: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_REPLICAS")?)?,
             durability: serde_json::from_value(serde_json::Value::String(
                 get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into()),
             ))?,
@@ -264,6 +270,8 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
+            replica_secret: required(&mut get, "DURABLE_ACTORS_REPLICA_SECRET")?,
+            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
             persistence,
             artifact_bucket,
             postgres_url: required(&mut get, "DURABLE_ACTORS_POSTGRES_URL")?,
@@ -279,14 +287,6 @@ impl ControlPlaneProcessConfig {
                 .is_some_and(|region| sandbox_provider.gke.zones.contains_key(region)),
             "default region has no configured GKE zone"
         );
-        if let crate::bucket::PersistenceConfig::Rapid { buckets, .. } = &storage.persistence {
-            for zone in sandbox_provider.gke.zones.values() {
-                ensure!(
-                    buckets.iter().any(|bucket| &bucket.zone == zone),
-                    "each compute zone requires a local Rapid bucket"
-                );
-            }
-        }
         let socket_event_sink = socket_event_sink_config(&mut get)?;
         Ok(Self {
             bind,

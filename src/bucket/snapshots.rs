@@ -1,19 +1,17 @@
-use std::sync::Arc;
-
+use super::{Bucket, replace};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-
-use super::{Bucket, replace};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistenceConfig {
     #[default]
     Local,
-    Rapid {
-        buckets: Vec<RapidBucket>,
+    Replicated {
+        replicas: Vec<ReplicaPlacement>,
         #[serde(default)]
         durability: Durability,
     },
@@ -21,8 +19,9 @@ pub enum PersistenceConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RapidBucket {
-    pub name: String,
+pub struct ReplicaPlacement {
+    pub id: String,
+    pub address: String,
     pub zone: String,
 }
 
@@ -36,34 +35,59 @@ pub enum Durability {
 }
 
 impl PersistenceConfig {
-    pub(crate) fn is_rapid(&self) -> bool {
-        matches!(self, Self::Rapid { .. })
-    }
-
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
-        let Self::Rapid {
-            buckets,
+        let Self::Replicated {
+            replicas,
             durability,
         } = self
         else {
             return Ok(());
         };
-        ensure!(!buckets.is_empty(), "Rapid requires a persistence bucket");
-        let mut names = HashSet::new();
+        ensure!(!replicas.is_empty(), "at least one replica is required");
+        let mut ids = HashSet::new();
+        let mut addresses = HashSet::new();
         let mut zones = HashSet::new();
         let mut regions = HashSet::new();
-        for bucket in buckets {
-            crate::storage::validate_bucket(&bucket.name)?;
-            ensure!(names.insert(&bucket.name), "duplicate Rapid bucket");
-            zones.insert(&bucket.zone);
-            regions.insert(bucket.region()?);
+        for replica in replicas {
+            ensure!(
+                !replica.id.is_empty()
+                    && replica
+                        .id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
+                "invalid replica ID"
+            );
+            ensure!(ids.insert(&replica.id), "duplicate replica ID");
+            let address = reqwest::Url::parse(&replica.address)?;
+            ensure!(
+                matches!(address.scheme(), "http" | "https")
+                    && address.host_str().is_some()
+                    && address.username().is_empty()
+                    && address.password().is_none()
+                    && address.path() == "/"
+                    && address.query().is_none()
+                    && address.fragment().is_none(),
+                "invalid replica address"
+            );
+            ensure!(
+                addresses.insert(address.origin().ascii_serialization()),
+                "duplicate replica address"
+            );
+            let (region, suffix) = replica.zone.rsplit_once('-').ok_or_else(|| {
+                anyhow::anyhow!("replica placement must name a Google Cloud zone")
+            })?;
+            ensure!(
+                suffix.len() == 1
+                    && suffix.as_bytes()[0].is_ascii_lowercase()
+                    && region.chars().last().is_some_and(|c| c.is_ascii_digit()),
+                "invalid replica zone"
+            );
+            zones.insert(&replica.zone);
+            regions.insert(region);
         }
         match durability {
-            Durability::Zonal => ensure!(
-                zones.len() == 1,
-                "zonal durability requires one failure domain"
-            ),
+            Durability::Zonal => ensure!(zones.len() == 1, "zonal durability requires one zone"),
             Durability::Regional => ensure!(
                 zones.len() >= 2 && regions.len() == 1,
                 "regional durability requires distinct zones in one region"
@@ -73,44 +97,6 @@ impl PersistenceConfig {
                 "multi-region durability requires distinct regions"
             ),
         }
-        Ok(())
-    }
-}
-
-impl RapidBucket {
-    pub(crate) fn region(&self) -> Result<&str> {
-        let (region, suffix) = self
-            .zone
-            .rsplit_once('-')
-            .ok_or_else(|| anyhow::anyhow!("Rapid placement must name a Google Cloud zone"))?;
-        ensure!(
-            suffix.len() == 1
-                && suffix.as_bytes()[0].is_ascii_lowercase()
-                && region.chars().last().is_some_and(|c| c.is_ascii_digit()),
-            "Rapid placement must name a Google Cloud zone"
-        );
-        Ok(region)
-    }
-
-    pub(crate) fn validate_placement(
-        &self,
-        actual: &google_cloud_storage::model::Bucket,
-    ) -> Result<()> {
-        let locations = actual
-            .custom_placement_config
-            .as_ref()
-            .map(|config| config.data_locations.as_slice())
-            .unwrap_or_default();
-        ensure!(
-            actual.storage_class == "RAPID"
-                && actual.location_type == "zone"
-                && actual.location.eq_ignore_ascii_case(self.region()?)
-                && locations.len() == 1
-                && locations[0].eq_ignore_ascii_case(&self.zone),
-            "Rapid bucket {} does not match configured placement {}",
-            self.name,
-            self.zone
-        );
         Ok(())
     }
 }

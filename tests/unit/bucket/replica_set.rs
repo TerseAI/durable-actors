@@ -72,7 +72,7 @@ impl SnapshotStore for CopyStore {
 async fn acknowledgement_waits_for_every_required_copy_and_dispatches_concurrently() -> Result<()> {
     let a = CopyStore::new(true);
     let b = CopyStore::new(true);
-    let store = Arc::new(RapidSet::new(vec![a.clone(), b.clone()])?);
+    let store = Arc::new(ReplicaSet::new(vec![a.clone(), b.clone()])?);
     store.prepare("epoch/").await?;
     let pending = tokio::spawn({
         let store = store.clone();
@@ -97,7 +97,7 @@ async fn ambiguous_write_fences_the_entire_epoch_without_downgrading() -> Result
     let a = CopyStore::new(false);
     let b = CopyStore::new(false);
     b.failed.store(true, Ordering::SeqCst);
-    let store = RapidSet::new(vec![a.clone(), b.clone()])?;
+    let store = ReplicaSet::new(vec![a.clone(), b.clone()])?;
     store.prepare("epoch/").await?;
     assert!(
         store
@@ -121,7 +121,7 @@ async fn ambiguous_write_fences_the_entire_epoch_without_downgrading() -> Result
 #[tokio::test]
 async fn cancellation_fences_the_epoch_before_any_subsequent_append() -> Result<()> {
     let a = CopyStore::new(true);
-    let store = Arc::new(RapidSet::new(vec![a.clone()])?);
+    let store = Arc::new(ReplicaSet::new(vec![a.clone()])?);
     store.prepare("epoch/").await?;
     let pending = tokio::spawn({
         let store = store.clone();
@@ -147,7 +147,7 @@ async fn cancellation_fences_the_epoch_before_any_subsequent_append() -> Result<
 async fn recovery_uses_a_surviving_copy_but_rejects_conflicting_state() -> Result<()> {
     let a = CopyStore::new(false);
     let b = CopyStore::new(false);
-    let store = RapidSet::new(vec![a.clone(), b.clone()])?;
+    let store = ReplicaSet::new(vec![a.clone(), b.clone()])?;
     store.prepare("epoch/").await?;
     store
         .put("epoch/1.json", Bytes::from_static(b"state"))
@@ -172,7 +172,7 @@ async fn recovery_uses_a_surviving_copy_but_rejects_conflicting_state() -> Resul
 async fn sealing_a_surviving_copy_prevents_old_epoch_writes() -> Result<()> {
     let a = CopyStore::new(false);
     let b = CopyStore::new(false);
-    let store = RapidSet::new(vec![a.clone(), b.clone()])?;
+    let store = ReplicaSet::new(vec![a.clone(), b.clone()])?;
     store.prepare("epoch/").await?;
     store
         .put("epoch/1.json", Bytes::from_static(b"state"))

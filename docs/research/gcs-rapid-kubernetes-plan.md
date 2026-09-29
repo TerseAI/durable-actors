@@ -1,3 +1,5 @@
+> Historical research: production now uses all-replica disk acknowledgements and batched Standard GCS archival. See [the deployment contract](../../charts/terse/README.md). These Rapid measurements are not replica latency measurements.
+
 # GKE Sandbox, Rust, and configurable durability
 
 Updated September 28, 2026. The objective is lower activation and mutation latency without introducing an ownership database that we must shard as the actor fleet grows. The chosen production default is GKE Sandbox with Rust infrastructure, GCS ownership, direct GCS artifact delivery, and Rapid persistence. PostgreSQL ownership migration is outside the plan. Stronger durability is configurable. Rapid is the only production state-persistence and replication implementation. Backward compatibility is not a requirement; this supersedes the earlier requirement to support the current setup alongside the new architecture. Do not add arbitrary artifact or state-size caps.

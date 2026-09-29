@@ -1,3 +1,5 @@
+> Historical research: production now uses all-replica disk acknowledgements and batched Standard GCS archival. See [the deployment contract](../../charts/terse/README.md). These Rapid measurements are not replica latency measurements.
+
 # Rust / GKE Sandbox latency experiment
 
 September 28, 2026. **The experiment supports direct Rust code delivery and persistent Rapid streams.** With PostgreSQL ownership, the estimate is a returning write around **240–260 ms p50**, compared with **548 ms** in the saved Modal benchmark. Retaining GCS ownership instead models at **325–360 ms p50** before a planning allowance, depending on stream setup ordering. These are modeled client latencies using measured components, not production end-to-end measurements.

@@ -11,8 +11,17 @@ storage:
   authorityBucket: ""
   artifactBucket: ""
   durability: zonal
-  rapidBuckets: []
-# Existing Secret in the release namespace, with postgres-url, jwt-signing-key and api-key.
+  archiveBucket: ""
+  replicas:
+    placements: [us-west4-a, us-west4-a, us-west4-a]
+    addresses: []
+    deployIndices: null
+    storageClassName: premium-rwo
+    diskSize: 100Gi
+    resources:
+      requests: {cpu: "1", memory: 1Gi}
+      limits: {memory: 4Gi}
+# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key and replica-key.
 credentialsSecret: terse-credentials
 serviceAccount:
   googleServiceAccount: ""
@@ -41,3 +50,4 @@ gateway:
 networkPolicy:
   enabled: true
   dnsCidrs: []
+  replicaCidrs: []

@@ -33,6 +33,21 @@ impl GcsBucket {
         self.clients.clone()
     }
 
+    pub(crate) async fn require_standard(&self) -> Result<()> {
+        let bucket = self
+            .clients
+            .control
+            .get_bucket()
+            .set_name(&self.bucket)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            bucket.storage_class == "STANDARD",
+            "archive bucket must use Standard GCS"
+        );
+        Ok(())
+    }
+
     pub async fn new(bucket: &str) -> Result<Self> {
         Self::with_credentials(
             bucket,
@@ -65,15 +80,7 @@ impl WarmGcs {
             .storage
             .read_object("projects/_/buckets/durable-actors-warmup", "connection")
             .send();
-        let bidi = self
-            .clients
-            .storage
-            .open_object("projects/_/buckets/durable-actors-warmup", "connection")
-            .send();
-        let _ = tokio::join!(
-            tokio::time::timeout(Duration::from_millis(250), probe),
-            tokio::time::timeout(Duration::from_millis(250), bidi),
-        );
+        let _ = tokio::time::timeout(Duration::from_millis(250), probe).await;
     }
 
     pub async fn keep_warm(&self) {

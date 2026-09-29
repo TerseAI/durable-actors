@@ -1,6 +1,6 @@
 apiVersion: v2
 name: terse
-description: Rust actor control plane and prewarmed GKE Sandbox hosts with GCS Rapid persistence
+description: Rust actor control plane and prewarmed GKE Sandbox hosts with replicated storage and Standard GCS archival
 type: application
 version: 0.1.0
 appVersion: "0.5.3"

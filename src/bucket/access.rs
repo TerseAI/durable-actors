@@ -21,6 +21,7 @@ pub(crate) struct HostStorageConfig {
     pub bucket: BucketLocation,
     pub persistence: super::PersistenceConfig,
     pub region: String,
+    pub replica_token: Option<String>,
     pub token: Option<StorageToken>,
 }
 
@@ -53,6 +54,7 @@ impl std::fmt::Debug for StorageToken {
 
 pub(crate) struct RuntimeAccess {
     location: BucketLocation,
+    replicas: Option<crate::replicas::access::Access>,
     tokens: Option<StorageTokens>,
     storage: Arc<super::RuntimeStorage>,
 }
@@ -60,6 +62,7 @@ pub(crate) struct RuntimeAccess {
 impl RuntimeAccess {
     pub fn new(location: BucketLocation, storage: Arc<super::RuntimeStorage>) -> Result<Self> {
         Ok(Self {
+            replicas: None,
             tokens: match &location {
                 BucketLocation::Gcs {
                     bucket,
@@ -83,8 +86,18 @@ impl RuntimeAccess {
         })
     }
 
-    pub async fn bootstrap(&self, region: &str) -> Result<String> {
+    pub fn with_replica_secret(mut self, secret: String) -> Result<Self> {
+        self.replicas = Some(crate::replicas::access::Access::new(secret)?);
+        Ok(self)
+    }
+
+    pub async fn bootstrap(&self, region: &str, actor: &crate::actor::ActorKey) -> Result<String> {
         Ok(serde_json::to_string(&HostStorageConfig {
+            replica_token: self
+                .replicas
+                .as_ref()
+                .map(|access| access.scoped(actor))
+                .transpose()?,
             bucket: self.location.clone(),
             persistence: self.storage.persistence.clone(),
             region: region.into(),
@@ -292,15 +305,7 @@ fn boundary(
         &["storage.objectUser"],
     )];
     match persistence {
-        super::PersistenceConfig::Rapid { buckets, .. } => {
-            for bucket in buckets {
-                rules.push(rule(
-                    &bucket.name,
-                    &[format!("{prefix}snapshots/")],
-                    &["storage.objectUser"],
-                ));
-            }
-        }
+        super::PersistenceConfig::Replicated { .. } => {}
         super::PersistenceConfig::Local => rules.push(rule(
             bucket,
             &[format!("{prefix}snapshots/")],

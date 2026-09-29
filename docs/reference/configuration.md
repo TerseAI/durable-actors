@@ -41,7 +41,11 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
-| `DURABLE_ACTORS_RAPID_BUCKETS` | JSON array of `{name,zone}` for all required state copies. |
+| `DURABLE_ACTORS_REPLICAS` | JSON array of `{id,address,zone}`; every configured replica must confirm a write. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Standard GCS bucket for immutable change-log batches. |
+| `DURABLE_ACTORS_REPLICA_SECRET` | Shared infrastructure credential, at least 32 bytes. Customer hosts receive actor-scoped capabilities. |
+| `DURABLE_ACTORS_REPLICA_ID` | Stable identity of this storage replica. |
+| `DURABLE_ACTORS_REPLICA_DATA` | SQLite file on a retained persistent volume. |
 | `DURABLE_ACTORS_DURABILITY` | `zonal` (default), `regional`, or `multi_region`. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
 | `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a Google zone. |
@@ -49,7 +53,7 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
 
-All configured Rapid buckets must flush a write before it is acknowledged. Placement is validated against actual bucket metadata at startup. Membership and durability changes require an explicit data migration. The deployment replaces the previous hosting and storage protocol; it does not read legacy state.
+All configured replicas must confirm a disk commit before a write is acknowledged. Logs are archived to Standard GCS at 16 MiB or 10 seconds, whichever comes first. Upload failures retain the local log; a surviving replica can archive it. Placement and replica count are configuration, with no fixed count ceiling. Membership and durability changes for existing actors require an explicit data migration. The deployment replaces the previous hosting and storage protocol; it does not read legacy state.
 
 ## Advanced settings
 
