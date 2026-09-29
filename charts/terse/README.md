@@ -79,7 +79,7 @@ Replica StatefulSets use `OnDelete` updates, retained PVCs and a zero-disruption
 
 ## Code deployment and capacity
 
-Build a source image extending the published runtime image, copy the application source and installed dependencies into it, push it, then deploy its digest. The provider runs the bundled compiler inside a temporary GKE Sandbox pod, publishes the resulting `actors.mjs` to the artifact bucket, and records a generation-pinned, SHA-256 checked manifest. Actor pods use the shared runtime image and receive code over the Rust GCS client; they do not mount GCS filesystems.
+Build a source image extending the published runtime image, copy the application source and installed dependencies into it, push it, then deploy its digest. The provider runs the bundled compiler inside a temporary GKE Sandbox pod, publishes the resulting `actors.mjs` or `actors.pyz` and Python dependencies to the artifact bucket, and records a generation-pinned, SHA-256 checked manifest. Actor pods use the shared runtime image and receive code over the Rust GCS client; they do not mount GCS filesystems.
 
 ```dockerfile
 FROM RUNTIME_IMAGE_AT_SHA256_DIGEST
@@ -87,7 +87,7 @@ COPY --chown=10000:10000 . /customer
 WORKDIR /customer
 ```
 
-Use the existing deployment API with an OCI digest in `imageRef`, `/customer` as `workingDirectory`, and the source entrypoint. The bundled compiler needs the application dependencies available in the source image. It produces a bundled JavaScript module; separately loaded files/native addons need explicit packaging support before using them.
+Use the existing deployment API with an OCI digest in `imageRef`, `/customer` as `workingDirectory`, and the source entrypoint. The bundled compiler needs the application dependencies available in the source image. TypeScript produces a bundled JavaScript module; separately loaded JavaScript files/native addons need explicit packaging support before using them. Python publishes its source archive and installed dependency tree. Python assignment currently starts its executor after claiming a prewarmed Bun pod, matching the existing Python runtime behavior; it adds interpreter startup latency.
 
 `pool.idle`, `pool.fleetMaximum`, `pool.maxStarting`, CPU and memory control prewarming. Keep enough nodes and ready spares for bursts. Resource overrides that differ from the configured pool currently create a pod on demand; these requests include pod startup latency. Running out of ready spares also uses this cold path. Large code and state payloads have no application byte ceiling; node/container resources and upstream service limits still apply.
 

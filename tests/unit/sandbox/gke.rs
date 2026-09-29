@@ -128,3 +128,48 @@ fn request() -> Result<EnsureHostRequest> {
         host_idle_timeout_ms: 10000,
     })
 }
+
+#[test]
+fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
+    let mut request = request()?;
+    let mut manifest =
+        crate::artifacts::ArtifactManifest::decode(request.code_snapshot.as_ref().unwrap())?;
+    manifest.files[0].path = "actors.pyz".into();
+    request.code_snapshot = Some(manifest.encode()?);
+    request.actor_entrypoint = Some("actors.pyz".into());
+    let environment =
+        assignment_environment(&request, request.spare.as_ref().unwrap(), HashMap::new())?;
+    assert_eq!(
+        environment["DURABLE_ACTORS_ENTRYPOINT"],
+        "/customer/actors.pyz"
+    );
+    Ok(())
+}
+
+struct ExpiredAssignment;
+#[async_trait]
+impl HostAssignment for ExpiredAssignment {
+    async fn assign(
+        &self,
+        spare: &SpareHandle,
+        environment: HashMap<String, String>,
+    ) -> Result<ActorHostHandle> {
+        let mut handle = Assign.assign(spare, environment).await?;
+        handle.lease.as_mut().unwrap().expires_at_ms = 0;
+        Ok(handle)
+    }
+}
+
+#[tokio::test]
+async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Result<()> {
+    let provider = GkeSandboxProvider {
+        cluster: Arc::new(Cluster {
+            creates: AtomicUsize::new(0),
+        }),
+        assignment: Arc::new(ExpiredAssignment),
+        artifacts: Arc::new(Artifacts),
+        public_origin: "https://actors.example.com".into(),
+    };
+    assert!(provider.ensure_host(&request()?).await.is_err());
+    Ok(())
+}

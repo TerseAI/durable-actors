@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     const [directory, entrypoint, output, mode] = process.argv.slice(2)
     if (!directory || !entrypoint || !output)
         throw new Error("Expected project directory, actor entrypoint, and output directory")
+    if (entrypoint.endsWith(".py")) return buildPython(directory, entrypoint, output, mode)
     process.chdir(directory)
     const artifact = path.join(output, "actors.mjs")
     const contract = parsePublicContract(await buildActor(entrypoint, artifact, { local: mode === "local" }))
@@ -21,6 +22,16 @@ async function main(): Promise<void> {
     if (size === 0) throw new Error("Compiled customer code is empty")
     if (mode === "local") await validateArtifact(artifact, entrypoint)
     process.stdout.write(document)
+}
+
+async function buildPython(directory: string, entrypoint: string, output: string, mode?: string): Promise<void> {
+    const { stdout, stderr } = await promisify(execFile)(
+        process.env.DURABLE_ACTORS_PYTHON ?? "python3",
+        ["-m", "durable_actors.build", directory, entrypoint, output, ...(mode === "local" ? [mode] : [])],
+        { maxBuffer: Infinity }
+    )
+    process.stderr.write(stderr)
+    process.stdout.write(stdout)
 }
 
 async function validateArtifact(artifact: string, entrypoint: string): Promise<void> {

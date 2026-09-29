@@ -11,7 +11,8 @@ To use Durable Actors in your own application, start with the [quickstart](READM
 - Node.js 22.19+ and pnpm 10.17.1 (the pinned workspace version).
 - Bun 1.3.9+; CI exercises both 1.3.9 and 1.4.2.
 - Rust 1.89+ with Cargo and rustfmt, and a native C/C++ build toolchain.
-- Go for changes to `providers/modal-go` or a full runtime bundle. CI uses Go 1.27.1; the module declares Go 1.25.0.
+- Helm 3 for changes to the Kubernetes chart.
+- Python 3.11+ and uv for changes to `sdk-python`.
 - PostgreSQL 16 for database tests. Docker is an optional way to run it.
 
 Fork the repository, then clone your fork and install the workspace dependencies:
@@ -24,23 +25,24 @@ pnpm --dir sdk build
 cargo build --locked
 ```
 
-The SDK build includes the observer UI and actor template. A full native bundle, including the Go provider, can be built with `pnpm build`.
+The SDK build includes the observer UI and actor template. A full native bundle can be built with `pnpm build`.
 
 ## Find your way around
 
 | Directory               | Contents                                            |
 | ----------------------- | --------------------------------------------------- |
 | `src/`                  | Rust control plane, host, storage, and runtime      |
+| `sdk-python/`           | Python actors, executor, and generated clients |
 | `sdk/`                  | TypeScript SDK, compiler, generated client, and CLI |
 | `packages/observer-ui/` | Actor observability UI                              |
-| `providers/modal-go/`   | Modal provider                                      |
+| `charts/terse/`          | GKE Sandbox and storage replica deployment          |
 | `tests/`                | Rust tests and repository script tests              |
 | `examples/`             | Chat, AI chat, and collaborative documents          |
 | `docs/`                 | API and configuration references                    |
 
 ## Make a change
 
-Keep changes focused and follow the [engineering conventions](AGENTS.md). For behavior changes, add a failing test first, implement the change, then refactor. Put tests and fixtures in the relevant project's `tests/` directory; CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access. Go tests use the existing overlay; update `providers/modal-go/tests/overlay.json` when adding or renaming tests.
+Keep changes focused and follow the [engineering conventions](AGENTS.md). For behavior changes, add a failing test first, implement the change, then refactor. Put tests and fixtures in the relevant project's `tests/` directory; CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access.
 
 Update documentation and examples when changing a public API, configuration, or CLI behavior.
 
@@ -77,12 +79,32 @@ cargo build --locked
 cargo test --locked -- --ignored
 ```
 
-For Go provider changes, run from `providers/modal-go`:
+For Kubernetes deployment changes:
 
 ```sh
-go test -race -mod=readonly -overlay tests/overlay.json ./...
-go vet -mod=readonly -overlay tests/overlay.json ./...
+helm lint charts/terse -f charts/terse/tests/values.yaml
+node --test charts/terse/tests/chart.test.mjs
 ```
+
+For Python SDK changes, build the runtime and run from `sdk-python`:
+
+```sh
+uv sync --locked --all-extras
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src/durable_actors
+uv run pyright
+DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run pytest -q
+uv build --no-sources
+```
+
+Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip without it. To run the shared CLI's Python tests from the repository root after building the SDK:
+
+```sh
+pnpm --dir sdk exec tsc -p tsconfig.test.json
+DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" node --test sdk/.test-dist/tests/cli/python.test.js
+```
+ The release workflow requires the PyPI trusted publisher described in the [Python reference](docs/reference/python.md#releases).
 
 For SDK packaging or documentation changes, run the relevant checks:
 

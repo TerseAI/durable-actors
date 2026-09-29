@@ -84,7 +84,7 @@ impl PublishedContract {
 struct ContractDocument {
     version: u32,
     actors: Vec<ActorApi>,
-    typescript: TypeScriptContract,
+    typescript: Option<TypeScriptContract>,
 }
 
 #[derive(Deserialize)]
@@ -96,22 +96,24 @@ struct TypeScriptContract {
 
 impl ContractDocument {
     fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.typescript.declarations.trim().is_empty(),
-            "public TypeScript declarations are required"
-        );
-        for (name, version) in &self.typescript.dependencies {
-            let segments: Vec<_> = name.strip_prefix('@').unwrap_or(name).split('/').collect();
+        if let Some(typescript) = &self.typescript {
             ensure!(
-                ((segments.len() == 1 && !name.starts_with('@'))
-                    || (segments.len() == 2 && name.starts_with('@')))
-                    && segments.iter().all(|part| !part.is_empty()
-                        && part.bytes().all(|b| b.is_ascii_lowercase()
-                            || b.is_ascii_digit()
-                            || b"._-".contains(&b)))
-                    && !version.is_empty(),
-                "invalid public type dependency"
+                !typescript.declarations.trim().is_empty(),
+                "public TypeScript declarations are required"
             );
+            for (name, version) in &typescript.dependencies {
+                let segments: Vec<_> = name.strip_prefix('@').unwrap_or(name).split('/').collect();
+                ensure!(
+                    ((segments.len() == 1 && !name.starts_with('@'))
+                        || (segments.len() == 2 && name.starts_with('@')))
+                        && segments.iter().all(|part| !part.is_empty()
+                            && part.bytes().all(|b| b.is_ascii_lowercase()
+                                || b.is_ascii_digit()
+                                || b"._-".contains(&b)))
+                        && !version.is_empty(),
+                    "invalid public type dependency"
+                );
+            }
         }
         ensure!(
             self.version == 1,
@@ -160,6 +162,8 @@ impl ContractDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActorApi {
     actor_name: String,
+    #[serde(rename = "description")]
+    _description: Option<String>,
     sandbox: Option<SandboxOptions>,
     socket: SocketContract,
     rpc: RpcContract,
@@ -301,6 +305,8 @@ impl RpcContract {
 #[serde(deny_unknown_fields)]
 struct RpcMethod {
     name: String,
+    #[serde(rename = "description")]
+    _description: Option<String>,
     parameters: Vec<RpcParameter>,
     result: RpcResult,
 }

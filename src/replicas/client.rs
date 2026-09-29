@@ -56,14 +56,15 @@ impl ReplicaClient {
             placement,
             token,
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             latest: Mutex::new(BTreeMap::new()),
         })
     }
     pub(super) async fn send(&self, command: Command) -> Result<Reply> {
-        let result: std::result::Result<Reply, String> = self
+        let exporting = matches!(command, Command::ExportSealed);
+        let request = self
             .http
             .post(format!(
                 "{}/storage",
@@ -73,12 +74,14 @@ impl ReplicaClient {
             .json(&Request {
                 replica: self.placement.id.clone(),
                 command,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            });
+        let request = if exporting {
+            request
+        } else {
+            request.timeout(Duration::from_secs(10))
+        };
+        let result: std::result::Result<Reply, String> =
+            request.send().await?.error_for_status()?.json().await?;
         result.map_err(anyhow::Error::msg)
     }
     pub async fn archived(&self, key: &str) -> Result<()> {

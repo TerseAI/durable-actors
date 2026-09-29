@@ -49,7 +49,7 @@ impl Kubernetes {
         let created = self.pods.create(&PostParams::default(), &pod).await?;
         let mut cleanup = PodCleanup::new(self.pods.clone(), &created)?;
         let ready = tokio::time::timeout(
-            Duration::from_secs(120),
+            Duration::from_secs(pod_start_timeout(&created)),
             await_condition(
                 self.pods.clone(),
                 &created.name_any(),
@@ -201,13 +201,30 @@ impl SandboxCluster for Kubernetes {
         let ready = self.start(pod).await?;
         let cleanup = PodCleanup::new(self.pods.clone(), &ready)?;
         let directory = tempfile::tempdir()?;
-        let mut artifact = tokio::fs::File::create(directory.path().join("actors.mjs")).await?;
         let mut contract = Vec::new();
+        let mut files = Vec::new();
         let name = ready.name_any();
         tokio::try_join!(
-            self.copy_file(&name, "/tmp/build/actors.mjs", &mut artifact),
-            self.copy_file(&name, "/tmp/build/contract.json", &mut contract)
+            self.copy_file(&name, "/tmp/build/contract.json", &mut contract),
+            self.copy_file(&name, "/tmp/build/files.json", &mut files)
         )?;
+        let paths: Vec<String> = serde_json::from_slice(&files)?;
+        let root = directory.path();
+        let name = &name;
+        futures_util::future::try_join_all(paths.iter().map(|path| async move {
+            crate::artifacts::validate_path(path)?;
+            let destination = root.join(path);
+            tokio::fs::create_dir_all(destination.parent().context("artifact parent missing")?)
+                .await?;
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination)
+                .await?;
+            self.copy_file(&name, &format!("/tmp/build/{path}"), &mut file)
+                .await
+        }))
+        .await?;
         let contract =
             serde_json::from_slice(&contract).context("decode compiled actor contract")?;
         cleanup.delete().await?;
@@ -246,6 +263,20 @@ fn spare_pod(request: &CreateSpareRequest, zone: &str, token: &str) -> Result<Po
     Ok(serde_json::from_value(pod)?)
 }
 
+fn pod_start_timeout(pod: &Pod) -> u64 {
+    if pod
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get("terse.ai/purpose"))
+        .is_some_and(|purpose| purpose == "build")
+    {
+        720
+    } else {
+        120
+    }
+}
+
 fn build_pod(request: &BuildCodeRequest, zone: &str) -> Result<Pod> {
     let mut pod = base_pod(
         &format!("do-build-{}", uuid::Uuid::new_v4()),
@@ -254,11 +285,11 @@ fn build_pod(request: &BuildCodeRequest, zone: &str) -> Result<Pod> {
         &ResourceLimits::default(),
     );
     pod["metadata"]["labels"]["terse.ai/purpose"] = json!("build");
-    pod["spec"]["activeDeadlineSeconds"] = json!(120);
+    pod["spec"]["activeDeadlineSeconds"] = json!(720);
     pod["spec"]["containers"][0]["command"] = json!([
         "/bin/sh",
         "-ec",
-        "mkdir -p /tmp/build; bun /opt/durable-actors/sdk/dist/compiler/deployment-build.js \"$1\" \"$2\" /tmp/build > /tmp/build/contract.json; touch /tmp/build/ready; exec sleep infinity",
+        "mkdir -p /tmp/build; bun /opt/durable-actors/sdk/dist/compiler/deployment-build.js \"$1\" \"$2\" /tmp/build > /tmp/build/contract.json; python3 -c \"import json; from pathlib import Path; root = Path('/tmp/build'); print(json.dumps([str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p not in (root / 'contract.json', root / 'files.json')]))\" > /tmp/build/files.json; touch /tmp/build/ready; exec sleep infinity",
         "build",
         request.working_directory,
         request.actor_entrypoint

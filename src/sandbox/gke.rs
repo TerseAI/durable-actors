@@ -61,6 +61,7 @@ impl GkeSandboxProvider {
             handle.host_id == request.host_id
                 && lease.id == request.host_id
                 && lease.session_id == request.session_id
+                && lease.expires_at_ms > now_ms()?
                 && handle.owner_epoch > 0
                 && handle.route == spare.route
                 && lease.route == spare.route
@@ -76,10 +77,7 @@ impl SandboxProvider for GkeSandboxProvider {
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
         validate_image(&request.image_ref)?;
         let compiled = self.cluster.build_code(request).await?;
-        let code_snapshot = self
-            .artifacts
-            .publish(&compiled.directory.path().join("actors.mjs"))
-            .await?;
+        let code_snapshot = self.artifacts.publish(compiled.directory.path()).await?;
         Ok(BuiltActorCode {
             code_snapshot,
             contract: compiled.contract,
@@ -164,7 +162,7 @@ fn assignment_environment(
         .code_snapshot
         .as_deref()
         .context("compiled GCS code artifact required")?;
-    crate::artifacts::ArtifactManifest::decode(artifact)?;
+    let manifest = crate::artifacts::ArtifactManifest::decode(artifact)?;
     let actor = request.actor.as_ref().context("actor identity required")?;
     actor.validate()?;
     let mut environment = HashMap::from([
@@ -214,7 +212,7 @@ fn assignment_environment(
         ),
         (
             "DURABLE_ACTORS_ENTRYPOINT".into(),
-            "/customer/actors.mjs".into(),
+            format!("/customer/{}", manifest.entrypoint()?),
         ),
         ("DURABLE_ACTORS_CODE_ARTIFACT".into(), artifact.into()),
         (

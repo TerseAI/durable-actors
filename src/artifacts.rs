@@ -70,6 +70,19 @@ impl ArtifactManifest {
         Ok(())
     }
 
+    pub fn entrypoint(&self) -> Result<&str> {
+        let names: Vec<_> = self
+            .files
+            .iter()
+            .filter(|file| matches!(file.path.as_str(), "actors.mjs" | "actors.pyz"))
+            .collect();
+        ensure!(
+            names.len() == 1,
+            "actor artifact requires exactly one compiled entrypoint"
+        );
+        Ok(&names[0].path)
+    }
+
     fn validate(&self) -> Result<()> {
         crate::storage::validate_bucket(&self.bucket)?;
         let mut paths = std::collections::HashSet::new();
@@ -83,10 +96,7 @@ impl ArtifactManifest {
                 "invalid artifact identity"
             );
         }
-        ensure!(
-            paths.contains(&"actors.mjs".to_owned()),
-            "actor artifact has no entrypoint"
-        );
+        self.entrypoint()?;
         Ok(())
     }
 }
@@ -94,10 +104,65 @@ impl ArtifactManifest {
 pub(crate) async fn publish(
     storage: &Storage,
     bucket: &str,
-    path: &Path,
+    root: &Path,
 ) -> Result<ArtifactManifest> {
+    let paths = compiled_files(root)?;
+    let prefix = format!(
+        "{}artifacts/{}",
+        crate::storage_paths::ROOT,
+        uuid::Uuid::new_v4()
+    );
+    let files = futures_util::future::try_join_all(
+        paths
+            .iter()
+            .map(|path| publish_file(storage, bucket, root, &prefix, path)),
+    )
+    .await?;
+    let manifest = ArtifactManifest {
+        bucket: bucket.into(),
+        files,
+    };
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+fn compiled_files(root: &Path) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    for entry in walkdir::WalkDir::new(root).min_depth(1) {
+        let entry = entry?;
+        ensure!(
+            !entry.file_type().is_symlink(),
+            "compiled artifacts cannot contain symlinks"
+        );
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        ensure!(
+            entry.file_type().is_file(),
+            "compiled artifact must be a regular file"
+        );
+        let path = entry
+            .path()
+            .strip_prefix(root)?
+            .to_str()
+            .context("artifact path must be UTF-8")?
+            .to_owned();
+        validate_path(&path)?;
+        paths.push(path);
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+async fn publish_file(
+    storage: &Storage,
+    bucket: &str,
+    root: &Path,
+    prefix: &str,
+    path: &str,
+) -> Result<ArtifactFile> {
     use tokio::io::AsyncReadExt;
-    let mut file = tokio::fs::File::open(path).await?;
+    let mut file = tokio::fs::File::open(root.join(path)).await?;
     let mut hash = Digest::new(&SHA256);
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -107,29 +172,21 @@ pub(crate) async fn publish(
         }
         hash.update(&buffer[..count]);
     }
-    let sha256 = URL_SAFE_NO_PAD.encode(hash.finish().as_ref());
-    let object = format!(
-        "{}artifacts/{}/actors.mjs",
-        crate::storage_paths::ROOT,
-        uuid::Uuid::new_v4()
-    );
+    let object = format!("{prefix}/{path}");
     let uploaded = storage
         .write_object(
             format!("projects/_/buckets/{bucket}"),
             &object,
-            tokio::fs::File::open(path).await?,
+            tokio::fs::File::open(root.join(path)).await?,
         )
         .set_if_generation_match(0)
         .send_unbuffered()
         .await?;
-    Ok(ArtifactManifest {
-        bucket: bucket.into(),
-        files: vec![ArtifactFile {
-            path: "actors.mjs".into(),
-            object,
-            generation: uploaded.generation,
-            sha256,
-        }],
+    Ok(ArtifactFile {
+        path: path.into(),
+        object,
+        generation: uploaded.generation,
+        sha256: URL_SAFE_NO_PAD.encode(hash.finish().as_ref()),
     })
 }
 
@@ -160,7 +217,7 @@ async fn install_file(
     Ok(())
 }
 
-fn validate_path(path: &str) -> Result<()> {
+pub(crate) fn validate_path(path: &str) -> Result<()> {
     ensure!(
         !path.is_empty()
             && Path::new(path)

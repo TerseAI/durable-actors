@@ -30,7 +30,7 @@ test("runtime images package Rust and Bun and run as the sandbox user", () => {
 })
 
 test("release waits for runtime and SDK validation", () => {
-    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) for (const check of ["rust", "npm-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
+    for (const job of ["native-publish", "image-push", "image", "npm", "crate"]) for (const check of ["rust", "npm-ci", "python-ci"]) assert.ok(dependsOn(job, check), `${job} must wait for ${check}`)
 })
 
 test("CI and release exercise direct host sockets with the built SDK", () => {

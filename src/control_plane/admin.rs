@@ -75,15 +75,15 @@ impl HostLaunchSpec {
         }
         validate_component("project ID", &self.project_id, 64)?;
         if let Some(snapshot) = &self.code_snapshot {
-            crate::artifacts::ArtifactManifest::decode(snapshot)?;
+            let manifest = crate::artifacts::ArtifactManifest::decode(snapshot)?;
             ensure!(
                 self.working_directory == "/customer",
                 "snapshot deployments must use /customer"
             );
             let entrypoint = self.actor_entrypoint.as_deref().unwrap_or("actors.mjs");
             ensure!(
-                entrypoint == "actors.mjs",
-                "compiled entrypoint must be actors.mjs"
+                entrypoint == manifest.entrypoint()?,
+                "compiled entrypoint must be actors.mjs or actors.pyz"
             );
         }
         ensure!(
