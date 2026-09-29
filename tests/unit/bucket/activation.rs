@@ -359,38 +359,6 @@ async fn expired_activation_cannot_renew_or_reacquire_with_the_same_session() ->
 }
 
 #[tokio::test]
-async fn ownership_without_a_combined_lease_is_rejected() -> Result<()> {
-    for missing in [true, false] {
-        let f = Fixture::new()?;
-        let mut owner = serde_json::json!({
-            "actor": f.actor, "owner": "legacy", "session": "legacy",
-            "epoch": 1, "region": "us-east", "base": null, "mutation": "old-write",
-        });
-        if !missing {
-            owner["lease"] = serde_json::Value::Null;
-        }
-        let key = ownership_key(&f.actor.storage_key())?;
-        let bytes = serde_json::to_vec(&owner)?;
-        assert!(
-            f.bucket
-                .inner
-                .compare_and_swap(&key, None, bytes.clone())
-                .await?
-        );
-        assert!(f.runtime.get_owner(&f.actor.storage_key()).await.is_err());
-        assert!(
-            f.runtime
-                .register_activation(&f.actor, &request("next"), "us-east", false, None)
-                .await
-                .is_err()
-        );
-        assert_eq!(f.bucket.inner.get(&key).await?.unwrap().bytes, bytes);
-        assert_eq!(f.bucket.writes.load(Ordering::SeqCst), 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn ambiguous_claim_and_renewal_responses_reconcile_the_exact_record() -> Result<()> {
     let f = Fixture::new()?;
     f.bucket.lose_reply.store(true, Ordering::SeqCst);
@@ -715,5 +683,59 @@ async fn clean_shutdown_reactivates_from_the_checkpoint_without_listing_or_sessi
                 .await?;
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replicated_resume_seeds_the_new_epoch_before_returning_an_activation() -> Result<()> {
+    use crate::state_transport::SnapshotWriter;
+    let mut f = Fixture::new()?;
+    let directory = tempfile::tempdir()?;
+    let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
+    f.runtime = f.runtime.with_persistence(
+        crate::bucket::PersistenceConfig::Replicated {
+            placements: vec!["us-west4-a".into()],
+            durability: crate::bucket::Durability::Zonal,
+        },
+        Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
+    )?;
+    let first = request("first");
+    f.runtime
+        .register_activation(&f.actor, &first, "us-east", true, None)
+        .await?;
+    let lease = f
+        .runtime
+        .get_owner(&f.actor.storage_key())
+        .await?
+        .unwrap()
+        .lease;
+    let plan = f
+        .runtime
+        .prepare_actor_write(&f.actor, &lease, 1, 1)
+        .await?;
+    let bytes = crate::state_log::StateSnapshot::new(
+        1,
+        1,
+        "write".into(),
+        serde_json::json!({"count":42}),
+        serde_json::json!(42),
+    )?
+    .encode()?;
+    f.runtime.write_snapshot(&plan, bytes).await?;
+    f.runtime
+        .finish_activation(&f.actor, &first.id, &first.session_id)
+        .await?;
+    let resumed = f
+        .runtime
+        .register_activation(&f.actor, &request("next"), "us-east", false, None)
+        .await?;
+    let key = crate::storage::snapshot_object_name(&f.actor, 1, &format!("{:032x}", 2))?;
+    let stored = snapshots
+        .get(&key)
+        .await?
+        .context("new replica group was not seeded")?;
+    let snapshot = crate::state_log::StateSnapshot::decode(&stored.bytes)?;
+    assert_eq!(snapshot.owner_epoch, 2);
+    assert_eq!(resumed.state.as_deref(), Some(stored.bytes.as_slice()));
     Ok(())
 }

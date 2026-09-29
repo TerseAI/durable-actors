@@ -11,7 +11,7 @@ pub enum PersistenceConfig {
     #[default]
     Local,
     Replicated {
-        replicas: Vec<ReplicaPlacement>,
+        placements: Vec<String>,
         #[serde(default)]
         durability: Durability,
     },
@@ -38,43 +38,17 @@ impl PersistenceConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         use std::collections::HashSet;
         let Self::Replicated {
-            replicas,
+            placements,
             durability,
         } = self
         else {
             return Ok(());
         };
-        ensure!(!replicas.is_empty(), "at least one replica is required");
-        let mut ids = HashSet::new();
-        let mut addresses = HashSet::new();
+        ensure!(!placements.is_empty(), "at least one replica is required");
         let mut zones = HashSet::new();
         let mut regions = HashSet::new();
-        for replica in replicas {
-            ensure!(
-                !replica.id.is_empty()
-                    && replica
-                        .id
-                        .bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
-                "invalid replica ID"
-            );
-            ensure!(ids.insert(&replica.id), "duplicate replica ID");
-            let address = reqwest::Url::parse(&replica.address)?;
-            ensure!(
-                matches!(address.scheme(), "http" | "https")
-                    && address.host_str().is_some()
-                    && address.username().is_empty()
-                    && address.password().is_none()
-                    && address.path() == "/"
-                    && address.query().is_none()
-                    && address.fragment().is_none(),
-                "invalid replica address"
-            );
-            ensure!(
-                addresses.insert(address.origin().ascii_serialization()),
-                "duplicate replica address"
-            );
-            let (region, suffix) = replica.zone.rsplit_once('-').ok_or_else(|| {
+        for zone in placements {
+            let (region, suffix) = zone.rsplit_once('-').ok_or_else(|| {
                 anyhow::anyhow!("replica placement must name a Google Cloud zone")
             })?;
             ensure!(
@@ -83,7 +57,7 @@ impl PersistenceConfig {
                     && region.chars().last().is_some_and(|c| c.is_ascii_digit()),
                 "invalid replica zone"
             );
-            zones.insert(&replica.zone);
+            zones.insert(zone);
             regions.insert(region);
         }
         match durability {

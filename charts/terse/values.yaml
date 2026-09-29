@@ -14,13 +14,15 @@ storage:
   archiveBucket: ""
   replicas:
     placements: [us-west4-a, us-west4-a, us-west4-a]
-    addresses: []
-    deployIndices: null
-    storageClassName: premium-rwo
-    diskSize: 100Gi
+    idle: 192
+    maxStarting: 32
+    credentialsSecret: terse-replica-credentials
     resources:
-      requests: {cpu: "1", memory: 1Gi}
-      limits: {memory: 4Gi}
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 512Mi}
+cloudSql:
+  instanceConnectionName: ""
+  image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
 # Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key and replica-key.
 credentialsSecret: terse-credentials
 serviceAccount:

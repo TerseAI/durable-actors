@@ -44,7 +44,7 @@ impl RuntimeStorage {
                 self.load(&actor.storage_key()).await?
             };
             let ownership_read_ms = read_started.elapsed().as_secs_f64() * 1_000.0;
-            let recovery = self
+            let mut recovery = self
                 .recover_activation(
                     actor,
                     request,
@@ -78,6 +78,7 @@ impl RuntimeStorage {
                 continue;
             }
             self.snapshots.prepare(&record.stream()?.prefix).await?;
+            self.seed_replicas(&record, &mut recovery).await?;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -95,6 +96,35 @@ impl RuntimeStorage {
             return Ok(self.remember(record, recovery.snapshot));
         }
         anyhow::bail!("actor activation changed concurrently")
+    }
+
+    async fn seed_replicas(
+        &self,
+        record: &Ownership,
+        recovery: &mut ActivationRecovery,
+    ) -> Result<()> {
+        use crate::state_transport::SnapshotWriter;
+        if !matches!(
+            self.persistence,
+            super::super::PersistenceConfig::Replicated { .. }
+        ) {
+            return Ok(());
+        }
+        let Some(previous) = &recovery.snapshot else {
+            return Ok(());
+        };
+        let mut snapshot = crate::state_log::StateSnapshot::decode(&previous.bytes)?;
+        snapshot.owner_epoch = record.epoch;
+        let bytes = snapshot.encode()?;
+        let mut plan = self.write_plan(record, snapshot.state_version)?;
+        // The recovered baseline keeps its version while entering a fresh replica stream.
+        plan.stream.base_version = 0;
+        self.write_snapshot(&plan, bytes.clone()).await?;
+        recovery.snapshot = Some(LoadedSnapshot {
+            reference: SnapshotRef::new(plan.object_name, &snapshot, &bytes),
+            bytes: bytes.into(),
+        });
+        Ok(())
     }
 
     pub async fn renew_activation(

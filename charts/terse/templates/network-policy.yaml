@@ -36,6 +36,11 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+    - to:
+        - podSelector:
+            matchLabels: {terse.ai/purpose: replica}
+      ports:
+        - {protocol: TCP, port: 7200}
     {{- range .Values.networkPolicy.replicaCidrs }}
     - to:
         - ipBlock: {cidr: {{ . | quote }}}

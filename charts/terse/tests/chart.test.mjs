@@ -21,14 +21,13 @@ for (const [durability, placements] of [
     ["regional", ["us-west4-a", "us-west4-b", "us-west4-c"]],
     ["multi_region", ["us-west4-a", "us-east4-a"]],
 ]) {
-    test(`renders ${durability} replicas with persistent disks and HTTPS ingress`, () => {
+    test(`renders ${durability} dedicated replica policy and HTTPS ingress`, () => {
         const result = render({ storage: { durability, replicas: { placements } } })
         assert.equal(result.status, 0, result.stderr)
         assert.match(result.stdout, /kind: Gateway/)
-        assert.match(result.stdout, /volumeClaimTemplates:/)
-        assert.match(result.stdout, /whenDeleted: Retain/)
-        assert.match(result.stdout, /DURABLE_ACTORS_REPLICAS/)
-        assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, placements.length)
+        assert.match(result.stdout, /DURABLE_ACTORS_REPLICA_PLACEMENTS/)
+        assert.match(result.stdout, /DURABLE_ACTORS_REPLICA_IDLE/)
+        assert.match(result.stdout, /terse.ai\/assigned: "true"/)
         assert.match(result.stdout, /automountServiceAccountToken: false/)
         assert.match(result.stdout, /port: 7200/)
     })
@@ -42,15 +41,13 @@ for (const [name, override] of [
     ["shared trust namespace", { sandboxNamespace: "terse-control" }],
 ]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
 
-test("regional installations deploy their selected replicas and permit configured remote networks", () => {
-    const result = render({ storage: { durability: "multi_region", replicas: { placements: ["us-west4-a", "us-east4-a"], addresses: ["http://10.1.0.1:7200", "http://10.2.0.1:7200"], deployIndices: [0] } }, networkPolicy: { replicaCidrs: ["10.2.0.0/16"] } })
+test("dedicated replicas have storage identity access while customer pods stay isolated", () => {
+    const result = render()
     assert.equal(result.status, 0, result.stderr)
-    assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, 1)
-    assert.match(result.stdout, /cidr: "10.2.0.0\/16"/)
-})
-
-test("rejects out of range replica deployment indices", () => {
-    assert.notEqual(render({ storage: { replicas: { deployIndices: [3] } } }).status, 0)
+    assert.match(result.stdout, /name: replica\n  namespace: terse-sandboxes/)
+    assert.match(result.stdout, /169\.254\.169\.254\/32/)
+    assert.match(result.stdout, /maxUnavailable: 0/)
+    assert.match(result.stdout, /resources: \[nodes\]/)
 })
 
 test("sandboxes can resolve DNS through kube-dns and GKE NodeLocal DNS pods", () => {
@@ -80,3 +77,15 @@ for (const [name, gateway] of [
     ["missing TLS certificate", { tlsSecret: "", preSharedCert: "" }],
     ["ambiguous TLS certificates", { tlsSecret: "tls", preSharedCert: "managed" }],
 ]) test(`rejects ${name}`, () => assert.notEqual(render({ gateway }).status, 0))
+
+test("Cloud SQL connects through a private local proxy that starts before the control plane", () => {
+    const result = render({ cloudSql: { instanceConnectionName: "project:us-west4:actors-db" } })
+    assert.equal(result.status, 0, result.stderr)
+    const deployment = result.stdout.split("---").find(document => document.includes("kind: Deployment"))
+    assert.match(deployment, /initContainers:[\s\S]*name: cloud-sql-proxy[\s\S]*restartPolicy: Always/)
+    assert.match(deployment, /--address=127\.0\.0\.1/)
+    assert.match(deployment, /--private-ip/)
+    assert.match(deployment, /project:us-west4:actors-db/)
+    assert.match(deployment, /path: \/startup/)
+    assert.match(deployment, /key: postgres-url/)
+})

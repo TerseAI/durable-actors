@@ -31,16 +31,14 @@ async fn acknowledged_records_and_seals_survive_restart() -> Result<()> {
     Ok(())
 }
 #[tokio::test]
-async fn a_registered_disk_can_fence_an_epoch_that_never_finished_initializing() -> Result<()> {
+async fn an_empty_disk_cannot_become_a_recovery_witness_by_sealing() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = ReplicaDisk::open(dir.path().join("data.sqlite")).await?;
-    store.seal(prefix()).await?;
-    drop(store);
-    let store = ReplicaDisk::open(dir.path().join("data.sqlite")).await?;
-    assert!(store.latest(prefix()).await?.is_none());
-    assert!(store.prepare(prefix()).await.is_err());
+    let disk = ReplicaDisk::open(dir.path().join("disk.sqlite")).await?;
+    assert!(disk.seal(prefix()).await.is_err());
+    assert!(disk.latest(prefix()).await.is_err());
     Ok(())
 }
+
 #[tokio::test]
 async fn batching_retains_records_until_archive_confirmation() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -113,34 +111,31 @@ async fn corrupt_records_cannot_replace_durable_state() -> Result<()> {
 }
 
 #[tokio::test]
-async fn replacement_disk_is_seeded_and_old_writers_are_fenced_before_export() -> Result<()> {
-    let source_dir = tempfile::tempdir()?;
-    let target_dir = tempfile::tempdir()?;
-    let source = ReplicaDisk::open(source_dir.path().join("source.sqlite")).await?;
-    source.prepare(prefix()).await?;
-    source
-        .append(prefix(), Record::encode(1, &data(1), None)?, 100)
+async fn replica_assignment_survives_restart_and_cannot_be_rebound() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("replica.sqlite");
+    let disk = ReplicaDisk::open(path.clone()).await?;
+    let assignment = crate::replicas::Assignment {
+        prefix: prefix().into(),
+        replicas: vec![crate::bucket::ReplicaPlacement {
+            id: disk.identity().await?,
+            address: "http://replica:7200".into(),
+            zone: "us-west4-a".into(),
+        }],
+    };
+    disk.bind_assignment(&assignment).await?;
+    disk.append(prefix(), Record::encode(1, &data(1), None)?, 100)
         .await?;
-    let backup = source.export_sealed().await?;
-    assert!(
-        source
-            .append(prefix(), Record::encode(2, &data(2), Some(&data(1)))?, 101)
-            .await
-            .is_err()
-    );
-    let target = ReplicaDisk::open(target_dir.path().join("target.sqlite")).await?;
-    target
-        .restore(backup, "original-disk-identity".into())
-        .await?;
-    assert_eq!(target.identity().await?, "original-disk-identity");
-    assert_eq!(target.latest(prefix()).await?.unwrap().1, data(1));
-    assert!(target.prepare(prefix()).await.is_err());
-    assert!(target.batch(prefix(), 16 * 1024 * 1024).await?.is_some());
-    assert!(
-        target
-            .restore(source.export_sealed().await?, "wrong".into())
-            .await
-            .is_err()
-    );
+    drop(disk);
+    let reopened = ReplicaDisk::open(path).await?;
+    assert_eq!(reopened.assignment().await?, Some(assignment.clone()));
+    assert_eq!(reopened.latest(prefix()).await?.unwrap().1, data(1));
+    reopened.bind_assignment(&assignment).await?;
+    let mut changed = assignment.clone();
+    changed.replicas[0].id = "new-disk".into();
+    assert!(reopened.bind_assignment(&changed).await.is_err());
+    changed = assignment;
+    changed.prefix = "another/epoch/".into();
+    assert!(reopened.bind_assignment(&changed).await.is_err());
     Ok(())
 }

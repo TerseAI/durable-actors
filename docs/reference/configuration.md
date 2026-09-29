@@ -41,7 +41,11 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
-| `DURABLE_ACTORS_REPLICAS` | JSON array of `{id,address,zone}`; every configured replica must confirm a write. |
+| `DURABLE_ACTORS_REPLICA_PLACEMENTS` | JSON array of Google Cloud zones; each entry requests a dedicated replica for every actor activation. All copies must confirm each write. |
+| `DURABLE_ACTORS_REPLICA_IDLE` | Ready unassigned replica target, default `192`. |
+| `DURABLE_ACTORS_REPLICA_MAX_STARTING` | Concurrent replica spare starts, default `32`. |
+| `DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET` | Secret containing `replica-key` in the sandbox namespace, default `terse-replica-credentials`. |
+| `DURABLE_ACTORS_REPLICA_RESOURCES` | Kubernetes requests/limits JSON; defaults to requests of `50m` CPU and `64Mi` RAM, with a `512Mi` memory limit and no CPU limit. |
 | `DURABLE_ACTORS_ARCHIVE_BUCKET` | Standard GCS bucket for immutable change-log batches. |
 | `DURABLE_ACTORS_REPLICA_SECRET` | Shared infrastructure credential, at least 32 bytes. Customer hosts receive actor-scoped capabilities. |
 | `DURABLE_ACTORS_REPLICA_ID` | Stable identity of this storage replica. |

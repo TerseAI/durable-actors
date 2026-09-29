@@ -49,6 +49,35 @@ spec:
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
+      {{- if .Values.cloudSql.instanceConnectionName }}
+      initContainers:
+        - name: cloud-sql-proxy
+          image: {{ .Values.cloudSql.image | quote }}
+          restartPolicy: Always
+          args:
+            - --address=127.0.0.1
+            - --port=5432
+            - --private-ip
+            - --structured-logs
+            - --health-check
+            - --http-address=0.0.0.0
+            - --http-port=9090
+            - {{ .Values.cloudSql.instanceConnectionName | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          startupProbe:
+            httpGet: {path: /startup, port: 9090}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /liveness, port: 9090}
+            periodSeconds: 10
+      {{- end }}
       containers:
         - name: control-plane
           image: {{ include "terse.image" . | quote }}
@@ -87,7 +116,11 @@ spec:
             - {name: DURABLE_ACTORS_GKE_ZONES, value: {{ .Values.zones | toJson | quote }}}
             - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" .Values.storage.authorityBucket | quote }}}
             - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" .Values.storage.artifactBucket | quote }}}
-            - {name: DURABLE_ACTORS_REPLICAS, value: {{ include "terse.replicas" . | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_PLACEMENTS, value: {{ .Values.storage.replicas.placements | toJson | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_IDLE, value: {{ .Values.storage.replicas.idle | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_MAX_STARTING, value: {{ .Values.storage.replicas.maxStarting | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET, value: {{ .Values.storage.replicas.credentialsSecret | quote }}}
+            - {name: DURABLE_ACTORS_REPLICA_RESOURCES, value: {{ .Values.storage.replicas.resources | toJson | quote }}}
             - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" .Values.storage.archiveBucket | quote }}}
             - name: DURABLE_ACTORS_REPLICA_SECRET
               valueFrom:

@@ -36,6 +36,67 @@ impl ReplicaDisk {
         }).await?
     }
 
+    pub async fn bind_assignment(&self, assignment: &super::Assignment) -> Result<()> {
+        let config = serde_json::to_string(assignment)?;
+        let prefix = assignment.prefix.clone();
+        self.run(move |db| {
+            let tx = db.transaction()?;
+            tx.execute(
+                "INSERT OR IGNORE INTO metadata VALUES ('assignment_config', ?1)",
+                [&config],
+            )?;
+            let previous: String = tx.query_row(
+                "SELECT value FROM metadata WHERE key='assignment_config'",
+                [],
+                |row| row.get(0),
+            )?;
+            ensure!(previous == config, "replica membership cannot change");
+            tx.execute(
+                "INSERT OR IGNORE INTO streams(prefix, initialized) VALUES (?1, 1)",
+                [&prefix],
+            )?;
+            let sealed: bool = tx.query_row(
+                "SELECT sealed FROM streams WHERE prefix=?1",
+                [&prefix],
+                |row| row.get(0),
+            )?;
+            ensure!(!sealed, "replica stream is permanently sealed");
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn assignment(&self) -> Result<Option<super::Assignment>> {
+        self.run(|db| {
+            let config: Option<String> = db
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='assignment_config'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(config
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?)
+        })
+        .await
+    }
+
+    pub async fn require_sealed(&self, prefix: &str) -> Result<()> {
+        let prefix = prefix.to_owned();
+        self.run(move |db| {
+            let sealed: bool = db.query_row(
+                "SELECT sealed FROM streams WHERE prefix=?1 AND initialized=1",
+                [prefix],
+                |row| row.get(0),
+            )?;
+            ensure!(sealed, "replica must be sealed before final archival");
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn identity(&self) -> Result<String> {
         self.run(|db| {
             Ok(db.query_row(
@@ -71,11 +132,18 @@ impl ReplicaDisk {
     pub async fn seal(&self, prefix: &str) -> Result<()> {
         let prefix = prefix.to_owned();
         self.run(move |db| {
-            db.execute("INSERT INTO streams(prefix, initialized, sealed) VALUES (?1, 1, 1) ON CONFLICT(prefix) DO UPDATE SET sealed=1", [&prefix])?;
+            ensure!(
+                db.execute(
+                    "UPDATE streams SET sealed=1 WHERE prefix=?1 AND initialized=1",
+                    [&prefix]
+                )? == 1,
+                "uninitialized replica is not a recovery witness"
+            );
             release_archived_payloads(db, &prefix)?;
 
             Ok(())
-        }).await
+        })
+        .await
     }
 
     pub async fn append(&self, prefix: &str, record: Record, now: u64) -> Result<()> {
@@ -270,57 +338,6 @@ impl ReplicaDisk {
             )?;
             release_archived_payloads(&tx, &prefix)?;
             tx.commit()?;
-            Ok(())
-        })
-        .await
-    }
-
-    pub async fn export_sealed(&self) -> Result<Vec<u8>> {
-        self.run(|db| {
-            db.execute("UPDATE streams SET sealed=1", [])?;
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join("replica.sqlite");
-            db.backup(rusqlite::MAIN_DB, &path, None)?;
-            Ok(zstd::stream::encode_all(std::fs::File::open(path)?, 1)?)
-        })
-        .await
-    }
-
-    pub async fn restore(&self, backup: Vec<u8>, identity: String) -> Result<()> {
-        self.run(move |db| {
-            ensure!(
-                db.query_row("SELECT count(*) FROM streams", [], |r| r.get::<_, i64>(0))? == 0,
-                "restore requires an empty replacement disk"
-            );
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join("source.sqlite");
-            std::fs::write(&path, zstd::stream::decode_all(backup.as_slice())?)?;
-            let source = Connection::open(&path)?;
-            ensure!(
-                source.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))? == "ok",
-                "replacement image is corrupt"
-            );
-            ensure!(
-                source.query_row("SELECT count(*) FROM streams WHERE sealed=0", [], |r| r
-                    .get::<_, i64>(0))?
-                    == 0,
-                "source was not fenced before recovery"
-            );
-            drop(source);
-            db.execute(
-                "ATTACH DATABASE ?1 AS recovered",
-                [path.to_str().context("invalid restore path")?],
-            )?;
-            let tx = db.transaction()?;
-            tx.execute("INSERT INTO streams SELECT * FROM recovered.streams", [])?;
-            tx.execute("INSERT INTO records SELECT * FROM recovered.records", [])?;
-            tx.execute("INSERT INTO archives SELECT * FROM recovered.archives", [])?;
-            tx.execute(
-                "UPDATE metadata SET value=?1 WHERE key='identity'",
-                [identity],
-            )?;
-            tx.commit()?;
-            db.execute_batch("DETACH DATABASE recovered")?;
             Ok(())
         })
         .await

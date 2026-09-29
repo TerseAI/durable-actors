@@ -35,7 +35,19 @@ impl Bucket for FailingBucket {
     }
 }
 fn prefix() -> &'static str {
-    "durable-actors/v3/snapshots/aa/cA/YQ/aQ/00000000000000000000000000000001/"
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| {
+        format!(
+            "{}{:032x}/",
+            crate::storage_paths::snapshots(&crate::actor::ActorKey {
+                project_id: "p".into(),
+                actor_name: "a".into(),
+                actor_id: "i".into()
+            })
+            .unwrap(),
+            1
+        )
+    })
 }
 fn data(version: u64) -> Vec<u8> {
     crate::state_log::StateSnapshot::new(
@@ -67,8 +79,7 @@ async fn failed_archival_retains_state_and_a_follower_archives_after_primary_fai
         disk: ReplicaDisk::open(dir.path().join("disk.sqlite")).await?,
         archive: Archive(bucket.clone()),
         access: access(),
-        peers: vec![],
-        primary: false,
+        assignment: assignment("follower", false),
         clock: time.clone(),
     };
     server.disk.prepare(prefix()).await?;
@@ -103,8 +114,7 @@ async fn primary_archives_after_ten_seconds_and_repeated_uploads_are_idempotent(
         disk: ReplicaDisk::open(dir.path().join("disk.sqlite")).await?,
         archive: Archive(Arc::new(FileBucket::new(dir.path().join("gcs"))?)),
         access: access(),
-        peers: vec![],
-        primary: true,
+        assignment: assignment("primary", true),
         clock: time.clone(),
     };
     server.disk.prepare(prefix()).await?;
@@ -148,8 +158,7 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
             disk: ReplicaDisk::open(dir.path().join(format!("{i}.sqlite"))).await?,
             archive: archive.clone(),
             access: access(),
-            peers: vec![],
-            primary: i == 0,
+            assignment: tokio::sync::OnceCell::new(),
             clock: Arc::new(SystemClock),
         });
         let app = routes(server.clone());
@@ -158,11 +167,15 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
         }));
         servers.push(server);
     }
-    let config = PersistenceConfig::Replicated {
-        replicas: placements.clone(),
-        durability: crate::bucket::Durability::Zonal,
-    };
-    let store = ReplicaSet::from_config(&config, access().admin().into())?;
+    for server in &servers {
+        server
+            .assign(Assignment {
+                prefix: prefix().into(),
+                replicas: placements.clone(),
+            })
+            .await?;
+    }
+    let store = ReplicaSet::from_replicas(&placements, access().admin().into())?;
     store.prepare(prefix()).await?;
     store
         .put(&format!("{}1.json", prefix()), data(1).into())
@@ -178,7 +191,7 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
             .await
             .is_err()
     );
-    let recovered = ReplicaSet::from_config(&config, access().admin().into())?;
+    let recovered = ReplicaSet::from_replicas(&placements, access().admin().into())?;
     recovered.seal(prefix()).await?;
     assert!(recovered.latest(prefix()).await?.is_some());
     for server in &servers[1..] {
@@ -193,18 +206,6 @@ async fn network_replication_recovers_with_a_missing_node_and_fences_delayed_wri
     for task in tasks {
         task.abort();
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_fresh_disk_cannot_impersonate_a_registered_replica() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let archive = Archive(Arc::new(FileBucket::new(dir.path().join("gcs"))?));
-    let first = ReplicaDisk::open(dir.path().join("first.sqlite")).await?;
-    let replacement = ReplicaDisk::open(dir.path().join("replacement.sqlite")).await?;
-    register_disk(&archive, &first, "node").await?;
-    register_disk(&archive, &first, "node").await?;
-    assert!(register_disk(&archive, &replacement, "node").await.is_err());
     Ok(())
 }
 
@@ -233,8 +234,7 @@ async fn sealed_streams_release_local_payloads_only_after_verified_archival() ->
         disk: ReplicaDisk::open(dir.path().join("disk.sqlite")).await?,
         archive: Archive(Arc::new(FileBucket::new(dir.path().join("gcs"))?)),
         access: access(),
-        peers: vec![],
-        primary: true,
+        assignment: assignment("primary", true),
         clock: Arc::new(Time(AtomicU64::new(20_000))),
     };
     server.disk.prepare(prefix()).await?;
@@ -261,26 +261,22 @@ async fn sealed_streams_release_local_payloads_only_after_verified_archival() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn one_failed_stream_does_not_starve_archival_of_other_actors() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let server = ReplicaServer {
-        id: "primary".into(),
-        disk: ReplicaDisk::open(dir.path().join("disk.sqlite")).await?,
-        archive: Archive(Arc::new(FileBucket::new(dir.path().join("gcs"))?)),
-        access: access(),
-        peers: vec![],
-        primary: true,
-        clock: Arc::new(Time(AtomicU64::new(20_000))),
-    };
-    for stream in ["aaa-invalid/00000000000000000000000000000001/", prefix()] {
-        server.disk.prepare(stream).await?;
-        server
-            .disk
-            .append(stream, Record::encode(1, &data(1), None)?, 100)
-            .await?;
+fn assignment(id: &str, primary: bool) -> tokio::sync::OnceCell<Assignment> {
+    let mut replicas = vec![];
+    if !primary {
+        replicas.push(ReplicaPlacement {
+            id: "offline".into(),
+            address: "http://127.0.0.1:1".into(),
+            zone: "us-west4-a".into(),
+        });
     }
-    assert!(server.upload_due().await.is_err());
-    assert_eq!(server.archive.get(prefix(), 1).await?, Some(data(1)));
-    Ok(())
+    replicas.push(ReplicaPlacement {
+        id: id.into(),
+        address: "http://127.0.0.1:1".into(),
+        zone: "us-west4-a".into(),
+    });
+    tokio::sync::OnceCell::new_with(Some(Assignment {
+        prefix: prefix().into(),
+        replicas,
+    }))
 }

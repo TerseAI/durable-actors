@@ -25,11 +25,7 @@ impl ReplicaSet {
         })
     }
 
-    pub fn from_config(config: &super::PersistenceConfig, token: String) -> Result<Self> {
-        config.validate()?;
-        let super::PersistenceConfig::Replicated { replicas, .. } = config else {
-            anyhow::bail!("replicated persistence required");
-        };
+    pub fn from_replicas(replicas: &[super::ReplicaPlacement], token: String) -> Result<Self> {
         Self::new(
             replicas
                 .iter()

@@ -1,138 +1,52 @@
-{{- range $i, $zone := .Values.storage.replicas.placements }}
-{{- if or (eq $.Values.storage.replicas.deployIndices nil) (has (float64 $i) $.Values.storage.replicas.deployIndices) }}
-{{- $id := printf "%s-r%d" (include "terse.name" $) $i }}
----
 apiVersion: v1
-kind: Service
+kind: ServiceAccount
 metadata:
-  name: {{ $id }}
-spec:
-  clusterIP: None
-  selector: {terse.ai/replica: {{ $id | quote }}}
-  ports:
-    - {name: storage, port: 7200, targetPort: storage}
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: {{ $id }}
-spec:
-  serviceName: {{ $id }}
-  replicas: 1
-  updateStrategy: {type: OnDelete}
-  persistentVolumeClaimRetentionPolicy:
-    whenDeleted: Retain
-    whenScaled: Retain
-  selector:
-    matchLabels: {terse.ai/replica: {{ $id | quote }}}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "terse.name" $ }}
-        app.kubernetes.io/component: storage
-        terse.ai/replica: {{ $id | quote }}
-    spec:
-      serviceAccountName: {{ include "terse.name" $ }}
-      automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 60
-      nodeSelector:
-        topology.kubernetes.io/zone: {{ $zone | quote }}
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: {{ include "terse.name" $ }}
-                  app.kubernetes.io/component: storage
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: sandbox.gke.io/runtime
-                    operator: NotIn
-                    values: [gvisor]
-      securityContext: {runAsNonRoot: true, runAsUser: 10000, runAsGroup: 10000, fsGroup: 10000}
-      containers:
-        - name: replica
-          image: {{ include "terse.image" $ | quote }}
-          ports:
-            - {name: storage, containerPort: 7200}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          resources:
-            {{- toYaml $.Values.storage.replicas.resources | nindent 12 }}
-          env:
-            - {name: DURABLE_ACTORS_PROCESS_ROLE, value: replica}
-            - {name: DURABLE_ACTORS_REPLICA_ID, value: {{ $id | quote }}}
-            - {name: DURABLE_ACTORS_REPLICA_DATA, value: /data/replica.sqlite}
-            - {name: DURABLE_ACTORS_REPLICAS, value: {{ include "terse.replicas" $ | quote }}}
-            - {name: DURABLE_ACTORS_DURABILITY, value: {{ $.Values.storage.durability | quote }}}
-            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ $.Values.storage.archiveBucket | quote }}}
-            - name: DURABLE_ACTORS_REPLICA_SECRET
-              valueFrom:
-                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: replica-key}
-          volumeMounts:
-            - {name: data, mountPath: /data}
-            - {name: tmp, mountPath: /tmp}
-          startupProbe:
-            httpGet: {path: /health, port: storage}
-            periodSeconds: 5
-            failureThreshold: 60
-          readinessProbe:
-            httpGet: {path: /health, port: storage}
-            periodSeconds: 2
-          livenessProbe:
-            httpGet: {path: /health, port: storage}
-            periodSeconds: 10
-      volumes:
-        - name: tmp
-          emptyDir: {}
-  volumeClaimTemplates:
-    - metadata: {name: data}
-      spec:
-        accessModes: [ReadWriteOnce]
-        storageClassName: {{ $.Values.storage.replicas.storageClassName | quote }}
-        resources:
-          requests: {storage: {{ $.Values.storage.replicas.diskSize | quote }}}
-{{- end }}
-{{- end }}
+  name: replica
+  namespace: {{ .Values.sandboxNamespace }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.googleServiceAccount | quote }}
+automountServiceAccountToken: false
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "terse.name" . }}-storage
+  name: {{ include "terse.name" . }}-replicas
+  namespace: {{ .Values.sandboxNamespace }}
 spec:
   maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "terse.name" . }}
-      app.kubernetes.io/component: storage
+      terse.ai/purpose: replica
+      terse.ai/assigned: "true"
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "terse.name" . }}-storage
+  name: {{ include "terse.name" . }}-replicas
+  namespace: {{ .Values.sandboxNamespace }}
 spec:
   podSelector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "terse.name" . }}
-      app.kubernetes.io/component: storage
-  policyTypes: [Ingress]
+    matchLabels: {terse.ai/purpose: replica}
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: {{ .Values.sandboxNamespace | quote }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ include "terse.name" . }}}
+        - podSelector:
+            matchExpressions:
+              - key: terse.ai/purpose
+                operator: In
+                values: [actor, replica]
       ports:
         - {protocol: TCP, port: 7200}
-
-    {{- range .Values.networkPolicy.replicaCidrs }}
-    - from:
-        - ipBlock: {cidr: {{ . | quote }}}
+  egress:
+    - to:
+        - ipBlock: {cidr: 169.254.169.254/32}
       ports:
-        - {protocol: TCP, port: 7200}
-    {{- end }}
+        - {protocol: TCP, port: 80}
+    - to:
+        - ipBlock: {cidr: 169.254.169.252/32}
+      ports:
+        - {protocol: TCP, port: 988}

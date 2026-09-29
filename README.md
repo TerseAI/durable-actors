@@ -219,4 +219,4 @@ Follow development and release notes on [GitHub Releases](https://github.com/Ter
 
 ## Production hosting
 
-Deploy the [Helm chart](charts/terse/README.md) on GKE Sandbox. It runs the Rust control plane, shared HTTPS/WebSocket gateway and prewarmed Bun actor sandboxes in Kubernetes. Configurable storage replicas persist every write before acknowledgement and archive batches to Standard GCS every 16 MiB or 10 seconds. GCS retains ownership CAS and PostgreSQL handles registry and pool bookkeeping. The chart includes installation prerequisites, code deployment, capacity controls and rollout guidance.
+Deploy the [Helm chart](charts/terse/README.md) on GKE Sandbox. It runs the Rust control plane, shared HTTPS/WebSocket gateway and prewarmed Bun actor sandboxes in Kubernetes. Each actor activation receives its own configurable group of dedicated storage replicas, which persist every write before acknowledgement and archive batches to Standard GCS every 16 MiB or 10 seconds. GCS retains ownership CAS and PostgreSQL handles registry and pool bookkeeping. The chart includes installation prerequisites, code deployment, capacity controls and rollout guidance.

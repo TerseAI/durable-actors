@@ -46,7 +46,8 @@ fn embedded_migrations_have_no_version_gaps() {
         .map(|migration| migration.version())
         .collect();
     versions.sort_unstable();
-    let expected: Vec<_> = (1..=versions.len() as i32).collect();
+    let mut expected: Vec<_> = (1..=versions.len() as i32).collect();
+    expected.sort_unstable();
     assert_eq!(versions, expected);
 }
 
@@ -92,7 +93,13 @@ async fn contract_schema_keeps_one_contract_per_project() -> Result<()> {
 
 #[tokio::test]
 async fn concurrent_connections_migrate_fresh_and_existing_schemas_once() -> Result<()> {
-    for version in [0, 2] {
+    let latest = embedded::migrations::runner()
+        .get_migrations()
+        .iter()
+        .map(|m| m.version())
+        .max()
+        .unwrap();
+    for version in [0, latest] {
         with_postgres_schema(async |database| check_concurrent_migrations(database, version).await)
             .await?;
     }
@@ -218,7 +225,13 @@ async fn check_concurrent_migrations(database: &TestDatabase, version: i32) -> R
         .iter()
         .map(|row| row.get(0))
         .collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    let mut expected: Vec<_> = embedded::migrations::runner()
+        .get_migrations()
+        .iter()
+        .map(|m| m.version())
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(versions, expected);
     Ok(())
 }
 

@@ -43,6 +43,10 @@ pub struct ControlPlaneStorageConfig {
     pub artifact_bucket: String,
     pub replica_secret: String,
     pub archive_bucket: String,
+    pub replica_idle: usize,
+    pub replica_max_starting: usize,
+    pub replica_credentials_secret: String,
+    pub replica_resources: serde_json::Value,
 }
 
 pub struct SandboxProviderConfig {
@@ -131,10 +135,33 @@ async fn control_plane_routes(
     let clients = authority.clients();
     let archive = GcsBucket::new(&config.storage.archive_bucket).await?;
     archive.require_standard().await?;
-    let snapshots = Arc::new(crate::bucket::ReplicaSet::from_config(
+    let replica_pods = crate::replicas::fleet::KubernetesReplicas::new(
+        kube::Client::try_default().await?,
+        crate::replicas::fleet::ReplicaPodConfig {
+            namespace: config.sandbox_provider.gke.namespace.clone(),
+            image: config.sandbox_provider.runtime_image.clone(),
+            archive_bucket: config.storage.archive_bucket.clone(),
+            credentials_secret: config.storage.replica_credentials_secret.clone(),
+            resources: config.storage.replica_resources.clone(),
+        },
+        config.storage.replica_secret.clone(),
+    )?;
+    let fleet = Arc::new(crate::replicas::fleet::ReplicaFleet::new(
+        database.clone(),
+        replica_pods,
+        authority.clone(),
+        Arc::new(archive),
         &config.storage.persistence,
         config.storage.replica_secret.clone(),
+        config.storage.replica_idle,
+        config.storage.replica_max_starting,
+        Arc::new(crate::clock::SystemClock),
     )?);
+    fleet.start(stop.clone());
+    let snapshots = Arc::new(crate::replicas::directory::DedicatedSnapshots::new(
+        fleet.clone(),
+        config.storage.replica_secret.clone(),
+    ));
     let storage = Arc::new(
         RuntimeStorage::new(authority, Arc::new(crate::clock::SystemClock))?
             .with_persistence(config.storage.persistence, snapshots)?,
@@ -179,6 +206,7 @@ async fn control_plane_routes(
     .with_runtime_access(runtime_access)
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
+    service.replicas = Some(fleet);
     service.gateway = Some(gateway);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
@@ -259,7 +287,10 @@ impl ControlPlaneProcessConfig {
         let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
         crate::storage::validate_bucket(&artifact_bucket)?;
         let persistence = crate::bucket::PersistenceConfig::Replicated {
-            replicas: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_REPLICAS")?)?,
+            placements: serde_json::from_str(&required(
+                &mut get,
+                "DURABLE_ACTORS_REPLICA_PLACEMENTS",
+            )?)?,
             durability: serde_json::from_value(serde_json::Value::String(
                 get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into()),
             ))?,
@@ -270,6 +301,10 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
+            replica_idle: get("DURABLE_ACTORS_REPLICA_IDLE").map(|v| v.parse()).transpose()?.unwrap_or(192),
+            replica_max_starting: get("DURABLE_ACTORS_REPLICA_MAX_STARTING").map(|v| v.parse()).transpose()?.unwrap_or(32),
+            replica_credentials_secret: get("DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET").unwrap_or_else(|| "terse-replica-credentials".into()),
+            replica_resources: get("DURABLE_ACTORS_REPLICA_RESOURCES").map(|v| serde_json::from_str(&v)).transpose()?.unwrap_or_else(|| serde_json::json!({"requests":{"cpu":"50m","memory":"64Mi"},"limits":{"memory":"512Mi"}})),
             replica_secret: required(&mut get, "DURABLE_ACTORS_REPLICA_SECRET")?,
             archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
             persistence,

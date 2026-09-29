@@ -17,7 +17,7 @@ pub(super) enum Command {
     List { prefix: String },
     Append { prefix: String, record: Record },
     Archived { key: String },
-    ExportSealed,
+    Flush { prefix: String },
 }
 impl Command {
     pub fn scope(&self) -> Option<&str> {
@@ -26,9 +26,10 @@ impl Command {
             | Self::Seal { prefix }
             | Self::Latest { prefix }
             | Self::List { prefix }
-            | Self::Append { prefix, .. } => Some(prefix),
+            | Self::Append { prefix, .. }
+            | Self::Flush { prefix } => Some(prefix),
             Self::Get { object } => Some(object),
-            Self::Archived { .. } | Self::ExportSealed => None,
+            Self::Archived { .. } => None,
         }
     }
 }
@@ -63,7 +64,7 @@ impl ReplicaClient {
         })
     }
     pub(super) async fn send(&self, command: Command) -> Result<Reply> {
-        let exporting = matches!(command, Command::ExportSealed);
+        let flushing = matches!(command, Command::Flush { .. });
         let request = self
             .http
             .post(format!(
@@ -75,7 +76,7 @@ impl ReplicaClient {
                 replica: self.placement.id.clone(),
                 command,
             });
-        let request = if exporting {
+        let request = if flushing {
             request
         } else {
             request.timeout(Duration::from_secs(10))

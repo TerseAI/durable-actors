@@ -4,7 +4,7 @@ use super::*;
 fn sandbox_credentials_cover_ownership_and_read_only_customer_code() {
     let config = crate::bucket::PersistenceConfig::Replicated {
         durability: crate::bucket::Durability::Zonal,
-        replicas: vec![],
+        placements: vec![],
     };
     let value = boundary("authority", &config, Some("code"));
     let rules = value["accessBoundary"]["accessBoundaryRules"]

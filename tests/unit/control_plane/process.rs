@@ -235,8 +235,8 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
             "0123456789abcdef0123456789abcdef",
         ),
         (
-            "DURABLE_ACTORS_REPLICAS",
-            r#"[{"id":"replica-a","address":"http://replica-a:7200","zone":"us-west4-a"}]"#,
+            "DURABLE_ACTORS_REPLICA_PLACEMENTS",
+            r#"["us-west4-a","us-west4-a","us-west4-a"]"#,
         ),
         (
             "DURABLE_ACTORS_GKE_ZONES",

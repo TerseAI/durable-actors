@@ -7,6 +7,9 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
+    ReplicaDirectory {
+        command: crate::replicas::directory::DirectoryCommand,
+    },
     InventoryChanged,
     RequestTraces {
         traces: Vec<crate::request_traces::RequestTrace>,
@@ -24,6 +27,9 @@ pub(crate) enum ControlPlaneCommandReply {
     StorageAccess {
         token: Option<crate::bucket::access::StorageToken>,
         replacement_token: String,
+    },
+    ReplicaDirectory {
+        reply: crate::replicas::directory::DirectoryReply,
     },
     Unit,
 }
