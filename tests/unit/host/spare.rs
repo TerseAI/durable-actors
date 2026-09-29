@@ -215,3 +215,6 @@ async fn control_plane_failure_prevents_spare_readiness() {
     );
     assert!(prewarm_control_plane(None).await.is_err());
 }
+
+#[path = "lifecycle.rs"]
+mod lifecycle;
