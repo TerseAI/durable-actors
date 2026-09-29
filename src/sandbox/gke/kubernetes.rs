@@ -282,7 +282,10 @@ fn build_pod(request: &BuildCodeRequest, zone: &str) -> Result<Pod> {
         &format!("do-build-{}", uuid::Uuid::new_v4()),
         &request.image_ref,
         zone,
-        &ResourceLimits::default(),
+        &ResourceLimits {
+            cpu_millis: 1000,
+            memory_mib: 1024,
+        },
     );
     pod["metadata"]["labels"]["terse.ai/purpose"] = json!("build");
     pod["spec"]["activeDeadlineSeconds"] = json!(720);

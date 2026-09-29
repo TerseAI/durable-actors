@@ -38,8 +38,8 @@ pool:
   fleetMaximum: 64
   maxStarting: 8
   idleTtlSeconds: 600
-  cpuMillis: 1000
-  memoryMiB: 1024
+  cpuMillis: 250
+  memoryMiB: 256
 hostIdleTimeoutMs: 10000
 gateway:
   enabled: true

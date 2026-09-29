@@ -91,6 +91,6 @@ Use the existing deployment API with an OCI digest in `imageRef`, `/customer` as
 
 `pool.idle`, `pool.fleetMaximum`, `pool.maxStarting`, CPU and memory control prewarming. Keep enough nodes and ready spares for bursts. Resource overrides that differ from the configured pool currently create a pod on demand; these requests include pod startup latency. Running out of ready spares also uses this cold path. Large code and state payloads have no application byte ceiling; node/container resources and upstream service limits still apply.
 
-Validate the assembled architecture on staging before production cutover: workload identity, persistent-volume provisioning, warm invocations, node loss, paused uploads, restore, actor fencing, and cross-region routing. Historical Rapid measurements in `docs/research/` describe a discarded design and do not predict this replica write path.
+Validate the assembled architecture on staging before production cutover: workload identity, persistent-volume provisioning, warm invocations, node loss, paused uploads, restore, actor fencing, and cross-region routing.
 
 References: [GKE Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods), [GKE Gateway TLS](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/secure-gateway).

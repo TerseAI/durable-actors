@@ -387,8 +387,8 @@ fn sandbox_provider_config(
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 1000, 100, 64000)?,
-                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 1024, 128, 262144)?,
+                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 250, 100, 64000)?,
+                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 256, 128, 262144)?,
             },
         },
         gke: GkeConfig {

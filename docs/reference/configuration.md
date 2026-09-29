@@ -53,8 +53,6 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
 
-All configured replicas must confirm a disk commit before a write is acknowledged. Logs are archived to Standard GCS at 16 MiB or 10 seconds, whichever comes first. Upload failures retain the local log; a surviving replica can archive it. Placement and replica count are configuration, with no fixed count ceiling. Membership and durability changes for existing actors require an explicit data migration. The deployment replaces the previous hosting and storage protocol; it does not read legacy state.
-
 ## Advanced settings
 
 ### Capacity and placement
@@ -65,8 +63,8 @@ All configured replicas must confirm a disk commit before a write is acknowledge
 | `DURABLE_ACTORS_HOST_STARTUP_MS`            | `10000`              | Positive actor-host startup timeout in milliseconds.                                                                                                                                                            |
 | `DURABLE_ACTORS_SPARE_IDLE`                 | `5`                  | Ready actor sandboxes per image and configured compute region; 0–32. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment. |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`          | `600`                | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                      |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `1000`               | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
-| `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `1024`               | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `250`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
+| `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `256`                | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
 
@@ -86,8 +84,8 @@ export class CustomerAgent extends Actor {}
 
 | Option | Meaning | Default when omitted |
 | --- | --- | --- |
-| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 1. |
-| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 1024. |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.25. |
+| `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 256. |
 | `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
 

@@ -28,6 +28,8 @@ for (const [durability, placements] of [
         assert.match(result.stdout, /volumeClaimTemplates:/)
         assert.match(result.stdout, /whenDeleted: Retain/)
         assert.match(result.stdout, /DURABLE_ACTORS_REPLICAS/)
+        assert.match(result.stdout, /DURABLE_ACTORS_HOST_CPU_MILLIS, value: "250"/)
+        assert.match(result.stdout, /DURABLE_ACTORS_HOST_MEMORY_MIB, value: "256"/)
         assert.equal((result.stdout.match(/kind: StatefulSet/g) ?? []).length, placements.length)
         assert.match(result.stdout, /automountServiceAccountToken: false/)
         assert.match(result.stdout, /port: 7200/)
