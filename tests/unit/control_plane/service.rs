@@ -605,6 +605,7 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
                 memory_mib: 8192,
             },
         },
+        false,
     );
     let provisioner = provisioner.with_pool(pool);
     for (actor_name, cpu_millis, memory_mib) in [

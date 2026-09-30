@@ -29,6 +29,7 @@ pub(crate) struct SparePool {
     store: PoolStore,
     provider: Arc<dyn SandboxProvider>,
     pub config: PoolConfig,
+    track_usage: bool,
 }
 
 impl SparePool {
@@ -36,11 +37,13 @@ impl SparePool {
         database: PostgresDatabase,
         provider: Arc<dyn SandboxProvider>,
         config: PoolConfig,
+        track_usage: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: PoolStore(database, config.kind),
             provider,
             config,
+            track_usage,
         })
     }
 
@@ -108,12 +111,14 @@ impl SparePool {
             &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
-        crate::usage::UsageJournal::start_in(
-            &transaction,
-            assignment,
-            crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64,
-        )
-        .await?;
+        if self.track_usage {
+            crate::usage::UsageJournal::start_in(
+                &transaction,
+                assignment,
+                crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64,
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(())
     }

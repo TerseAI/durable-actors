@@ -64,6 +64,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
+            false,
         );
         for name in ["done", "live"] {
             pool.reserve_host(name, name, "revision").await?;
@@ -138,6 +139,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
+            false,
         );
         let mut spare = SpareHandle {
             name: "do-actor-done".into(),
@@ -182,7 +184,7 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
             control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
             max_starting: 2, idle_ttl_seconds: 600, regions: vec![], resources: ResourceLimits::default(),
-        });
+        }, false);
         for name in ["evicted", "warm"] {
             let spare = SpareHandle {
                 name: format!("do-actor-{name}"),

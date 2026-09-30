@@ -196,7 +196,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         registry.register_test_deployment(&spec).await?;
         let mut config = config(1);
         config.regions = vec!["slow".into(), "fast".into()];
-        let pool = SparePool::new(database.clone(), Arc::new(RegionalProvider { control_plane_url: None }), config);
+        let pool = SparePool::new(database.clone(), Arc::new(RegionalProvider { control_plane_url: None }), config, false);
         let stop = CancellationToken::new();
         let task = tokio::spawn(pool.clone().run(registry, stop.clone()));
         let guard = stop.clone().drop_guard();
@@ -269,6 +269,7 @@ async fn actor_pool_passes_its_control_plane_url_to_idle_spares() -> Result<()> 
             PostgresDatabase::lazy("postgresql://localhost:1/unused?sslmode=disable")?,
             Arc::new(RegionalProvider { control_plane_url }),
             config,
+            false,
         );
         pool.create("im-runtime", "fast", "spare").await?;
     }

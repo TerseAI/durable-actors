@@ -146,7 +146,8 @@ async fn control_plane_routes(
         .map(|(url, token)| crate::usage::worker::HttpUsageSink::new(&url, token))
         .transpose()?
         .map(|sink| Arc::new(sink) as Arc<dyn crate::usage::UsageSink>);
-    if usage_sink.is_some() {
+    let track_usage = usage_sink.is_some();
+    if track_usage {
         crate::usage::worker::UsageWorker::new(
             crate::usage::UsageJournal::new(database.clone()),
             Arc::new(crate::usage::worker::KubernetesUsageObserver(
@@ -236,6 +237,7 @@ async fn control_plane_routes(
         stop,
         clients.storage,
         usage_authorizer,
+        track_usage,
     )
     .await?;
     let socket_events = config
@@ -281,9 +283,11 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
     storage: google_cloud_storage::client::Storage,
     usage_authorizer: Option<Arc<dyn crate::usage::UsageAuthorizer>>,
+    track_usage: bool,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(GkeSandboxProvider::new(config.gke, storage).await?);
-    let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
+    let pool =
+        crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool, track_usage);
     pool.start(registry, stop);
     Ok(Arc::new(
         super::service::SandboxHostProvisioner::new(

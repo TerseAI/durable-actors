@@ -120,7 +120,7 @@ Supported regions: `canada`, `north-america-east`, `north-america-central`, `nor
 
 ## Sandbox usage hook
 
-GKE assignments are journaled in PostgreSQL when an assigned sandbox becomes ready. Set `DURABLE_ACTORS_USAGE_URL` to an HTTPS receiver and `DURABLE_ACTORS_USAGE_TOKEN` to its dedicated bearer token to enable reconciliation and export. The equivalent Helm settings are `usage.url`, `usage.tokenSecret`, and `usage.tokenKey`; these credentials stay in the control plane.
+Usage tracking is disabled by default: sandbox assignments create no usage sessions or events. Set `DURABLE_ACTORS_USAGE_URL` to an HTTPS receiver and `DURABLE_ACTORS_USAGE_TOKEN` to its dedicated bearer token to enable journaling of new ready assignments, reconciliation, and export. Sandboxes assigned while tracking was disabled remain unmetered; enabling it does not backfill their usage. The equivalent Helm settings are `usage.url`, `usage.tokenSecret`, and `usage.tokenKey`; these credentials stay in the control plane.
 
 Every ten seconds, the control plane observes the runtime container by pod UID and records allocated CPU, allocated memory, and elapsed time. It includes idle time and excludes unassigned warm sandboxes and failed startup. This is allocation metering; actual CPU utilization and memory working-set collection are not implemented. A missing pod ends at the last confirmed checkpoint, so short unobserved tails may be undercounted. Completed-container timestamps close known final intervals. Events survive sandbox cleanup and control-plane restart.
 

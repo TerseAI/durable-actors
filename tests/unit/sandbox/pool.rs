@@ -6,6 +6,7 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
         database,
         Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
         config(1),
+        false,
     )
 }
 
@@ -266,4 +267,91 @@ fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAs
         cpu_millis: 250,
         memory_mib: 256,
     }
+}
+
+#[tokio::test]
+async fn unmetered_assignments_do_not_enter_usage_journal() -> Result<()> {
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let pool = pool(database.clone());
+        pool.reserve_host("unmetered", "host", "revision").await?;
+        let spare = SpareHandle {
+            name: "do-actor-unmetered".into(),
+            resource_id: "namespace/pod/uid".into(),
+            route: "https://spare.test".into(),
+            canonical_region: "region".into(),
+            control_route: String::new(),
+            control_token: String::new(),
+        };
+        pool.remember(
+            "host",
+            "revision",
+            &spare,
+            &usage_assignment("unmetered", &spare),
+        )
+        .await?;
+        assert!(pool.host("host").await?.is_some());
+        let journal = crate::usage::UsageJournal::new(database.clone());
+        assert!(journal.active().await?.is_empty());
+        assert!(journal.pending().await?.is_empty());
+        let metered = SparePool::new(database, pool.provider.clone(), config(1), true);
+        metered
+            .reserve_host("metered", "paid-host", "revision")
+            .await?;
+        let spare = SpareHandle {
+            name: "do-actor-metered".into(),
+            ..spare
+        };
+        let assignment = usage_assignment("metered", &spare);
+        metered
+            .remember("paid-host", "revision", &spare, &assignment)
+            .await?;
+        assert_eq!(journal.active().await?, vec![assignment]);
+        assert!(metered.host("host").await?.is_some());
+        assert!(journal.pending().await?.is_empty());
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn metered_assignment_failure_cannot_make_a_sandbox_routable() -> Result<()> {
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let pool = SparePool::new(
+            database.clone(),
+            Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
+            config(1),
+            true,
+        );
+        pool.reserve_host("metered", "host", "revision").await?;
+        let spare = SpareHandle {
+            name: "do-actor-metered".into(),
+            resource_id: "namespace/pod/uid".into(),
+            route: "https://spare.test".into(),
+            canonical_region: "region".into(),
+            control_route: String::new(),
+            control_token: String::new(),
+        };
+        let mut assignment = usage_assignment("metered", &spare);
+        assignment.cpu_millis = 0;
+        assert!(
+            pool.remember("host", "revision", &spare, &assignment)
+                .await
+                .is_err()
+        );
+        assert!(pool.host("host").await?.is_none());
+        assert!(
+            crate::usage::UsageJournal::new(database)
+                .active()
+                .await?
+                .is_empty()
+        );
+        assignment.cpu_millis = 1_000;
+        pool.remember("host", "revision", &spare, &assignment)
+            .await?;
+        assert!(pool.host("host").await?.is_some());
+        Ok(())
+    })
+    .await
 }
