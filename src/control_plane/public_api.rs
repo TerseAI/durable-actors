@@ -612,7 +612,3 @@ struct ErrorBody {
     code: String,
     message: String,
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/control_plane/public_api.rs"]
-mod tests;

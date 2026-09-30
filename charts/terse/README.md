@@ -76,9 +76,13 @@ GCS history remains after pod deletion. History is retained indefinitely; retent
 
 ## Code and capacity
 
-Compile customer code outside the runtime, upload the compiled files to GCS, and register `bundle` plus `contract` through the administrative deployment API. The runtime accepts the same artifact format from any build system. Each file specifies its relative path, GCS object, immutable generation, and base64url SHA256. Use the configured artifact bucket and `durable-actors/v3/artifacts/{UUID}/` object prefix, with exactly one `actors.mjs` or `actors.pyz` entrypoint. Compile with an SDK/toolchain compatible with the shared runtime image.
+Build a source image extending the published runtime image, containing application source and dependencies. Deploy its digest with `imageRef`, `workingDirectory`, and `actorEntrypoint`. A temporary Sandbox builder runs the compiler and publishes a generation-pinned, checksummed artifact. Rust downloads it in parallel into the assigned actor; there is no GCS filesystem mount.
 
-The control-plane Google identity needs read access to the compiled artifacts. Source uploads, build execution, and caches belong to the caller. Actor spares load registered bundles through the existing scoped GCS path. Retain generations referenced by deployments; the chart does not install an artifact garbage collector.
+```dockerfile
+FROM RUNTIME_IMAGE_AT_SHA256_DIGEST
+COPY --chown=10000:10000 . /customer
+WORKDIR /customer
+```
 
 Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.25 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
 
