@@ -10,8 +10,8 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { fields, seed } from "../../.test-dist/tests/fixtures/litestream.js"
 import { buildActor } from "../../dist/compiler/actor-build.js"
+import { fields, seed } from "../fixtures/litestream.ts"
 
 const sdk = fileURLToPath(new URL("../../", import.meta.url))
 const run = promisify(execFile)

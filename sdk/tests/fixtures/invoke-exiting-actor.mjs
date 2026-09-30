@@ -1,7 +1,8 @@
 import { pathToFileURL } from "node:url"
 
-import { seed } from "../../.test-dist/tests/fixtures/litestream.js"
 import { ActorWorkerSupervisor } from "../../dist/host/worker-supervisor.js"
+
+import { seed } from "./litestream.ts"
 
 const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(process.argv[2]).href })
 try {

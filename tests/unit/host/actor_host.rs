@@ -446,6 +446,11 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
             state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             if invocation.request_id.starts_with("fail") {
+                if invocation.request_id == "fail-fatal" {
+                    let database =
+                        rusqlite::Connection::open(state.unwrap().sqlite.path.as_ref().unwrap())?;
+                    database.execute_batch("BEGIN; UPDATE __terse_fields SET value='999' WHERE name='count'; CREATE TABLE abandoned(value INTEGER); COMMIT")?;
+                }
                 return Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
                     code: if invocation.request_id == "fail-application" {
                         "actor_method_failed"
@@ -455,6 +460,18 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
                     .into(),
                     message: "failed".into(),
                 }));
+            }
+            if invocation.request_id == "after-failure" {
+                let database =
+                    rusqlite::Connection::open(state.unwrap().sqlite.path.as_ref().unwrap())?;
+                assert_eq!(
+                    database.query_row(
+                        "SELECT COUNT(*) FROM sqlite_schema WHERE name='abandoned'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )?,
+                    0
+                );
             }
             let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
             Ok(ActorMethodOutcome::Completed {
@@ -480,7 +497,10 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
             route: "http://host.invalid/".into(),
         },
         executor.clone(),
-        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeAuthority {
+            persisted: Some(state.clone()),
+            ..Default::default()
+        }),
         state.clone(),
         Arc::new(EmptySocketPublisher),
         replication().await,
@@ -1019,6 +1039,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
 
 #[derive(Default)]
 struct FakeAuthority {
+    persisted: Option<Arc<FakeStateTransport>>,
     history: std::collections::HashMap<String, Vec<u8>>,
     fenced: std::sync::atomic::AtomicBool,
     loads: AtomicUsize,
@@ -1057,6 +1078,13 @@ impl ActorStorage for FakeAuthority {
         _: u64,
     ) -> Result<(u64, bytes::Bytes)> {
         self.loads.fetch_add(1, Ordering::SeqCst);
+        if let Some(bytes) = self
+            .persisted
+            .as_ref()
+            .and_then(|state| state.writes.lock().unwrap().last().cloned())
+        {
+            return Ok((StateSnapshot::decode(&bytes)?.state_version, bytes.into()));
+        }
         Ok(self.initial_state.clone().unwrap_or_default())
     }
     async fn read_snapshot(

@@ -326,15 +326,18 @@ impl ActorRuntime {
         }
         timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
         let origin = CommitOrigin::socket(&invocation.event);
-        let outcome = self.execute_socket_event(invocation, cached.state()).await;
+        let state = cached.state();
+        self.cached_state = Some(cached);
+        let outcome = self.execute_socket_event(invocation, state).await;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (next_state, effects) = match outcome {
             Ok(outcome) => outcome,
-            Err(result) => {
-                self.cached_state = Some(cached);
-                return Ok(result);
-            }
+            Err(result) => return Ok(result),
         };
+        let mut cached = self
+            .cached_state
+            .take()
+            .context("actor socket event has no state")?;
         if cached.state.as_deref() == Some(&next_state) {
             let version = cached.state_version;
             self.cached_state = Some(cached);
@@ -578,7 +581,7 @@ impl ActorRuntime {
     }
 
     async fn execute_method(
-        &self,
+        &mut self,
         invocation: &ActorInvocation,
         state: Option<Arc<ActorState>>,
     ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
@@ -599,7 +602,7 @@ impl ActorRuntime {
     }
 
     async fn method_result(
-        &self,
+        &mut self,
         invocation: &ActorInvocation,
         outcome: Result<ActorMethodOutcome>,
     ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
@@ -646,7 +649,7 @@ impl ActorRuntime {
     }
 
     async fn execute_socket_event(
-        &self,
+        &mut self,
         invocation: ActorSocketInvocation,
         state: Option<Arc<ActorState>>,
     ) -> std::result::Result<(ActorState, Vec<ActorSocketEffect>), ActorExecutionResult> {
@@ -958,7 +961,7 @@ impl ActorRuntime {
         );
     }
 
-    pub(super) async fn evict(&self, actor: &crate::actor::ActorKey) {
+    pub(super) async fn evict(&mut self, actor: &crate::actor::ActorKey) {
         if let Err(error) = self
             .executor
             .evict(ActorMethodEviction {
@@ -968,6 +971,8 @@ impl ActorRuntime {
         {
             warn!(error = %format!("{error:#}"), "failed to evict actor after invocation failure");
         }
+        self.cached_state = None;
+        self.activation = None;
     }
 }
 

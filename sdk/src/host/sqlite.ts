@@ -38,6 +38,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
         validateStatement(sql)
         const database = this.open()
+        validateSingleStatement(database, sql)
         const statement = database.prepare(sql)
         if (!database.isTransaction) database.exec("BEGIN")
         return statement.all(...bindings) as Row[]
@@ -183,6 +184,23 @@ function validateStatement(sql: string): void {
         )
     )
         throw new Error("this SQLite pragma is managed by the actor runtime")
+}
+
+function validateSingleStatement(database: SqliteConnection, sql: string): void {
+    const tokens = sql.matchAll(
+        /--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|;/g
+    )
+    for (const token of tokens) {
+        if (token[0] !== ";" || !withoutComments(sql.slice(token.index + 1))) continue
+        try {
+            // SQLite distinguishes a statement boundary from a semicolon inside a trigger body.
+            database.prepare(sql.slice(0, token.index + 1))
+        } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes("incomplete input")) throw error
+            continue
+        }
+        throw new Error("actor database exec accepts one SQL statement")
+    }
 }
 
 function withoutComments(sql: string): string {

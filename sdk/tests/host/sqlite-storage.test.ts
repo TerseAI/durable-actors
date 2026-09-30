@@ -104,3 +104,27 @@ test("malformed SQLite recovery state is rejected", () => {
     assert.throws(() => database.restore({ txid: 0, path: "/unused" }), /invalid actor SQLite recovery state/)
     database.close()
 })
+
+test("exec rejects multiple statements before applying writes and accepts trigger bodies", async context => {
+    const database = new SqliteActorDatabase()
+    context.after(() => database.close())
+    database.restore(await seed())
+    database.exec("CREATE TABLE entries (value TEXT)")
+    assert.throws(
+        () => database.exec("INSERT INTO entries VALUES ('first'); INSERT INTO entries VALUES ('second')"),
+        /one SQL statement/
+    )
+    assert.deepEqual(database.exec("SELECT * FROM entries"), [])
+    database.exec("CREATE TABLE audit (value TEXT)")
+    database.exec(
+        "CREATE TRIGGER record_entry AFTER INSERT ON entries BEGIN INSERT INTO audit VALUES (NEW.value); INSERT INTO audit VALUES ('trigger; value'); END;"
+    )
+    database.exec("INSERT INTO entries VALUES (?); /* trailing ; comment */", "bound; value")
+    assert.deepEqual(
+        database.exec<{ value: string }>("SELECT value FROM audit; -- trailing comment").map(row => row.value),
+        ["bound; value", "trigger; value"]
+    )
+    const [row] = database.exec<{ value: string; "a;b": number }>("SELECT ';' AS value, 1 AS \"a;b\"")
+    assert.equal(row!.value, ";")
+    assert.equal(row!["a;b"], 1)
+})
