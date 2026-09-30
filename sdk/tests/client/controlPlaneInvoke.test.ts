@@ -22,6 +22,7 @@ test("a cold call resolves and invokes once, then warm calls go directly to the 
             now: () => now,
             requestId: () => `request-${++requestId}`,
             fetch: async (url, init) => {
+                assert.equal(init?.redirect, "manual")
                 requests.push({
                     url: String(url),
                     method: init?.method,
@@ -289,42 +290,49 @@ test("an actor failure still supplies a target for the next warm call", async ()
     ])
 })
 
-test("the next separate invocation resolves through the control plane after a direct transport failure", async () => {
-    const fresh = { ...target, route: "https://fresh.example.com", token: "fresh", ownerEpoch: 4 }
-    const requests: { url: string; requestId: string }[] = []
-    let nextRequestId = 0
-    const client = new RemoteActorClient(options, {
-        now: () => 0,
-        telemetry: () => {},
-        requestId: () => `request-${++nextRequestId}`,
-        fetch: async (url, init) => {
-            requests.push({ url: String(url), requestId: JSON.parse(String(init?.body)).requestId })
-            if (String(url).startsWith(target.route)) throw new TypeError("fetch failed")
-            const outcome = { type: "completed", result: 7 }
-            return Response.json(
-                String(url).startsWith(fresh.route)
-                    ? outcome
-                    : { target: requests.length === 1 ? target : fresh, outcome }
-            )
-        }
+for (const status of [null, 302, 307, 404, 503])
+    test(`the next invocation resolves through the control plane after a direct failure (${status ?? "fetch error"})`, async () => {
+        const fresh = { ...target, route: "https://fresh.example.com", token: "fresh", ownerEpoch: 4 }
+        const requests: { url: string; requestId: string }[] = []
+        let nextRequestId = 0
+        const client = new RemoteActorClient(options, {
+            now: () => 0,
+            telemetry: () => {},
+            requestId: () => `request-${++nextRequestId}`,
+            fetch: async (url, init) => {
+                requests.push({ url: String(url), requestId: JSON.parse(String(init?.body)).requestId })
+                if (String(url).startsWith(target.route)) {
+                    assert.equal(init?.redirect, "manual")
+                    if (status === null) throw new TypeError("fetch failed")
+                    return new Response(null, { status, headers: { location: "https://redirect.example.com" } })
+                }
+                const outcome = { type: "completed", result: 7 }
+                return Response.json(
+                    String(url).startsWith(fresh.route)
+                        ? outcome
+                        : { target: requests.length === 1 ? target : fresh, outcome }
+                )
+            }
+        })
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+        await assert.rejects(
+            client.invoke("Counter", "one", "increment", [1]),
+            error =>
+                error instanceof ActorInvocationError &&
+                error.code === "outcome_unknown" &&
+                error.requestId === "request-2"
+        )
+        assert.equal(requests.length, 2)
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+        assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+        assert.deepEqual(
+            requests,
+            [options.controlPlaneUrl, target.route, options.controlPlaneUrl, fresh.route].map((origin, index) => ({
+                url: `${origin}/v1/projects/project/actors/Counter/one/invoke`,
+                requestId: `request-${index + 1}`
+            }))
+        )
     })
-    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
-    await assert.rejects(
-        client.invoke("Counter", "one", "increment", [1]),
-        error =>
-            error instanceof ActorInvocationError && error.code === "outcome_unknown" && error.requestId === "request-2"
-    )
-    assert.equal(requests.length, 2)
-    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
-    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
-    assert.deepEqual(
-        requests,
-        [options.controlPlaneUrl, target.route, options.controlPlaneUrl, fresh.route].map((origin, index) => ({
-            url: `${origin}/v1/projects/project/actors/Counter/one/invoke`,
-            requestId: `request-${index + 1}`
-        }))
-    )
-})
 
 test("a late failure from the old host cannot erase a refreshed target", { timeout: 2000 }, async t => {
     let fail!: (error: Error) => void
