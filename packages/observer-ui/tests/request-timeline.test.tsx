@@ -85,6 +85,26 @@ test("method rows keep different projects, actor classes, instances and event ki
     assert.ok(within(rows[0] as HTMLElement).getByRole("button", { name: /Overlapping/ }))
 })
 
+test("request details open a right-side drawer from the waterfall and table, then restore focus on Escape", async () => {
+    const { client } = fixture([trace])
+    const view = render(<RequestObserver client={client} />)
+    await view.findByRole("group", { name: "Invocation waterfall" })
+    for (const layout of ["Waterfall", "Table"]) {
+        fireEvent.click(view.getByRole("button", { name: layout }))
+        const trigger = view.getByRole("button", { name: /Inspect load request/ })
+        fireEvent.click(trigger)
+        const drawer = await view.findByRole("dialog", { name: "Request details" })
+        assert.equal(drawer.getAttribute("data-vaul-drawer-direction"), "right")
+        assert.equal(drawer.getAttribute("data-slot"), "drawer-content")
+        assert.ok(view.getByRole("region", { name: "Request observer", hidden: true }).contains(drawer), "The portal retains the observer's theme scope")
+        assert.ok(within(drawer).getByText("first"))
+        await waitFor(() => assert.ok(drawer.contains(document.activeElement), "Opening the drawer moves focus inside"))
+        fireEvent.keyDown(drawer, { key: "Escape" })
+        await waitFor(() => assert.equal(view.queryByRole("dialog"), null))
+        await waitFor(() => assert.ok(document.activeElement === trigger, "Escape returns focus to the invocation"))
+    }
+})
+
 test("waterfall places calls chronologically on one scale with queue time and gaps", async () => {
     const { client } = fixture([{ ...trace, sequence: 2, requestId: "second", operation: "save", startedAtMs: 1300, durationMs: 100, outcome: "failed" }, trace])
     const view = render(<RequestObserver client={client} />)
