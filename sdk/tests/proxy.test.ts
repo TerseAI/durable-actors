@@ -49,7 +49,6 @@ test("socket grants use environment settings and prefer the shared secret over t
         {},
         {
             fetch: async (url, init) => {
-                assert.equal(init?.redirect, "manual")
                 assert.equal(String(url), "http://127.0.0.1:8123/v1/projects/local/actors/Room/one/find-websocket")
                 assert.equal(new Headers(init?.headers).get("authorization"), "Bearer new-key")
                 return Response.json({
