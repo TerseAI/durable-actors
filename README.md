@@ -4,7 +4,7 @@
 
 If you've been burned by memory limits in Durable Objects, the lack of observability or want to avoid the lock in, Durable Actors is a self-hostable alternative that could work for you!
 
-> Use Durable Actors to build Software Factories, Multiplayer AI experiences and coordinate Agents.
+> Use Durable Actors to build persistence and coordination for Software Factories, Multiplayer AI and agent fleets.
 
 Get it working end-2-end in minutes. Define your actor class, generate your type-safe client and easily integrate into your existing tech stack.
 
