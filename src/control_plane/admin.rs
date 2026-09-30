@@ -33,7 +33,6 @@ pub(crate) struct HostLaunchSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum DeploymentSource {
-    Archive(crate::sandbox::source::SourceArchive),
     Local(LocalSource),
 }
 
@@ -42,15 +41,6 @@ pub(crate) enum DeploymentSource {
 pub(crate) struct LocalSource {
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
-}
-
-impl DeploymentSource {
-    pub fn archive(&self) -> Option<&crate::sandbox::source::SourceArchive> {
-        match self {
-            Self::Archive(archive) => Some(archive),
-            Self::Local(_) => None,
-        }
-    }
 }
 
 impl HostLaunchSpec {
@@ -74,10 +64,6 @@ impl HostLaunchSpec {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        let archive = self.source.as_ref().and_then(DeploymentSource::archive);
-        if let Some(archive) = archive {
-            archive.validate()?;
-        }
         for (actor, options) in &self.sandboxes {
             validate_component("actor name", actor, 255)?;
             options.validate()?;
@@ -96,7 +82,7 @@ impl HostLaunchSpec {
             );
         }
         ensure!(
-            (archive.is_some() || !self.image_ref.is_empty()) && self.image_ref.len() <= 255,
+            !self.image_ref.is_empty() && self.image_ref.len() <= 255,
             "sandbox image reference must contain between 1 and 255 bytes"
         );
         ensure!(

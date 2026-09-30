@@ -55,19 +55,23 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Compiles a generation-pinned GCS source ZIP using the shared runtime, or reuses a cached bundle. Replaces the deployment and restarts actors while preserving saved state. Local development registers localSource with its project directory and entrypoint.
+            description: Registers a compiled GCS bundle and its actor contract. Build and upload with any compatible toolchain before calling this endpoint. Replaces the deployment and restarts actors while preserving saved state. The bundle must use the configured artifact bucket and durable-actors/v3/artifacts/{UUID}/ paths. A new bundle requires contract; resubmitting the current bundle may omit it to retain the current contract. Local development registers localSource with its project directory and entrypoint.
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema: { $ref: "#/components/schemas/Deployment" }
                         examples:
-                            sourceArchive:
+                            compiled:
                                 value:
-                                    sourceArchive:
-                                        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                                        entrypoint: src/actors.ts
-                                        object: { bucket: source-uploads, name: projects/chat/source.zip, generation: "123456789" }
+                                    bundle:
+                                        bucket: actor-code
+                                        files:
+                                            - path: actors.mjs
+                                              object: durable-actors/v3/artifacts/00000000-0000-4000-8000-000000000001/actors.mjs
+                                              generation: 123456789
+                                              sha256: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                    contract: { version: 1, actors: [], typescript: { declarations: "export interface ActorTypes {}", dependencies: {} } }
                             local:
                                 value:
                                     localSource: { workingDirectory: /project, actorEntrypoint: src/actors.ts }
@@ -97,33 +101,6 @@ paths:
             description: Stops deployed actors and keeps their saved state.
             responses:
                 "200": { $ref: "#/components/responses/Changed" }
-                "400": { $ref: "#/components/responses/InvalidRequest" }
-                "401": { $ref: "#/components/responses/Unauthenticated" }
-                "500": { $ref: "#/components/responses/Internal" }
-    /v1/projects/{project_id}/deployment/cache:
-        parameters:
-            - { $ref: "#/components/parameters/ProjectId" }
-        post:
-            operationId: checkDeploymentCache
-            tags: [Deployments]
-            summary: Check for a compiled source bundle before uploading
-            description: Requires administrative authentication. Cache identity includes the project, runtime image, source ZIP SHA256, and entrypoint. A hit allows registration with the same sourceArchive identity and no object. A miss requires uploading a ZIP and providing its immutable object generation.
-            requestBody:
-                required: true
-                content:
-                    application/json:
-                        schema: { $ref: "#/components/schemas/SourceArchive" }
-            responses:
-                "200":
-                    description: Whether the current runtime can reuse a compiled bundle.
-                    content:
-                        application/json:
-                            schema:
-                                type: object
-                                additionalProperties: false
-                                required: [cached]
-                                properties:
-                                    cached: { type: boolean }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -822,25 +799,25 @@ components:
                 messages: { type: integer, minimum: 0 }
                 failures: { type: integer, minimum: 0 }
                 metadata: { description: Metadata saved with a retained onConnect event. }
-        SourceArchive:
+        ActorBundle:
             type: object
             additionalProperties: false
-            required: [sha256, entrypoint]
+            required: [bucket, files]
             properties:
-                sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
-                entrypoint:
-                    type: string
-                    minLength: 1
-                    description: Relative TypeScript, JavaScript, or Python entrypoint; traversal and absolute paths are rejected.
-                object:
-                    type: object
-                    additionalProperties: false
-                    required: [bucket, name, generation]
-                    properties:
-                        bucket: { type: string, minLength: 3 }
-                        name: { type: string, minLength: 1, maxLength: 1024 }
-                        generation: { type: string, pattern: "^[1-9][0-9]*$" }
-                    description: Required on a cache miss. The control-plane identity must have read access to this exact object.
+                bucket: { type: string, minLength: 3 }
+                files:
+                    type: array
+                    minItems: 1
+                    description: Unique relative paths including exactly one actors.mjs or actors.pyz entrypoint. Objects must belong to one immutable artifact deployment.
+                    items:
+                        type: object
+                        additionalProperties: false
+                        required: [path, object, generation, sha256]
+                        properties:
+                            path: { type: string, minLength: 1 }
+                            object: { type: string, minLength: 1 }
+                            generation: { type: integer, minimum: 1 }
+                            sha256: { type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Base64url-encoded SHA256 without padding. }
         LocalSource:
             type: object
             additionalProperties: false
@@ -861,10 +838,10 @@ components:
             type: object
             additionalProperties: false
             oneOf:
-                - required: [sourceArchive]
+                - required: [bundle]
                 - required: [localSource]
             properties:
-                sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
+                bundle: { $ref: "#/components/schemas/ActorBundle" }
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs:
                     type: array
@@ -883,10 +860,10 @@ components:
             additionalProperties: false
             required: [secretRefs]
             oneOf:
-                - required: [sourceArchive]
+                - required: [bundle]
                 - required: [localSource]
             properties:
-                sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
+                bundle: { $ref: "#/components/schemas/ActorBundle" }
                 localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
         PublicActorContract:

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process"
-import { readFileSync } from "node:fs"
 import { stat } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -11,7 +10,7 @@ import { buildActor } from "./actor-build.js"
 import { parsePublicContract } from "./validate-public-contract.js"
 
 async function main(): Promise<void> {
-    const [directory, entrypoint, output, mode] = buildArguments()
+    const [directory, entrypoint, output, mode] = process.argv.slice(2)
     if (!directory || !entrypoint || !output)
         throw new Error("Expected project directory, actor entrypoint, and output directory")
     if (entrypoint.endsWith(".py")) return buildPython(directory, entrypoint, output, mode)
@@ -23,15 +22,6 @@ async function main(): Promise<void> {
     if (size === 0) throw new Error("Compiled customer code is empty")
     if (mode === "local") await validateArtifact(artifact, entrypoint)
     process.stdout.write(document)
-}
-
-function buildArguments(): string[] {
-    const args = process.argv.slice(2)
-    if (args.length !== 1 || args[0] !== "--stdin") return args
-    const input: unknown = JSON.parse(readFileSync(0, "utf8"))
-    if (!Array.isArray(input) || input.length !== 3 || !input.every(value => typeof value === "string"))
-        throw new Error("Expected a JSON array of project directory, actor entrypoint, and output directory")
-    return input
 }
 
 async function buildPython(directory: string, entrypoint: string, output: string, mode?: string): Promise<void> {

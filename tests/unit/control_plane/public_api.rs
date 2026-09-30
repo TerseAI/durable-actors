@@ -1,9 +1,10 @@
 use super::*;
 
 #[test]
-fn deployment_accepts_a_source_archive() {
+fn deployment_accepts_a_compiled_bundle() {
     let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
-        "sourceArchive": {"sha256": "a".repeat(64), "entrypoint": "src/actor.ts", "object": {"bucket": "source-bucket", "name": "project/source.zip", "generation": "1"}},
+        "bundle": {"bucket": "code-bucket", "files": [{"path": "actors.mjs", "object": "bundle/actors.mjs", "generation": 1, "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]},
+        "contract": {"version": 1, "actors": []},
         "secretRefs": []
     }));
     assert!(request.is_ok());

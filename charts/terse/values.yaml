@@ -43,11 +43,6 @@ pool:
   cpuMillis: 250
   memoryMiB: 256
 hostIdleTimeoutMs: 10000
-build:
-  project: ""
-  region: us-west4
-  serviceAccount: ""
-  machineType: E2_STANDARD_2
 gateway:
   enabled: true
   className: gke-l7-global-external-managed

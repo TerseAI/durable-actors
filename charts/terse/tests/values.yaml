@@ -7,7 +7,3 @@ storage:
 
 serviceAccount:
   googleServiceAccount: test-control@test-project.iam.gserviceaccount.com
-
-build:
-  project: test-project
-  serviceAccount: test-build@test-project.iam.gserviceaccount.com

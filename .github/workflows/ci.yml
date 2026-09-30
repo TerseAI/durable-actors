@@ -45,12 +45,6 @@ jobs:
               run: |
                   docker run --rm durable-actors:ci --version
                   docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" durable-actors:ci /tmp/image_smoke.py
-            - name: Check source build worker
-              run: |
-                  python3 -m unittest discover -s tests/scripts -p test_source_build.py
-                  docker run --rm --entrypoint node durable-actors:ci --version
-                  docker run --rm --entrypoint npm durable-actors:ci --version
-                  docker run --rm --read-only --tmpfs /tmp:rw,exec,size=1g --entrypoint python3 -v "$PWD/tests/scripts/source_build_smoke.py:/tmp/source_build_smoke.py:ro" durable-actors:ci /tmp/source_build_smoke.py
 
     rust:
         name: Rust runtime (Bun ${{ matrix.bun }})

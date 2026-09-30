@@ -15,7 +15,6 @@ pub(crate) struct GkeConfig {
     pub namespace: String,
     pub zones: BTreeMap<String, String>,
     pub public_origin: String,
-    pub artifact_bucket: String,
 }
 
 pub(super) struct Kubernetes {

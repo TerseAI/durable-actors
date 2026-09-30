@@ -96,6 +96,21 @@ impl RuntimeAccess {
         Ok(self)
     }
 
+    pub(crate) fn validate_code(&self, code: &crate::artifacts::ArtifactManifest) -> Result<()> {
+        let BucketLocation::Gcs {
+            artifact_bucket, ..
+        } = &self.location
+        else {
+            anyhow::bail!("compiled GCS bundles require GCS storage");
+        };
+        ensure!(
+            code.bucket == *artifact_bucket,
+            "code artifact belongs to another bucket"
+        );
+        artifact_prefix(code)?;
+        Ok(())
+    }
+
     pub async fn bootstrap(
         &self,
         region: &str,
@@ -163,17 +178,6 @@ struct GcsTokenSource {
     http: reqwest::Client,
 }
 
-pub(crate) async fn scoped_storage_token(boundary: &Value) -> Result<StorageToken> {
-    GcsTokenSource {
-        credentials: StorageCredentials::new()?,
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()?,
-    }
-    .exchange(boundary)
-    .await
-}
-
 #[async_trait]
 impl StorageTokenSource for GcsTokenSource {
     async fn exchange(&self, boundary: &Value) -> Result<StorageToken> {
@@ -224,13 +228,13 @@ impl StorageTokenSource for GcsTokenSource {
     }
 }
 
-pub(crate) enum StorageCredentials {
+enum StorageCredentials {
     ServiceAccount(gcp_auth::CustomServiceAccount),
     ApplicationDefault(AccessTokenCredentials),
 }
 
 impl StorageCredentials {
-    pub(crate) fn new() -> Result<Self> {
+    fn new() -> Result<Self> {
         if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
             let document = std::fs::read_to_string(path)?;
             let value: Value = serde_json::from_str(&document)?;
@@ -245,7 +249,7 @@ impl StorageCredentials {
         ))
     }
 
-    pub(crate) async fn token(&self) -> Result<String> {
+    async fn token(&self) -> Result<String> {
         match self {
             // STS requires an OAuth access token, not the default library's self-signed JWT.
             Self::ServiceAccount(credentials) => Ok(credentials

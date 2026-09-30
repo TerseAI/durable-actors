@@ -23,22 +23,6 @@ impl SandboxCluster for Cluster {
         )]))
     }
 }
-struct SourceBuilds;
-#[async_trait]
-impl source_builds::SourceBuilder for SourceBuilds {
-    async fn cached(&self, _: &str, _: &str, _: &source::SourceArchive) -> Result<bool> {
-        anyhow::bail!("unused")
-    }
-    async fn build(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &source::SourceArchive,
-    ) -> Result<BuiltActorCode> {
-        anyhow::bail!("unused")
-    }
-}
 struct Assign;
 #[async_trait]
 impl HostAssignment for Assign {
@@ -80,7 +64,6 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
     let provider = GkeSandboxProvider {
         cluster: cluster.clone(),
         assignment: Arc::new(Assign),
-        source_builds: Arc::new(SourceBuilds),
         public_origin: "https://actors.example.com".into(),
     };
     let request = request()?;
@@ -176,7 +159,6 @@ async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Res
             creates: AtomicUsize::new(0),
         }),
         assignment: Arc::new(ExpiredAssignment),
-        source_builds: Arc::new(SourceBuilds),
         public_origin: "https://actors.example.com".into(),
     };
     assert!(provider.ensure_host(&request()?).await.is_err());

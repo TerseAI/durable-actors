@@ -5,36 +5,21 @@ use async_trait::async_trait;
 
 use super::*;
 
-mod cloud_build;
 mod kubernetes;
-mod source_builds;
-pub(crate) use cloud_build::CloudBuildConfig;
 pub(crate) use kubernetes::GkeConfig;
 
 pub(crate) struct GkeSandboxProvider {
     cluster: Arc<dyn SandboxCluster>,
     assignment: Arc<dyn HostAssignment>,
     public_origin: String,
-    source_builds: Arc<dyn source_builds::SourceBuilder>,
 }
 
 impl GkeSandboxProvider {
-    pub async fn new(
-        config: GkeConfig,
-        storage: google_cloud_storage::client::Storage,
-        image: String,
-        build: CloudBuildConfig,
-    ) -> Result<Self> {
+    pub async fn new(config: GkeConfig) -> Result<Self> {
         let public_origin = config.public_origin.clone();
         let cluster = Arc::new(kubernetes::Kubernetes::new(
             kube::Client::try_default().await?,
             config.clone(),
-        ));
-        let executor = Arc::new(cloud_build::CloudBuild::new(build, image, storage.clone())?);
-        let source_builds = Arc::new(source_builds::SourceBuilds::new(
-            config.artifact_bucket,
-            storage,
-            executor,
         ));
         Ok(Self {
             cluster,
@@ -45,7 +30,6 @@ impl GkeSandboxProvider {
                     .build()?,
             )),
             public_origin,
-            source_builds,
         })
     }
 
@@ -82,26 +66,6 @@ impl GkeSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for GkeSandboxProvider {
-    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
-        self.source_builds
-            .build(
-                &request.project_id,
-                &request.image_ref,
-                &request.canonical_region,
-                &request.source_archive,
-            )
-            .await
-    }
-
-    async fn source_cached(
-        &self,
-        project: &str,
-        image: &str,
-        source: &source::SourceArchive,
-    ) -> Result<bool> {
-        self.source_builds.cached(project, image, source).await
-    }
-
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {
         validate_image(&request.image_ref)?;
         self.cluster.create_spare(request).await

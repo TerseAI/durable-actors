@@ -107,7 +107,7 @@ test("transport failures do not retry writes and warn that their outcome is unkn
         throw new TypeError("fetch failed")
     })
     await assert.rejects(
-        client.registerDeployment({ sourceArchive: { sha256: "a".repeat(64), entrypoint: "actors.ts" } }),
+        client.registerDeployment({ localSource: { workingDirectory: "/project", actorEntrypoint: "actors.ts" } }),
         /Cannot complete PUT.*may have reached the server/u
     )
     assert.equal(requests, 1)

@@ -48,10 +48,6 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
                 .delete(delete_deployment),
         )
         .route(
-            "/v1/projects/{project_id}/deployment/cache",
-            post(source_cache),
-        )
-        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
             post(super::invocation::invoke),
         )
@@ -196,13 +192,17 @@ async fn get_deployment(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found"))?;
-    let (source_archive, local_source) = match spec.source {
-        Some(super::admin::DeploymentSource::Archive(archive)) => (Some(archive), None),
-        Some(super::admin::DeploymentSource::Local(local)) => (None, Some(local)),
-        None => return Err(ApiError::internal("deployment source missing")),
-    };
+    let bundle = spec
+        .code_snapshot
+        .as_deref()
+        .map(crate::artifacts::ArtifactManifest::decode)
+        .transpose()
+        .map_err(ApiError::internal)?;
+    let local_source = spec
+        .source
+        .map(|super::admin::DeploymentSource::Local(local)| local);
     Ok(Json(RegisterDeploymentRequest {
-        source_archive,
+        bundle,
         local_source,
         contract: None,
         secret_refs: spec.secret_refs,
@@ -232,13 +232,18 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
-    let (source, image_ref, working_directory, actor_entrypoint) =
-        match (request.source_archive, request.local_source) {
-            (Some(archive), None) => {
-                let entrypoint = archive.entrypoint.clone();
+    let (source, code_snapshot, image_ref, working_directory, actor_entrypoint) =
+        match (request.bundle, request.local_source) {
+            (Some(bundle), None) => {
+                let snapshot = bundle.encode().map_err(ApiError::bad_request)?;
+                let entrypoint = bundle
+                    .entrypoint()
+                    .map_err(ApiError::bad_request)?
+                    .to_owned();
                 (
-                    super::admin::DeploymentSource::Archive(archive),
-                    String::new(),
+                    None,
+                    Some(snapshot),
+                    "bundle".into(),
                     "/customer".into(),
                     Some(entrypoint),
                 )
@@ -247,7 +252,8 @@ async fn register_deployment(
                 let directory = local.working_directory.clone();
                 let entrypoint = local.actor_entrypoint.clone();
                 (
-                    super::admin::DeploymentSource::Local(local),
+                    Some(super::admin::DeploymentSource::Local(local)),
+                    None,
                     "local".into(),
                     directory,
                     entrypoint,
@@ -255,7 +261,7 @@ async fn register_deployment(
             }
             _ => {
                 return Err(ApiError::bad_request(
-                    "provide exactly one sourceArchive or localSource",
+                    "provide exactly one bundle or localSource",
                 ));
             }
         };
@@ -267,8 +273,8 @@ async fn register_deployment(
     let spec = HostLaunchSpec {
         sandboxes: Default::default(),
         project_id: project_id(path)?,
-        source: Some(source),
-        code_snapshot: None,
+        source,
+        code_snapshot,
         image_ref,
         working_directory,
         actor_entrypoint,
@@ -280,23 +286,6 @@ async fn register_deployment(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(DeploymentReply { changed }))
-}
-
-async fn source_cache(
-    State(state): State<PublicApiState>,
-    path: Path<ProjectPath>,
-    headers: HeaderMap,
-    request: Result<Json<crate::sandbox::source::SourceArchive>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
-    authorized_admin(&state.admin, &headers)?;
-    let Json(source) = request.map_err(ApiError::json)?;
-    source.validate().map_err(ApiError::bad_request)?;
-    let cached = state
-        .invocations
-        .source_cached(&project_id(path)?, &source)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(Json(serde_json::json!({"cached": cached})))
 }
 
 async fn find_actor(
@@ -493,7 +482,7 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_archive: Option<crate::sandbox::source::SourceArchive>,
+    bundle: Option<crate::artifacts::ArtifactManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

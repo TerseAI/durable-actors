@@ -8,7 +8,6 @@ pub(crate) mod gke;
 mod local;
 mod local_store;
 pub(crate) mod pool;
-pub mod source;
 
 pub(crate) use local::LocalSandboxProvider;
 
@@ -65,23 +64,6 @@ pub struct CreateSpareRequest {
     pub image_ref: String,
     pub canonical_region: String,
     pub resources: ResourceLimits,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildCodeRequest {
-    pub project_id: String,
-    pub source_archive: source::SourceArchive,
-    pub image_ref: String,
-    pub canonical_region: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuiltActorCode {
-    pub source_archive: source::SourceArchive,
-    pub code_snapshot: String,
-    pub contract: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -179,15 +161,6 @@ pub struct SocketCredentials {
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
-    async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode>;
-    async fn source_cached(
-        &self,
-        _project: &str,
-        _image: &str,
-        _source: &source::SourceArchive,
-    ) -> Result<bool> {
-        Ok(false)
-    }
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }

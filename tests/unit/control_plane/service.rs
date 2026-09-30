@@ -1084,7 +1084,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"sourceArchive": archive_document("a")}))
+        .json(&serde_json::json!({"localSource": local_document("a")}))
         .send()
         .await?
         .error_for_status()?;
@@ -1211,7 +1211,7 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let deployment = serde_json::json!({"sourceArchive": archive_document("a")});
+    let deployment = serde_json::json!({"localSource": local_document("a")});
     let registered = client
         .put(format!("{origin}/v1/projects/default/deployment"))
         .bearer_auth("api-key")
@@ -1306,8 +1306,8 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         .register_test_deployment(&HostLaunchSpec {
             sandboxes: Default::default(),
             project_id: "default".into(),
-            source: Some(super::super::admin::DeploymentSource::Archive(
-                serde_json::from_value(archive_document("a"))?,
+            source: Some(super::super::admin::DeploymentSource::Local(
+                serde_json::from_value(local_document("a"))?,
             )),
             code_snapshot: None,
             image_ref: "image-1".into(),
@@ -1351,7 +1351,7 @@ async fn deployment_reads_and_deletion_require_the_api_key() -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(deployment["sourceArchive"], archive_document("a"));
+    assert_eq!(deployment["localSource"], local_document("a"));
     assert_eq!(deployment["secretRefs"], serde_json::json!([]));
     for changed in [true, false] {
         let reply: serde_json::Value = client
@@ -1445,7 +1445,7 @@ async fn contract_api_returns_the_current_deployments_contract() -> Result<()> {
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
     let mut deployment =
-        serde_json::json!({"sourceArchive": archive_document("a"), "contract":document});
+        serde_json::json!({"localSource": local_document("a"), "contract":document});
     for scope in ["/v1/projects/default"] {
         for changed in [true, true] {
             let reply: serde_json::Value = client
@@ -1561,14 +1561,14 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
     ))?;
     for project in ["team-a", "team-b"] {
         client.put(format!("{origin}/v1/projects/{project}/deployment")).bearer_auth("api-key")
-            .json(&serde_json::json!({"sourceArchive": archive_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
+            .json(&serde_json::json!({"localSource": local_document(if project == "team-a" { "a" } else { "b" }), "contract":document}))
             .send().await?.error_for_status()?;
     }
     assert!(retired_rx.try_recv().is_err());
     client
         .put(format!("{origin}/v1/projects/team-a/deployment"))
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"sourceArchive": archive_document("c"), "contract":document}))
+        .json(&serde_json::json!({"localSource": local_document("c"), "contract":document}))
         .send()
         .await?
         .error_for_status()?;
@@ -1589,7 +1589,7 @@ async fn project_http_deployments_only_replace_and_retire_their_own_hosts() -> R
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(remaining["sourceArchive"], archive_document("b"));
+    assert_eq!(remaining["localSource"], local_document("b"));
     let contract: serde_json::Value = client
         .get(format!("{origin}/v1/projects/team-b/deployment/contract"))
         .bearer_auth("api-key")
@@ -1761,6 +1761,6 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
 #[path = "invoke.rs"]
 mod invoke;
 
-fn archive_document(digest: &str) -> serde_json::Value {
-    serde_json::json!({"sha256": digest.repeat(64), "entrypoint": "src/actors.ts", "object": {"bucket": "sources", "name": "source.zip", "generation": "1"}})
+fn local_document(digest: &str) -> serde_json::Value {
+    serde_json::json!({"workingDirectory": format!("/project/{digest}"), "actorEntrypoint":"src/actors.ts"})
 }

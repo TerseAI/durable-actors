@@ -109,37 +109,6 @@
         "replicas"
       ]
     },
-    "build": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "project",
-        "region",
-        "serviceAccount",
-        "machineType"
-      ],
-      "properties": {
-        "project": {
-          "type": "string"
-        },
-        "region": {
-          "type": "string",
-          "pattern": "^[a-z0-9-]+$"
-        },
-        "serviceAccount": {
-          "type": "string"
-        },
-        "machineType": {
-          "type": "string",
-          "enum": [
-            "E2_MEDIUM",
-            "E2_STANDARD_2",
-            "E2_HIGHCPU_8",
-            "E2_HIGHCPU_32"
-          ]
-        }
-      }
-    },
     "serviceAccount": {
       "type": "object",
       "properties": {
@@ -178,7 +147,6 @@
     "sandboxNamespace",
     "zones",
     "storage",
-    "build",
     "serviceAccount",
     "networkPolicy"
   ],

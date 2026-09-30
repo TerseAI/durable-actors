@@ -9,7 +9,7 @@ use crate::{
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
         HostSandboxRuntimeConfig,
-        gke::{CloudBuildConfig, GkeConfig, GkeSandboxProvider},
+        gke::{GkeConfig, GkeSandboxProvider},
     },
 };
 
@@ -54,7 +54,6 @@ pub struct SandboxProviderConfig {
     pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
-    pub(crate) build: CloudBuildConfig,
     pub runtime: HostSandboxRuntimeConfig,
 }
 
@@ -141,7 +140,6 @@ async fn control_plane_routes(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let clients = authority.clients();
     let archive = GcsBucket::new(&config.storage.archive_bucket).await?;
     archive.require_standard().await?;
     let replica_pods = crate::replicas::fleet::KubernetesReplicas::new(
@@ -202,7 +200,6 @@ async fn control_plane_routes(
         database,
         registry.clone(),
         stop,
-        clients.storage,
     )
     .await?;
     let socket_events = config
@@ -246,17 +243,8 @@ async fn sandbox_provisioner(
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
-    storage: google_cloud_storage::client::Storage,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(
-        GkeSandboxProvider::new(
-            config.gke,
-            storage,
-            config.runtime_image.clone(),
-            config.build,
-        )
-        .await?,
-    );
+    let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
     pool.start(registry, stop);
     Ok(Arc::new(
@@ -457,18 +445,6 @@ fn sandbox_provider_config(
                 .unwrap_or_else(|| "terse-sandboxes".into()),
             zones,
             public_origin,
-            artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
-        },
-        build: {
-            let build = CloudBuildConfig {
-                project: required(get, "DURABLE_ACTORS_BUILD_PROJECT")?,
-                region: required(get, "DURABLE_ACTORS_BUILD_REGION")?,
-                service_account: required(get, "DURABLE_ACTORS_BUILD_SERVICE_ACCOUNT")?,
-                machine_type: get("DURABLE_ACTORS_BUILD_MACHINE_TYPE")
-                    .unwrap_or_else(|| "E2_STANDARD_2".into()),
-            };
-            build.validate()?;
-            build
         },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
