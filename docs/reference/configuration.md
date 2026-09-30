@@ -118,16 +118,11 @@ Supported regions: `canada`, `north-america-east`, `north-america-central`, `nor
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
 
-## Sandbox usage hook
+## Sandbox usage
 
-Usage tracking is disabled by default. For GCP Pub/Sub, set `DURABLE_ACTORS_USAGE_PUBSUB_TOPIC` to `projects/PROJECT/topics/TOPIC` (Helm `usage.pubsubTopic`) and grant the control plane's Google identity publisher access to that topic. Create its billing push subscription before publishing. For a custom HTTPS receiver, set `DURABLE_ACTORS_USAGE_URL` and `DURABLE_ACTORS_USAGE_TOKEN` (Helm `usage.url`, `usage.tokenSecret`, `usage.tokenKey`). Configure one destination. Sandboxes assigned while tracking was disabled remain unmetered; enabling it does not backfill their usage.
-
-Every ten seconds, the control plane observes the runtime container by pod UID and records allocated CPU, allocated memory and elapsed time. It includes idle time and excludes unassigned warm sandboxes and failed startup. Actual CPU utilization and memory working-set collection are not implemented. A missing pod ends at the last confirmed observation, so unobserved tails may be undercounted. Completed-container timestamps close known final intervals.
-
-An interval contains `id`, `projectId`, optional opaque `billingAccountId`, `sessionId`, `resourceId`, `region`, `startMs`, `endMs`, `cpuMillis` and `memoryMib`. Terse billing requires `billingAccountId` to be the trusted Metronome customer UUID supplied by Terse's deployment request. Time is Unix milliseconds, CPU is millicores, memory is MiB. Intervals use fixed ten-second UTC boundaries and a final partial interval. The ID is `sandbox_usage_v1:{sessionId}:{startMs}:{endMs}`; retries preserve the ID and assignment.
-
-PostgreSQL retains observation and publication checkpoints, advancing publication only after confirmed receipt. No new PostgreSQL event queue entries are written; migration V17 preserves and drains any earlier outbox records. Pub/Sub messages each contain one base64-encoded JSON interval, and Pub/Sub handles delivery retries and dead letters after publication. The alternative HTTP receiver accepts `POST {"events": [...]}` in batches of up to 100 and must durably deduplicate IDs; its 2xx response confirms the entire batch. Monitor runtime publication lag and Pub/Sub oldest-unacknowledged age/dead-letter backlog.
-
-Optionally set `DURABLE_ACTORS_USAGE_AUTHORIZATION_URL` (Helm `usage.authorizationUrl`) and `DURABLE_ACTORS_USAGE_TOKEN`. Before creating a sandbox, the control plane appends the deployment's billing account ID to the HTTPS prefix and sends an authenticated GET. The receiver returns `{"allowed":true}` or `{"allowed":false}`. Missing identity, denial or an unavailable receiver blocks new starts. This is admission-only: running sandboxes keep running and consuming usage, so it is not a hard spending cap. Admission works alongside either export destination.
-
-For Terse billing, push Pub/Sub messages to `/billing/compute/pubsub` and use `/billing/compute/authorize/` for admission. Redeploy pilot projects to attach their trusted billing account before enabling usage. Start in billing-service shadow mode, then choose an explicit charging cutoff after validating delivery, balance drawdown and manual credit grants. See [the billing plan](../plans/sandbox-billing.md) for coordinated rollout and migration requirements.
+| Environment variable | Default | Helm setting / purpose |
+| --- | --- | --- |
+| `DURABLE_ACTORS_USAGE_PUBSUB_TOPIC` | Disabled | `usage.pubsubTopic`: `projects/PROJECT/topics/TOPIC`; publish using Google credentials. |
+| `DURABLE_ACTORS_USAGE_URL` | Disabled | `usage.url`: alternative HTTPS receiver; configure one export destination. |
+| `DURABLE_ACTORS_USAGE_TOKEN` | Unset | `usage.tokenSecret` / `usage.tokenKey`: bearer token for HTTP export and admission. |
+| `DURABLE_ACTORS_USAGE_AUTHORIZATION_URL` | Disabled | `usage.authorizationUrl`: append the billing account ID and check admission before new starts. |
