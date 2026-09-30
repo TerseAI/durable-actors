@@ -44,7 +44,7 @@ impl RuntimeStorage {
                 self.load(&actor.storage_key()).await?
             };
             let ownership_read_ms = read_started.elapsed().as_secs_f64() * 1_000.0;
-            let mut recovery = self
+            let recovery = self
                 .recover_activation(
                     actor,
                     request,
@@ -77,8 +77,7 @@ impl RuntimeStorage {
                 ensure!(hint.is_some(), "actor activation changed concurrently");
                 continue;
             }
-            self.snapshots.prepare(&record.stream()?.prefix).await?;
-            self.seed_replicas(&record, &mut recovery).await?;
+            let ownership_cas_ms = write_started.elapsed().as_secs_f64() * 1_000.0;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -88,6 +87,7 @@ impl RuntimeStorage {
                 session_id = %request.session_id,
                 new_actor,
                 ownership_read_ms,
+                ownership_cas_ms,
                 session_recovery_ms = recovery.session_ms,
                 snapshot_load_ms = recovery.snapshot_ms,
                 ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
@@ -96,35 +96,6 @@ impl RuntimeStorage {
             return Ok(self.remember(record, recovery.snapshot));
         }
         anyhow::bail!("actor activation changed concurrently")
-    }
-
-    async fn seed_replicas(
-        &self,
-        record: &Ownership,
-        recovery: &mut ActivationRecovery,
-    ) -> Result<()> {
-        use crate::state_transport::SnapshotWriter;
-        if !matches!(
-            self.persistence,
-            super::super::PersistenceConfig::Replicated { .. }
-        ) {
-            return Ok(());
-        }
-        let Some(previous) = &recovery.snapshot else {
-            return Ok(());
-        };
-        let mut snapshot = crate::state_log::StateSnapshot::decode(&previous.bytes)?;
-        snapshot.owner_epoch = record.epoch;
-        let bytes = snapshot.encode()?;
-        let mut plan = self.write_plan(record, snapshot.state_version)?;
-        // The recovered baseline keeps its version while entering a fresh replica stream.
-        plan.stream.base_version = 0;
-        self.write_snapshot(&plan, bytes.clone()).await?;
-        recovery.snapshot = Some(LoadedSnapshot {
-            reference: SnapshotRef::new(plan.object_name, &snapshot, &bytes),
-            bytes: bytes.into(),
-        });
-        Ok(())
     }
 
     pub async fn renew_activation(
@@ -212,7 +183,7 @@ impl RuntimeStorage {
             return Ok(ActivationRecovery::default());
         };
         ensure!(
-            record.persistence == self.persistence,
+            record.persistence.same_backend(&self.persistence),
             "actor persistence configuration changed; an explicit state migration is required"
         );
         ensure!(
@@ -236,8 +207,13 @@ impl RuntimeStorage {
             });
         }
         let started = Instant::now();
-        self.snapshots.seal(&record.stream()?.prefix).await?;
         let snapshot = self.latest(record, None).await?;
+        if let Some(snapshot) = &snapshot {
+            // A recovered tail may belong to a write that never reached quorum.
+            self.snapshots
+                .put(&snapshot.reference.object, snapshot.bytes.clone())
+                .await?;
+        }
         Ok(ActivationRecovery {
             snapshot,
             session_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),

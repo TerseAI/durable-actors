@@ -42,12 +42,6 @@ pub struct ControlPlaneStorageConfig {
     pub bucket: String,
     pub persistence: crate::bucket::PersistenceConfig,
     pub artifact_bucket: String,
-    pub replica_secret: String,
-    pub archive_bucket: String,
-    pub replica_idle: usize,
-    pub replica_max_starting: usize,
-    pub replica_credentials_secret: String,
-    pub replica_resources: serde_json::Value,
 }
 
 pub struct SandboxProviderConfig {
@@ -140,38 +134,12 @@ async fn control_plane_routes(
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(
         database.clone(),
     ));
-    let clients = authority.clients();
-    let archive = GcsBucket::new(&config.storage.archive_bucket).await?;
-    archive.require_standard().await?;
-    let replica_pods = crate::replicas::fleet::KubernetesReplicas::new(
-        kube::Client::try_default().await?,
-        crate::replicas::fleet::ReplicaPodConfig {
-            namespace: config.sandbox_provider.gke.namespace.clone(),
-            image: config.sandbox_provider.runtime_image.clone(),
-            archive_bucket: config.storage.archive_bucket.clone(),
-            credentials_secret: config.storage.replica_credentials_secret.clone(),
-            resources: config.storage.replica_resources.clone(),
-        },
-        config.storage.replica_secret.clone(),
-    )?;
-    let fleet = Arc::new(crate::replicas::fleet::ReplicaFleet::new(
-        database.clone(),
-        replica_pods,
-        authority.clone(),
-        Arc::new(archive),
+    let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
         &config.storage.persistence,
-        config.storage.replica_secret.clone(),
-        config.storage.replica_idle,
-        config.storage.replica_max_starting,
-        Arc::new(crate::clock::SystemClock),
+        authority.clients(),
     )?);
-    fleet.start(stop.clone());
-    let snapshots = Arc::new(
-        crate::replicas::directory::DedicatedSnapshots::for_control_plane(
-            fleet.clone(),
-            config.storage.replica_secret.clone(),
-        )?,
-    );
+    crate::bucket::RapidSnapshots::validate_gcs(&config.storage.persistence, authority.clients())
+        .await?;
     let storage = Arc::new(
         RuntimeStorageReader::new(authority, Arc::new(crate::clock::SystemClock))?
             .with_persistence(config.storage.persistence, snapshots)?,
@@ -188,8 +156,7 @@ async fn control_plane_routes(
             database.clone(),
             config.storage.token_issuer.clone(),
             stop.clone(),
-        )
-        .with_replica_secret(config.storage.replica_secret.clone())?,
+        ),
     );
     let placements = storage.clone();
     let gateway =
@@ -201,7 +168,6 @@ async fn control_plane_routes(
         database,
         registry.clone(),
         stop,
-        clients.storage,
     )
     .await?;
     let socket_events = config
@@ -222,7 +188,6 @@ async fn control_plane_routes(
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.changes = changes;
-    service.replicas = Some(fleet);
     service.gateway = Some(gateway);
     service.region = config.region;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
@@ -245,9 +210,8 @@ async fn sandbox_provisioner(
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
-    storage: google_cloud_storage::client::Storage,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(GkeSandboxProvider::new(config.gke, storage).await?);
+    let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
     pool.start(registry, stop);
     Ok(Arc::new(
@@ -302,14 +266,13 @@ impl ControlPlaneProcessConfig {
         crate::storage::validate_bucket(&bucket)?;
         let artifact_bucket = required(&mut get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?;
         crate::storage::validate_bucket(&artifact_bucket)?;
-        let persistence = crate::bucket::PersistenceConfig::Replicated {
-            placements: serde_json::from_str(&required(
-                &mut get,
-                "DURABLE_ACTORS_REPLICA_PLACEMENTS",
-            )?)?,
-            durability: serde_json::from_value(serde_json::Value::String(
-                get("DURABLE_ACTORS_DURABILITY").unwrap_or_else(|| "zonal".into()),
-            ))?,
+        let persistence = crate::bucket::PersistenceConfig::Rapid {
+            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
+            buckets: serde_json::from_str(&required(&mut get, "DURABLE_ACTORS_RAPID_BUCKETS")?)?,
+            ack_zones: get("DURABLE_ACTORS_RAPID_ACK_ZONES")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(2),
         };
         persistence.validate()?;
         let region = get("DURABLE_ACTORS_REGION");
@@ -317,12 +280,6 @@ impl ControlPlaneProcessConfig {
             crate::placement::validate_region(region)?;
         }
         let storage = ControlPlaneStorageConfig {
-            replica_idle: get("DURABLE_ACTORS_REPLICA_IDLE").map(|v| v.parse()).transpose()?.unwrap_or(192),
-            replica_max_starting: get("DURABLE_ACTORS_REPLICA_MAX_STARTING").map(|v| v.parse()).transpose()?.unwrap_or(32),
-            replica_credentials_secret: get("DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET").unwrap_or_else(|| "terse-replica-credentials".into()),
-            replica_resources: get("DURABLE_ACTORS_REPLICA_RESOURCES").map(|v| serde_json::from_str(&v)).transpose()?.unwrap_or_else(|| serde_json::json!({"requests":{"cpu":"50m","memory":"64Mi"},"limits":{"memory":"512Mi"}})),
-            replica_secret: required(&mut get, "DURABLE_ACTORS_REPLICA_SECRET")?,
-            archive_bucket: required(&mut get, "DURABLE_ACTORS_ARCHIVE_BUCKET")?,
             persistence,
             artifact_bucket,
             token_issuer: required(&mut get, "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT")?,
@@ -387,18 +344,7 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let zones: BTreeMap<String, String> =
-        serde_json::from_str(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
-    ensure!(
-        !zones.is_empty(),
-        "at least one GKE placement zone is required"
-    );
-    for (region, zone) in &zones {
-        ensure!(
-            super::regions::storage_region(zone)? == region,
-            "GKE zone does not match canonical region {region}"
-        );
-    }
+    let zones = compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
     let public_origin = validated_http_url(
         &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
         "DURABLE_ACTORS_PUBLIC_URL",
@@ -439,7 +385,7 @@ fn sandbox_provider_config(
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 250, 100, 64000)?,
+                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 500, 100, 64000)?,
                 memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 256, 128, 262144)?,
             },
         },
@@ -448,7 +394,6 @@ fn sandbox_provider_config(
                 .unwrap_or_else(|| "terse-sandboxes".into()),
             zones,
             public_origin,
-            artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
         },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
@@ -457,6 +402,53 @@ fn sandbox_provider_config(
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
     })
+}
+
+fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Placement {
+        Zone(String),
+        Zones(Vec<String>),
+    }
+    let configured: BTreeMap<String, Placement> = serde_json::from_str(value)?;
+    let zones: BTreeMap<String, Vec<String>> = configured
+        .into_iter()
+        .map(|(region, placement)| {
+            (
+                region,
+                match placement {
+                    Placement::Zone(zone) => vec![zone],
+                    Placement::Zones(zones) => zones,
+                },
+            )
+        })
+        .collect();
+    ensure!(
+        !zones.is_empty(),
+        "at least one GKE placement zone is required"
+    );
+    for (region, placements) in &zones {
+        ensure!(
+            !placements.is_empty(),
+            "compute region requires at least one zone"
+        );
+        ensure!(
+            placements
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == placements.len(),
+            "duplicate compute zones"
+        );
+        for zone in placements {
+            ensure!(
+                super::regions::storage_region(zone)? == region,
+                "GKE zone does not match canonical region {region}"
+            );
+        }
+    }
+    Ok(zones)
 }
 
 fn pool_number(

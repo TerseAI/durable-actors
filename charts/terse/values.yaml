@@ -1,29 +1,23 @@
 image:
   repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
   digest: ""
-replicaCount: 2
+replicaCount: 3
 publicUrl: https://actors.useterse.ai
 region: north-america-west
 sandboxNamespace: terse-sandboxes
 zones:
-  north-america-west: us-west4-a
+  north-america-west: [us-west4-a, us-west4-b, us-west4-c]
 storage:
   authorityBucket: ""
   artifactBucket: ""
-  durability: zonal
   archiveBucket: ""
-  replicas:
-    placements: [us-west4-a, us-west4-a, us-west4-a]
-    idle: 192
-    maxStarting: 32
-    credentialsSecret: terse-replica-credentials
-    resources:
-      requests: {cpu: 50m, memory: 64Mi}
-      limits: {memory: 512Mi}
+  rapid:
+    ackZones: 2
+    buckets: []
 cloudSql:
   instanceConnectionName: ""
   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
-# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key and replica-key.
+# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key.
 credentialsSecret: terse-credentials
 serviceAccount:
   googleServiceAccount: ""
@@ -40,7 +34,7 @@ pool:
   fleetMaximum: 256
   maxStarting: 32
   idleTtlSeconds: 600
-  cpuMillis: 250
+  cpuMillis: 500
   memoryMiB: 256
 hostIdleTimeoutMs: 10000
 gateway:
@@ -53,4 +47,3 @@ gateway:
 networkPolicy:
   enabled: true
   dnsCidrs: []
-  replicaCidrs: []

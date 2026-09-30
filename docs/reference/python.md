@@ -4,17 +4,17 @@
 
 ## Actor definitions
 
-Extend `Actor` directly with typed `def` methods and field defaults; prefix helper methods with `_`. Annotated fields persist, `emitted()` also broadcasts changes, and `ephemeral()` keeps temporary values.
+Extend `Actor` directly with typed `def` methods and field defaults; prefix helper methods with `_`. Every instance field must have a type annotation and use exactly one of `persisted()` or `ephemeral()`, including private fields. Wrap a public persisted field with `emitted()` to broadcast changes. Unmarked fields are rejected; `ClassVar` attributes are excluded from state.
 
 ```python
 from pydantic import BaseModel, Field
-from durable_actors import Actor, emitted, ephemeral
+from durable_actors import Actor, emitted, ephemeral, persisted
 
 class Message(BaseModel):
     text: str = Field(min_length=1)
 
 class Chat(Actor):
-    messages: list[Message] = emitted(default_factory=list)
+    messages: list[Message] = emitted(persisted(default_factory=list))
     busy: bool = ephemeral(False)
 
     def append(self, message: Message) -> list[Message]:
@@ -34,6 +34,14 @@ messages: actors.Chat.Methods.append.Result = chat.append(actors.Chat.Message(te
 print(messages[0].text)
 ```
 
+If you copy a client into another application, copy the entire generated package, including its helper modules, and install its runtime dependency from that application's root:
+
+```sh
+uv add durable-actors
+```
+
+Each application that runs a generated client must declare `durable-actors`. Its runtime dependencies are installed automatically; the `[codegen]` extras are only needed to generate or regenerate clients, not to run them.
+
 ## State subscriptions
 
 Callbacks receive complete typed snapshots of emitted fields on a background thread. Failures stop the subscription and reach `on_error`; use `with` to close it.
@@ -51,10 +59,10 @@ Calls serialize and roll back persisted state on failure by default. `@reentrant
 ```python
 import time
 from threading import Lock
-from durable_actors import Actor, ephemeral, reentrant
+from durable_actors import Actor, ephemeral, persisted, reentrant
 
 class Counter(Actor):
-    count: int = 0
+    count: int = persisted(0)
     _lock: Lock = ephemeral(default_factory=Lock)
 
     def increment(self) -> int:
@@ -158,11 +166,11 @@ grant = ActorProxy.handle(access)
 Override deployment defaults per actor; see [configuration](configuration.md#per-actor-sandbox-overrides) for limits and placement rules.
 
 ```python
-from durable_actors import Actor, sandbox
+from durable_actors import Actor, persisted, sandbox
 
 @sandbox(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
 class CustomerAgent(Actor):
-    count: int = 0
+    count: int = persisted(0)
 
     def increment(self) -> int:
         self.count += 1
@@ -171,7 +179,7 @@ class CustomerAgent(Actor):
 
 ## Deployment
 
-Register the project through the [HTTP API](openapi.md) with a Python `actorEntrypoint`, such as `src/actors.py`; dependencies come from `requirements.txt` or `pyproject.toml` and must match the runtime's SDK version. Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
+Compile a Python project with `python -m durable_actors.build PROJECT ENTRYPOINT OUTPUT`, upload the resulting `actors.pyz` to GCS, and register its `bundle` manifest and the compiler's contract through the [HTTP API](openapi.md). Dependencies must match the runtime's SDK version. Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
 
 ```toml
 [tool.durable-actors]

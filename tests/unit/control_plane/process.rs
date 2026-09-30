@@ -36,7 +36,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     let resources = &config.sandbox_provider.pool.resources;
-    assert_eq!((resources.cpu_millis, resources.memory_mib), (250, 256));
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (500, 256));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
@@ -174,22 +174,41 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn production_defaults_to_zonal_replicas_and_gke() -> Result<()> {
+fn production_defaults_to_two_rapid_zones_and_gke() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
     })?;
     assert!(matches!(
         config.storage.persistence,
-        crate::bucket::PersistenceConfig::Replicated {
-            durability: crate::bucket::Durability::Zonal,
-            ..
-        }
+        crate::bucket::PersistenceConfig::Rapid { ack_zones: 2, .. }
     ));
     assert_eq!(
         config.sandbox_provider.gke.zones["north-america-west"],
-        "us-west4-a"
+        vec!["us-west4-a"]
     );
+    Ok(())
+}
+
+#[test]
+fn compute_region_accepts_multiple_zones_and_rejects_empty_or_mismatched_sets() -> Result<()> {
+    let mut values = process_environment();
+    values.insert(
+        "DURABLE_ACTORS_GKE_ZONES",
+        r#"{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}"#,
+    );
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    parse(&values)?;
+    for zones in [
+        r#"{"north-america-west":[]}"#,
+        r#"{"north-america-west":["us-west4-a","us-east4-b"]}"#,
+        r#"{"north-america-west":["us-west4-a","us-west4-a"]}"#,
+    ] {
+        values.insert("DURABLE_ACTORS_GKE_ZONES", zones);
+        assert!(parse(&values).is_err(), "{zones}");
+    }
     Ok(())
 }
 
@@ -235,12 +254,8 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
         ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
         (
-            "DURABLE_ACTORS_REPLICA_SECRET",
-            "0123456789abcdef0123456789abcdef",
-        ),
-        (
-            "DURABLE_ACTORS_REPLICA_PLACEMENTS",
-            r#"["us-west4-a","us-west4-a","us-west4-a"]"#,
+            "DURABLE_ACTORS_RAPID_BUCKETS",
+            r#"[{"bucket":"rapid-test-a","zone":"us-west4-a"},{"bucket":"rapid-test-b","zone":"us-west4-b"}]"#,
         ),
         (
             "DURABLE_ACTORS_GKE_ZONES",

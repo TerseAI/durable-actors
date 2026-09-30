@@ -1,6 +1,6 @@
 {
     "name": "durable-actors-observer",
-    "version": "0.6.0",
+    "version": "0.7.3",
     "description": "Embeddable React observer for Durable Actors",
     "type": "module",
     "license": "MIT",
@@ -69,6 +69,7 @@
         "lucide-react": "^1.47.0",
         "react-day-picker": "^10.0.1",
         "react-json-view-lite": "^2.5.0",
-        "tailwind-merge": "^3.7.0"
+        "tailwind-merge": "^3.7.0",
+        "vaul": "^1.1.2"
     }
 }

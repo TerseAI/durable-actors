@@ -15,13 +15,13 @@ pnpm install
 uv sync
 ```
 
-Define `src/actors.py`. Annotated fields persist; `emitted()` also broadcasts saved changes.
+Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Wrap persisted fields with `emitted()` to broadcast saved changes.
 
 ```python
-from durable_actors import Actor, emitted
+from durable_actors import Actor, emitted, persisted
 
 class Counter(Actor):
-    count: int = emitted(0)
+    count: int = emitted(persisted(0))
 
     def increment(self, amount: int = 1) -> int:
         self.count += amount
@@ -48,6 +48,16 @@ from generated import actors
 counter = actors.Counter.get("one")
 print(counter.increment())
 ```
+
+## Use the client in another application
+
+Copy the entire generated package, including its helper modules, into the application. From that application's root, install the client runtime:
+
+```sh
+uv add durable-actors
+```
+
+This installs the runtime dependencies automatically. The `[codegen]` extras are only needed to generate or regenerate clients, not to run them.
 
 ## Subscribe to state
 

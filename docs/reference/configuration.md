@@ -41,18 +41,11 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled customer code. |
-| `DURABLE_ACTORS_REPLICA_PLACEMENTS` | JSON array of Google Cloud zones; each entry requests a dedicated replica for every actor activation. All copies must confirm each write. |
-| `DURABLE_ACTORS_REPLICA_IDLE` | Ready unassigned replica target, default `192`. |
-| `DURABLE_ACTORS_REPLICA_MAX_STARTING` | Concurrent replica spare starts, default `32`. |
-| `DURABLE_ACTORS_REPLICA_CREDENTIALS_SECRET` | Secret containing `replica-key` in the sandbox namespace, default `terse-replica-credentials`. |
-| `DURABLE_ACTORS_REPLICA_RESOURCES` | Kubernetes requests/limits JSON; defaults to requests of `50m` CPU and `64Mi` RAM, with a `512Mi` memory limit and no CPU limit. |
-| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Standard GCS bucket for immutable change-log batches. |
-| `DURABLE_ACTORS_REPLICA_SECRET` | Shared infrastructure credential, at least 32 bytes. Customer hosts receive actor-scoped capabilities. |
-| `DURABLE_ACTORS_REPLICA_ID` | Stable identity of this storage replica. |
-| `DURABLE_ACTORS_REPLICA_DATA` | SQLite file on a retained persistent volume. |
-| `DURABLE_ACTORS_DURABILITY` | `zonal` (default), `regional`, or `multi_region`. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Permanent Standard GCS bucket for immutable snapshots. Writes race the Rapid quorum; archival continues asynchronously when Rapid wins. |
+| `DURABLE_ACTORS_RAPID_BUCKETS` | JSON array of `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct Rapid zones. Required in production. |
+| `DURABLE_ACTORS_RAPID_ACK_ZONES` | Number of distinct Rapid zones required to acknowledge before Standard succeeds; default `2`. |
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
-| `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a Google zone. |
+| `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a nonempty list of Google zones, for example `{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}`. A single zone string is also accepted. Actor placement spreads across the eligible zones. |
 | `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
@@ -69,7 +62,7 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_SPARE_FLEET_MAX` | `256` | Maximum unassigned spares across pools. Active actors do not count against this budget. |
 | `DURABLE_ACTORS_SPARE_MAX_STARTING` | `32` | Maximum simultaneous spare starts across control-plane replicas. |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`          | `600`                | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                      |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `250`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS`            | `500`                | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                |
 | `DURABLE_ACTORS_HOST_MEMORY_MIB`            | `256`                | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                   |
 | `DURABLE_ACTORS_REGION`                     | Unset                | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                 |
 | `DURABLE_ACTORS_HOME_REGION`                | Unset                | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                |
@@ -90,7 +83,7 @@ export class CustomerAgent extends Actor {}
 
 | Option | Meaning | Default when omitted |
 | --- | --- | --- |
-| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.25. |
+| `cpu` | CPU request and cap in cores; 0.1–64 in increments of 0.001. | `DURABLE_ACTORS_HOST_CPU_MILLIS` divided by 1000; normally 0.5. |
 | `memoryMiB` | Memory request and cap; integer from 128–262144 MiB. | `DURABLE_ACTORS_HOST_MEMORY_MIB`; normally 256. |
 | `regions` | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults. |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms. | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
