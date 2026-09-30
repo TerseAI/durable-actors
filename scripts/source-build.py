@@ -145,9 +145,10 @@ class SourceBuilder:
         started = time.monotonic()
         contract = json.loads(
             self.run(
-                ["bun", COMPILER, str(project), entrypoint, str(output)],
+                ["bun", COMPILER, "--stdin"],
                 project,
                 environment,
+                json.dumps([str(project), entrypoint, str(output)]).encode(),
             )
         )
         self.record("compileMs", started)
@@ -278,7 +279,7 @@ class SourceBuilder:
             )
         return {"bucket": request["bucket"], "files": files}
 
-    def command(self, command, cwd, environment):
+    def command(self, command, cwd, environment, payload=None):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Actor source build exceeded ten minutes")
@@ -287,15 +288,16 @@ class SourceBuilder:
                 command,
                 cwd=cwd,
                 env=environment,
+                stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,
             )
             try:
-                process.wait(timeout=remaining)
+                process.communicate(payload, timeout=remaining)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+                process.communicate()
                 raise TimeoutError("Actor source build exceeded ten minutes") from None
             if process.returncode:
                 stderr.seek(0, io.SEEK_END)

@@ -43,11 +43,15 @@ class SourceBuildTests(unittest.TestCase):
         storage = Store()
         calls = []
 
-        def run(command, cwd, environment):
+        def run(command, cwd, environment, payload=None):
             calls.append(command[0])
             self.assertNotIn("DURABLE_ACTORS_BUILD_TOKEN", environment)
             if command[0] == "bun":
-                (Path(command[-1]) / "actors.mjs").write_text(
+                self.assertEqual(command, ["bun", build.COMPILER, "--stdin"])
+                project, entrypoint, output = json.loads(payload)
+                self.assertEqual(project, str(cwd))
+                self.assertEqual(entrypoint, "src/actor.ts")
+                (Path(output) / "actors.mjs").write_text(
                     (cwd / "src/actor.ts").read_text()
                 )
                 return b'{"version":1,"actors":[]}'
