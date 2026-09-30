@@ -1,4 +1,4 @@
-"""Profile the same actor source ZIP on four Cloud Build machine types using gcloud ADC."""
+"""Profile the same actor source ZIP on four Cloud Build machine types using gcloud credentials."""
 
 import argparse
 import base64
@@ -29,9 +29,7 @@ def request(url, token=None, data=None, method=None):
             return response.read()
     except HTTPError as error:
         # Request bodies contain credentials and must never be written to the report.
-        raise RuntimeError(
-            f"Google API request failed: HTTP {error.code}: {error.read(2048).decode()}"
-        ) from None
+        raise RuntimeError(f"Google API request failed: HTTP {error.code}") from None
 
 
 def oauth():

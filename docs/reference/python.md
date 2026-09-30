@@ -179,7 +179,7 @@ class CustomerAgent(Actor):
 
 ## Deployment
 
-Register the project through the [HTTP API](openapi.md) with a Python `actorEntrypoint`, such as `src/actors.py`; dependencies come from `requirements.txt` or `pyproject.toml` and must match the runtime's SDK version. Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
+Register a GCS source archive through the [HTTP API](openapi.md) with a Python `sourceArchive.entrypoint`, such as `src/actors.py`, and include `pyproject.toml`. Dependencies must match the runtime's SDK version. Include extra resources in `pyproject.toml` and load them with `importlib.resources`:
 
 ```toml
 [tool.durable-actors]
