@@ -8,6 +8,8 @@ If you've been burned by the memory limits in Durable Objects, the lack of obser
 
 Define your state, write your methods and generate a type-safe client to easily integrate into your existing tech stack. Get it working end-2-end in minutes.
 
+<img width="1599" height="676" alt="o11y-screenshot" src="https://github.com/user-attachments/assets/ac390257-8534-4911-830c-0e9155b36831" />
+
 ### Start with a coding agent
 
 Paste this prompt into your coding agent:
