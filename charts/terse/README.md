@@ -93,10 +93,5 @@ Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned re
 
 `pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted actor pools use the cold pod-creation path; exhausted replica pools use bucket persistence while spares start. Python switches the prewarmed Bun process to its Python executor on assignment.
 
-## Upgrading from a zonal deployment
 
-Provision a regional GKE cluster and node pools before cutover; Helm cannot convert an existing zonal control plane. Update existing production overrides as well as chart defaults, and keep enough capacity in the surviving zones to handle the workload after a zone loss. Verify Cloud SQL HA and regional archive placement.
-
-This release adds bucket-mode directory writes and persisted transition states. Quiesce and drain existing actors while the old controllers can still seal and archive them, then replace controllers and actor runtimes together. Do not mix old controllers with the new fallback protocol. The migration runs automatically. Replica placement policy can change between ownership epochs; each old epoch must finish recovery before the new policy takes effect. Sharing a database between clusters during cutover is unsupported because pod inventory is cluster-local.
-
-Before cutover, check real warm/cold/resume invocations, all-copy acknowledgment, replica loss, archival failure, ownership fencing, cleanup, Workload Identity, Cloud SQL and HTTPS routing.
+Size node capacity and autoscaling so the surviving zones can handle the workload after a zone loss.
