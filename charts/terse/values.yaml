@@ -54,3 +54,10 @@ networkPolicy:
   enabled: true
   dnsCidrs: []
   replicaCidrs: []
+
+usage:
+  # Empty disables usage reconciliation and export.
+  url: ""
+  authorizationUrl: ""
+  tokenSecret: terse-usage-credentials
+  tokenKey: producer-token

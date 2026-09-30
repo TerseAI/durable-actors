@@ -20,3 +20,5 @@ mod request_traces;
 mod sockets;
 
 pub mod replicas;
+
+pub mod usage;

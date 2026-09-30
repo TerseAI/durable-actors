@@ -93,13 +93,28 @@ impl SparePool {
         .context("actor sandbox readiness timed out")?
     }
 
-    pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
-        let updated = self.store.0.execute(
+    pub async fn remember(
+        &self,
+        host: &str,
+        config_key: &str,
+        spare: &SpareHandle,
+        assignment: &crate::usage::UsageAssignment,
+    ) -> Result<()> {
+        let mut connection = self.store.0.connection().await?;
+        let transaction = connection.transaction().await?;
+        let updated = transaction.execute(
             "UPDATE durable_actors_spares SET status = 'active', handle = $2 \
              WHERE name = $1 AND host_id = $3 AND host_config_key = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
             &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
+        crate::usage::UsageJournal::start_in(
+            &transaction,
+            assignment,
+            crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64,
+        )
+        .await?;
+        transaction.commit().await?;
         Ok(())
     }
 

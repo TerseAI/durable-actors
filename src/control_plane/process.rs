@@ -32,6 +32,8 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
+    pub usage_sink: Option<(String, String)>,
+    pub usage_authorization_url: Option<String>,
     pub region: Option<String>,
 }
 
@@ -123,6 +125,37 @@ async fn control_plane_routes(
         config.jwt_max_lifetime,
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
+    let usage_authorizer = config
+        .usage_authorization_url
+        .as_ref()
+        .map(|url| {
+            crate::usage::worker::HttpUsageAuthorizer::new(
+                url,
+                config
+                    .usage_sink
+                    .as_ref()
+                    .context("usage sink must be configured with authorization")?
+                    .1
+                    .clone(),
+            )
+        })
+        .transpose()?
+        .map(|authorizer| Arc::new(authorizer) as Arc<dyn crate::usage::UsageAuthorizer>);
+    let usage_sink = config
+        .usage_sink
+        .map(|(url, token)| crate::usage::worker::HttpUsageSink::new(&url, token))
+        .transpose()?
+        .map(|sink| Arc::new(sink) as Arc<dyn crate::usage::UsageSink>);
+    if usage_sink.is_some() {
+        crate::usage::worker::UsageWorker::new(
+            crate::usage::UsageJournal::new(database.clone()),
+            Arc::new(crate::usage::worker::KubernetesUsageObserver(
+                kube::Client::try_default().await?,
+            )),
+            usage_sink,
+        )
+        .start(stop.clone());
+    }
     let trace_persistence = Arc::new(PostgresTracePersistence::new(
         database.clone(),
         config.storage.trace_retention,
@@ -202,6 +235,7 @@ async fn control_plane_routes(
         registry.clone(),
         stop,
         clients.storage,
+        usage_authorizer,
     )
     .await?;
     let socket_events = config
@@ -246,6 +280,7 @@ async fn sandbox_provisioner(
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
     storage: google_cloud_storage::client::Storage,
+    usage_authorizer: Option<Arc<dyn crate::usage::UsageAuthorizer>>,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(GkeSandboxProvider::new(config.gke, storage).await?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
@@ -258,6 +293,7 @@ async fn sandbox_provisioner(
             Some(config.runtime_image),
         )
         .with_runtime_access(access)
+        .with_usage_authorizer(usage_authorizer)
         .with_pool(pool),
     ))
 }
@@ -340,6 +376,11 @@ impl ControlPlaneProcessConfig {
             "default region has no configured GKE zone"
         );
         let socket_event_sink = socket_event_sink_config(&mut get)?;
+        let usage_sink = get("DURABLE_ACTORS_USAGE_URL")
+            .map(|url| {
+                Ok::<_, anyhow::Error>((url, required(&mut get, "DURABLE_ACTORS_USAGE_TOKEN")?))
+            })
+            .transpose()?;
         Ok(Self {
             bind,
             jwt_signing_key,
@@ -352,6 +393,8 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
+            usage_sink,
+            usage_authorization_url: get("DURABLE_ACTORS_USAGE_AUTHORIZATION_URL"),
             region,
         })
     }

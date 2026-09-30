@@ -117,3 +117,15 @@ Supported regions: `canada`, `north-america-east`, `north-america-central`, `nor
 | `DURABLE_ACTORS_TELEMETRY`       | Disabled                  | Set to `1` to enable SDK invocation telemetry on standard error; unset or `0` keeps it disabled. |
 | `DURABLE_ACTORS_BINARY`          | Downloaded runtime        | Use an existing native executable. Relative paths resolve from the working directory.          |
 | `DURABLE_ACTORS_CACHE_DIR`       | `~/.cache/durable-actors` | Runtime download cache; ignored when `DURABLE_ACTORS_BINARY` is set.                           |
+
+## Sandbox usage hook
+
+GKE assignments are journaled in PostgreSQL when an assigned sandbox becomes ready. Set `DURABLE_ACTORS_USAGE_URL` to an HTTPS receiver and `DURABLE_ACTORS_USAGE_TOKEN` to its dedicated bearer token to enable reconciliation and export. The equivalent Helm settings are `usage.url`, `usage.tokenSecret`, and `usage.tokenKey`; these credentials stay in the control plane.
+
+Every ten seconds, the control plane observes the runtime container by pod UID and records allocated CPU, allocated memory, and elapsed time. It includes idle time and excludes unassigned warm sandboxes and failed startup. This is allocation metering; actual CPU utilization and memory working-set collection are not implemented. A missing pod ends at the last confirmed checkpoint, so short unobserved tails may be undercounted. Completed-container timestamps close known final intervals. Events survive sandbox cleanup and control-plane restart.
+
+The receiver accepts `POST {"events": [...]}` with at most 100 intervals. An interval contains `id`, `projectId`, `sessionId`, `resourceId`, `region`, `startMs`, `endMs`, `cpuMillis`, and `memoryMib`. Time is Unix milliseconds, CPU is millicores, memory is MiB. Intervals split at UTC hour boundaries. The ID is `sandbox_usage_v1:{sessionId}:{startMs}:{endMs}`. Receivers must validate and durably deduplicate it, rejecting a conflicting payload. A 2xx response acknowledges durable receipt of the entire batch. Non-2xx results retry on the next reconciliation; an invalid event requires operator reconciliation and is never discarded by the runtime. Monitor oldest pending events in `durable_actors_usage_outbox` and retain the session journal for audits.
+
+Optionally set `DURABLE_ACTORS_USAGE_AUTHORIZATION_URL` (Helm `usage.authorizationUrl`) to an HTTPS URL prefix. Before creating a sandbox, the control plane appends the project ID and sends an authenticated GET. The receiver returns `{"allowed":true}` or `{"allowed":false}`. Denial or an unavailable receiver blocks new starts. This is admission-only: running sandboxes keep running and consuming usage, so it is not a hard spending cap.
+
+For Terse billing, use `/billing/compute/usage` and `/billing/compute/authorize/` on the billing-service origin. Map every project before enabling admission. Start in billing-service shadow mode, then choose an explicit charging start time after validating delivery, balance drawdown, and top-ups with a test account. Do not enable charging merely by deploying the runtime PR.

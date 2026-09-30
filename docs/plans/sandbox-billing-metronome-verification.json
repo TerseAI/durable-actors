@@ -1,0 +1,47 @@
+{
+  "checked_at": "2026-09-29T23:20:26.492Z",
+  "scope": "Synthetic Metronome verification; runtime and billing-service integration pending",
+  "objects": {
+    "Credit type \u2014 Compute USD": "2534e030-aa9b-4dd1-b6c3-8a2ed0dbe99a",
+    "Metric \u2014 Sandbox CPU seconds": "ebfa261c-457b-432a-8b65-ca3d1ef320e6",
+    "Metric \u2014 Sandbox memory seconds": "2a40028a-5da9-4cac-8fd9-eba23cb69d6a",
+    "Metric \u2014 Sandbox uptime": "85be053c-a943-44aa-8519-72b1ec1442d0",
+    "Product \u2014 Sandbox CPU": "3fd7945f-3646-4565-88c3-46b6d8a71690",
+    "Product \u2014 Sandbox Memory": "b11dd704-ee9b-4110-95b1-9c567aff8294",
+    "Product \u2014 Compute Balance": "c8e332a6-74ad-4398-a4f4-e444aff66a79",
+    "Rate card \u2014 Sandbox Standard": "a88c695d-c7af-43da-9e6d-3793ee5066f4",
+    "Test customer \u2014 Sandbox Billing Test Customer": "559a5a54-2389-4062-8919-d9212bb36291",
+    "Contract": "3ab76b6a-0b3d-447a-b391-a7316b961acf",
+    "Credit grant": "ed1b5161-629b-4338-bb71-26dbf81687a2"
+  },
+  "rate_card_alias": "sandbox-standard",
+  "fiat_credit_type_id": "2714e483-4ff1-48e4-9e25-ac732e8f24f2",
+  "fiat_per_custom_credit": "100",
+  "event": {
+    "transaction_id": "sandbox-billing-verification-v1:3ab76b6a-0b3d-447a-b391-a7316b961acf",
+    "customer_id": "559a5a54-2389-4062-8919-d9212bb36291",
+    "event_type": "sandbox_usage_v1",
+    "timestamp": "2026-09-29T23:20:17.861Z",
+    "properties": {
+      "project_id": "sandbox-billing-verification",
+      "cpu_vcpu_seconds": "7200",
+      "memory_gib_seconds": "28800",
+      "sandbox_seconds": "3600",
+      "source": "synthetic_verification"
+    }
+  },
+  "observed": {
+    "cpu_vcpu_seconds": "7200",
+    "memory_gib_seconds": "28800",
+    "sandbox_seconds": "3600",
+    "cpu_vcpu_hours": "2",
+    "memory_gib_hours": "8",
+    "cpu_charge_compute_usd": "0.141912",
+    "memory_charge_compute_usd": "0.192096",
+    "grant_deduction_compute_usd": "0.334008",
+    "remaining_compute_usd": "9.665992",
+    "invoice_id": "4dbebfbe-aabd-5e48-806a-a33cf34ef799",
+    "invoice_status": "DRAFT",
+    "invoice_due_usd": "0"
+  }
+}

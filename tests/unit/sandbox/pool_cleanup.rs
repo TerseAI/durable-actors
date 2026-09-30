@@ -75,7 +75,8 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 control_route: "http://host:7102".into(),
                 control_token: "token".into(),
             };
-            pool.remember(name, "revision", &spare).await?;
+            pool.remember(name, "revision", &spare, &usage_assignment(name, &spare))
+                .await?;
         }
         pool.reserve_host("starting", "starting", "revision")
             .await?;
@@ -147,7 +148,8 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
             control_token: "token".into(),
         };
         pool.reserve_host("done", "old", "revision").await?;
-        pool.remember("old", "revision", &spare).await?;
+        pool.remember("old", "revision", &spare, &usage_assignment("old", &spare))
+            .await?;
         let cleanup = pool.forget_stopped();
         tokio::pin!(cleanup);
         tokio::select! {
@@ -163,7 +165,8 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
             .await?;
         pool.reserve_host("done", "new", "revision").await?;
         spare.resource_id = "sandboxes/do-actor-done/new-uid".into();
-        pool.remember("new", "revision", &spare).await?;
+        pool.remember("new", "revision", &spare, &usage_assignment("new", &spare))
+            .await?;
         let _ = resume.send(());
         cleanup.await?;
         assert_eq!(pool.host("new").await?, Some(spare));
@@ -196,4 +199,15 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         assert!(pool.store.claim("warm", "another", "revision").await?.is_none());
         Ok(())
     }).await
+}
+
+fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAssignment {
+    crate::usage::UsageAssignment {
+        project_id: "project".into(),
+        session_id: session.into(),
+        resource_id: spare.resource_id.clone(),
+        region: spare.canonical_region.clone(),
+        cpu_millis: 250,
+        memory_mib: 256,
+    }
 }
