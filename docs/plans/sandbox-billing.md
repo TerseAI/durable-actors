@@ -1,17 +1,19 @@
 # Sandbox usage and shared billing plan
 
-> Initial PR scope: GKE allocation metering with a durable journal/outbox; a separate Compute USD wallet and durable billing inbox; Stripe top-ups; Terse project binding and billing UI; optional admission checks. Shadow traffic is never promoted to billable traffic. Actual utilization collection, automatic stopping/draining at exhaustion, reservations for a hard spending cap, and provider-wide reconciliation are follow-up work. The implementation may undercount unobserved pod tails and does not claim to complete every phase below.
+> Initial PR scope: GKE allocation metering with a durable journal/outbox; a separate Compute USD wallet and durable billing inbox; manual Metronome credit grants; Terse project binding and billing UI; optional admission checks. Shadow traffic is never promoted to billable traffic. Actual utilization collection, automatic stopping/draining at exhaustion, reservations for a hard spending cap, and provider-wide reconciliation are follow-up work. The implementation may undercount unobserved pod tails and does not claim to complete every phase below.
 
 
 Implementation plan, September 29, 2026. Planning branch: `codex/sandbox-billing`, based on `origin/main` at `49da720`. The supplied Metronome verification setup passed a synthetic usage and credit-drawdown check; runtime metering and billing-service integration are still to be implemented.
 
-Build reliable sandbox metering in Durable Actors and extend the existing `terse-commercial/billing-service` to accept it. Keep resource measurements in Durable Actors, pricing and credit policy in the billing service, financial credit accounting in Metronome, and payments in Stripe. Terse remains a client of the same billing service.
+Build reliable sandbox metering in Durable Actors and extend the existing `terse-commercial/billing-service` to accept it. Keep resource measurements in Durable Actors, pricing and credit policy in the billing service, financial accounting and manual credit grants in Metronome. Terse remains a client of the same billing service.
 
 The first release should charge for allocated CPU and memory over sandbox uptime, collect actual consumption alongside those quantities, and run in shadow mode before enabling charges. This fits the current GKE provider, which sets resource requests equal to limits. The intended later model supports Modal-style charging for the higher of requested and actual resources when bursting is available.
 
 ## Compute balance
 
-Use **$1 paid = $1 of compute balance**. Metronome tracks this through the dedicated **Compute USD** credit type: one unit represents one US dollar. Display customer balances and usage costs in dollars. A $10 top-up adds 10 Compute USD; there is no separate credit-pack conversion for sandbox compute.
+Credits are granted manually in Metronome for this rollout. Compute checkout, subscription plans, recurring grants, and payment automation are outside scope. The usage contract is still required to rate CPU and memory consumption.
+
+Use **1 Compute USD granted = $1 of compute balance**. Metronome tracks this through the dedicated **Compute USD** credit type: one unit represents one US dollar. Display customer balances and usage costs in dollars. A manual grant of 10 Compute USD adds $10 of compute balance; there is no separate credit-pack conversion for sandbox compute.
 
 Use the **Sandbox Standard** rate card, alias `sandbox-standard`, for CPU and memory. These products consume the compute balance. Terse's existing agent/LLM balance stays separately scoped within the shared billing service. Any future consolidation of balances requires an explicit migration.
 
@@ -57,7 +59,7 @@ Track `sandbox_seconds` as its own meter for reporting. The initial price is com
 
 Keep physical pod lifetime and customer billable lifetime separately. Bill each assigned sandbox once regardless of concurrent calls. A replacement creates a new session; fence the prior owner and hold any unverified overlap for reconciliation. Capture resource changes as new allocation segments so historical usage cannot be repriced using the latest deployment settings.
 
-Start with one regional rate card. GPU, storage, egress, subscription fees, free grants, and regional surcharges are outside this first compute meter. Review GKE costs and warm-pool overhead during shadow billing before settling on long-term margins.
+Start with one regional rate card. GPU, storage, egress, subscription fees, automatic recurring grants, and regional surcharges are outside this first compute meter. Review GKE costs and warm-pool overhead during shadow billing before settling on long-term margins.
 
 ## Existing infrastructure to reuse
 
@@ -70,7 +72,7 @@ Start with one regional rate card. GPU, storage, egress, subscription fees, free
 | Terse `backend/src/services/ActorControlPlane.ts`, `ActorDeploymentService.ts` | Trusted project deployment and control-plane integration | Establish the project-to-billing-account binding during provisioning. |
 | Terse `backend/src/services/BillingService.ts`, agent `billingHook.ts` | Billing client, run/model gates, organization cancellation | Reuse the client boundary and notification approach; add sandbox entitlements. |
 | Commercial billing `CreditService`, `UsageMeterService`, `MetronomeService` | Credit context, run and LLM usage, Metronome customers and contracts | Add generic usage ingestion and product-specific meters; inject external dependencies. |
-| Commercial billing `PaymentsProviderService`, Stripe and Metronome webhook routes | Payments, subscriptions, top-ups, low-credit alerts | Reuse integrations with durable event deduplication and product-aware routing. |
+| Metronome customer credit grants | Manually grant credit with contract/product restrictions | Grant Compute USD to the organization's compute contract, restricted to CPU and memory. |
 | Local `rate-card-library` | YAML extraction, rate sync, dry-run validation, commit rates | Reuse for pricing changes. It currently manages rates; products and metrics need separate provisioning. |
 
 The inspected billing service forwards usage directly to Metronome and has no application-owned durable inbox/outbox or reservation store. Its reporting recognizes named LLM and run line items, its credit configuration uses one credit type, and its low-credit webhook updates one organization-wide `runExecutionBlocked` flag. Those are the specific seams to generalize.
@@ -84,7 +86,7 @@ flowchart LR
     Runtime[Sandbox lifecycle and resource collector] --> Ledger[Durable Actors usage journal and outbox]
     Ledger -->|UsageSink over authenticated HTTP| Billing[Shared billing service]
     Billing -->|Durable export| Metronome[Metronome pricing and credit accounting]
-    Stripe[Stripe payments and top-ups] --> Billing
+    Operator[Manual credit grants] --> Metronome
     Terse[Terse backend and billing UI] --> Billing
     Billing -->|Entitlement decisions and notifications| Control[Durable Actors control plane]
 ```
@@ -136,7 +138,7 @@ Generalize the existing service incrementally behind interfaces for usage storag
 
 Metronome remains the financial authority for grants, expiry, consumption, and adjustments. The service owns account/product mappings, delivery history, and execution authorization. It must not deduct credits once locally and a second time through a Metronome usage event.
 
-The current run gate can fast-path on an organization flag until a low-credit webhook arrives. For sandbox compute, check before allocation and renew a short-lived execution entitlement while the sandbox runs. Publish product/account-scoped changes so all relevant regions block new activations and drain existing sessions on exhaustion. Force-stop after a documented grace period, preserve actor state, and emit final usage. Top-up or entitlement restoration permits later activation.
+The current run gate can fast-path on an organization flag until a low-credit webhook arrives. For sandbox compute, check before allocation and renew a short-lived execution entitlement while the sandbox runs. Publish product/account-scoped changes so all relevant regions block new activations and drain existing sessions on exhaustion. Force-stop after a documented grace period, preserve actor state, and emit final usage. A manual credit grant or entitlement restoration permits later activation.
 
 A first soft-limit rollout can reuse balance checks and alerts, but must state its overspend exposure from telemetry, export, rating, polling, concurrency, and shutdown delay. Put conservative concurrency and maximum-session bounds around it. A 60-second event batch does not imply a 60-second credit cutoff.
 
@@ -150,9 +152,9 @@ Outage policy should be explicit: accepted usage stays queued; new paid allocati
 
 2. **Durable runtime metering.** Add `src/usage/`, a migration after the current V15, and lifecycle integrations in assignment, host shutdown, and spare cleanup. Implement the PostgreSQL journal/outbox, HTTP `UsageSink`, replay, and provider reconciliation. Keep test doubles faithful to required interfaces and tests under `tests/`. Exit: warm adoption, cold start, idle timeout, crash, failover, and replay produce no duplicate or overlapping charges.
 
-3. **Billing service ingestion and pricing.** Add durable ingestion/export storage and connect the provisioned sandbox SUM metrics and rate card; reuse Metronome, Stripe, and rate-card tooling. Make reports product-aware and expose uptime, resource quantities, and credit consumption. Register trusted account mappings from Terse provisioning. Run sandbox charges against a test contract only. Exit: the known one-hour fixtures reconcile through runtime, service, and Metronome, including retries after acknowledgement loss.
+3. **Billing service ingestion and pricing.** Add durable ingestion/export storage and connect the provisioned sandbox SUM metrics and rate card; reuse Metronome and rate-card tooling. Make reports product-aware and expose uptime, resource quantities, and credit consumption. Register trusted account mappings from Terse provisioning. Run sandbox charges against a test contract only. Exit: the known one-hour fixtures reconcile through runtime, service, and Metronome, including retries after acknowledgement loss.
 
-4. **Credits and execution control.** Add sandbox entitlement operations and product-scoped notifications, integrate admission/renewal/drain, and route top-ups to the intended balance. Test multiple concurrent sandboxes, multiple regions, credit exhaustion, top-up recovery, provider outages, and payment/webhook replay. Release soft limits only with a stated overspend bound; make hard caps a separate acceptance gate.
+4. **Credits and execution control.** Add sandbox entitlement operations and product-scoped notifications, integrate admission/renewal/drain, and scope manual credit grants to the intended balance. Test multiple concurrent sandboxes, multiple regions, credit exhaustion, manual-grant recovery, provider outages, and usage replay. Release soft limits only with a stated overspend bound; make hard caps a separate acceptance gate.
 
 5. **Shadow billing and launch.** Observe at least one representative workload cycle including long-lived sockets, idle tails, and forced node failures. Compare usage with provider evidence and projected charges with costs. Verify account isolation, deterministic replay, restored backups, rate changes, and invoice-boundary splits. Enable real charges for a small cohort with a known effective timestamp, then expand. Disabling charging must preserve usage capture and audit history; shadow events must never be replayed into paid contracts by accident.
 
