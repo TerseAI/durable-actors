@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn deployment_accepts_a_source_archive_without_a_customer_image() {
+fn deployment_accepts_a_source_archive() {
     let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
         "sourceArchive": {"sha256": "a".repeat(64), "entrypoint": "src/actor.ts", "object": {"bucket": "source-bucket", "name": "project/source.zip", "generation": "1"}},
         "secretRefs": []
@@ -10,22 +10,10 @@ fn deployment_accepts_a_source_archive_without_a_customer_image() {
 }
 
 #[test]
-fn deployment_accepts_the_customer_image_and_source_entrypoint_without_a_snapshot() {
+fn deployment_accepts_a_local_project() {
     let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
-        "imageRef": "im-customer",
-        "workingDirectory": "/project",
-        "actorEntrypoint": "src/actors.ts",
+        "localSource": {"workingDirectory": "/project", "actorEntrypoint": "src/actors.ts"},
         "secretRefs": ["project-secrets"]
     }));
     assert!(request.is_ok());
-}
-
-#[test]
-fn deployment_registration_rejects_the_removed_image_warmup_option() {
-    let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
-        "imageRef": "im-runtime",
-        "workingDirectory": "/customer",
-        "warmRegion": "north-america-west"
-    }));
-    assert!(request.is_err());
 }

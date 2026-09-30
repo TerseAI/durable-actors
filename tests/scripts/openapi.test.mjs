@@ -79,9 +79,9 @@ test("deployment schemas describe both hosted and local registration and the com
     const ajv = new Ajv({ strict: false })
     const register = ajv.compile(deployment.put.requestBody.content["application/json"].schema)
     const read = ajv.compile(deployment.get.responses["200"].content["application/json"].schema)
-    for (const imageRef of ["im-source", "local"]) {
-        const value = { imageRef, workingDirectory: "/customer", actorEntrypoint: null, secretRefs: [] }
-        assert.ok(register({ imageRef, workingDirectory: "/customer" }), ajv.errorsText(register.errors))
+    for (const source of [{ sourceArchive: { sha256: "a".repeat(64), entrypoint: "src/actors.ts" } }, { localSource: { workingDirectory: "/project", actorEntrypoint: "actors.ts" } }]) {
+        const value = { ...source, secretRefs: [] }
+        assert.ok(register(source), ajv.errorsText(register.errors))
         assert.ok(read(value), ajv.errorsText(read.errors))
         for (const field of Object.keys(value)) {
             const incomplete = { ...value }
@@ -106,8 +106,7 @@ test("archive deployments and cache probes document immutable source identities"
     const deploy = ajv.compile(spec.components.schemas.Deployment)
     const source = { sha256: "a".repeat(64), entrypoint: "src/actors.ts", object: { bucket: "uploads", name: "source.zip", generation: "42" } }
     assert.ok(deploy({ sourceArchive: source }), ajv.errorsText(deploy.errors))
-    assert.ok(deploy({ sourceArchive: source, imageRef: "" }), ajv.errorsText(deploy.errors))
-    assert.equal(deploy({ sourceArchive: source, imageRef: "local" }), false)
+    assert.equal(deploy({ sourceArchive: source, localSource: { workingDirectory: "/project" } }), false)
     assert.equal(deploy({ sourceArchive: { ...source, object: { ...source.object, generation: "0" } } }), false)
     const probe = ajv.compile(spec.paths["/v1/projects/{project_id}/deployment/cache"].post.requestBody.content["application/json"].schema)
     assert.ok(probe({ sha256: source.sha256, entrypoint: source.entrypoint }))

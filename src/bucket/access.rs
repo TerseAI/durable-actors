@@ -224,13 +224,13 @@ impl StorageTokenSource for GcsTokenSource {
     }
 }
 
-enum StorageCredentials {
+pub(crate) enum StorageCredentials {
     ServiceAccount(gcp_auth::CustomServiceAccount),
     ApplicationDefault(AccessTokenCredentials),
 }
 
 impl StorageCredentials {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
             let document = std::fs::read_to_string(path)?;
             let value: Value = serde_json::from_str(&document)?;
@@ -245,7 +245,7 @@ impl StorageCredentials {
         ))
     }
 
-    async fn token(&self) -> Result<String> {
+    pub(crate) async fn token(&self) -> Result<String> {
         match self {
             // STS requires an OAuth access token, not the default library's self-signed JWT.
             Self::ServiceAccount(credentials) => Ok(credentials

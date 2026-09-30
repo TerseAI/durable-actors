@@ -1,18 +1,19 @@
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 
 use super::*;
 
+mod cloud_build;
 mod kubernetes;
 mod source_builds;
-pub(crate) use kubernetes::{BuilderConfig, GkeConfig};
+pub(crate) use cloud_build::CloudBuildConfig;
+pub(crate) use kubernetes::GkeConfig;
 
 pub(crate) struct GkeSandboxProvider {
     cluster: Arc<dyn SandboxCluster>,
     assignment: Arc<dyn HostAssignment>,
-    artifacts: Arc<dyn CodeArtifacts>,
     public_origin: String,
     source_builds: Arc<dyn source_builds::SourceBuilder>,
 }
@@ -22,24 +23,18 @@ impl GkeSandboxProvider {
         config: GkeConfig,
         storage: google_cloud_storage::client::Storage,
         image: String,
-        builders: BuilderConfig,
-        stop: tokio_util::sync::CancellationToken,
+        build: CloudBuildConfig,
     ) -> Result<Self> {
         let public_origin = config.public_origin.clone();
-        let artifacts = Arc::new(GcsArtifacts {
-            storage: storage.clone(),
-            bucket: config.artifact_bucket.clone(),
-        });
         let cluster = Arc::new(kubernetes::Kubernetes::new(
             kube::Client::try_default().await?,
             config.clone(),
         ));
-        let workers = kubernetes::WorkerPool::new(cluster.clone(), image, builders)?;
-        workers.start(stop);
+        let executor = Arc::new(cloud_build::CloudBuild::new(build, image, storage.clone())?);
         let source_builds = Arc::new(source_builds::SourceBuilds::new(
             config.artifact_bucket,
             storage,
-            workers,
+            executor,
         ));
         Ok(Self {
             cluster,
@@ -49,7 +44,6 @@ impl GkeSandboxProvider {
                     .redirect(reqwest::redirect::Policy::none())
                     .build()?,
             )),
-            artifacts,
             public_origin,
             source_builds,
         })
@@ -89,25 +83,14 @@ impl GkeSandboxProvider {
 #[async_trait]
 impl SandboxProvider for GkeSandboxProvider {
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
-        if let Some(source) = &request.source_archive {
-            return self
-                .source_builds
-                .build(
-                    &request.project_id,
-                    &request.image_ref,
-                    &request.canonical_region,
-                    source,
-                )
-                .await;
-        }
-        validate_image(&request.image_ref)?;
-        let compiled = self.cluster.build_code(request).await?;
-        let code_snapshot = self.artifacts.publish(compiled.directory.path()).await?;
-        Ok(BuiltActorCode {
-            source_archive: None,
-            code_snapshot,
-            contract: compiled.contract,
-        })
+        self.source_builds
+            .build(
+                &request.project_id,
+                &request.image_ref,
+                &request.canonical_region,
+                &request.source_archive,
+            )
+            .await
     }
 
     async fn source_cached(
@@ -301,12 +284,6 @@ trait SandboxCluster: Send + Sync {
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>>;
-    async fn build_code(&self, request: &BuildCodeRequest) -> Result<CompiledCode>;
-}
-
-struct CompiledCode {
-    directory: tempfile::TempDir,
-    contract: serde_json::Value,
 }
 
 #[async_trait]
@@ -339,23 +316,6 @@ impl HostAssignment for HttpAssignment {
             .json()
             .await
             .context("decode host assignment")
-    }
-}
-
-#[async_trait]
-trait CodeArtifacts: Send + Sync {
-    async fn publish(&self, path: &Path) -> Result<String>;
-}
-struct GcsArtifacts {
-    storage: google_cloud_storage::client::Storage,
-    bucket: String,
-}
-#[async_trait]
-impl CodeArtifacts for GcsArtifacts {
-    async fn publish(&self, path: &Path) -> Result<String> {
-        crate::artifacts::publish(&self.storage, &self.bucket, path)
-            .await?
-            .encode()
     }
 }
 

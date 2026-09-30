@@ -71,18 +71,15 @@ pub struct CreateSpareRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BuildCodeRequest {
     pub project_id: String,
-    pub source_archive: Option<source::SourceArchive>,
+    pub source_archive: source::SourceArchive,
     pub image_ref: String,
-    pub working_directory: String,
-    pub actor_entrypoint: String,
     pub canonical_region: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltActorCode {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_archive: Option<source::SourceArchive>,
+    pub source_archive: source::SourceArchive,
     pub code_snapshot: String,
     pub contract: serde_json::Value,
 }

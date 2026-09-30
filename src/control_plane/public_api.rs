@@ -196,20 +196,15 @@ async fn get_deployment(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "deployment not found"))?;
-    let source = spec
-        .source
-        .unwrap_or_else(|| super::admin::DeploymentSource {
-            source_archive: None,
-            image_ref: spec.image_ref,
-            working_directory: spec.working_directory,
-            actor_entrypoint: spec.actor_entrypoint,
-        });
+    let (source_archive, local_source) = match spec.source {
+        Some(super::admin::DeploymentSource::Archive(archive)) => (Some(archive), None),
+        Some(super::admin::DeploymentSource::Local(local)) => (None, Some(local)),
+        None => return Err(ApiError::internal("deployment source missing")),
+    };
     Ok(Json(RegisterDeploymentRequest {
-        source_archive: source.source_archive,
+        source_archive,
+        local_source,
         contract: None,
-        image_ref: source.image_ref,
-        working_directory: source.working_directory,
-        actor_entrypoint: source.actor_entrypoint,
         secret_refs: spec.secret_refs,
     }))
 }
@@ -237,11 +232,33 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
-    if request.source_archive.is_some() && !request.image_ref.is_empty() {
-        return Err(ApiError::bad_request(anyhow::anyhow!(
-            "provide a source archive or a source image, not both"
-        )));
-    }
+    let (source, image_ref, working_directory, actor_entrypoint) =
+        match (request.source_archive, request.local_source) {
+            (Some(archive), None) => {
+                let entrypoint = archive.entrypoint.clone();
+                (
+                    super::admin::DeploymentSource::Archive(archive),
+                    String::new(),
+                    "/customer".into(),
+                    Some(entrypoint),
+                )
+            }
+            (None, Some(local)) => {
+                let directory = local.working_directory.clone();
+                let entrypoint = local.actor_entrypoint.clone();
+                (
+                    super::admin::DeploymentSource::Local(local),
+                    "local".into(),
+                    directory,
+                    entrypoint,
+                )
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "provide exactly one sourceArchive or localSource",
+                ));
+            }
+        };
     let contract = request
         .contract
         .map(PublicActorContract::new)
@@ -250,18 +267,11 @@ async fn register_deployment(
     let spec = HostLaunchSpec {
         sandboxes: Default::default(),
         project_id: project_id(path)?,
-        source: request
-            .source_archive
-            .map(|archive| super::admin::DeploymentSource {
-                image_ref: String::new(),
-                working_directory: "/customer".into(),
-                actor_entrypoint: Some(archive.entrypoint.clone()),
-                source_archive: Some(archive),
-            }),
+        source: Some(source),
         code_snapshot: None,
-        image_ref: request.image_ref,
-        working_directory: request.working_directory,
-        actor_entrypoint: request.actor_entrypoint,
+        image_ref,
+        working_directory,
+        actor_entrypoint,
         secret_refs: request.secret_refs,
     };
     let changed = state
@@ -486,18 +496,10 @@ struct RegisterDeploymentRequest {
     source_archive: Option<crate::sandbox::source::SourceArchive>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
-    #[serde(default)]
-    image_ref: String,
-    #[serde(default = "source_working_directory")]
-    working_directory: String,
-    #[serde(default)]
-    actor_entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_source: Option<super::admin::LocalSource>,
     #[serde(default)]
     secret_refs: Vec<String>,
-}
-
-fn source_working_directory() -> String {
-    "/customer".into()
 }
 
 #[derive(Serialize)]

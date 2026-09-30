@@ -134,10 +134,10 @@ spec:
             - {name: DURABLE_ACTORS_SPARE_TTL_SECONDS, value: {{ .Values.pool.idleTtlSeconds | quote }}}
             - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.pool.cpuMillis | quote }}}
             - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ .Values.pool.memoryMiB | quote }}}
-            - {name: DURABLE_ACTORS_BUILD_IDLE, value: {{ .Values.build.idlePerControlPlane | quote }}}
-            - {name: DURABLE_ACTORS_BUILD_CONCURRENT, value: {{ .Values.build.concurrentPerControlPlane | quote }}}
-            - {name: DURABLE_ACTORS_BUILD_CPU_MILLIS, value: {{ .Values.build.cpuMillis | quote }}}
-            - {name: DURABLE_ACTORS_BUILD_MEMORY_MIB, value: {{ .Values.build.memoryMiB | quote }}}
+            - {name: DURABLE_ACTORS_BUILD_PROJECT, value: {{ required "build.project is required" .Values.build.project | quote }}}
+            - {name: DURABLE_ACTORS_BUILD_REGION, value: {{ .Values.build.region | quote }}}
+            - {name: DURABLE_ACTORS_BUILD_SERVICE_ACCOUNT, value: {{ required "build.serviceAccount is required" .Values.build.serviceAccount | quote }}}
+            - {name: DURABLE_ACTORS_BUILD_MACHINE_TYPE, value: {{ .Values.build.machineType | quote }}}
             - {name: DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS, value: {{ .Values.hostIdleTimeoutMs | quote }}}
             - name: DURABLE_ACTORS_POSTGRES_URL
               valueFrom:

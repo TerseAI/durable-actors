@@ -113,31 +113,30 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "idlePerControlPlane",
-        "concurrentPerControlPlane",
-        "cpuMillis",
-        "memoryMiB"
+        "project",
+        "region",
+        "serviceAccount",
+        "machineType"
       ],
       "properties": {
-        "idlePerControlPlane": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 16
+        "project": {
+          "type": "string"
         },
-        "concurrentPerControlPlane": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 64
+        "region": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
         },
-        "cpuMillis": {
-          "type": "integer",
-          "minimum": 100,
-          "maximum": 64000
+        "serviceAccount": {
+          "type": "string"
         },
-        "memoryMiB": {
-          "type": "integer",
-          "minimum": 256,
-          "maximum": 262144
+        "machineType": {
+          "type": "string",
+          "enum": [
+            "E2_MEDIUM",
+            "E2_STANDARD_2",
+            "E2_HIGHCPU_8",
+            "E2_HIGHCPU_32"
+          ]
         }
       }
     },

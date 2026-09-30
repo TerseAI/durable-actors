@@ -53,12 +53,13 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
         );
         assert_ne!(initial_key, deployment.host_config_key());
         deployment.secret_refs = vec!["project-secrets".into()];
-        deployment.source = Some(DeploymentSource {
-            source_archive: None,
-            image_ref: "im-source".into(),
-            working_directory: "/project".into(),
-            actor_entrypoint: Some("src/actors.ts".into()),
-        });
+        deployment.source = Some(DeploymentSource::Archive(
+            crate::sandbox::source::SourceArchive {
+                sha256: "a".repeat(64),
+                entrypoint: "src/actors.ts".into(),
+                object: None,
+            },
+        ));
 
         assert!(registry.register_test_deployment(&deployment).await?);
         assert_eq!(
@@ -66,7 +67,13 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
             Some(deployment.clone())
         );
         assert!(!registry.register_test_deployment(&deployment).await?);
-        deployment.source.as_mut().unwrap().image_ref = "im-updated".into();
+        deployment.source = Some(DeploymentSource::Archive(
+            crate::sandbox::source::SourceArchive {
+                sha256: "b".repeat(64),
+                entrypoint: "src/actors.ts".into(),
+                object: None,
+            },
+        ));
         assert!(registry.register_test_deployment(&deployment).await?);
         assert_eq!(registry.launch_spec("default").await?, Some(deployment));
         registry.remove_deployment("default").await?;

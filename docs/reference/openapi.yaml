@@ -55,7 +55,7 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Compiles a generation-pinned GCS source ZIP using the shared runtime, or reuses a cached bundle. Replaces the deployment and restarts actors while preserving saved state. Source images remain supported through imageRef; local development uses imageRef set to local.
+            description: Compiles a generation-pinned GCS source ZIP using the shared runtime, or reuses a cached bundle. Replaces the deployment and restarts actors while preserving saved state. Local development registers localSource with its project directory and entrypoint.
             requestBody:
                 required: true
                 content:
@@ -68,12 +68,9 @@ paths:
                                         sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                                         entrypoint: src/actors.ts
                                         object: { bucket: source-uploads, name: projects/chat/source.zip, generation: "123456789" }
-                            chat:
+                            local:
                                 value:
-                                    imageRef: registry.example/customer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                                    workingDirectory: /customer
-                                    actorEntrypoint: src/actors.ts
-                                    secretRefs: []
+                                    localSource: { workingDirectory: /project, actorEntrypoint: src/actors.ts }
             responses:
                 "200": { $ref: "#/components/responses/Changed" }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
@@ -844,33 +841,31 @@ components:
                         name: { type: string, minLength: 1, maxLength: 1024 }
                         generation: { type: string, pattern: "^[1-9][0-9]*$" }
                     description: Required on a cache miss. The control-plane identity must have read access to this exact object.
+        LocalSource:
+            type: object
+            additionalProperties: false
+            required: [workingDirectory]
+            properties:
+                workingDirectory:
+                    type: string
+                    pattern: "^/"
+                    maxLength: 1024
+                    description: Absolute project directory in the local development server.
+                actorEntrypoint:
+                    type: [string, "null"]
+                    minLength: 1
+                    maxLength: 1024
+                    default: null
+                    description: TypeScript or Python source path; null uses src/actors.ts.
         Deployment:
             type: object
             additionalProperties: false
             oneOf:
                 - required: [sourceArchive]
-                  properties:
-                      imageRef: { const: "" }
-                - required: [imageRef]
-                  not: { required: [sourceArchive] }
-                  properties:
-                      imageRef: { minLength: 1 }
+                - required: [localSource]
             properties:
                 sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
-                imageRef:
-                    type: string
-                    maxLength: 255
-                    description: Immutable OCI source image reference pinned by sha256 digest for image deployments; local for development. Omit or use an empty string with sourceArchive. Maximum 255 UTF-8 bytes.
-                workingDirectory:
-                    type: string
-                    pattern: "^/"
-                    default: /customer
-                    description: Absolute project path inside the image. Maximum 1024 UTF-8 bytes.
-                actorEntrypoint:
-                    type: [string, "null"]
-                    minLength: 1
-                    default: null
-                    description: TypeScript or Python source path; null uses src/actors.ts. Maximum 1024 UTF-8 bytes.
+                localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs:
                     type: array
                     maxItems: 16
@@ -886,12 +881,13 @@ components:
         CurrentDeployment:
             type: object
             additionalProperties: false
-            required: [imageRef, workingDirectory, actorEntrypoint, secretRefs]
+            required: [secretRefs]
+            oneOf:
+                - required: [sourceArchive]
+                - required: [localSource]
             properties:
                 sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
-                imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
-                workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
-                actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }
+                localSource: { $ref: "#/components/schemas/LocalSource" }
                 secretRefs: { $ref: "#/components/schemas/Deployment/properties/secretRefs" }
         PublicActorContract:
             type: object

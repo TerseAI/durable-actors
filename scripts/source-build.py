@@ -1,8 +1,7 @@
-"""One source build per sandbox; storage credentials are scoped by the control plane."""
+"""Compile one source archive in Cloud Build and publish its bundle to GCS."""
 
 import base64
 import hashlib
-import hmac
 import io
 import json
 import os
@@ -10,12 +9,11 @@ import re
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
-import threading
 import time
 import zipfile
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
@@ -26,20 +24,6 @@ MAX_EXPANDED = 1024 * 1024 * 1024
 MAX_FILES = 20_000
 MAX_CACHE_FILES = 100_000
 COMPILER = "/opt/durable-actors/sdk/dist/compiler/deployment-build.js"
-
-
-class BuildGate:
-    def __init__(self, token):
-        self.token = "Bearer " + token
-        self.used = False
-        self.lock = threading.Lock()
-
-    def claim(self, authorization):
-        with self.lock:
-            if self.used or not hmac.compare_digest(authorization, self.token):
-                return False
-            self.used = True
-            return True
 
 
 class ObjectStore:
@@ -133,7 +117,7 @@ class SourceBuilder:
             "XDG_STATE_HOME": str(root / "state"),
             "PNPM_HOME": str(root / "pnpm"),
         }
-        environment.pop("DURABLE_ACTORS_BUILD_TOKEN", None)
+        environment.pop("DURABLE_ACTORS_BUILD_REQUEST", None)
         cache_object = request["dependencyPrefix"] + dependency_key(project) + ".tar.gz"
         started = time.monotonic()
         cached = self.store.get(request["bucket"], cache_object)
@@ -226,6 +210,14 @@ class SourceBuilder:
             )
 
     def save_cache(self, bucket, name, root):
+        try:
+            self.write_cache(bucket, name, root)
+        except (OSError, RuntimeError, tarfile.TarError):
+            print(
+                json.dumps({"event": "actor_dependency_cache_write_failed"}), flush=True
+            )
+
+    def write_cache(self, bucket, name, root):
         files = [
             file
             for file in sorted(root.rglob("*"))
@@ -468,54 +460,30 @@ def artifact_files(root, entrypoint):
     return files
 
 
-def serve():
-    gate = BuildGate(os.environ["DURABLE_ACTORS_BUILD_TOKEN"])
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.reply(200 if self.path == "/ready" and not gate.used else 409, {})
-
-        def do_POST(self):
-            if self.path != "/build" or not gate.claim(
-                self.headers.get("Authorization", "")
-            ):
-                self.reply(409, {"error": "Build worker is unavailable"})
-                return
-            try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 64 * 1024:
-                    raise ValueError("Invalid build request size")
-                request = json.loads(self.rfile.read(size))
-                # Pod deletion reclaims the workspace after the reply, without delaying deployment.
-                result = SourceBuilder(ObjectStore(request["accessToken"])).build(
-                    request, Path(tempfile.mkdtemp(prefix="actor-source-"))
-                )
-                self.reply(200, result)
-            except (
-                ValueError,
-                KeyError,
-                OSError,
-                RuntimeError,
-                tarfile.TarError,
-                zipfile.BadZipFile,
-            ) as error:
-                self.reply(400, {"error": str(error)[-8192:]})
-
-        def reply(self, status, body):
-            encoded = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-        def log_message(self, *_args):
-            pass
-
-    server = ThreadingHTTPServer(("0.0.0.0", 7102), Handler)
-    server.daemon_threads = True
-    server.serve_forever()
+def main():
+    request = json.loads(os.environ.pop("DURABLE_ACTORS_BUILD_REQUEST"))
+    store = ObjectStore(request.pop("accessToken"))
+    try:
+        with tempfile.TemporaryDirectory(prefix="actor-source-") as directory:
+            result = SourceBuilder(store).build(request, Path(directory))
+        status = 0
+    except (
+        ValueError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        tarfile.TarError,
+        zipfile.BadZipFile,
+    ) as error:
+        result = {"error": str(error)[-8192:]}
+        status = 1
+    store.put(
+        request["bucket"],
+        request["artifactPrefix"] + "result.json",
+        json.dumps(result).encode(),
+    )
+    return status
 
 
 if __name__ == "__main__":
-    serve()
+    sys.exit(main())

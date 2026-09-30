@@ -22,11 +22,7 @@ impl SandboxCluster for Cluster {
             "assigned-secret".into(),
         )]))
     }
-    async fn build_code(&self, _: &BuildCodeRequest) -> Result<CompiledCode> {
-        anyhow::bail!("unused")
-    }
 }
-struct Artifacts;
 struct SourceBuilds;
 #[async_trait]
 impl source_builds::SourceBuilder for SourceBuilds {
@@ -40,12 +36,6 @@ impl source_builds::SourceBuilder for SourceBuilds {
         _: &str,
         _: &source::SourceArchive,
     ) -> Result<BuiltActorCode> {
-        anyhow::bail!("unused")
-    }
-}
-#[async_trait]
-impl CodeArtifacts for Artifacts {
-    async fn publish(&self, _: &std::path::Path) -> Result<String> {
         anyhow::bail!("unused")
     }
 }
@@ -90,7 +80,6 @@ async fn prewarmed_assignment_uses_ready_host_without_creating_a_pod() -> Result
     let provider = GkeSandboxProvider {
         cluster: cluster.clone(),
         assignment: Arc::new(Assign),
-        artifacts: Arc::new(Artifacts),
         source_builds: Arc::new(SourceBuilds),
         public_origin: "https://actors.example.com".into(),
     };
@@ -187,7 +176,6 @@ async fn assignment_rejects_a_host_whose_lease_expired_before_its_reply() -> Res
             creates: AtomicUsize::new(0),
         }),
         assignment: Arc::new(ExpiredAssignment),
-        artifacts: Arc::new(Artifacts),
         source_builds: Arc::new(SourceBuilds),
         public_origin: "https://actors.example.com".into(),
     };

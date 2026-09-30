@@ -14,7 +14,7 @@ use crate::sandbox::{
 pub(super) struct SourceBuilds {
     bucket: String,
     store: Arc<dyn BuildStore>,
-    workers: Arc<dyn BuildWorkers>,
+    executor: Arc<dyn BuildExecutor>,
 }
 
 #[async_trait]
@@ -30,14 +30,14 @@ pub(super) trait SourceBuilder: Send + Sync {
 }
 
 impl SourceBuilds {
-    pub fn new(bucket: String, storage: Storage, workers: Arc<dyn BuildWorkers>) -> Self {
+    pub fn new(bucket: String, storage: Storage, executor: Arc<dyn BuildExecutor>) -> Self {
         Self {
             store: Arc::new(GcsBuildStore {
                 storage,
                 bucket: bucket.clone(),
             }),
             bucket,
-            workers,
+            executor,
         }
     }
 }
@@ -86,10 +86,10 @@ impl SourceBuilder for SourceBuilds {
             .await?;
         let started = std::time::Instant::now();
         let reply = self
-            .workers
+            .executor
             .build(
                 region,
-                &WorkerRequest {
+                &BuildRequest {
                     source: source.clone(),
                     bucket: self.bucket.clone(),
                     artifact_prefix: artifact_prefix.clone(),
@@ -120,7 +120,7 @@ impl SourceBuilder for SourceBuilds {
         let build = BuiltActorCode {
             code_snapshot: reply.manifest.encode()?,
             contract: reply.contract,
-            source_archive: Some(source.clone()),
+            source_archive: source.clone(),
         };
         self.store.put(&key, &build).await?;
         tracing::info!(project_id = project, total_ms = started.elapsed().as_millis() as u64, dependency_cache_hit = reply.dependency_cache_hit, timings = ?reply.timings, "actor source build completed");
@@ -130,7 +130,7 @@ impl SourceBuilder for SourceBuilds {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct WorkerRequest {
+pub(super) struct BuildRequest {
     pub source: SourceArchive,
     pub bucket: String,
     pub artifact_prefix: String,
@@ -140,7 +140,7 @@ pub(super) struct WorkerRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WorkerReply {
+pub(super) struct BuildReply {
     pub manifest: crate::artifacts::ArtifactManifest,
     pub contract: Value,
     pub timings: std::collections::BTreeMap<String, u64>,
@@ -148,8 +148,8 @@ pub(super) struct WorkerReply {
 }
 
 #[async_trait]
-pub(super) trait BuildWorkers: Send + Sync {
-    async fn build(&self, region: &str, request: &WorkerRequest) -> Result<WorkerReply>;
+pub(super) trait BuildExecutor: Send + Sync {
+    async fn build(&self, region: &str, request: &BuildRequest) -> Result<BuildReply>;
 }
 
 #[async_trait]

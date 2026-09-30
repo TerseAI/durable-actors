@@ -35,8 +35,7 @@ for (const [durability, placements] of [
     })
 }
 for (const [name, override] of [
-    ["zero build concurrency", { build: { concurrentPerControlPlane: 0 } }],
-    ["unbounded idle builders", { build: { idlePerControlPlane: 17 } }],
+    ["unknown build machine", { build: { machineType: "E2_HUGE" } }],
     ["regional copies in one zone", { storage: { durability: "regional" } }],
     ["multi-region copies in one region", { storage: { durability: "multi_region" } }],
     ["empty replica set", { storage: { replicas: { placements: [] } } }],
@@ -46,18 +45,17 @@ for (const [name, override] of [
 ])
     test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
 
-test("source builds have configurable capacity and control-plane-only ingress", () => {
-    const result = render({ build: { idlePerControlPlane: 0, concurrentPerControlPlane: 8, cpuMillis: 2000, memoryMiB: 2048 } })
+test("source builds configure Cloud Build project, region, identity, and machine", () => {
+    const result = render({ build: { project: "build-project", region: "us-west4", serviceAccount: "build@build-project.iam.gserviceaccount.com", machineType: "E2_HIGHCPU_32" } })
     assert.equal(result.status, 0, result.stderr)
     for (const [name, value] of [
-        ["IDLE", "0"],
-        ["CONCURRENT", "8"],
-        ["CPU_MILLIS", "2000"],
-        ["MEMORY_MIB", "2048"]
+        ["PROJECT", "build-project"],
+        ["REGION", "us-west4"],
+        ["SERVICE_ACCOUNT", "build@build-project.iam.gserviceaccount.com"],
+        ["MACHINE_TYPE", "E2_HIGHCPU_32"]
     ]) {
         assert.match(result.stdout, new RegExp(`name: DURABLE_ACTORS_BUILD_${name}, value: "${value}"`))
     }
-    assert.match(result.stdout, /protocol: TCP, port: 7102/)
 })
 
 test("dedicated replicas have storage identity access while customer pods stay isolated", () => {

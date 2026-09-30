@@ -111,7 +111,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
-    let source = serde_json::json!({"imageRef":"im-customer", "workingDirectory":"/project", "actorEntrypoint":"src/actors.ts", "secretRefs":[]});
+    let source = serde_json::json!({"sourceArchive": archive(), "secretRefs":[]});
     for changed in [true, true] {
         let reply: serde_json::Value = client
             .put(&url)
@@ -137,7 +137,10 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
     assert_eq!(compiled.actor_entrypoint.as_deref(), Some("actors.mjs"));
     assert_eq!(compiled.working_directory, "/customer");
-    assert_eq!(compiled.source.as_ref().unwrap().image_ref, "im-customer");
+    assert_eq!(
+        compiled.source.as_ref().unwrap().archive(),
+        Some(&archive())
+    );
     let mut roundtrip: serde_json::Value = client
         .get(&url)
         .bearer_auth("api-key")
@@ -174,7 +177,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
     );
 
     provider.fail.store(true, Ordering::SeqCst);
-    roundtrip["imageRef"] = "im-broken".into();
+    roundtrip["sourceArchive"]["sha256"] = "b".repeat(64).into();
     let failed = client
         .put(&url)
         .bearer_auth("api-key")
@@ -190,7 +193,7 @@ async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_
 
     provider.fail.store(false, Ordering::SeqCst);
     *provider.contract.lock().unwrap() = contract();
-    roundtrip["imageRef"] = "im-updated".into();
+    roundtrip["sourceArchive"]["sha256"] = "c".repeat(64).into();
     client
         .put(&url)
         .bearer_auth("api-key")
@@ -405,12 +408,24 @@ fn fixture_with_idle_timeout(
     Ok((service, admin, provider))
 }
 
+fn archive() -> crate::sandbox::source::SourceArchive {
+    crate::sandbox::source::SourceArchive {
+        sha256: "a".repeat(64),
+        entrypoint: "src/actors.ts".into(),
+        object: Some(crate::sandbox::source::SourceObject {
+            bucket: "sources".into(),
+            name: "source.zip".into(),
+            generation: "1".into(),
+        }),
+    }
+}
+
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
         sandboxes: Default::default(),
         project_id: "default".into(),
-        source: None,
-        image_ref: "im-customer".into(),
+        source: Some(super::super::admin::DeploymentSource::Archive(archive())),
+        image_ref: String::new(),
         code_snapshot: None,
         working_directory: "/project".into(),
         actor_entrypoint: Some("src/actors.ts".into()),

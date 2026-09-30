@@ -9,7 +9,7 @@ use crate::{
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
         HostSandboxRuntimeConfig,
-        gke::{BuilderConfig, GkeConfig, GkeSandboxProvider},
+        gke::{CloudBuildConfig, GkeConfig, GkeSandboxProvider},
     },
 };
 
@@ -54,7 +54,7 @@ pub struct SandboxProviderConfig {
     pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
-    pub(crate) builders: BuilderConfig,
+    pub(crate) build: CloudBuildConfig,
     pub runtime: HostSandboxRuntimeConfig,
 }
 
@@ -253,8 +253,7 @@ async fn sandbox_provisioner(
             config.gke,
             storage,
             config.runtime_image.clone(),
-            config.builders,
-            stop.clone(),
+            config.build,
         )
         .await?,
     );
@@ -460,13 +459,16 @@ fn sandbox_provider_config(
             public_origin,
             artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
         },
-        builders: BuilderConfig {
-            idle: pool_number(get, "DURABLE_ACTORS_BUILD_IDLE", 1, 0, 16)?,
-            concurrent: pool_number(get, "DURABLE_ACTORS_BUILD_CONCURRENT", 4, 1, 64)?,
-            resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_ACTORS_BUILD_CPU_MILLIS", 1000, 100, 64000)?,
-                memory_mib: pool_number(get, "DURABLE_ACTORS_BUILD_MEMORY_MIB", 1024, 256, 262144)?,
-            },
+        build: {
+            let build = CloudBuildConfig {
+                project: required(get, "DURABLE_ACTORS_BUILD_PROJECT")?,
+                region: required(get, "DURABLE_ACTORS_BUILD_REGION")?,
+                service_account: required(get, "DURABLE_ACTORS_BUILD_SERVICE_ACCOUNT")?,
+                machine_type: get("DURABLE_ACTORS_BUILD_MACHINE_TYPE")
+                    .unwrap_or_else(|| "E2_STANDARD_2".into()),
+            };
+            build.validate()?;
+            build
         },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,

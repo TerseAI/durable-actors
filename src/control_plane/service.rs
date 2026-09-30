@@ -917,7 +917,12 @@ impl HostProvisioner for SandboxHostProvisioner {
             .runtime_image
             .as_ref()
             .context("hosted code preparation requires a runtime image")?;
-        let mut input = super::admin::DeploymentSource::from(source);
+        let archive = source
+            .source
+            .as_ref()
+            .and_then(super::admin::DeploymentSource::archive)
+            .context("hosted deployments require a source archive")?;
+        let input = super::admin::DeploymentSource::Archive(archive.clone());
         if let Some(previous) = previous.filter(|old| {
             old.source.as_ref() == Some(&input)
                 && old.image_ref == *image
@@ -931,29 +936,13 @@ impl HostProvisioner for SandboxHostProvisioner {
             .provider
             .build_code(&crate::sandbox::BuildCodeRequest {
                 project_id: source.project_id.clone(),
-                source_archive: input.source_archive.clone(),
-                image_ref: if input.source_archive.is_some() {
-                    image.clone()
-                } else {
-                    input.image_ref.clone()
-                },
-                working_directory: input.working_directory.clone(),
-                actor_entrypoint: input
-                    .actor_entrypoint
-                    .clone()
-                    .unwrap_or_else(|| "src/actors.ts".into()),
+                source_archive: archive.clone(),
+                image_ref: image.clone(),
                 canonical_region: region.into(),
             })
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
-        if let Some(archive) = built.source_archive {
-            input.source_archive = Some(archive);
-        }
-        let artifact = if input
-            .actor_entrypoint
-            .as_deref()
-            .is_some_and(|entrypoint| entrypoint.ends_with(".py"))
-        {
+        let artifact = if built.source_archive.entrypoint.ends_with(".py") {
             "actors.pyz"
         } else {
             "actors.mjs"
@@ -961,7 +950,9 @@ impl HostProvisioner for SandboxHostProvisioner {
         let prepared = HostLaunchSpec {
             sandboxes: Default::default(),
             project_id: source.project_id.clone(),
-            source: Some(input),
+            source: Some(super::admin::DeploymentSource::Archive(
+                built.source_archive,
+            )),
             image_ref: image.clone(),
             code_snapshot: Some(built.code_snapshot),
             working_directory: "/customer".into(),

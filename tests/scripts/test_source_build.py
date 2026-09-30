@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -173,11 +174,68 @@ class SourceBuildTests(unittest.TestCase):
             (root / "package.json").write_text('{"packageManager":"pnpm@12.5.1"}')
             self.assertEqual(build.package_manager(root), ("pnpm", "12.5.1"))
 
-    def test_worker_accepts_only_one_authenticated_build(self):
-        gate = build.BuildGate("secret")
-        self.assertFalse(gate.claim("wrong"))
-        self.assertTrue(gate.claim("Bearer secret"))
-        self.assertFalse(gate.claim("Bearer secret"))
+    def test_cloud_build_publishes_result_and_removes_credentials_from_environment(
+        self,
+    ):
+        request = {
+            "accessToken": "scoped-secret",
+            "bucket": "code",
+            "artifactPrefix": "artifacts/run/",
+        }
+        reply = {
+            "manifest": {"bucket": "code", "files": []},
+            "contract": {"version": 1, "actors": []},
+        }
+        with (
+            patch.dict(
+                build.os.environ, {"DURABLE_ACTORS_BUILD_REQUEST": json.dumps(request)}
+            ),
+            patch.object(build, "ObjectStore") as storage,
+            patch.object(
+                build.SourceBuilder, "build", return_value=reply
+            ) as compile_source,
+        ):
+            self.assertEqual(build.main(), 0)
+            storage.assert_called_once_with("scoped-secret")
+            self.assertNotIn("DURABLE_ACTORS_BUILD_REQUEST", build.os.environ)
+            self.assertNotIn("accessToken", compile_source.call_args.args[0])
+            storage.return_value.put.assert_called_once_with(
+                "code", "artifacts/run/result.json", json.dumps(reply).encode()
+            )
+
+    def test_cloud_build_records_failure_and_exits_unsuccessfully(self):
+        request = {
+            "accessToken": "scoped-secret",
+            "bucket": "code",
+            "artifactPrefix": "artifacts/run/",
+        }
+        with (
+            patch.dict(
+                build.os.environ, {"DURABLE_ACTORS_BUILD_REQUEST": json.dumps(request)}
+            ),
+            patch.object(build, "ObjectStore") as storage,
+            patch.object(
+                build.SourceBuilder,
+                "build",
+                side_effect=RuntimeError("compiler failed"),
+            ),
+        ):
+            self.assertEqual(build.main(), 1)
+            result = json.loads(storage.return_value.put.call_args.args[2])
+            self.assertEqual(result, {"error": "compiler failed"})
+
+    def test_dependency_cache_publication_failure_keeps_successful_bundle(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                build.ObjectStore,
+                "put",
+                side_effect=RuntimeError("storage unavailable"),
+            ),
+        ):
+            build.SourceBuilder(build.ObjectStore("token")).save_cache(
+                "code", "deps/cache", Path(directory)
+            )
 
     def test_artifact_publication_rejects_links_and_empty_entrypoints(self):
         with tempfile.TemporaryDirectory() as directory:

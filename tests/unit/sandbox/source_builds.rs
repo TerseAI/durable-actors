@@ -29,8 +29,8 @@ struct Workers(AtomicUsize);
 
 struct InvalidWorkers;
 #[async_trait]
-impl BuildWorkers for InvalidWorkers {
-    async fn build(&self, region: &str, request: &WorkerRequest) -> Result<WorkerReply> {
+impl BuildExecutor for InvalidWorkers {
+    async fn build(&self, region: &str, request: &BuildRequest) -> Result<BuildReply> {
         let mut reply = Workers(AtomicUsize::new(0)).build(region, request).await?;
         reply.contract = serde_json::json!({"version": 999, "actors": []});
         Ok(reply)
@@ -45,7 +45,7 @@ async fn invalid_compilations_are_not_cached() -> Result<()> {
     let builds = SourceBuilds {
         bucket: "code-bucket".into(),
         store: store.clone(),
-        workers: Arc::new(InvalidWorkers),
+        executor: Arc::new(InvalidWorkers),
     };
     let source = SourceArchive {
         sha256: "a".repeat(64),
@@ -67,10 +67,10 @@ async fn invalid_compilations_are_not_cached() -> Result<()> {
     Ok(())
 }
 #[async_trait]
-impl BuildWorkers for Workers {
-    async fn build(&self, _: &str, request: &WorkerRequest) -> Result<WorkerReply> {
+impl BuildExecutor for Workers {
+    async fn build(&self, _: &str, request: &BuildRequest) -> Result<BuildReply> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(WorkerReply {
+        Ok(BuildReply {
             manifest: crate::artifacts::ArtifactManifest {
                 bucket: request.bucket.clone(),
                 files: vec![crate::artifacts::ArtifactFile {
@@ -93,11 +93,11 @@ async fn repeated_source_reuses_compiled_code_without_a_worker_and_isolates_proj
     let store = Arc::new(Store {
         entries: Mutex::new(Default::default()),
     });
-    let workers = Arc::new(Workers(AtomicUsize::new(0)));
+    let executor = Arc::new(Workers(AtomicUsize::new(0)));
     let builds = SourceBuilds {
         bucket: "code-bucket".into(),
         store,
-        workers: workers.clone(),
+        executor: executor.clone(),
     };
     let source = SourceArchive {
         sha256: "a".repeat(64),
@@ -118,7 +118,7 @@ async fn repeated_source_reuses_compiled_code_without_a_worker_and_isolates_proj
             .build("one", "runtime", "region", &cached)
             .await?
             .source_archive,
-        Some(source.clone())
+        source.clone()
     );
     assert_eq!(
         builds
@@ -127,7 +127,7 @@ async fn repeated_source_reuses_compiled_code_without_a_worker_and_isolates_proj
             .code_snapshot,
         first.code_snapshot
     );
-    assert_eq!(workers.0.load(Ordering::SeqCst), 1);
+    assert_eq!(executor.0.load(Ordering::SeqCst), 1);
     assert!(
         builds
             .build("two", "runtime", "region", &cached)
@@ -138,7 +138,7 @@ async fn repeated_source_reuses_compiled_code_without_a_worker_and_isolates_proj
     builds
         .build("one", "new-runtime", "region", &source)
         .await?;
-    assert_eq!(workers.0.load(Ordering::SeqCst), 3);
+    assert_eq!(executor.0.load(Ordering::SeqCst), 3);
     Ok(())
 }
 

@@ -233,6 +233,12 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
             "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
+        ("DURABLE_ACTORS_BUILD_PROJECT", "test-project"),
+        ("DURABLE_ACTORS_BUILD_REGION", "us-west4"),
+        (
+            "DURABLE_ACTORS_BUILD_SERVICE_ACCOUNT",
+            "build@test-project.iam.gserviceaccount.com",
+        ),
         ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
         (
             "DURABLE_ACTORS_REPLICA_SECRET",
