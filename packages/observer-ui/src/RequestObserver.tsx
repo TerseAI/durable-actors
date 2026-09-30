@@ -65,7 +65,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                 </p>
             )}
             <div className="la-observer-toolbar">
-                <div>
+                <div className={actor ? "la:sr-only" : undefined}>
                     <Heading>Requests</Heading>
                     <p>{actor ? "Method calls and WebSocket events for this instance." : "Method calls and WebSocket events, with time spent waiting and processing."}</p>
                 </div>

@@ -34,7 +34,7 @@ The localhost-only `durable-actors dev` runtime allows observability requests wi
 
 ## Invocation waterfall
 
-`RequestObserver` opens with a waterfall of retained method calls and WebSocket events, including inside an actor instance. Each row shares a relative time axis and shows total duration, queue wait, and the gap or overlap with preceding calls on that instance. Select a row to inspect identifiers, outcomes, and exact timings; switch to Table for the tabular view. Live updates, pause, history filters, and loading older requests apply to both views.
+`RequestObserver` opens with a waterfall of retained method calls and WebSocket events, including inside an actor instance. Instance inspection combines identity, residency, and queue metrics in a compact header; Requests, State, and WebSockets views preserve inspection controls when switching. Each row shares a relative time axis and shows total duration, queue wait, and the gap or overlap with preceding calls on that instance. Select a row to inspect identifiers, outcomes, and exact timings; switch to Table for the tabular view. Live updates, pause, history filters, and loading older requests apply to both views.
 
 Durations include queue wait, actor processing, and persistence. Gaps are calculated only from the calls loaded in the current view; filtered or unretained calls are not included. The waterfall uses request traces, so internal helper calls within one invocation are not separate spans. Embed `RequestTimeline` directly with `records` and an `onSelect(record, trigger)` callback when providing your own request controls.
 

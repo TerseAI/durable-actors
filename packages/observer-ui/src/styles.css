@@ -184,21 +184,6 @@
 .la-observer-summary p {
     font-size: 0.75rem;
 }
-.la-observer-summary-compact {
-    margin: 16px 0 0;
-}
-.la-observer-summary-compact > div {
-    padding: 14px 18px;
-}
-.la-observer-summary-compact dd {
-    font-size: 1.25rem;
-}
-.la-observer-queue-wait-detail {
-    margin-top: 28px;
-}
-.la-observer-queue-wait-detail > p {
-    margin-top: 6px;
-}
 .la-observer-table th.la-observer-wait-cell,
 .la-observer-table td.la-observer-wait-cell,
 .la-observer-instance-table th.la-observer-wait-cell,
@@ -706,25 +691,87 @@
     font-size: 12px;
     color: var(--muted-foreground);
 }
-.la-observer-instance-heading {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 12px 0 28px;
+.la-observer-instance-page > .la-observer-toolbar {
+    flex-wrap: wrap;
+    margin-bottom: 16px;
 }
-.la-observer-instance-heading h2 {
-    font-size: 1.25rem;
+.la-observer-instance-page h1 {
+    font-size: 1.375rem;
+    overflow-wrap: anywhere;
 }
-.la-observer-instance-detail h2:focus-visible,
-.la-observer-instances h2:focus-visible {
+.la-observer-instance-page h1:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 4px;
 }
-.la-observer-instance-detail > section + section {
-    margin-top: 28px;
+.la-observer-instance-metrics {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 24px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
 }
-.la-observer-instance-detail > [data-slot="button"] {
-    padding-left: 0;
+.la-observer-instance-metrics:empty {
+    display: none;
+}
+.la-observer-queue-wait-detail dl,
+.la-observer-queue-wait-detail dl > div,
+.la-observer-waiting {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+}
+.la-observer-queue-wait-detail dl {
+    gap: 8px 20px;
+}
+.la-observer-queue-wait-detail dt,
+.la-observer-waiting-label,
+.la-observer-instance-metrics p {
+    color: var(--muted-foreground);
+    font-size: 12px;
+}
+.la-observer-queue-wait-detail dd {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+.la-observer-waiting-label strong {
+    color: var(--foreground);
+    margin-left: 4px;
+}
+.la-observer-waiting .la-observer-queue {
+    margin: 0;
+}
+.la-observer-instance-views {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+.la-observer-instance-views > [data-slot="button"] {
+    border-radius: 0;
+    height: 38px;
+    padding: 0 14px;
+    border-bottom: 2px solid transparent;
+    color: var(--muted-foreground);
+    font-size: 12px;
+}
+.la-observer-instance-views > [aria-pressed="true"] {
+    border-bottom-color: var(--foreground);
+    color: var(--foreground);
+}
+.la-observer-instance-detail .la-requests > .la-observer-toolbar {
+    margin-bottom: 12px;
+}
+.la-observer-instance-detail .la-state {
+    margin: 0;
 }
 .la-sheet-overlay {
     position: fixed;
@@ -889,9 +936,6 @@
 .la-observer-queue-empty {
     color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
-}
-.la-observer-waiting > p {
-    margin-top: 6px;
 }
 
 .console-shell {
