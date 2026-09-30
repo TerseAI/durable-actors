@@ -42,13 +42,56 @@ function fixture(records: RequestTrace[]) {
     return { client, publish: (records: RequestTrace[]) => publish({ ...page, records }) }
 }
 
+test("repeated methods share a row while interleaved calls remain individually selectable", async () => {
+    const source = fixture([{ ...trace, sequence: 3, requestId: "third", startedAtMs: 1300 }, trace, { ...trace, sequence: 2, requestId: "second", operation: "save", startedAtMs: 1050 }])
+    const view = render(<RequestObserver client={source.client} />)
+    const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
+    const loads = within(timeline).getAllByRole("button", { name: /Inspect load request/ })
+    const row = loads[0]!.closest(".request-waterfall-row")!
+    assert.ok(loads[1]!.closest(".request-waterfall-row") === row, "Repeated calls share one row")
+    assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 2)
+    assert.ok(within(row as HTMLElement).getByText("2 calls"))
+    assert.equal((loads[0] as HTMLElement).style.left, "0%")
+    assert.equal((loads[1] as HTMLElement).style.left, "75%")
+    assert.match(loads[1]!.getAttribute("aria-label")!, /150 ms gap/)
+    for (const [index, requestId] of ["first", "third"].entries()) {
+        fireEvent.click(loads[index]!)
+        const details = await view.findByRole("dialog", { name: "Request details" })
+        assert.ok(within(details).getByText(requestId))
+        assert.equal(loads[index]!.getAttribute("data-state"), "selected")
+        fireEvent.click(view.getByRole("button", { name: "Close" }))
+        await waitFor(() => assert.ok(document.activeElement === loads[index], "Closing details restores focus to the selected call"))
+    }
+    await act(async () => source.publish([{ ...trace, sequence: 4, requestId: "fourth", startedAtMs: 1400 }]))
+    assert.equal(timeline.querySelectorAll(".request-waterfall-row").length, 2)
+    assert.equal(within(row as HTMLElement).getAllByRole("button").length, 3)
+    assert.ok(within(row as HTMLElement).getByText("3 calls"))
+})
+
+test("method rows keep different projects, actor classes, instances and event kinds separate", async () => {
+    const { client } = fixture([
+        trace,
+        { ...trace, sequence: 2, projectId: "other" },
+        { ...trace, sequence: 3, actorName: "Workspace" },
+        { ...trace, sequence: 4, actorId: "other" },
+        { ...trace, sequence: 5, kind: "websocket" },
+        { ...trace, sequence: 6, requestId: "overlap", startedAtMs: 1050 }
+    ])
+    const view = render(<RequestObserver client={client} />)
+    const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
+    const rows = timeline.querySelectorAll(".request-waterfall-row")
+    assert.equal(rows.length, 5)
+    assert.equal(within(rows[0] as HTMLElement).getAllByRole("button").length, 2)
+    assert.ok(within(rows[0] as HTMLElement).getByRole("button", { name: /Overlapping/ }))
+})
+
 test("waterfall places calls chronologically on one scale with queue time and gaps", async () => {
     const { client } = fixture([{ ...trace, sequence: 2, requestId: "second", operation: "save", startedAtMs: 1300, durationMs: 100, outcome: "failed" }, trace])
     const view = render(<RequestObserver client={client} />)
     const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
     const calls = within(timeline).getAllByRole("button", { name: /Inspect .* request/ })
     assert.deepEqual(
-        calls.map(call => call.querySelector("strong")?.textContent),
+        [...timeline.querySelectorAll(".request-waterfall-label strong")].map(label => label.textContent),
         ["load", "save"]
     )
     const bars = timeline.querySelectorAll<HTMLElement>(".request-waterfall-bar")
@@ -56,7 +99,7 @@ test("waterfall places calls chronologically on one scale with queue time and ga
     assert.equal(bars[0]!.style.width, "25%")
     assert.equal(bars[1]!.style.left, "75%")
     assert.equal(timeline.querySelector<HTMLElement>(".request-waterfall-bar > .request-waterfall-queue")!.style.width, "20%")
-    assert.ok(within(timeline).getByText("200 ms gap"))
+    assert.match(calls[1]!.getAttribute("aria-label")!, /200 ms gap/)
     assert.match(calls[1]!.getAttribute("aria-label")!, /failed/)
     fireEvent.click(calls[1]!)
     assert.ok(await view.findByRole("dialog", { name: "Request details" }))
@@ -75,9 +118,9 @@ test("gaps follow the latest finish on the same actor, including overlapping req
     ])
     const view = render(<RequestObserver client={client} />)
     const timeline = await view.findByRole("group", { name: "Invocation waterfall" })
-    assert.ok(within(timeline).getByText("Overlapping"))
-    assert.ok(within(timeline).getByText("100 ms gap"))
-    assert.equal(within(timeline).getAllByText("First in view").length, 2)
+    assert.ok(within(timeline).getByRole("button", { name: /Overlapping/ }))
+    assert.ok(within(timeline).getByRole("button", { name: /100 ms gap/ }))
+    assert.equal(within(timeline).getAllByRole("button", { name: /First in view/ }).length, 2)
 })
 
 test("waterfall handles instant requests, unavailable queue timings and every outcome", async () => {

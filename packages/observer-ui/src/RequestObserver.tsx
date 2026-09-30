@@ -279,7 +279,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                 >
                     <SheetTitle>Request details</SheetTitle>
                     <SheetDescription>Full identifiers and timings for this request.</SheetDescription>
-                    {selected && <RequestDetails record={selected} timing={requestTimeline(records).rows.find(row => row.record === selected)} />}
+                    {selected && <RequestDetails record={selected} timing={requestTimeline(records).calls.find(call => call.record === selected)} />}
                 </SheetContent>
             </Sheet>
         </section>
