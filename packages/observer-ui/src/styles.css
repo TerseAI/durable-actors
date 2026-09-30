@@ -629,6 +629,7 @@
 
 .la-request-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
 }
@@ -806,7 +807,7 @@
 }
 @media (max-width: 640px) {
     .la-request-actions {
-        flex-shrink: 0;
+        max-width: 100%;
     }
     .la-requests .la-observer-toolbar {
         flex-wrap: wrap;
@@ -2199,4 +2200,227 @@
         align-items: flex-start;
         flex-direction: column;
     }
+}
+
+.request-view-toggle {
+    display: inline-flex;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    gap: 2px;
+}
+.request-view-toggle [data-slot="button"] {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+}
+.request-waterfall {
+    --request-method: #248b80;
+    --request-websocket: #8470c7;
+    --request-queue: #d6a442;
+    --request-failed: #d05765;
+    --request-interrupted: #aa8054;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    overflow: hidden;
+}
+.dark .request-waterfall {
+    --request-method: #3aaf9e;
+    --request-websocket: #a291e0;
+    --request-queue: #d8ae60;
+    --request-failed: #e47f8d;
+    --request-interrupted: #bc956e;
+}
+.request-waterfall-heading {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.request-waterfall-heading > div {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-size: 13px;
+}
+.request-waterfall-heading > div > span {
+    color: var(--muted-foreground);
+    font-size: 11px;
+}
+.request-waterfall-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--muted-foreground);
+    font-size: 10px;
+}
+.request-waterfall-legend li {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.request-waterfall-legend i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+}
+.request-waterfall-method {
+    background: var(--request-method);
+}
+.request-waterfall-websocket {
+    background: var(--request-websocket);
+}
+.request-waterfall-queue {
+    background: var(--request-queue);
+    background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgb(255 255 255 / 0.25) 3px 4px);
+}
+.request-waterfall-failed,
+.request-waterfall-rejected {
+    background: var(--request-failed);
+}
+.request-waterfall-interrupted,
+.request-waterfall-rerouted {
+    background: var(--request-interrupted);
+}
+.request-waterfall-scroll {
+    max-height: 570px;
+    overflow: auto;
+}
+.request-waterfall-axis,
+.request-waterfall-row {
+    display: grid;
+    grid-template-columns: 210px minmax(240px, 1fr) 120px;
+    column-gap: 24px;
+    min-width: 700px;
+    padding: 0 20px;
+}
+.request-waterfall-axis {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: 42px;
+    background: var(--card);
+    color: var(--muted-foreground);
+    border-bottom: 1px solid var(--border);
+    font: 10px var(--console-mono, ui-monospace, monospace);
+    align-items: center;
+}
+.request-waterfall-axis > div {
+    position: relative;
+    height: 100%;
+}
+.request-waterfall-axis > div > span {
+    position: absolute;
+    top: 14px;
+    transform: translateX(-50%);
+    white-space: nowrap;
+}
+.request-waterfall-axis > div > span:first-child {
+    transform: none;
+}
+.request-waterfall-axis > div > span:last-child {
+    transform: translateX(-100%);
+}
+.request-waterfall-axis > span:last-child {
+    text-align: right;
+}
+.request-waterfall-row {
+    width: 100%;
+    min-height: 58px;
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+    background: transparent;
+    text-align: left;
+    color: var(--foreground);
+    cursor: pointer;
+}
+.request-waterfall-row:last-child {
+    border-bottom: 0;
+}
+.request-waterfall-row:hover,
+.request-waterfall-row[data-state="selected"] {
+    background: color-mix(in srgb, var(--request-method) 6%, var(--card));
+}
+.request-waterfall-row:focus-visible,
+.request-waterfall-scroll:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+}
+.request-waterfall-label,
+.request-waterfall-timing {
+    display: flex;
+    justify-content: center;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+    padding: 10px 0;
+    font: 11px var(--console-mono, ui-monospace, monospace);
+}
+.request-waterfall-label strong,
+.request-waterfall-timing strong {
+    font-weight: 500;
+    font-size: 12px;
+}
+.request-waterfall-label > *,
+.request-waterfall-timing > * {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.request-waterfall-label > span,
+.request-waterfall-timing > span {
+    color: var(--muted-foreground);
+    font-size: 10px;
+}
+.request-waterfall-timing {
+    text-align: right;
+}
+.request-waterfall-track {
+    position: relative;
+    min-width: 0;
+}
+.request-waterfall-gridline {
+    position: absolute;
+    inset-block: 0;
+    width: 1px;
+    background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+.request-waterfall-bar {
+    position: absolute;
+    top: calc(50% - 7px);
+    height: 14px;
+    min-width: 3px;
+    max-width: 100%;
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.18),
+        0 1px 3px rgb(0 0 0 / 0.08);
+}
+.request-waterfall-bar > .request-waterfall-queue {
+    display: block;
+    height: 100%;
+}
+.request-waterfall-gap {
+    position: absolute;
+    top: 50%;
+    border-top: 1px dashed var(--muted-foreground);
+    opacity: 0.45;
+}
+.request-waterfall-caption {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 10px;
 }
