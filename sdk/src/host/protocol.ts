@@ -6,7 +6,7 @@ import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtoc
 import type { SocketConnection, SocketEffect } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
-import type { JsonObject, JsonValue } from "../json.js"
+import type { JsonValue } from "../json.js"
 
 import type { SqliteState } from "./sqlite.js"
 
@@ -28,7 +28,8 @@ function failedReply(code: string, message: string): FailedReply {
 
 const sqliteStateSchema = z.object({
     txid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    path: z.string().optional()
+    path: z.string().optional(),
+    socket: z.string().optional()
 })
 
 const invokeCommandSchema = z.object({
@@ -37,9 +38,7 @@ const invokeCommandSchema = z.object({
     actor: actorIdentitySchema,
     method: actorComponentSchema,
     args: z.array(jsonValueSchema),
-    state: jsonValueSchema.nullable().optional(),
     sqlite: sqliteStateSchema.optional(),
-    durable_sqlite_txid: z.number().int().nonnegative().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -49,9 +48,7 @@ const websocketEventCommandSchema = z.object({
     actor: actorIdentitySchema,
     event: socketEventSchema,
     connections: z.array(socketConnectionSchema),
-    state: jsonValueSchema.nullable().optional(),
     sqlite: sqliteStateSchema.optional(),
-    durable_sqlite_txid: z.number().int().nonnegative().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -63,9 +60,7 @@ const evictCommandSchema = z.object({
 const hydrateCommandSchema = z.object({
     type: z.literal("hydrate"),
     actor: actorIdentitySchema,
-    state: jsonValueSchema.nullable().optional(),
     sqlite: sqliteStateSchema.optional(),
-    durable_sqlite_txid: z.number().int().nonnegative().optional(),
     resident_only: z.boolean().optional()
 })
 
@@ -77,7 +72,7 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(20), supports_residency: z.boolean().optional() }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(21), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -118,7 +113,7 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 20
+    readonly protocol: 21
     readonly actor_names: readonly string[]
 }
 
@@ -132,16 +127,14 @@ interface InvokedReply {
     readonly type: "invoked"
     readonly sequence?: number
     readonly result: JsonValue
-    readonly state: JsonObject
-    readonly sqlite?: SqliteState
+    readonly sqlite: SqliteState
     readonly effects?: readonly SocketEffect[]
 }
 
 interface WebSocketHandledReply {
     readonly type: "websocket_handled"
     readonly sequence?: number
-    readonly state: JsonObject
-    readonly sqlite?: SqliteState
+    readonly sqlite: SqliteState
     readonly effects: readonly SocketEffect[]
 }
 

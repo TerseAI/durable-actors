@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url"
 
+import { seed } from "../../.test-dist/tests/fixtures/litestream.js"
 import { ActorWorkerSupervisor } from "../../dist/host/worker-supervisor.js"
 
 const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: pathToFileURL(process.argv[2]).href })
@@ -11,7 +12,7 @@ try {
             actor: { project_id: "local", actor_name: "Exiting", actor_id: "one" },
             method: "stop",
             args: [],
-            state: null
+            sqlite: await seed(null)
         },
         () => {}
     )

@@ -1,12 +1,7 @@
-use crate::storage::SnapshotRef;
+use crate::{litestream::storage::LtxFile, storage::SnapshotRef};
 use anyhow::{Context, Result, ensure};
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
-use serde_json::{
-    Value,
-    value::{RawValue, to_raw_value},
-};
-use std::borrow::Borrow;
+use serde_json::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,53 +11,49 @@ pub struct StateSnapshot {
     pub state_version: u64,
     pub owner_epoch: u64,
     pub request_id: String,
-    pub state: Box<RawValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqlite: Option<SqliteSnapshot>,
+    pub sqlite: SqliteSnapshot,
     pub result: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SqliteSnapshot {
-    pub object: String,
     pub txid: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SnapshotRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ltx: Option<String>,
+    pub files: Vec<LtxFile>,
 }
 
 impl SqliteSnapshot {
-    pub(crate) fn segment(&self) -> Result<Option<Vec<u8>>> {
-        self.ltx
-            .as_ref()
-            .map(|data| STANDARD.decode(data).context("decode SQLite LTX segment"))
-            .transpose()
-    }
-
     fn validate(&self, state_version: u64) -> Result<()> {
         ensure!(self.txid > 0, "SQLite transaction must be positive");
+        let first = self
+            .files
+            .first()
+            .context("SQLite commit has no replication files")?;
+        ensure!(
+            (first.first == 1) == self.parent.is_none(),
+            "SQLite dependency mismatch"
+        );
         if let Some(parent) = &self.parent {
             ensure!(
                 parent.state_version < state_version,
                 "SQLite dependency must precede its commit"
             );
         }
-        match self.segment()? {
-            Some(bytes) => {
-                let (_, header) = litetx::Decoder::new(bytes.as_slice())?;
-                ensure!(
-                    header.max_txid.into_inner() == self.txid,
-                    "SQLite LTX transaction mismatch"
-                );
-                ensure!(
-                    header.pre_apply_checksum.is_some() == self.parent.is_some(),
-                    "SQLite LTX dependency mismatch"
-                );
-            }
-            None => ensure!(self.parent.is_some(), "SQLite state has no recovery source"),
+        let mut next = first.first;
+        for file in &self.files {
+            file.validate()?;
+            ensure!(file.first == next, "SQLite transaction gap");
+            next = file
+                .last
+                .checked_add(1)
+                .context("SQLite transaction overflow")?;
         }
+        ensure!(
+            next.checked_sub(1) == Some(self.txid),
+            "SQLite transaction mismatch"
+        );
         Ok(())
     }
 }
@@ -81,7 +72,7 @@ impl StateSnapshot {
         state_version: u64,
         owner_epoch: u64,
         request_id: String,
-        state: impl Borrow<Value>,
+        sqlite: SqliteSnapshot,
         result: Value,
     ) -> Result<Self> {
         let snapshot = Self {
@@ -89,8 +80,7 @@ impl StateSnapshot {
             state_version,
             owner_epoch,
             request_id,
-            state: to_raw_value(state.borrow())?,
-            sqlite: None,
+            sqlite,
             result,
         };
         snapshot.validate()?;
@@ -98,8 +88,7 @@ impl StateSnapshot {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let snapshot: Self =
-            serde_json::from_slice(bytes).context("decode actor state snapshot")?;
+        let snapshot: Self = serde_json::from_slice(bytes).context("decode actor SQLite commit")?;
         snapshot.validate()?;
         Ok(snapshot)
     }
@@ -110,23 +99,12 @@ impl StateSnapshot {
     }
 
     pub(crate) fn validate_object(&self, object: &str) -> Result<()> {
-        if let Some(sqlite) = &self.sqlite {
-            if sqlite.ltx.is_some() {
-                ensure!(
-                    sqlite.object == object,
-                    "SQLite segment belongs to another snapshot"
-                );
-            }
-            if let Some(parent) = &sqlite.parent {
-                ensure!(
-                    crate::storage_paths::actor_from_snapshot(object)?
-                        == crate::storage_paths::actor_from_snapshot(&parent.object)?,
-                    "SQLite dependency belongs to another actor"
-                );
-                if sqlite.ltx.is_none() {
-                    ensure!(sqlite.object == parent.object, "SQLite head mismatch");
-                }
-            }
+        if let Some(parent) = &self.sqlite.parent {
+            ensure!(
+                crate::storage_paths::actor_from_snapshot(object)?
+                    == crate::storage_paths::actor_from_snapshot(&parent.object)?,
+                "SQLite dependency belongs to another actor"
+            );
         }
         Ok(())
     }
@@ -141,14 +119,7 @@ impl StateSnapshot {
             !self.request_id.is_empty() && self.request_id.len() <= 255,
             "actor state request ID is invalid"
         );
-        ensure!(
-            self.state.get().starts_with('{'),
-            "actor state must be a JSON object"
-        );
-        if let Some(sqlite) = &self.sqlite {
-            sqlite.validate(self.state_version)?;
-        }
-        Ok(())
+        self.sqlite.validate(self.state_version)
     }
 }
 

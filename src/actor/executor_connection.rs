@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 20;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 21;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -167,10 +167,7 @@ pub struct ActorInterleavedOutcome {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActorState {
-    #[serde(rename = "state")]
-    pub fields: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqlite: Option<crate::ltx::SqliteState>,
+    pub sqlite: crate::litestream::storage::SqliteState,
 }
 
 #[async_trait]
@@ -834,27 +831,17 @@ impl ExecutorDriver {
         self.next_message_id = message_id
             .checked_add(1)
             .context("actor executor message ID overflow")?;
-        let empty = ActorState {
-            fields: Value::Null,
-            sqlite: None,
-        };
         let state = if pending.resident_only || matches!(pending.command, ExecutorCommand::Evict(_))
         {
             None
         } else {
-            Some(pending.state.as_deref().unwrap_or(&empty))
+            pending.state.as_deref()
         };
         let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
             message_id,
             command: ExecutorCommandEnvelope {
                 command: &pending.command,
-                state: state.map(|value| &value.fields),
-                sqlite: state.and_then(|value| value.sqlite.as_ref()),
-                durable_sqlite_txid: pending
-                    .state
-                    .as_ref()
-                    .and_then(|state| state.sqlite.as_ref())
-                    .map(|sqlite| sqlite.txid),
+                sqlite: state.map(|value| &value.sqlite),
                 resident_only: pending.resident_only,
             },
         });
@@ -1076,11 +1063,7 @@ struct ExecutorCommandEnvelope<'a> {
     #[serde(flatten)]
     command: &'a ExecutorCommand,
     #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<&'a Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sqlite: Option<&'a crate::ltx::SqliteState>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    durable_sqlite_txid: Option<u64>,
+    sqlite: Option<&'a crate::litestream::storage::SqliteState>,
     resident_only: bool,
 }
 

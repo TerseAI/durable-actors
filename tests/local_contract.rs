@@ -108,19 +108,27 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
     );
     let mut segment_sizes = Vec::new();
     for snapshot in &snapshots {
-        if let Some(encoded) = &snapshot.sqlite.as_ref().unwrap().ltx {
-            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-            let (_, header) = litetx::Decoder::new(bytes.as_slice())?;
-            assert_eq!(
-                header.max_txid.into_inner(),
-                snapshot.sqlite.as_ref().unwrap().txid
-            );
-            segment_sizes.push(bytes.len());
-        }
+        let size = snapshot
+            .sqlite
+            .files
+            .iter()
+            .map(|file| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&file.data)
+                    .map(|bytes| bytes.len())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum::<usize>();
+        segment_sizes.push(size);
     }
-    assert_eq!(segment_sizes.len(), 4);
-    assert!(segment_sizes[0] > 25 * 1024 * 1024);
-    assert!(segment_sizes[1..].iter().all(|size| *size < 64 * 1024));
+    assert_eq!(segment_sizes.len(), 6);
+    for index in [1, 2, 4, 5] {
+        assert!(segment_sizes[index] < segment_sizes[0] / 5);
+        assert!(snapshots[index].sqlite.parent.is_some());
+    }
+    assert!(snapshots[0].sqlite.parent.is_none());
+    assert!(snapshots[3].sqlite.parent.is_none());
     Ok(())
 }
 

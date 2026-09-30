@@ -75,6 +75,10 @@ jobs:
               with:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Install pinned Litestream
+              run: |
+                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
               run: cargo fmt --all -- --check
             - name: Run tests
@@ -131,6 +135,10 @@ jobs:
             - run: pnpm --dir sdk format:check
             - run: pnpm --dir packages/observer-ui format:check
             - run: pnpm --dir packages/observer-ui test
+            - name: Install pinned Litestream
+              run: |
+                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - run: pnpm --dir sdk test
             - name: Validate HTTP and build TypeScript documentation
               run: pnpm docs:build

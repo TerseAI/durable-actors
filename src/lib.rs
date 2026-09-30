@@ -6,7 +6,7 @@ pub mod control_plane;
 mod grpc;
 pub mod host;
 pub mod host_leases;
-mod ltx;
+mod litestream;
 pub mod placement;
 mod postgres;
 pub mod sandbox;
@@ -19,3 +19,9 @@ pub mod storage_paths;
 pub(crate) mod artifacts;
 mod request_traces;
 mod sockets;
+
+#[cfg(test)]
+extern crate self as durable_actors;
+#[cfg(test)]
+#[path = "../tests/fixtures/sqlite.rs"]
+mod test_sqlite;

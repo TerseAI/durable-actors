@@ -32,68 +32,54 @@ struct IncrementingExecutor {
     invocations: AtomicU64,
 }
 
+#[path = "../../fixtures/host_sqlite.rs"]
+mod sqlite;
+use sqlite::{fields, replication, write_fields};
+
 #[tokio::test]
-async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> Result<()> {
-    struct DualStoreExecutor {
-        images: [crate::ltx::SqliteState; 2],
+async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()> {
+    struct Executor {
         restored: Mutex<Option<ActorState>>,
     }
     #[async_trait]
-    impl ActorExecutor for DualStoreExecutor {
+    impl ActorExecutor for Executor {
         fn supports(&self, _: &str) -> bool {
             true
         }
-
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
             state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
-            *self.restored.lock().unwrap() = state.cloned();
-            let mut state = state.cloned().unwrap_or(ActorState {
-                fields: json!({"count": 0}),
-                sqlite: None,
-            });
+            let current = state.unwrap();
+            *self.restored.lock().unwrap() = Some(current.clone());
+            let database = rusqlite::Connection::open(current.sqlite.path.as_ref().unwrap())?;
+            database.execute_batch("PRAGMA wal_autocheckpoint=0")?;
             match invocation.request_id.as_str() {
-                "sql" => state.sqlite = Some(self.images[0].clone()),
-                "fields" => state.fields["count"] = json!(1),
-                "schema" => state.sqlite = Some(self.images[1].clone()),
+                "sql" => database.execute_batch(
+                    "CREATE TABLE entries(value TEXT); INSERT INTO entries VALUES ('retained')",
+                )?,
+                "schema" => database
+                    .execute_batch("ALTER TABLE entries ADD COLUMN enabled INTEGER DEFAULT 1")?,
                 _ => {}
             }
+            let mut values = fields(state)?;
+            if invocation.request_id == "initial" {
+                values["count"] = json!(0);
+            }
+            if invocation.request_id == "fields" {
+                values["count"] = json!(1);
+            }
+            let result = values["count"].clone();
+            let state = write_fields(state, values).await?;
             Ok(ActorMethodOutcome::Completed {
-                result: state.fields["count"].clone(),
+                result,
                 state,
                 effects: vec![],
             })
         }
     }
-    use base64::Engine;
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("actor.sqlite");
-    let database = rusqlite::Connection::open(&path)?;
-    database.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE entries (value TEXT); INSERT INTO entries VALUES ('retained')",
-    )?;
-    let wal_path = path.with_extension("sqlite-wal");
-    let rows = crate::ltx::SqliteState {
-        txid: 2,
-        path: None,
-        wal: Some(crate::ltx::SqliteWal {
-            base_txid: 0,
-            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&wal_path)?),
-        }),
-    };
-    database.execute_batch("ALTER TABLE entries ADD COLUMN enabled INTEGER DEFAULT 1")?;
-    let schema = crate::ltx::SqliteState {
-        txid: 3,
-        path: None,
-        wal: Some(crate::ltx::SqliteWal {
-            base_txid: 0,
-            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&wal_path)?),
-        }),
-    };
-    let executor = Arc::new(DualStoreExecutor {
-        images: [rows.clone(), schema.clone()],
+    let executor = Arc::new(Executor {
         restored: Mutex::new(None),
     });
     let writes = Arc::new(FakeStateTransport::default());
@@ -107,6 +93,7 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
         Arc::new(FakeAuthority::default()),
         writes.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     for request in [
         "initial", "read-1", "sql", "read-2", "fields", "read-3", "schema", "read-4",
@@ -128,65 +115,43 @@ async fn commits_changes_to_either_store_and_recovers_both_at_one_version() -> R
     let mut snapshots = writes.writes.lock().unwrap().clone();
     assert_eq!(
         snapshots[1], snapshots[2],
-        "retry must publish the same JSON and LTX commit"
+        "retry preserves the exact commit"
     );
     snapshots.dedup();
-    assert_eq!(
-        snapshots.len(),
-        4,
-        "reads should not publish another version"
-    );
+    assert_eq!(snapshots.len(), 4, "reads preserve the durable version");
     let decoded = snapshots
         .iter()
         .map(|bytes| StateSnapshot::decode(bytes))
         .collect::<Result<Vec<_>>>()?;
-    assert!(decoded[0].sqlite.is_none());
-    assert_eq!(decoded[1].sqlite.as_ref().unwrap().txid, 2);
-    assert!(decoded[1].sqlite.as_ref().unwrap().ltx.is_some());
-    assert_eq!(decoded[1].state.get(), r#"{"count":0}"#);
-    assert_eq!(decoded[2].sqlite.as_ref().unwrap().txid, 2);
-    assert!(decoded[2].sqlite.as_ref().unwrap().ltx.is_none());
-    assert_eq!(decoded[2].state.get(), r#"{"count":1}"#);
-    assert_eq!(decoded[3].sqlite.as_ref().unwrap().txid, 3);
-    assert!(decoded[3].sqlite.as_ref().unwrap().ltx.is_some());
+    let history = decoded
+        .iter()
+        .skip(1)
+        .zip(snapshots.iter())
+        .map(|(next, bytes)| {
+            (
+                next.sqlite.parent.as_ref().unwrap().object.clone(),
+                bytes.clone(),
+            )
+        })
+        .collect();
     let restored = ActorHost::new(
         endpoint,
         executor.clone(),
         Arc::new(FakeAuthority {
             initial_state: Some((4, snapshots[3].clone().into())),
-            history: [(
-                decoded[1].sqlite.as_ref().unwrap().object.clone(),
-                snapshots[1].clone(),
-            )]
-            .into(),
+            history,
             ..Default::default()
         }),
         writes.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert_eq!(invoke(&restored, "read-restored").await?, completed(1));
+    let recovered = executor.restored.lock().unwrap().clone().unwrap();
+    assert_eq!(fields(Some(&recovered))?, json!({"count": 1}));
+    let database = rusqlite::Connection::open(recovered.sqlite.path.unwrap())?;
     assert_eq!(
-        executor.restored.lock().unwrap().as_ref(),
-        Some(&ActorState {
-            fields: json!({"count": 1}),
-            sqlite: Some(schema)
-        })
-    );
-    let recovered_path = executor
-        .restored
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .sqlite
-        .as_ref()
-        .unwrap()
-        .path
-        .clone()
-        .unwrap();
-    let recovered = rusqlite::Connection::open(recovered_path)?;
-    assert_eq!(
-        recovered.query_row("SELECT value, enabled FROM entries", [], |row| Ok((
+        database.query_row("SELECT value, enabled FROM entries", [], |row| Ok((
             row.get::<_, String>(0)?,
             row.get::<_, u32>(1)?
         )))?,
@@ -212,6 +177,7 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
         Arc::new(FakeAuthority::default()),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert!(matches!(
         invoke(&host, "request-1").await?,
@@ -291,8 +257,13 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
-            _: Option<&ActorState>,
+            state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
+            let committed = if invocation.request_id == "first" {
+                write_fields(state, json!({"count": 1})).await?
+            } else {
+                write_fields(state, json!({"count": 2})).await?
+            };
             let sequence = if invocation.request_id == "first" {
                 self.admission.send_replace(());
                 self.first_started.notify_one();
@@ -307,10 +278,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
                     result: json!(sequence),
-                    state: ActorState {
-                        fields: json!({"count": sequence}),
-                        sqlite: None,
-                    },
+                    state: committed,
                     effects: vec![],
                 },
             ))
@@ -334,6 +302,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
         Arc::new(FakeAuthority::default()),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     let operation = async {
         let first = invoke(&host, "first");
@@ -360,14 +329,8 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
         assert_eq!(second?, completed(2));
         let writes = state.writes.lock().unwrap();
         assert_eq!(writes.len(), 2);
-        assert_eq!(
-            serde_json::from_str::<Value>(StateSnapshot::decode(&writes[0])?.state.get())?,
-            json!({"count": 1})
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(StateSnapshot::decode(&writes[1])?.state.get())?,
-            json!({"count": 2})
-        );
+        assert_eq!(StateSnapshot::decode(&writes[0])?.result, json!(1));
+        assert_eq!(StateSnapshot::decode(&writes[1])?.result, json!(2));
         Ok::<_, anyhow::Error>(())
     };
     tokio::time::timeout(Duration::from_secs(2), operation).await??;
@@ -394,7 +357,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
         async fn invoke(
             &self,
             invocation: ActorMethodInvocation,
-            _: Option<&ActorState>,
+            state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
             self.started.send(invocation.request_id.clone())?;
             let sequence = match invocation.request_id.as_str() {
@@ -414,10 +377,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
                 crate::actor::ActorInterleavedOutcome {
                     sequence,
                     result: json!(sequence),
-                    state: ActorState {
-                        fields: json!({"count": sequence}),
-                        sqlite: None,
-                    },
+                    state: write_fields(state, json!({"count": sequence})).await?,
                     effects: vec![],
                 },
             ))
@@ -439,6 +399,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     ));
     let operation = async {
         let caller = host.clone();
@@ -495,16 +456,10 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
                     message: "failed".into(),
                 }));
             }
-            let count = state
-                .and_then(|state| state.fields["count"].as_u64())
-                .unwrap_or(0)
-                + 1;
+            let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
             Ok(ActorMethodOutcome::Completed {
                 result: json!(count),
-                state: ActorState {
-                    fields: json!({"count": count}),
-                    sqlite: None,
-                },
+                state: write_fields(state, json!({"count": count})).await?,
                 effects: vec![],
             })
         }
@@ -528,6 +483,7 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
         Arc::new(FakeAuthority::default()),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert_eq!(invoke(&host, "first").await?, completed(1));
     for request in ["fail-application", "fail-fatal"] {
@@ -570,16 +526,10 @@ impl ActorExecutor for ControlledExecutor {
         if invocation.request_id == "first" {
             self.release.acquire().await?.forget();
         }
-        let count = state
-            .and_then(|value| value.fields["count"].as_u64())
-            .unwrap_or(0)
-            + 1;
+        let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
         Ok(ActorMethodOutcome::Completed {
             result: json!(count),
-            state: ActorState {
-                fields: json!({"count": count}),
-                sqlite: None,
-            },
+            state: write_fields(state, json!({"count": count})).await?,
             effects: Vec::new(),
         })
     }
@@ -612,7 +562,7 @@ impl ActorExecutor for ControlledExecutor {
     }
 }
 
-fn controlled_host() -> (
+async fn controlled_host() -> (
     Arc<ActorHost>,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     Arc<tokio::sync::Semaphore>,
@@ -631,13 +581,14 @@ fn controlled_host() -> (
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     (Arc::new(host), receiver, release)
 }
 
 #[tokio::test]
 async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<()> {
-    let (host, mut started, release) = controlled_host();
+    let (host, mut started, release) = controlled_host().await;
     let activity = host.activity();
     assert_eq!(invoke(&host, "warm").await?, completed(1));
     assert_eq!(started.recv().await.as_deref(), Some("warm"));
@@ -666,7 +617,7 @@ async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {
-        let (host, mut started, release) = controlled_host();
+        let (host, mut started, release) = controlled_host().await;
         let mut activity = host.activity();
         let caller = host.clone();
         let first = tokio::spawn(async move { invoke(&caller, "first").await });
@@ -717,6 +668,7 @@ async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Resu
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     ));
     let caller = host.clone();
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
@@ -746,7 +698,7 @@ async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Resu
 
 #[tokio::test]
 async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
-    let (host, mut started, release) = controlled_host();
+    let (host, mut started, release) = controlled_host().await;
     let (sender, mut traces) = crate::request_traces::TraceSender::channel(8);
     let host = Arc::new(Arc::try_unwrap(host).ok().unwrap().with_traces(sender));
     let caller = host.clone();
@@ -785,7 +737,7 @@ async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
 #[tokio::test]
 async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Result<()> {
     for socket in [false, true] {
-        let (host, mut started, release) = controlled_host();
+        let (host, mut started, release) = controlled_host().await;
         let caller = host.clone();
         let first = tokio::spawn(async move {
             if socket {
@@ -836,7 +788,7 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 
 #[tokio::test]
 async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Result<()> {
-    let (host, mut started, release) = controlled_host();
+    let (host, mut started, release) = controlled_host().await;
     let mut activity = host.activity();
     let caller = host.clone();
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
@@ -902,17 +854,10 @@ impl ActorExecutor for IncrementingExecutor {
         state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         self.invocations.fetch_add(1, Ordering::Relaxed);
-        let count = state
-            .and_then(|state| state.fields.get("count"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            + 1;
+        let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
         Ok(ActorMethodOutcome::Completed {
             result: json!(count),
-            state: ActorState {
-                fields: json!({ "count": count }),
-                sqlite: None,
-            },
+            state: write_fields(state, json!({ "count": count })).await?,
             effects: Vec::new(),
         })
     }
@@ -922,16 +867,9 @@ impl ActorExecutor for IncrementingExecutor {
         _invocation: ActorSocketInvocation,
         state: Option<&ActorState>,
     ) -> Result<ActorSocketOutcome> {
-        let count = state
-            .and_then(|state| state.fields.get("count"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-            + 1;
+        let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
         Ok(ActorSocketOutcome::Handled {
-            state: ActorState {
-                fields: json!({ "count": count }),
-                sqlite: None,
-            },
+            state: write_fields(state, json!({ "count": count })).await?,
             effects: vec![ActorSocketEffect::Send {
                 connection_id: "socket-1".into(),
                 message: crate::actor::ActorSocketMessage::Text {
@@ -969,14 +907,11 @@ impl ActorExecutor for InvalidEffectsExecutor {
     async fn invoke(
         &self,
         _invocation: ActorMethodInvocation,
-        _state: Option<&ActorState>,
+        state: Option<&ActorState>,
     ) -> Result<ActorMethodOutcome> {
         Ok(ActorMethodOutcome::Completed {
             result: Value::Null,
-            state: ActorState {
-                fields: json!({ "count": 1 }),
-                sqlite: None,
-            },
+            state: write_fields(state, json!({ "count": 1 })).await?,
             effects: vec![ActorSocketEffect::Close {
                 connection_id: "socket-1".into(),
                 code: 1001,
@@ -1007,6 +942,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         authority.clone(),
         Arc::new(FakeStateTransport::default()),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     let activation = host.activate_actor(actor.clone()).await?;
     assert_eq!(activation.owner_epoch, 7);
@@ -1030,8 +966,14 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
 #[tokio::test]
 async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_write_ticket()
 -> Result<()> {
-    let snapshot =
-        StateSnapshot::new(3, 6, "previous".into(), json!({"count": 41}), json!(41))?.encode()?;
+    let snapshot = StateSnapshot::new(
+        3,
+        6,
+        "previous".into(),
+        crate::test_sqlite::snapshot(json!({"count": 41}))?,
+        json!(41),
+    )?
+    .encode()?;
     let authority = Arc::new(FakeAuthority {
         activation_state: Some(snapshot),
         ..Default::default()
@@ -1053,6 +995,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
         authority.clone(),
         transport.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     let activation = host.activate_actor(actor.clone()).await?;
     assert_eq!(activation.state_version, 3);
@@ -1188,8 +1131,14 @@ impl crate::state_transport::SnapshotWriter for FakeStateTransport {
 
 #[tokio::test]
 async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() -> Result<()> {
-    let snapshot =
-        StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
+    let snapshot = StateSnapshot::new(
+        8,
+        1,
+        "previous".into(),
+        crate::test_sqlite::snapshot(json!({"count":8}))?,
+        json!(8),
+    )?
+    .encode()?;
     let authority = Arc::new(FakeAuthority {
         initial_state: Some((8, snapshot.into())),
         ..Default::default()
@@ -1206,6 +1155,7 @@ async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() 
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert_eq!(invoke(&host, "request-1").await?, completed(9));
     assert_eq!(authority.loads.load(Ordering::Relaxed), 1);
@@ -1234,8 +1184,14 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
             })
         }
     }
-    let snapshot =
-        StateSnapshot::new(8, 1, "previous".into(), json!({"count":8}), json!(8))?.encode()?;
+    let snapshot = StateSnapshot::new(
+        8,
+        1,
+        "previous".into(),
+        crate::test_sqlite::snapshot(json!({"count":8}))?,
+        json!(8),
+    )?
+    .encode()?;
     let authority = Arc::new(FakeAuthority {
         initial_state: Some((8, snapshot.into())),
         ..Default::default()
@@ -1250,6 +1206,7 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
         authority,
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert!(invoke(&host, "request-1").await.is_err());
     assert!(state.writes.lock().unwrap().is_empty());
@@ -1277,6 +1234,7 @@ async fn write_results_are_withheld_if_the_lease_expires_during_persistence() ->
             authority.clone(),
             state.clone(),
             Arc::new(EmptySocketPublisher),
+            replication().await,
         ));
         let caller = host.clone();
         let result = tokio::spawn(async move { invoke(&caller, "first").await });
@@ -1317,6 +1275,7 @@ async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> 
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert!(matches!(
         invoke(&host, "request-1").await?,
@@ -1350,6 +1309,7 @@ async fn durable_snapshot_commits_locally_before_success() -> Result<()> {
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
     assert_eq!(invoke(&host, "request-1").await?, completed(1));
     assert_eq!(state.writes.lock().unwrap().len(), 1);
@@ -1372,6 +1332,7 @@ async fn resident_actor_uses_immutable_snapshots_and_replays_the_last_request() 
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
 
     assert_eq!(invoke(&host, "request-1").await?, completed(1));
@@ -1409,6 +1370,7 @@ async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Re
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
 
     let first = invoke(&host, "request-1").await?;
@@ -1435,6 +1397,7 @@ async fn preserves_executor_resource_exhaustion() -> Result<()> {
         Arc::new(FakeAuthority::default()),
         Arc::new(FakeStateTransport::default()),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
 
     assert!(matches!(
@@ -1457,6 +1420,7 @@ async fn invalid_socket_effects_do_not_commit_actor_state() -> Result<()> {
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
 
     assert!(matches!(
@@ -1482,16 +1446,10 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
             _: ActorMethodInvocation,
             state: Option<&ActorState>,
         ) -> Result<ActorMethodOutcome> {
-            let count = state
-                .and_then(|state| state.fields["count"].as_u64())
-                .unwrap_or(0)
-                + 1;
+            let count = fields(state)?["count"].as_u64().unwrap_or(0) + 1;
             Ok(ActorMethodOutcome::Completed {
                 result: json!(count),
-                state: ActorState {
-                    fields: json!({"count": count}),
-                    sqlite: None,
-                },
+                state: write_fields(state, json!({"count": count})).await?,
                 effects: serde_json::from_value(
                     json!([{ "type":"state_update", "changes":{"count":count}, "removed":[] }]),
                 )?,
@@ -1533,6 +1491,7 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
         authority.clone(),
         state.clone(),
         publisher.clone(),
+        replication().await,
     );
     assert_eq!(invoke(&host, "one").await?, completed(1));
     assert_eq!(invoke(&host, "two").await?, completed(2));
@@ -1576,6 +1535,7 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
+        replication().await,
     );
 
     let invocation = |request_id: &str| ActorSocketInvocation {

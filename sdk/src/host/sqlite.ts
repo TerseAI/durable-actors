@@ -1,35 +1,39 @@
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 
 import type { ActorDatabase, SqliteValue } from "../actor/database.js"
+import type { JsonObject, JsonValue } from "../json.js"
+
+import { syncLitestream } from "./litestream.js"
+import type { LitestreamDatabase } from "./litestream.js"
 
 interface SqliteState {
     readonly txid: number
     readonly path?: string
-    readonly wal?: { readonly base_txid: number; readonly data: string }
+    readonly socket?: string
 }
 
 class SqliteCaptureError extends Error {}
 
 interface ActorDatabaseStorage extends ActorDatabase {
+    fields(): JsonObject
+    persistFields(fields: JsonObject): void
     restore(state: SqliteState | undefined): void
-    checkpoint(durableTxid: number | undefined): void
-    snapshot(): SqliteState | undefined
+    snapshot(): Promise<SqliteState>
     rollback(): void
     close(): void
 }
 
 class SqliteActorDatabase implements ActorDatabaseStorage {
     private connection: SqliteConnection | undefined
-    private directory: string | undefined
-    private seed: SqliteState | undefined
+    private seed: LitestreamDatabase | undefined
     private txid = 0
-    private baseTxid = 0
-    private offset = 0
+    private version = ""
+    private failure: SqliteCaptureError | undefined
 
-    constructor(private readonly connect: (path: string) => SqliteConnection = openSqlite) {}
+    constructor(
+        private readonly connect: (path: string) => SqliteConnection = openSqlite,
+        private readonly sync: (database: LitestreamDatabase) => Promise<number> = syncLitestream
+    ) {}
 
     exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
         validateStatement(sql)
@@ -39,47 +43,55 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         return statement.all(...bindings) as Row[]
     }
 
+    fields(): JsonObject {
+        const rows = this.fieldDatabase().prepare("SELECT name, value FROM __terse_fields").all() as {
+            name: string
+            value: string
+        }[]
+        return Object.fromEntries(rows.map(row => [row.name, JSON.parse(row.value) as JsonValue]))
+    }
+
+    persistFields(fields: JsonObject): void {
+        const database = this.fieldDatabase()
+        const put = database.prepare(
+            "INSERT INTO __terse_fields (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value WHERE value <> excluded.value"
+        )
+        for (const [name, value] of Object.entries(fields)) put.all(name, JSON.stringify(value))
+        database
+            .prepare("DELETE FROM __terse_fields WHERE name NOT IN (SELECT value FROM json_each(?))")
+            .all(JSON.stringify(Object.keys(fields)))
+    }
+
     restore(state: SqliteState | undefined): void {
         this.close()
-        if (state !== undefined && (!Number.isSafeInteger(state.txid) || state.txid < 1 || !state.path))
+        if (state === undefined || !Number.isSafeInteger(state.txid) || state.txid < 1 || !state.path || !state.socket)
             throw new Error("invalid actor SQLite recovery state")
-        this.seed = state
-        this.txid = this.baseTxid = state?.txid ?? 0
-        this.offset = 0
+        this.seed = { path: state.path, socket: state.socket }
+        this.txid = state.txid
+        this.version = this.changeToken()
     }
 
-    checkpoint(durableTxid: number | undefined): void {
-        const database = this.connection
-        if (durableTxid !== this.txid || database === undefined || database.isTransaction) return
-        const result = database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()
-        if (result?.busy !== 0) return
-        this.baseTxid = this.txid
-        this.offset = 0
-    }
-
-    snapshot(): SqliteState | undefined {
-        const database = this.connection
-        if (database === undefined || !database.isTransaction) return this.position()
+    async snapshot(): Promise<SqliteState> {
         try {
-            database.exec("COMMIT")
-            const path = join(this.directory!, "actor.sqlite-wal")
-            if (!existsSync(path)) return this.position()
-            const wal = readFileSync(path)
-            const commit = walCommit(wal)
-            if (commit <= this.offset) return this.position()
-            this.offset = commit
-            this.txid += 1
-            return {
-                txid: this.txid,
-                wal: { base_txid: this.baseTxid, data: wal.subarray(0, commit).toString("base64") }
+            const database = this.open()
+            const version = this.changeToken()
+            if (database.isTransaction) database.exec("COMMIT")
+            if (version !== this.version) {
+                const txid = await this.sync(this.seed!)
+                if (!Number.isSafeInteger(txid) || txid < this.txid) throw new Error("invalid Litestream transaction")
+                this.txid = txid
+                this.version = version
             }
+            return { txid: this.txid }
         } catch (cause) {
-            throw new SqliteCaptureError("failed to capture actor SQLite WAL", { cause })
+            this.failure = new SqliteCaptureError("failed to replicate actor SQLite commit", { cause })
+            throw this.failure
         }
     }
 
     rollback(): void {
         if (this.connection?.isTransaction) this.connection.exec("ROLLBACK")
+        if (this.connection !== undefined) this.version = this.changeToken()
     }
 
     close(): void {
@@ -87,21 +99,34 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
             this.connection?.close()
         } finally {
             this.connection = undefined
-            if (this.directory !== undefined) rmSync(this.directory, { recursive: true, force: true })
-            this.directory = undefined
+            this.seed = undefined
+            this.failure = undefined
         }
     }
 
-    private position(): SqliteState | undefined {
-        return this.txid === 0 ? undefined : { txid: this.txid }
+    private changeToken(): string {
+        const database = this.open()
+        return JSON.stringify([
+            database.prepare("SELECT total_changes() AS changes").get(),
+            database.prepare("PRAGMA schema_version").get(),
+            database.prepare("PRAGMA user_version").get()
+        ])
+    }
+
+    private fieldDatabase(): SqliteConnection {
+        const database = this.open()
+        if (!database.isTransaction) database.exec("BEGIN")
+        database.exec(
+            "CREATE TABLE IF NOT EXISTS __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))"
+        )
+        return database
     }
 
     private open(): SqliteConnection {
+        if (this.failure !== undefined) throw this.failure
         if (this.connection !== undefined) return this.connection
-        this.directory = mkdtempSync(join(tmpdir(), "durable-actor-sqlite-"))
-        const path = join(this.directory, "actor.sqlite")
-        if (this.seed?.path !== undefined) copyFileSync(this.seed.path, path)
-        const database = (this.connection = this.connect(path))
+        if (this.seed === undefined) throw new Error("actor SQLite database has not been restored")
+        const database = (this.connection = this.connect(this.seed.path))
         database.exec(
             "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL"
         )
@@ -148,6 +173,7 @@ function openSqlite(path: string): SqliteConnection {
 
 function validateStatement(sql: string): void {
     const statement = withoutComments(sql)
+    if (/(?:__terse_|_litestream_)/i.test(statement)) throw new Error("SQLite runtime table names are reserved")
     if (/^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|ATTACH|DETACH|VACUUM)\b/i.test(statement))
         throw new Error("actor invocations own SQLite transactions and database files")
     if (
@@ -161,19 +187,6 @@ function validateStatement(sql: string): void {
 
 function withoutComments(sql: string): string {
     return sql.replace(/^(?:\s|;|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/, "").trim()
-}
-
-function walCommit(wal: Buffer): number {
-    if (wal.length < 32) return 0
-    const pageSize = wal.readUInt32BE(8)
-    if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) !== 0)
-        throw new Error("invalid SQLite WAL page size")
-    let commit = 0
-    for (let offset = 32; offset + 24 + pageSize <= wal.length; offset += 24 + pageSize) {
-        if (!wal.subarray(offset + 8, offset + 16).equals(wal.subarray(16, 24))) break
-        if (wal.readUInt32BE(offset + 4) !== 0) commit = offset + 24 + pageSize
-    }
-    return commit
 }
 
 export { SqliteActorDatabase, SqliteCaptureError }

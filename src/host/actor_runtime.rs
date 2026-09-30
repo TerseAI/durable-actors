@@ -1,9 +1,12 @@
 use std::{sync::Arc, time::Instant};
 
-use crate::{ltx::SqliteCapture, state_log::SqliteSnapshot, storage::SnapshotRef};
+use crate::{
+    litestream::{Replicator, storage::SqliteCapture},
+    state_log::SqliteSnapshot,
+    storage::SnapshotRef,
+};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -83,6 +86,7 @@ pub(super) struct ActorRuntime {
     storage: Arc<dyn ActorStorage>,
     state: Arc<dyn crate::state_transport::SnapshotWriter>,
     publisher: Arc<dyn ActorSocketPublisher>,
+    replication: Arc<dyn Replicator>,
     cached_state: Option<CachedActorState>,
     activation: Option<ActorActivation>,
 }
@@ -94,6 +98,7 @@ impl ActorRuntime {
         storage: Arc<dyn ActorStorage>,
         state: Arc<dyn crate::state_transport::SnapshotWriter>,
         publisher: Arc<dyn ActorSocketPublisher>,
+        replication: Arc<dyn Replicator>,
     ) -> Self {
         Self {
             endpoint,
@@ -101,6 +106,7 @@ impl ActorRuntime {
             storage,
             state,
             publisher,
+            replication,
             cached_state: None,
             activation: None,
         }
@@ -231,7 +237,10 @@ impl ActorRuntime {
         let mut activation = self.storage.acquire_actor(actor, &self.endpoint.id).await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
-                CachedActorState::new(activation.owner_epoch)
+                CachedActorState::new(
+                    activation.owner_epoch,
+                    SqliteCapture::new(self.replication.clone()).await?,
+                )
             } else {
                 let bytes = activation
                     .state
@@ -507,7 +516,10 @@ impl ActorRuntime {
             .await?;
         if state_version == 0 {
             ensure!(loaded.is_empty(), "uninitialized actor has state");
-            return Ok(CachedActorState::new(owner_epoch));
+            return Ok(CachedActorState::new(
+                owner_epoch,
+                SqliteCapture::new(self.replication.clone()).await?,
+            ));
         }
         timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
         let cached = self
@@ -525,23 +537,22 @@ impl ActorRuntime {
         loaded: &[u8],
     ) -> Result<CachedActorState> {
         let snapshot = StateSnapshot::decode(loaded)?;
-        let mut cached = CachedActorState::from_loaded(owner_epoch, state_version, loaded)?;
-        let Some(sqlite) = &snapshot.sqlite else {
-            return Ok(cached);
-        };
+        ensure!(
+            snapshot.state_version == state_version,
+            "actor snapshot version does not match its state head"
+        );
+        ensure!(
+            snapshot.owner_epoch <= owner_epoch,
+            "actor snapshot belongs to a newer owner epoch"
+        );
         let mut segments = Vec::new();
         let mut current = snapshot.clone();
         loop {
-            let sqlite = current
-                .sqlite
-                .as_ref()
-                .context("SQLite dependency has no database state")?;
-            if let Some(segment) = sqlite.segment()? {
-                segments.push(segment);
-            }
-            let Some(parent) = sqlite.parent.clone() else {
+            segments.push(current.sqlite.files.clone());
+            let Some(parent) = current.sqlite.parent.clone() else {
                 break;
             };
+            let first = current.sqlite.files[0].first;
             let bytes = self.storage.read_snapshot(actor, &parent).await?;
             parent.verify(&bytes)?;
             current = StateSnapshot::decode(&bytes)?;
@@ -550,25 +561,19 @@ impl ActorRuntime {
                 current.state_version == parent.state_version,
                 "SQLite dependency version mismatch"
             );
+            ensure!(
+                current.sqlite.txid.checked_add(1) == Some(first),
+                "SQLite dependency transaction gap"
+            );
         }
-        let mut capture = SqliteCapture::new()?;
-        for segment in segments.into_iter().rev() {
-            capture.apply(&segment)?;
-        }
-        ensure!(
-            capture.txid() == sqlite.txid,
-            "SQLite recovery transaction mismatch"
-        );
-        cached.sqlite_head = if sqlite.ltx.is_some() {
-            Some(SnapshotRef::new(sqlite.object.clone(), &snapshot, loaded))
-        } else {
-            sqlite.parent.clone()
-        };
-        cached.state = Some(Arc::new(ActorState {
-            fields: serde_json::from_str(snapshot.state.get())?,
-            sqlite: Some(capture.state()),
-        }));
-        cached.sqlite = Some(capture);
+        let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        let capture =
+            SqliteCapture::restore(self.replication.clone(), &files, snapshot.sqlite.txid).await?;
+        let mut cached = CachedActorState::new(owner_epoch, capture);
+        cached.state_version = state_version;
+        cached.state = cached.state();
+        cached.last_request_id = Some(snapshot.request_id);
+        cached.last_result = Some(snapshot.result);
         Ok(cached)
     }
 
@@ -750,10 +755,9 @@ impl ActorRuntime {
             next_version,
             owner_epoch,
             invocation.request_id.clone(),
-            &next_state.fields,
+            cached.capture_sqlite(&mut next_state).await?,
             result.clone(),
         )?;
-        snapshot.sqlite = cached.capture_sqlite(&mut next_state, &ticket.object_name)?;
         snapshot.attribution = Some(crate::state_log::StateAttribution {
             operation: invocation.method.clone(),
             connection_id: origin.connection_id,
@@ -883,15 +887,11 @@ impl ActorRuntime {
             .context("state version overflow")?;
         next_write.object_name = stream.object(next_write.state_version);
         let pending = cached.pending.take().expect("pending commit checked above");
-        if let Some(sqlite) = &pending.snapshot.sqlite
-            && sqlite.ltx.is_some()
-        {
-            cached.sqlite_head = Some(SnapshotRef::new(
-                pending.ticket.object_name.clone(),
-                &pending.snapshot,
-                &pending.snapshot.encode()?,
-            ));
-        }
+        cached.sqlite_head = Some(SnapshotRef::new(
+            pending.ticket.object_name.clone(),
+            &pending.snapshot,
+            &pending.snapshot.encode()?,
+        ));
         cached.state_version = pending.snapshot.state_version;
         cached.state = Some(Arc::new(pending.state));
         cached.last_request_id = Some(pending.snapshot.request_id);
@@ -985,7 +985,7 @@ pub(super) enum PreparedInvocation {
 }
 
 struct CachedActorState {
-    sqlite: Option<SqliteCapture>,
+    sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
     state_version: u64,
@@ -1004,9 +1004,9 @@ struct PendingStateCommit {
 }
 
 impl CachedActorState {
-    fn new(owner_epoch: u64) -> Self {
+    fn new(owner_epoch: u64, sqlite: SqliteCapture) -> Self {
         Self {
-            sqlite: None,
+            sqlite,
             sqlite_head: None,
             owner_epoch,
             state_version: 0,
@@ -1018,80 +1018,34 @@ impl CachedActorState {
         }
     }
 
-    fn from_loaded(owner_epoch: u64, state_version: u64, loaded: &[u8]) -> Result<Self> {
-        let snapshot = StateSnapshot::decode(loaded)?;
-        ensure!(
-            snapshot.state_version == state_version,
-            "actor snapshot version does not match its state head"
-        );
-        ensure!(
-            snapshot.owner_epoch <= owner_epoch,
-            "actor snapshot belongs to a newer owner epoch"
-        );
-        Ok(Self {
-            sqlite: None,
-            sqlite_head: None,
-            owner_epoch,
-            state_version,
-            state: Some(Arc::new(ActorState {
-                fields: serde_json::from_str(snapshot.state.get())?,
-                sqlite: None,
-            })),
-            last_request_id: Some(snapshot.request_id),
-            last_result: Some(snapshot.result),
-            next_write: None,
-            pending: None,
+    async fn capture_sqlite(&mut self, state: &mut ActorState) -> Result<SqliteSnapshot> {
+        let files = self.sqlite.capture(&state.sqlite).await?;
+        let first = files
+            .first()
+            .context("actor commit has no replication files")?;
+        let parent = if first.first == 1 {
+            None
+        } else {
+            Some(
+                self.sqlite_head
+                    .clone()
+                    .context("SQLite state has no durable head")?,
+            )
+        };
+        state.sqlite = self.sqlite.state();
+        Ok(SqliteSnapshot {
+            txid: self.sqlite.txid(),
+            parent,
+            files,
         })
     }
 
-    fn capture_sqlite(
-        &mut self,
-        state: &mut ActorState,
-        object: &str,
-    ) -> Result<Option<SqliteSnapshot>> {
-        let Some(sqlite) = &state.sqlite else {
-            ensure!(self.sqlite.is_none(), "actor discarded its SQLite state");
-            return Ok(None);
-        };
-        if self.sqlite.is_none() {
-            self.sqlite = Some(SqliteCapture::new()?);
-        }
-        let capture = self.sqlite.as_mut().expect("SQLite capture initialized");
-        ensure!(
-            sqlite.txid >= capture.txid(),
-            "SQLite transaction went backwards"
-        );
-        let changed = sqlite.txid > capture.txid();
-        let mut parent = self.sqlite_head.clone();
-        let ltx = if changed {
-            let bytes = capture.capture(sqlite)?;
-            if crate::ltx::is_checkpoint(&bytes)? {
-                parent = None;
-            }
-            Some(STANDARD.encode(bytes))
-        } else {
-            None
-        };
-        let object = if changed {
-            object.to_owned()
-        } else {
-            parent
-                .as_ref()
-                .context("SQLite state has no durable head")?
-                .object
-                .clone()
-        };
-        state.sqlite = Some(capture.state());
-        Ok(Some(SqliteSnapshot {
-            object,
-            txid: capture.txid(),
-            parent,
-            ltx,
-        }))
-    }
-
     fn state(&self) -> Option<Arc<ActorState>> {
-        self.state.clone()
+        Some(self.state.clone().unwrap_or_else(|| {
+            Arc::new(ActorState {
+                sqlite: self.sqlite.state(),
+            })
+        }))
     }
 
     fn replay(&self, request_id: &str) -> Option<Value> {

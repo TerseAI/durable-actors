@@ -26,6 +26,7 @@ class ActorRuntime {
     private identity: ActorIdentity | undefined
     private readonly schemas: ActorSchemas
     private serial: Promise<unknown> = Promise.resolve()
+    private completion: Promise<unknown> = Promise.resolve()
     private sequence = 0
     private lastCompletedState: JsonObject | undefined
     private fatal: ActorExecutorReply | undefined
@@ -114,16 +115,17 @@ class ActorRuntime {
                 this.schemas
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
-            const state = snapshotActorState(instance, this.definition.state)
-            const effects = [...operation.effects, ...this.stateUpdates(before, state)]
-            return {
-                type: "invoked",
-                result,
-                state,
-                ...this.databaseState(),
-                ...this.completionOrder(),
-                ...(effects.length === 0 ? {} : { effects })
-            }
+            return await this.complete(async () => {
+                const state = snapshotActorState(instance, this.definition.state)
+                const effects = [...operation.effects, ...this.stateUpdates(before, state)]
+                return {
+                    type: "invoked",
+                    result,
+                    sqlite: await this.databaseState(state),
+                    ...this.completionOrder(),
+                    ...(effects.length === 0 ? {} : { effects })
+                }
+            })
         } catch (error) {
             if (error instanceof SqliteCaptureError) {
                 this.fatal = failedReply("actor_database_failed", errorMessage(error))
@@ -161,23 +163,23 @@ class ActorRuntime {
                 command.event.type === "connect" ? undefined : this.publish,
                 this.schemas
             )
-            const state = snapshotActorState(instance, this.definition.state)
-            const effects = [
-                ...operation.effects,
-                ...this.stateUpdates(
-                    before,
-                    state,
-                    command.event.type === "connect" ? command.event.connection.id : undefined
-                )
-            ]
-            const publishedEffects = socketEffects(command, state, effects, this.definition.state)
-            return {
-                type: "websocket_handled",
-                state,
-                ...this.databaseState(),
-                ...this.completionOrder(),
-                effects: publishedEffects
-            }
+            return await this.complete(async () => {
+                const state = snapshotActorState(instance, this.definition.state)
+                const effects = [
+                    ...operation.effects,
+                    ...this.stateUpdates(
+                        before,
+                        state,
+                        command.event.type === "connect" ? command.event.connection.id : undefined
+                    )
+                ]
+                return {
+                    type: "websocket_handled",
+                    sqlite: await this.databaseState(state),
+                    ...this.completionOrder(),
+                    effects: socketEffects(command, state, effects, this.definition.state)
+                }
+            })
         } catch (error) {
             if (error instanceof SqliteCaptureError) {
                 this.fatal = failedReply("actor_database_failed", errorMessage(error))
@@ -206,20 +208,30 @@ class ActorRuntime {
                 "resident actor Worker received an invocation for a different actor"
             )
         }
-        if (this.instance !== undefined) {
-            this.database.checkpoint(command.durable_sqlite_txid)
-            return this.instance
-        }
+        if (this.instance !== undefined) return this.instance
         if (command.resident_only) return { type: "state_required" }
-        if (command.state === undefined)
-            return failedReply("invalid_actor_state", "actor hydration requires an explicit state or null")
         this.database.restore(command.sqlite)
-        return this.createInstance(identity, command.state)
+        return this.createInstance(identity, this.database.fields())
     }
 
-    private databaseState(): { sqlite?: SqliteState } {
-        const sqlite = this.database.snapshot()
-        return sqlite === undefined ? {} : { sqlite }
+    private complete(operation: () => Promise<ActorExecutorReply>): Promise<ActorExecutorReply> {
+        const completed = this.completion.then(async () => {
+            if (this.fatal !== undefined) return this.fatal
+            try {
+                return await operation()
+            } catch (error) {
+                if (error instanceof SqliteCaptureError)
+                    this.fatal = failedReply("actor_database_failed", errorMessage(error))
+                throw error
+            }
+        })
+        this.completion = completed.catch(() => undefined)
+        return completed
+    }
+
+    private async databaseState(fields: JsonObject): Promise<SqliteState> {
+        this.database.persistFields(fields)
+        return await this.database.snapshot()
     }
 
     private restoreInstance(identity: ActorIdentity, state: JsonObject): void {
