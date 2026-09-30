@@ -284,6 +284,7 @@ async fn local_routes(
         Duration::from_secs(86_400),
     )?;
     let spec = HostLaunchSpec {
+        billing_account_id: None,
         sandboxes: Default::default(),
         project_id: options.project_id.clone(),
         source: None,

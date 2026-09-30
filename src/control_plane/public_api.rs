@@ -205,6 +205,7 @@ async fn get_deployment(
         working_directory: source.working_directory,
         actor_entrypoint: source.actor_entrypoint,
         secret_refs: spec.secret_refs,
+        billing_account_id: spec.billing_account_id,
     }))
 }
 
@@ -245,6 +246,7 @@ async fn register_deployment(
         working_directory: request.working_directory,
         actor_entrypoint: request.actor_entrypoint,
         secret_refs: request.secret_refs,
+        billing_account_id: request.billing_account_id,
     };
     let changed = state
         .invocations
@@ -447,6 +449,8 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
     image_ref: String,

@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod worker;
 pub use worker::HttpUsageSink;
+mod pubsub;
+pub use pubsub::PubSubUsageSink;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageAssignment {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_account_id: Option<String>,
     pub session_id: String,
     pub resource_id: String,
     pub region: String,
@@ -34,7 +38,7 @@ pub trait UsageSink: Send + Sync {
 
 #[async_trait]
 pub trait UsageAuthorizer: Send + Sync {
-    async fn authorize(&self, project_id: &str) -> Result<bool>;
+    async fn authorize(&self, project_id: &str, billing_account_id: Option<&str>) -> Result<bool>;
 }
 
 #[derive(Clone)]
@@ -64,7 +68,7 @@ impl UsageJournal {
             "invalid usage assignment"
         );
         let value = serde_json::to_value(assignment)?;
-        transaction.execute("INSERT INTO durable_actors_usage_sessions (session_id, assignment, checkpoint_ms) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", &[&assignment.session_id, &value, &now]).await?;
+        transaction.execute("INSERT INTO durable_actors_usage_sessions (session_id, assignment, checkpoint_ms, observed_ms) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING", &[&assignment.session_id, &value, &now]).await?;
         let row = transaction
             .query_one(
                 "SELECT assignment FROM durable_actors_usage_sessions WHERE session_id=$1",
@@ -100,52 +104,64 @@ impl UsageJournal {
     ) -> Result<()> {
         let mut connection = self.0.connection().await?;
         let transaction = connection.transaction().await?;
-        let row = transaction.query_opt("SELECT assignment, checkpoint_ms FROM durable_actors_usage_sessions WHERE session_id=$1 AND NOT stopped FOR UPDATE", &[&session]).await?;
+        let row = transaction.query_opt("SELECT GREATEST(observed_ms, checkpoint_ms) FROM durable_actors_usage_sessions WHERE session_id=$1 AND NOT stopped FOR UPDATE", &[&session]).await?;
         let Some(row) = row else {
             return Ok(());
         };
-        let assignment: UsageAssignment = serde_json::from_value(row.get(0))?;
-        let start: i64 = row.get(1);
+        let previous: i64 = row.get(0);
         let end = match observation {
             Observation::Running => now,
             Observation::Stopped(Some(end)) => end.min(now),
-            Observation::Stopped(None) => start,
+            Observation::Stopped(None) => previous,
         }
-        .max(start);
-        let mut cursor = start;
-        while end > cursor {
-            let interval_end = end.min((cursor / 3_600_000 + 1) * 3_600_000);
-            let event = UsageInterval {
-                id: format!("sandbox_usage_v1:{session}:{cursor}:{interval_end}"),
-                assignment: assignment.clone(),
-                start_ms: cursor,
-                end_ms: interval_end,
-            };
-            transaction
-                .execute(
-                    "INSERT INTO durable_actors_usage_outbox (id,event) VALUES ($1,$2)",
-                    &[&event.id, &serde_json::to_value(&event)?],
-                )
-                .await?;
-            cursor = interval_end;
-        }
-        transaction.execute("UPDATE durable_actors_usage_sessions SET checkpoint_ms=$2, stopped=$3 WHERE session_id=$1", &[&session,&end,&matches!(observation, Observation::Stopped(_))]).await?;
+        .max(previous);
+        transaction.execute("UPDATE durable_actors_usage_sessions SET observed_ms=$2, stopped=$3 WHERE session_id=$1", &[&session,&end,&matches!(observation, Observation::Stopped(_))]).await?;
         transaction.commit().await?;
         Ok(())
     }
 
     pub(crate) async fn pending(&self) -> Result<Vec<UsageInterval>> {
-        self.0.connection().await?.query("SELECT event FROM durable_actors_usage_outbox WHERE delivered_at IS NULL ORDER BY created_at, id LIMIT 100", &[]).await?.iter()
-            .map(|row| serde_json::from_value(row.get(0)).map_err(Into::into)).collect()
+        let connection = self.0.connection().await?;
+        // Preserve original event IDs while draining records created before checkpoint publishing.
+        let mut events: Vec<UsageInterval> = connection.query("SELECT event FROM durable_actors_usage_outbox WHERE delivered_at IS NULL ORDER BY created_at, id LIMIT 100", &[]).await?.iter()
+            .map(|row| serde_json::from_value(row.get(0))).collect::<std::result::Result<_, _>>()?;
+        let rows = connection.query("SELECT assignment, checkpoint_ms, observed_ms, stopped FROM durable_actors_usage_sessions WHERE observed_ms > checkpoint_ms AND (stopped OR observed_ms / 10000 * 10000 > checkpoint_ms) ORDER BY checkpoint_ms, session_id LIMIT 100", &[]).await?;
+        for row in rows {
+            let assignment: UsageAssignment = serde_json::from_value(row.get(0))?;
+            let mut start: i64 = row.get(1);
+            let observed: i64 = row.get(2);
+            let end = if row.get::<_, bool>(3) {
+                observed
+            } else {
+                observed / 10_000 * 10_000
+            };
+            while start < end && events.len() < 100 {
+                // Stable boundaries reproduce IDs if publication succeeds but checkpointing fails.
+                let interval_end = end.min((start / 10_000 + 1) * 10_000);
+                events.push(UsageInterval {
+                    id: format!(
+                        "sandbox_usage_v1:{}:{start}:{interval_end}",
+                        assignment.session_id
+                    ),
+                    assignment: assignment.clone(),
+                    start_ms: start,
+                    end_ms: interval_end,
+                });
+                start = interval_end;
+            }
+        }
+        Ok(events)
     }
 
-    pub(crate) async fn ack(&self, ids: &[String]) -> Result<()> {
-        self.0
-            .execute(
-                "UPDATE durable_actors_usage_outbox SET delivered_at=clock_timestamp() WHERE id=ANY($1)",
-                &[&ids],
-            )
-            .await?;
+    pub(crate) async fn ack(&self, events: &[UsageInterval]) -> Result<()> {
+        let mut connection = self.0.connection().await?;
+        let transaction = connection.transaction().await?;
+        for event in events {
+            transaction.execute("UPDATE durable_actors_usage_sessions SET checkpoint_ms=GREATEST(checkpoint_ms,$3) WHERE session_id=$1 AND checkpoint_ms >= $2 AND observed_ms >= $3", &[&event.assignment.session_id, &event.start_ms, &event.end_ms]).await?;
+        }
+        let ids: Vec<_> = events.iter().map(|event| event.id.clone()).collect();
+        transaction.execute("UPDATE durable_actors_usage_outbox SET delivered_at=clock_timestamp() WHERE id=ANY($1) AND delivered_at IS NULL", &[&ids]).await?;
+        transaction.commit().await?;
         Ok(())
     }
 }

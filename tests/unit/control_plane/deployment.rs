@@ -346,6 +346,7 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        billing_account_id: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

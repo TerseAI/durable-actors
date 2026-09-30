@@ -56,7 +56,8 @@ networkPolicy:
   replicaCidrs: []
 
 usage:
-  # Empty disables usage reconciliation and export.
+  # Configure one destination. Empty disables usage reconciliation and export.
+  pubsubTopic: ""
   url: ""
   authorizationUrl: ""
   tokenSecret: terse-usage-credentials

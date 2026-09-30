@@ -205,6 +205,7 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
 
 fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAssignment {
     crate::usage::UsageAssignment {
+        billing_account_id: None,
         project_id: "project".into(),
         session_id: session.into(),
         resource_id: spare.resource_id.clone(),

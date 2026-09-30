@@ -78,6 +78,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        billing_account_id: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -197,4 +198,26 @@ async fn deployment_updates_serialize_across_instances_and_recover_when_the_lock
         assert!(second.launch_spec(&project).await?.is_none());
         Ok(())
     }).await
+}
+
+#[tokio::test]
+async fn billing_identity_is_persisted_and_changes_host_identity() -> Result<()> {
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let registry =
+            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let original = spec("image");
+        let mut value = serde_json::to_value(&original)?;
+        value["billingAccountId"] = serde_json::json!("account-a");
+        let assigned: HostLaunchSpec = serde_json::from_value(value)?;
+        assert_ne!(original.host_config_key(), assigned.host_config_key());
+        registry.register_test_deployment(&assigned).await?;
+        let restored = registry.launch_spec(&assigned.project_id).await?.unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored)?["billingAccountId"],
+            "account-a"
+        );
+        assert_eq!(registry.launch_specs().await?, vec![restored]);
+        Ok(())
+    })
+    .await
 }

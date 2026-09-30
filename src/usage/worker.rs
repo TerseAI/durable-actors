@@ -77,14 +77,7 @@ impl UsageWorker {
                 break;
             }
             sink.deliver(&pending).await?;
-            self.journal
-                .ack(
-                    &pending
-                        .iter()
-                        .map(|event| event.id.clone())
-                        .collect::<Vec<_>>(),
-                )
-                .await?;
+            self.journal.ack(&pending).await?;
         }
         Ok(())
     }
@@ -190,12 +183,14 @@ impl HttpUsageAuthorizer {
 }
 #[async_trait]
 impl UsageAuthorizer for HttpUsageAuthorizer {
-    async fn authorize(&self, project_id: &str) -> Result<bool> {
+    async fn authorize(&self, _project_id: &str, billing_account_id: Option<&str>) -> Result<bool> {
         let mut url = self.sink.url.clone();
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("invalid authorization URL"))?
             .pop_if_empty()
-            .push(project_id);
+            .push(
+                billing_account_id.context("billing account identity is required for admission")?,
+            );
         #[derive(Deserialize)]
         struct Decision {
             allowed: bool,
@@ -213,3 +208,7 @@ impl UsageAuthorizer for HttpUsageAuthorizer {
         Ok(response.allowed)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/usage/worker.rs"]
+mod tests;

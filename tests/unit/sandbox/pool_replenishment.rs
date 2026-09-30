@@ -188,6 +188,7 @@ async fn a_stalled_region_does_not_block_claim_replenishment_in_another_region()
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let registry = Arc::new(LocalAdminRegistry::default());
         let spec = HostLaunchSpec {
+            billing_account_id: None,
             sandboxes: Default::default(),
             project_id: "project".into(), source: None, image_ref: "im-runtime".into(),
             code_snapshot: Some(crate::sandbox::testing::code_artifact(1)), working_directory: "/customer".into(),

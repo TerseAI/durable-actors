@@ -934,6 +934,7 @@ impl HostProvisioner for SandboxHostProvisioner {
         let prepared = HostLaunchSpec {
             sandboxes: Default::default(),
             project_id: source.project_id.clone(),
+            billing_account_id: source.billing_account_id.clone(),
             source: Some(input),
             image_ref: image.clone(),
             code_snapshot: Some(built.code_snapshot),
@@ -1016,7 +1017,9 @@ impl SandboxHostProvisioner {
     ) -> Result<(HostLease, u64)> {
         if let Some(authorizer) = &self.usage_authorizer {
             ensure!(
-                authorizer.authorize(&spec.project_id).await?,
+                authorizer
+                    .authorize(&spec.project_id, spec.billing_account_id.as_deref())
+                    .await?,
                 "sandbox compute balance exhausted"
             );
         }
@@ -1119,6 +1122,7 @@ impl SandboxHostProvisioner {
                     },
                     &crate::usage::UsageAssignment {
                         project_id: spec.project_id.clone(),
+                        billing_account_id: spec.billing_account_id.clone(),
                         session_id: request.session_id.clone(),
                         resource_id: provisioning.resource_id.clone(),
                         region: region.into(),

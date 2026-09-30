@@ -333,6 +333,7 @@ impl Fixture {
         admin
             .register_deployment(
                 &HostLaunchSpec {
+                    billing_account_id: None,
                     sandboxes: Default::default(),
                     project_id: "default".into(),
                     source: None,

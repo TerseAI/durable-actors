@@ -89,3 +89,15 @@ Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned re
 `pool.fleetMaximum` limits unassigned actor spares, not active actors. Each active actor consumes its own replica group in addition to the maintained reserve. Configure node autoscaling separately and account for all four pods, gVisor and system overhead. Resource overrides or exhausted warm pools use the cold pod-creation path. Python switches the prewarmed Bun process to its Python executor on assignment.
 
 Before cutover, check real warm/cold/resume invocations, all-copy acknowledgment, replica loss, archival failure, ownership fencing, cleanup, Workload Identity, Cloud SQL and HTTPS routing.
+
+## Sandbox usage
+
+For Pub/Sub delivery, set `usage.pubsubTopic: projects/PROJECT/topics/sandbox-usage` and leave `usage.url` empty. Grant the control plane's Google identity `roles/pubsub.publisher` on that topic. Publishing uses application-default credentials through Workload Identity. Create the billing push subscription and its dead-letter recovery subscription before enabling publication.
+
+The billing service receives Google-authenticated pushes at `/billing/compute/pubsub`; its README contains the resource creation and IAM commands. It acknowledges only after Metronome accepts usage. Runtime PostgreSQL stores per-session measurement/publication watermarks; Pub/Sub holds messages awaiting billing delivery. Migration V17 preserves existing data and drains earlier outbox records. Stop old metering workers before upgrading an enabled prototype.
+
+Terse must supply the trusted Metronome customer UUID as `billingAccountId` on deployments before enabling the billing pipeline. Redeploy existing pilot projects to populate it. Already-running sessions preserve their original attribution and require reconciliation if they predate that field.
+
+Optional new-sandbox admission uses `usage.authorizationUrl: https://billing.example.com/billing/compute/authorize/` with `usage.tokenSecret` / `usage.tokenKey` containing the billing service's producer token. This can be enabled alongside Pub/Sub; the token is used only for the admission request. Admission requires positive Compute USD when charging is enabled and does not stop existing sandboxes at zero balance.
+
+For a custom HTTP consumer, use `usage.url` and the producer-token secret instead of `usage.pubsubTopic`. The `UsageSink` interface remains injectable. See [the billing design](../../docs/plans/sandbox-billing.md) for units, stable event IDs, retry behavior and rollout limits.
