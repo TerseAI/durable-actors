@@ -6,7 +6,7 @@ If you've been burned by the memory limits in Durable Objects, the lack of obser
 
 > Use Durable Actors to build Software Factories, Multiplayer AI experiences and coordinate Agents.
 
-Define your state, write your methods and generate a type-safe client to easily integrate into your existing tech stack. Set up takes under a minute locally.
+Define your state, write your methods and generate a type-safe client to easily integrate into your existing tech stack. Get it working end-2-end in minutes.
 
 ### Start with a coding agent
 
