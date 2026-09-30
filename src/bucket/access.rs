@@ -163,6 +163,17 @@ struct GcsTokenSource {
     http: reqwest::Client,
 }
 
+pub(crate) async fn scoped_storage_token(boundary: &Value) -> Result<StorageToken> {
+    GcsTokenSource {
+        credentials: StorageCredentials::new()?,
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()?,
+    }
+    .exchange(boundary)
+    .await
+}
+
 #[async_trait]
 impl StorageTokenSource for GcsTokenSource {
     async fn exchange(&self, boundary: &Value) -> Result<StorageToken> {

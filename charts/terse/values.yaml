@@ -43,6 +43,11 @@ pool:
   cpuMillis: 250
   memoryMiB: 256
 hostIdleTimeoutMs: 10000
+build:
+  idlePerControlPlane: 1
+  concurrentPerControlPlane: 4
+  cpuMillis: 1000
+  memoryMiB: 1024
 gateway:
   enabled: true
   className: gke-l7-global-external-managed

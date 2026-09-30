@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn deployment_accepts_a_source_archive_without_a_customer_image() {
+    let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
+        "sourceArchive": {"sha256": "a".repeat(64), "entrypoint": "src/actor.ts", "object": {"bucket": "source-bucket", "name": "project/source.zip", "generation": "1"}},
+        "secretRefs": []
+    }));
+    assert!(request.is_ok());
+}
+
+#[test]
 fn deployment_accepts_the_customer_image_and_source_entrypoint_without_a_snapshot() {
     let request = serde_json::from_value::<RegisterDeploymentRequest>(serde_json::json!({
         "imageRef": "im-customer",

@@ -55,13 +55,19 @@ paths:
             operationId: registerDeployment
             tags: [Deployments]
             summary: Deploy actors
-            description: Builds the supplied source image, replaces the current deployment, and restarts its actors while preserving saved state. Local development registers source from the filesystem with imageRef set to local.
+            description: Compiles a generation-pinned GCS source ZIP using the shared runtime, or reuses a cached bundle. Replaces the deployment and restarts actors while preserving saved state. Source images remain supported through imageRef; local development uses imageRef set to local.
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema: { $ref: "#/components/schemas/Deployment" }
                         examples:
+                            sourceArchive:
+                                value:
+                                    sourceArchive:
+                                        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                                        entrypoint: src/actors.ts
+                                        object: { bucket: source-uploads, name: projects/chat/source.zip, generation: "123456789" }
                             chat:
                                 value:
                                     imageRef: registry.example/customer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -94,6 +100,33 @@ paths:
             description: Stops deployed actors and keeps their saved state.
             responses:
                 "200": { $ref: "#/components/responses/Changed" }
+                "400": { $ref: "#/components/responses/InvalidRequest" }
+                "401": { $ref: "#/components/responses/Unauthenticated" }
+                "500": { $ref: "#/components/responses/Internal" }
+    /v1/projects/{project_id}/deployment/cache:
+        parameters:
+            - { $ref: "#/components/parameters/ProjectId" }
+        post:
+            operationId: checkDeploymentCache
+            tags: [Deployments]
+            summary: Check for a compiled source bundle before uploading
+            description: Requires administrative authentication. Cache identity includes the project, runtime image, source ZIP SHA256, and entrypoint. A hit allows registration with the same sourceArchive identity and no object. A miss requires uploading a ZIP and providing its immutable object generation.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: "#/components/schemas/SourceArchive" }
+            responses:
+                "200":
+                    description: Whether the current runtime can reuse a compiled bundle.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                additionalProperties: false
+                                required: [cached]
+                                properties:
+                                    cached: { type: boolean }
                 "400": { $ref: "#/components/responses/InvalidRequest" }
                 "401": { $ref: "#/components/responses/Unauthenticated" }
                 "500": { $ref: "#/components/responses/Internal" }
@@ -792,19 +825,46 @@ components:
                 messages: { type: integer, minimum: 0 }
                 failures: { type: integer, minimum: 0 }
                 metadata: { description: Metadata saved with a retained onConnect event. }
+        SourceArchive:
+            type: object
+            additionalProperties: false
+            required: [sha256, entrypoint]
+            properties:
+                sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                entrypoint:
+                    type: string
+                    minLength: 1
+                    description: Relative TypeScript, JavaScript, or Python entrypoint; traversal and absolute paths are rejected.
+                object:
+                    type: object
+                    additionalProperties: false
+                    required: [bucket, name, generation]
+                    properties:
+                        bucket: { type: string, minLength: 3 }
+                        name: { type: string, minLength: 1, maxLength: 1024 }
+                        generation: { type: string, pattern: "^[1-9][0-9]*$" }
+                    description: Required on a cache miss. The control-plane identity must have read access to this exact object.
         Deployment:
             type: object
             additionalProperties: false
-            required: [imageRef, workingDirectory]
+            oneOf:
+                - required: [sourceArchive]
+                  properties:
+                      imageRef: { const: "" }
+                - required: [imageRef]
+                  not: { required: [sourceArchive] }
+                  properties:
+                      imageRef: { minLength: 1 }
             properties:
+                sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
                 imageRef:
                     type: string
-                    minLength: 1
                     maxLength: 255
-                    description: Immutable OCI source image reference pinned by sha256 digest for GKE deployments; local for development. Maximum 255 UTF-8 bytes.
+                    description: Immutable OCI source image reference pinned by sha256 digest for image deployments; local for development. Omit or use an empty string with sourceArchive. Maximum 255 UTF-8 bytes.
                 workingDirectory:
                     type: string
                     pattern: "^/"
+                    default: /customer
                     description: Absolute project path inside the image. Maximum 1024 UTF-8 bytes.
                 actorEntrypoint:
                     type: [string, "null"]
@@ -828,6 +888,7 @@ components:
             additionalProperties: false
             required: [imageRef, workingDirectory, actorEntrypoint, secretRefs]
             properties:
+                sourceArchive: { $ref: "#/components/schemas/SourceArchive" }
                 imageRef: { $ref: "#/components/schemas/Deployment/properties/imageRef" }
                 workingDirectory: { $ref: "#/components/schemas/Deployment/properties/workingDirectory" }
                 actorEntrypoint: { $ref: "#/components/schemas/Deployment/properties/actorEntrypoint" }

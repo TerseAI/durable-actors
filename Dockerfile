@@ -42,12 +42,19 @@ FROM oven/bun:1.4.2 AS bun
 FROM python:3.13-slim-bookworm
 
 RUN apt-get update -qq \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 libstdc++6 libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-sdk /usr/local /usr/local
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=sdk-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=sdk-builder /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && npm install --prefix /opt/durable-actors/pnpm/10.34.1 --no-fund --no-audit pnpm@10.34.1 \
+    && npm install --prefix /opt/durable-actors/pnpm/12.5.1 --no-fund --no-audit pnpm@12.5.1 \
+    && npm cache clean --force
+COPY scripts/source-build.py /opt/durable-actors/source-build.py
 COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules
 COPY --from=sdk-builder /build/sdk/node_modules /opt/durable-actors/sdk/node_modules
 COPY --from=sdk-builder /build/packages/observer-ui /opt/durable-actors/packages/observer-ui

@@ -9,7 +9,7 @@ use crate::{
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
         HostSandboxRuntimeConfig,
-        gke::{GkeConfig, GkeSandboxProvider},
+        gke::{BuilderConfig, GkeConfig, GkeSandboxProvider},
     },
 };
 
@@ -54,6 +54,7 @@ pub struct SandboxProviderConfig {
     pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
+    pub(crate) builders: BuilderConfig,
     pub runtime: HostSandboxRuntimeConfig,
 }
 
@@ -247,7 +248,16 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
     storage: google_cloud_storage::client::Storage,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(GkeSandboxProvider::new(config.gke, storage).await?);
+    let provider = Arc::new(
+        GkeSandboxProvider::new(
+            config.gke,
+            storage,
+            config.runtime_image.clone(),
+            config.builders,
+            stop.clone(),
+        )
+        .await?,
+    );
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
     pool.start(registry, stop);
     Ok(Arc::new(
@@ -449,6 +459,14 @@ fn sandbox_provider_config(
             zones,
             public_origin,
             artifact_bucket: required(get, "DURABLE_ACTORS_ARTIFACT_BUCKET")?,
+        },
+        builders: BuilderConfig {
+            idle: pool_number(get, "DURABLE_ACTORS_BUILD_IDLE", 1, 0, 16)?,
+            concurrent: pool_number(get, "DURABLE_ACTORS_BUILD_CONCURRENT", 4, 1, 64)?,
+            resources: crate::sandbox::ResourceLimits {
+                cpu_millis: pool_number(get, "DURABLE_ACTORS_BUILD_CPU_MILLIS", 1000, 100, 64000)?,
+                memory_mib: pool_number(get, "DURABLE_ACTORS_BUILD_MEMORY_MIB", 1024, 256, 262144)?,
+            },
         },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,

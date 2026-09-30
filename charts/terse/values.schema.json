@@ -109,6 +109,38 @@
         "replicas"
       ]
     },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idlePerControlPlane",
+        "concurrentPerControlPlane",
+        "cpuMillis",
+        "memoryMiB"
+      ],
+      "properties": {
+        "idlePerControlPlane": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "concurrentPerControlPlane": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 64000
+        },
+        "memoryMiB": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 262144
+        }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "properties": {
@@ -147,6 +179,7 @@
     "sandboxNamespace",
     "zones",
     "storage",
+    "build",
     "serviceAccount",
     "networkPolicy"
   ],

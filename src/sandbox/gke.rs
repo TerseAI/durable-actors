@@ -6,30 +6,43 @@ use async_trait::async_trait;
 use super::*;
 
 mod kubernetes;
-pub(crate) use kubernetes::GkeConfig;
+mod source_builds;
+pub(crate) use kubernetes::{BuilderConfig, GkeConfig};
 
 pub(crate) struct GkeSandboxProvider {
     cluster: Arc<dyn SandboxCluster>,
     assignment: Arc<dyn HostAssignment>,
     artifacts: Arc<dyn CodeArtifacts>,
     public_origin: String,
+    source_builds: Arc<dyn source_builds::SourceBuilder>,
 }
 
 impl GkeSandboxProvider {
     pub async fn new(
         config: GkeConfig,
         storage: google_cloud_storage::client::Storage,
+        image: String,
+        builders: BuilderConfig,
+        stop: tokio_util::sync::CancellationToken,
     ) -> Result<Self> {
         let public_origin = config.public_origin.clone();
         let artifacts = Arc::new(GcsArtifacts {
-            storage,
+            storage: storage.clone(),
             bucket: config.artifact_bucket.clone(),
         });
+        let cluster = Arc::new(kubernetes::Kubernetes::new(
+            kube::Client::try_default().await?,
+            config.clone(),
+        ));
+        let workers = kubernetes::WorkerPool::new(cluster.clone(), image, builders)?;
+        workers.start(stop);
+        let source_builds = Arc::new(source_builds::SourceBuilds::new(
+            config.artifact_bucket,
+            storage,
+            workers,
+        ));
         Ok(Self {
-            cluster: Arc::new(kubernetes::Kubernetes::new(
-                kube::Client::try_default().await?,
-                config,
-            )),
+            cluster,
             assignment: Arc::new(HttpAssignment(
                 reqwest::Client::builder()
                     .timeout(Duration::from_secs(120))
@@ -38,6 +51,7 @@ impl GkeSandboxProvider {
             )),
             artifacts,
             public_origin,
+            source_builds,
         })
     }
 
@@ -75,13 +89,34 @@ impl GkeSandboxProvider {
 #[async_trait]
 impl SandboxProvider for GkeSandboxProvider {
     async fn build_code(&self, request: &BuildCodeRequest) -> Result<BuiltActorCode> {
+        if let Some(source) = &request.source_archive {
+            return self
+                .source_builds
+                .build(
+                    &request.project_id,
+                    &request.image_ref,
+                    &request.canonical_region,
+                    source,
+                )
+                .await;
+        }
         validate_image(&request.image_ref)?;
         let compiled = self.cluster.build_code(request).await?;
         let code_snapshot = self.artifacts.publish(compiled.directory.path()).await?;
         Ok(BuiltActorCode {
+            source_archive: None,
             code_snapshot,
             contract: compiled.contract,
         })
+    }
+
+    async fn source_cached(
+        &self,
+        project: &str,
+        image: &str,
+        source: &source::SourceArchive,
+    ) -> Result<bool> {
+        self.source_builds.cached(project, image, source).await
     }
 
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {

@@ -76,13 +76,13 @@ GCS history remains after pod deletion. History is retained indefinitely; retent
 
 ## Code and capacity
 
-Build a source image extending the published runtime image, containing application source and dependencies. Deploy its digest with `imageRef`, `workingDirectory`, and `actorEntrypoint`. A temporary Sandbox builder runs the compiler and publishes a generation-pinned, checksummed artifact. Rust downloads it in parallel into the assigned actor; there is no GCS filesystem mount.
+Upload a source ZIP directly to GCS and register `sourceArchive` with its SHA256, relative entrypoint, and `{bucket, name, generation}`. A ready gVisor worker installs dependencies, compiles with the shared runtime toolchain, and uploads the checksummed bundle directly to the artifact bucket. Actor hosts load that bundle using the shared runtime image. Customer deploys do not build or transfer container images. Source-image registration through `imageRef` remains supported for existing callers.
 
-```dockerfile
-FROM RUNTIME_IMAGE_AT_SHA256_DIGEST
-COPY --chown=10000:10000 . /customer
-WORKDIR /customer
-```
+The administrative `POST /v1/projects/{project_id}/deployment/cache` endpoint accepts `{sha256, entrypoint}`. A hit permits deployment with that identity alone, skipping upload and compilation. Cache identity includes the project and runtime digest. Dependency download caches also stay within a project/runtime scope; installation scripts run for each new build.
+
+Grant the control-plane Google identity `storage.objects.get` on the source-upload objects, and object read/create on the artifact bucket. Workers receive a short-lived downscoped token for one source object, one artifact prefix, and their project's dependency cache. They have no Kubernetes service-account token. Retain source ZIP generations and compiled artifacts referenced by deployments or build-cache records; source is needed after runtime upgrades. The chart does not install a garbage collector or bucket lifecycle rules for these objects.
+
+`build.idlePerControlPlane` defaults to one ready worker per control-plane process and zone; `build.concurrentPerControlPlane` defaults to four builds per process. Workers request one CPU and 1 GiB, configurable with `build.cpuMillis` and `build.memoryMiB`. Each pod accepts one build and is deleted afterward. Idle workers rotate after four minutes, and every build pod has a fifteen-minute maximum lifetime. Account for this reserve when sizing cluster capacity.
 
 Defaults maintain 64 ready actor spares per runtime/region and 192 unassigned replicas. Actor pods request and are limited to 0.25 CPU and 256 MiB. Replica requests are 50m CPU and 64 MiB; CPU may burst, with a configurable 512 MiB memory limit. Large state increases memory and disk needs. These settings must be measured against the application's workload.
 

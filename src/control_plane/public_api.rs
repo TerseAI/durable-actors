@@ -48,6 +48,10 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
                 .delete(delete_deployment),
         )
         .route(
+            "/v1/projects/{project_id}/deployment/cache",
+            post(source_cache),
+        )
+        .route(
             "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
             post(super::invocation::invoke),
         )
@@ -195,11 +199,13 @@ async fn get_deployment(
     let source = spec
         .source
         .unwrap_or_else(|| super::admin::DeploymentSource {
+            source_archive: None,
             image_ref: spec.image_ref,
             working_directory: spec.working_directory,
             actor_entrypoint: spec.actor_entrypoint,
         });
     Ok(Json(RegisterDeploymentRequest {
+        source_archive: source.source_archive,
         contract: None,
         image_ref: source.image_ref,
         working_directory: source.working_directory,
@@ -231,6 +237,11 @@ async fn register_deployment(
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let Json(request) = request.map_err(ApiError::json)?;
+    if request.source_archive.is_some() && !request.image_ref.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "provide a source archive or a source image, not both"
+        )));
+    }
     let contract = request
         .contract
         .map(PublicActorContract::new)
@@ -239,7 +250,14 @@ async fn register_deployment(
     let spec = HostLaunchSpec {
         sandboxes: Default::default(),
         project_id: project_id(path)?,
-        source: None,
+        source: request
+            .source_archive
+            .map(|archive| super::admin::DeploymentSource {
+                image_ref: String::new(),
+                working_directory: "/customer".into(),
+                actor_entrypoint: Some(archive.entrypoint.clone()),
+                source_archive: Some(archive),
+            }),
         code_snapshot: None,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
@@ -252,6 +270,23 @@ async fn register_deployment(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(DeploymentReply { changed }))
+}
+
+async fn source_cache(
+    State(state): State<PublicApiState>,
+    path: Path<ProjectPath>,
+    headers: HeaderMap,
+    request: Result<Json<crate::sandbox::source::SourceArchive>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let Json(source) = request.map_err(ApiError::json)?;
+    source.validate().map_err(ApiError::bad_request)?;
+    let cached = state
+        .invocations
+        .source_cached(&project_id(path)?, &source)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({"cached": cached})))
 }
 
 async fn find_actor(
@@ -448,13 +483,21 @@ pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Res
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegisterDeploymentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_archive: Option<crate::sandbox::source::SourceArchive>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     contract: Option<Value>,
+    #[serde(default)]
     image_ref: String,
+    #[serde(default = "source_working_directory")]
     working_directory: String,
     #[serde(default)]
     actor_entrypoint: Option<String>,
     #[serde(default)]
     secret_refs: Vec<String>,
+}
+
+fn source_working_directory() -> String {
+    "/customer".into()
 }
 
 #[derive(Serialize)]

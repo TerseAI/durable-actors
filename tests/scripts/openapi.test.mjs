@@ -100,6 +100,19 @@ test("websocket discovery requires metadata and enforces grant limits", async ()
         assert.equal(validate(request), false, JSON.stringify(request))
 })
 
+test("archive deployments and cache probes document immutable source identities", async () => {
+    const spec = await SwaggerParser.dereference(specPath)
+    const ajv = new Ajv({ strict: false })
+    const deploy = ajv.compile(spec.components.schemas.Deployment)
+    const source = { sha256: "a".repeat(64), entrypoint: "src/actors.ts", object: { bucket: "uploads", name: "source.zip", generation: "42" } }
+    assert.ok(deploy({ sourceArchive: source }), ajv.errorsText(deploy.errors))
+    assert.ok(deploy({ sourceArchive: source, imageRef: "" }), ajv.errorsText(deploy.errors))
+    assert.equal(deploy({ sourceArchive: source, imageRef: "local" }), false)
+    assert.equal(deploy({ sourceArchive: { ...source, object: { ...source.object, generation: "0" } } }), false)
+    const probe = ajv.compile(spec.paths["/v1/projects/{project_id}/deployment/cache"].post.requestBody.content["application/json"].schema)
+    assert.ok(probe({ sha256: source.sha256, entrypoint: source.entrypoint }))
+})
+
 test("OpenAPI accepts the compiler's public contract fixture", async () => {
     const spec = await SwaggerParser.dereference(specPath)
     const contract = JSON.parse(await readFile(new URL("../../sdk/tests/fixtures/public-contract.json", import.meta.url), "utf8"))

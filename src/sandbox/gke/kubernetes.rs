@@ -11,6 +11,9 @@ use tokio::io::AsyncWrite;
 
 use super::*;
 
+mod build_workers;
+pub(crate) use build_workers::{BuilderConfig, WorkerPool};
+
 #[derive(Clone, Debug)]
 pub(crate) struct GkeConfig {
     pub namespace: String,

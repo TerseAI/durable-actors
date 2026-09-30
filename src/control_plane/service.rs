@@ -191,6 +191,14 @@ impl ControlPlaneService {
         Ok(changed)
     }
 
+    pub(super) async fn source_cached(
+        &self,
+        project: &str,
+        source: &crate::sandbox::source::SourceArchive,
+    ) -> Result<bool> {
+        self.provisioner.source_cached(project, source).await
+    }
+
     pub(super) async fn delete_deployment(
         &self,
         admin: &AdminService,
@@ -794,6 +802,14 @@ impl std::error::Error for RegionConflict {}
 pub(crate) trait HostProvisioner: Send + Sync {
     fn host_idle_timeout_ms(&self) -> u64;
 
+    async fn source_cached(
+        &self,
+        _project: &str,
+        _source: &crate::sandbox::source::SourceArchive,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -876,6 +892,18 @@ impl HostProvisioner for SandboxHostProvisioner {
         self.runtime.host_idle_timeout_ms
     }
 
+    async fn source_cached(
+        &self,
+        project: &str,
+        source: &crate::sandbox::source::SourceArchive,
+    ) -> Result<bool> {
+        let image = self
+            .runtime_image
+            .as_ref()
+            .context("hosted builds require a runtime image")?;
+        self.provider.source_cached(project, image, source).await
+    }
+
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
@@ -889,7 +917,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .runtime_image
             .as_ref()
             .context("hosted code preparation requires a runtime image")?;
-        let input = super::admin::DeploymentSource::from(source);
+        let mut input = super::admin::DeploymentSource::from(source);
         if let Some(previous) = previous.filter(|old| {
             old.source.as_ref() == Some(&input)
                 && old.image_ref == *image
@@ -902,7 +930,13 @@ impl HostProvisioner for SandboxHostProvisioner {
         let built = self
             .provider
             .build_code(&crate::sandbox::BuildCodeRequest {
-                image_ref: input.image_ref.clone(),
+                project_id: source.project_id.clone(),
+                source_archive: input.source_archive.clone(),
+                image_ref: if input.source_archive.is_some() {
+                    image.clone()
+                } else {
+                    input.image_ref.clone()
+                },
                 working_directory: input.working_directory.clone(),
                 actor_entrypoint: input
                     .actor_entrypoint
@@ -912,6 +946,9 @@ impl HostProvisioner for SandboxHostProvisioner {
             })
             .await?;
         let contract = super::contracts::PublicActorContract::new(built.contract)?;
+        if let Some(archive) = built.source_archive {
+            input.source_archive = Some(archive);
+        }
         let artifact = if input
             .actor_entrypoint
             .as_deref()

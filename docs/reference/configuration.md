@@ -54,6 +54,10 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace, default `terse-sandboxes`. |
 | `DURABLE_ACTORS_GKE_ZONES` | JSON map from canonical compute region to a Google zone. |
 | `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
+| `DURABLE_ACTORS_BUILD_IDLE` | Ready source-build workers per control-plane process and zone; default `1`, range 0–16. |
+| `DURABLE_ACTORS_BUILD_CONCURRENT` | Concurrent builds per control-plane process; default `4`, range 1–64. |
+| `DURABLE_ACTORS_BUILD_CPU_MILLIS` | Worker CPU request and cap; default `1000`, range 100–64000. |
+| `DURABLE_ACTORS_BUILD_MEMORY_MIB` | Worker memory request and cap; default `1024`, range 256–262144 MiB. |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
 

@@ -33,6 +33,8 @@ pub(crate) struct HostLaunchSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeploymentSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_archive: Option<crate::sandbox::source::SourceArchive>,
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
@@ -40,7 +42,11 @@ pub(crate) struct DeploymentSource {
 
 impl From<&HostLaunchSpec> for DeploymentSource {
     fn from(spec: &HostLaunchSpec) -> Self {
+        if let Some(source) = &spec.source {
+            return source.clone();
+        }
         Self {
+            source_archive: None,
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec.actor_entrypoint.clone(),
@@ -69,6 +75,13 @@ impl HostLaunchSpec {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        let archive = self
+            .source
+            .as_ref()
+            .and_then(|source| source.source_archive.as_ref());
+        if let Some(archive) = archive {
+            archive.validate()?;
+        }
         for (actor, options) in &self.sandboxes {
             validate_component("actor name", actor, 255)?;
             options.validate()?;
@@ -87,7 +100,7 @@ impl HostLaunchSpec {
             );
         }
         ensure!(
-            !self.image_ref.is_empty() && self.image_ref.len() <= 255,
+            (archive.is_some() || !self.image_ref.is_empty()) && self.image_ref.len() <= 255,
             "sandbox image reference must contain between 1 and 255 bytes"
         );
         ensure!(

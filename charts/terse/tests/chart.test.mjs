@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -13,13 +13,15 @@ function render(overrides = {}) {
         const values = join(directory, "values.json")
         writeFileSync(values, JSON.stringify(overrides))
         return spawnSync(helm, ["template", "test", chart, "--namespace", "terse-control", "-f", `${chart}tests/values.yaml`, "-f", values], { encoding: "utf8" })
-    } finally { rmSync(directory, { recursive: true }) }
+    } finally {
+        rmSync(directory, { recursive: true })
+    }
 }
 
 for (const [durability, placements] of [
     ["zonal", ["us-west4-a", "us-west4-a", "us-west4-a"]],
     ["regional", ["us-west4-a", "us-west4-b", "us-west4-c"]],
-    ["multi_region", ["us-west4-a", "us-east4-a"]],
+    ["multi_region", ["us-west4-a", "us-east4-a"]]
 ]) {
     test(`renders ${durability} dedicated replica policy and HTTPS ingress`, () => {
         const result = render({ storage: { durability, replicas: { placements } } })
@@ -33,13 +35,30 @@ for (const [durability, placements] of [
     })
 }
 for (const [name, override] of [
+    ["zero build concurrency", { build: { concurrentPerControlPlane: 0 } }],
+    ["unbounded idle builders", { build: { idlePerControlPlane: 17 } }],
     ["regional copies in one zone", { storage: { durability: "regional" } }],
     ["multi-region copies in one region", { storage: { durability: "multi_region" } }],
     ["empty replica set", { storage: { replicas: { placements: [] } } }],
     ["unknown policy", { storage: { durability: "best_effort" } }],
     ["mutable image", { image: { digest: "latest" } }],
-    ["shared trust namespace", { sandboxNamespace: "terse-control" }],
-]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
+    ["shared trust namespace", { sandboxNamespace: "terse-control" }]
+])
+    test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
+
+test("source builds have configurable capacity and control-plane-only ingress", () => {
+    const result = render({ build: { idlePerControlPlane: 0, concurrentPerControlPlane: 8, cpuMillis: 2000, memoryMiB: 2048 } })
+    assert.equal(result.status, 0, result.stderr)
+    for (const [name, value] of [
+        ["IDLE", "0"],
+        ["CONCURRENT", "8"],
+        ["CPU_MILLIS", "2000"],
+        ["MEMORY_MIB", "2048"]
+    ]) {
+        assert.match(result.stdout, new RegExp(`name: DURABLE_ACTORS_BUILD_${name}, value: "${value}"`))
+    }
+    assert.match(result.stdout, /protocol: TCP, port: 7102/)
+})
 
 test("dedicated replicas have storage identity access while customer pods stay isolated", () => {
     const result = render()
@@ -53,8 +72,7 @@ test("dedicated replicas have storage identity access while customer pods stay i
 test("sandboxes can resolve DNS through kube-dns and GKE NodeLocal DNS pods", () => {
     const result = render()
     assert.equal(result.status, 0, result.stderr)
-    const policy = result.stdout.split("---").find(document =>
-        document.includes("kind: NetworkPolicy") && document.includes("namespace: terse-sandboxes"))
+    const policy = result.stdout.split("---").find(document => document.includes("kind: NetworkPolicy") && document.includes("namespace: terse-sandboxes"))
     assert.ok(policy)
     const dnsRule = policy.slice(policy.indexOf("kubernetes.io/metadata.name: kube-system"))
     const destinations = dnsRule.slice(0, dnsRule.indexOf("ports:"))
@@ -63,7 +81,6 @@ test("sandboxes can resolve DNS through kube-dns and GKE NodeLocal DNS pods", ()
     assert.match(dnsRule, /protocol: UDP, port: 53/)
     assert.match(dnsRule, /protocol: TCP, port: 53/)
 })
-
 
 test("uses a Google-managed certificate on the HTTPS gateway", () => {
     const result = render({ gateway: { tlsSecret: "", preSharedCert: "actors-production" } })
@@ -75,8 +92,9 @@ test("uses a Google-managed certificate on the HTTPS gateway", () => {
 
 for (const [name, gateway] of [
     ["missing TLS certificate", { tlsSecret: "", preSharedCert: "" }],
-    ["ambiguous TLS certificates", { tlsSecret: "tls", preSharedCert: "managed" }],
-]) test(`rejects ${name}`, () => assert.notEqual(render({ gateway }).status, 0))
+    ["ambiguous TLS certificates", { tlsSecret: "tls", preSharedCert: "managed" }]
+])
+    test(`rejects ${name}`, () => assert.notEqual(render({ gateway }).status, 0))
 
 test("Cloud SQL connects through a private local proxy that starts before the control plane", () => {
     const result = render({ cloudSql: { instanceConnectionName: "project:us-west4:actors-db" } })

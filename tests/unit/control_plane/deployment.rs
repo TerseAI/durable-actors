@@ -32,6 +32,67 @@ async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()
 }
 
 #[tokio::test]
+async fn archive_deployments_use_the_runtime_builder_and_preserve_sources_on_secret_rotation()
+-> Result<()> {
+    let (service, admin, provider) = fixture()?;
+    let routes = super::super::public_api::router(service, admin.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!(
+        "http://{}/v1/projects/default/deployment",
+        listener.local_addr()?
+    );
+    let server = tokio::spawn(async { axum::serve(listener, routes).await });
+    let client = reqwest::Client::new();
+    let archive = serde_json::json!({"sha256": "a".repeat(64), "entrypoint": "src/actor.ts", "object": {"bucket": "sources", "name": "source.zip", "generation": "42"}});
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&serde_json::json!({"sourceArchive": archive}))
+        .send()
+        .await?
+        .error_for_status()?;
+    let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(active.image_ref, "im-runtime");
+    assert_eq!(active.actor_entrypoint.as_deref(), Some("actors.mjs"));
+    assert_eq!(provider.builds.lock().unwrap()[0]["sourceArchive"], archive);
+    assert_eq!(provider.builds.lock().unwrap()[0]["imageRef"], "im-runtime");
+    let mut current: serde_json::Value = client
+        .get(&url)
+        .bearer_auth("api-key")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(current["sourceArchive"], archive);
+    current["secretRefs"] = serde_json::json!(["rotated"]);
+    client
+        .put(&url)
+        .bearer_auth("api-key")
+        .json(&current)
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(provider.builds.lock().unwrap().len(), 1);
+    assert_eq!(
+        admin
+            .current_deployment("default")
+            .await?
+            .unwrap()
+            .code_snapshot,
+        active.code_snapshot
+    );
+    let cached = client
+        .post(format!("{url}/cache"))
+        .json(&archive)
+        .send()
+        .await?;
+    assert_eq!(cached.status(), reqwest::StatusCode::UNAUTHORIZED);
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_deployment_builds_once_and_preserves_code_on_secret_updates_and_failures()
 -> Result<()> {
     let (service, admin, provider) = fixture()?;
@@ -389,6 +450,7 @@ impl SandboxProvider for BuildProvider {
         builds.push(serde_json::to_value(request)?);
         ensure!(!self.fail.load(Ordering::SeqCst), "compilation failed");
         Ok(BuiltActorCode {
+            source_archive: request.source_archive.clone(),
             code_snapshot: crate::sandbox::testing::code_artifact(builds.len() as i64),
             contract: self.contract.lock().unwrap().clone(),
         })

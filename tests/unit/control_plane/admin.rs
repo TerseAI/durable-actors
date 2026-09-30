@@ -54,6 +54,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
         assert_ne!(initial_key, deployment.host_config_key());
         deployment.secret_refs = vec!["project-secrets".into()];
         deployment.source = Some(DeploymentSource {
+            source_archive: None,
             image_ref: "im-source".into(),
             working_directory: "/project".into(),
             actor_entrypoint: Some("src/actors.ts".into()),
