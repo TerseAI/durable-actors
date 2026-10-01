@@ -199,22 +199,28 @@ async fn crash_recovery_joins_standard_batches_and_unflushed_rapid_tail() -> Res
 }
 
 #[tokio::test]
-async fn one_rapid_flush_cannot_acknowledge_a_write() -> Result<()> {
+async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
     f.zones[1].stalled.store(true, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(
             Duration::from_millis(30),
-            store.put(&f.stream.object(1), state(1, 1)?)
+            store.put(&f.stream.object(2), state(2, 1)?)
         )
         .await
         .is_err()
     );
-    assert!(store.put(&f.stream.object(1), state(1, 1)?).await.is_err());
+    f.zones[1].stalled.store(false, Ordering::SeqCst);
+    assert!(store.put(&f.stream.object(2), state(2, 1)?).await.is_err());
     assert!(store.finish(&f.stream).await.is_err());
-    assert!(f.archive.get(&f.stream.object(1)).await?.is_none());
+    assert!(f.archive.get(&f.stream.object(2)).await?.is_none());
+    assert_eq!(
+        f.store()?.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(2), state(2, 1)?))
+    );
     Ok(())
 }
 
@@ -364,9 +370,9 @@ async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Resu
 }
 
 #[tokio::test]
-async fn cleanup_retries_after_one_rapid_copy_was_already_deleted() -> Result<()> {
+async fn cleanup_retries_partial_deletion_and_skips_completed_segments() -> Result<()> {
     let f = Fixture::new()?;
-    let store = f.store()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     f.zones[1].offline.store(true, Ordering::SeqCst);
@@ -383,37 +389,11 @@ async fn cleanup_retries_after_one_rapid_copy_was_already_deleted() -> Result<()
         Some((f.stream.object(1), state(1, 1)?))
     );
     f.zones[1].offline.store(false, Ordering::SeqCst);
-    f.store()?
-        .storage
-        .sweep(&object_name(&f.stream.prefix)?)
-        .await?;
+    let prefix = object_name(&f.stream.prefix)?;
+    store.storage.sweep(&prefix).await?;
     f.cleaned().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn cleanup_skips_remote_reads_for_already_cleaned_segments() -> Result<()> {
-    let f = Fixture::new()?;
-    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    store.finish(&f.stream).await?;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if f.archive
-                .list("")
-                .await?
-                .iter()
-                .any(|k| k.ends_with(".cleaned"))
-            {
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await??;
     archive.cleaned_reads.store(0, Ordering::SeqCst);
-    store.storage.sweep(&object_name(&f.stream.prefix)?).await?;
+    store.storage.sweep(&prefix).await?;
     assert_eq!(archive.cleaned_reads.load(Ordering::SeqCst), 0);
     Ok(())
 }

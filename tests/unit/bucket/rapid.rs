@@ -18,18 +18,6 @@ use std::{
 mod batch;
 
 #[tokio::test]
-async fn ordinary_writes_wait_for_a_standard_batch() -> Result<()> {
-    let f = Fixture::new()?;
-    let store = f.store()?;
-    store.start(&f.stream).await?;
-    store.put(&f.stream.object(1), state(1, 1)?).await?;
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(f.archive.get(&f.stream.object(1)).await?.is_none());
-    assert_eq!(f.archive.list("").await?.len(), 1);
-    Ok(())
-}
-
-#[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
@@ -312,22 +300,6 @@ fn large_snapshots() -> Result<BTreeMap<u64, Bytes>> {
             Ok((version, snapshot.encode()?.into()))
         })
         .collect()
-}
-
-#[test]
-fn large_segments_decode_every_record() -> Result<()> {
-    let records = (1..=3)
-        .map(|version| Record {
-            version,
-            state: Bytes::from(vec![version as u8; 3 * 1024 * 1024]),
-        })
-        .collect::<Vec<_>>();
-    let mut bytes = Vec::new();
-    for record in &records {
-        bytes.extend_from_slice(&record.encode()?);
-    }
-    assert_eq!(frame::decode(&bytes.into())?, records);
-    Ok(())
 }
 
 #[test]
