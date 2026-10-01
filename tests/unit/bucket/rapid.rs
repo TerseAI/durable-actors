@@ -654,7 +654,6 @@ struct MemoryZone {
     objects: Arc<Mutex<BTreeMap<String, MemoryObject>>>,
     offline: Arc<AtomicBool>,
     stalled: Arc<AtomicBool>,
-    delete_stalled: AtomicBool,
     opens: AtomicU64,
 }
 impl MemoryZone {
@@ -664,7 +663,6 @@ impl MemoryZone {
             objects: Default::default(),
             offline: Default::default(),
             stalled: Default::default(),
-            delete_stalled: AtomicBool::new(false),
             opens: AtomicU64::new(0),
         }
     }
@@ -714,9 +712,6 @@ impl LogZone for MemoryZone {
     }
     async fn delete(&self, replica: &Replica) -> Result<()> {
         ensure!(!self.offline.load(Ordering::SeqCst), "zone offline");
-        while self.delete_stalled.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
         self.objects.lock().unwrap().remove(&replica.object);
         Ok(())
     }
