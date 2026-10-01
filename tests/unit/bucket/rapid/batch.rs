@@ -6,11 +6,15 @@ struct ArchiveBucket {
     stalled: AtomicBool,
     fail_batch: AtomicBool,
     batches: AtomicU64,
+    cleaned_reads: AtomicU64,
 }
 
 #[async_trait]
 impl Bucket for ArchiveBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        if key.ends_with(".cleaned") {
+            self.cleaned_reads.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.get(key).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
@@ -46,6 +50,7 @@ fn controlled(
         stalled: AtomicBool::new(false),
         fail_batch: AtomicBool::new(false),
         batches: AtomicU64::new(0),
+        cleaned_reads: AtomicU64::new(0),
     });
     let store = RapidSnapshots::new(
         archive.clone(),
@@ -383,6 +388,33 @@ async fn cleanup_retries_after_one_rapid_copy_was_already_deleted() -> Result<()
         .sweep(&object_name(&f.stream.prefix)?)
         .await?;
     f.cleaned().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cleanup_skips_remote_reads_for_already_cleaned_segments() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    store.finish(&f.stream).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if f.archive
+                .list("")
+                .await?
+                .iter()
+                .any(|k| k.ends_with(".cleaned"))
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await??;
+    archive.cleaned_reads.store(0, Ordering::SeqCst);
+    store.storage.sweep(&object_name(&f.stream.prefix)?).await?;
+    assert_eq!(archive.cleaned_reads.load(Ordering::SeqCst), 0);
     Ok(())
 }
 

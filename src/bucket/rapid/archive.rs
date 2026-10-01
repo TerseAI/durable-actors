@@ -335,8 +335,12 @@ impl LogStorage {
     }
 
     pub async fn sweep(&self, prefix: &str) -> Result<()> {
-        let keys = self.archive.list(prefix).await?;
-        for key in keys.iter().filter(|k| k.ends_with(".closed")) {
+        let keys: std::collections::BTreeSet<_> =
+            self.archive.list(prefix).await?.into_iter().collect();
+        for key in keys
+            .iter()
+            .filter(|k| k.ends_with(".closed") && !keys.contains(&k.replace(".closed", ".cleaned")))
+        {
             if let Err(error) = self.sweep_segment(key).await {
                 tracing::warn!(%error, key, "Rapid segment cleanup deferred");
             }
