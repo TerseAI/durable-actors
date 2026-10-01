@@ -1,7 +1,7 @@
 use super::*;
 use aws_lc_rs::digest::{Context as Digest, SHA256};
 
-const HEADER: usize = 48;
+pub(super) const HEADER: usize = 48;
 pub(super) const MAX_STATE: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

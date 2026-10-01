@@ -63,7 +63,7 @@ With Cloud SQL, `postgres-url` points to `127.0.0.1:5432`; the native proxy side
 
 The first write waits for a durable manifest binding both object generations to the actor's ownership epoch. Subsequent writes reuse those streams; they perform no finalize, rename, ownership update, or Standard upload. A failed or cancelled write fences that activation. If either Rapid stream cannot be opened, the activation uses immutable Standard snapshots.
 
-Segments have no application-imposed byte-size limit. Active segments are buffered in memory until checkpointed, with a checkpoint worker checking every 60 seconds. Clean shutdown archives all records and records the final snapshot in ownership. Clean resume reads that snapshot directly. Crash recovery waits for lease expiry, fences available old streams, verifies records, and makes recovered state durable in Standard before claiming a new ownership epoch. One surviving Rapid zone can recover acknowledged records because every acknowledgment required both copies. An interrupted request can have an uncertain outcome.
+Segments rotate at 8 MiB, with a checkpoint worker checking every 60 seconds. Clean shutdown archives all records and records the final snapshot in ownership. Clean resume reads that snapshot directly. Crash recovery waits for lease expiry, fences available old streams, verifies records, and makes recovered state durable in Standard before claiming a new ownership epoch. One surviving Rapid zone can recover acknowledged records because every acknowledgment required both copies. An interrupted request can have an uncertain outcome.
 
 Actor-scoped credentials cover only the ownership object, the actor's log and archive prefixes, and its immutable deployment code.
 
