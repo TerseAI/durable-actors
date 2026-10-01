@@ -206,7 +206,17 @@ async fn upload(
         None => {
             let length =
                 (end - start).min((storage.batch.bytes + frame::MAX_STATE + frame::HEADER) as u64);
-            storage.read_range(manifest, start, length).await?
+            match storage.read_range(manifest, start, length).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // Another worker may have archived and deleted the Rapid copies.
+                    let (through, _) = storage.archived(manifest).await?;
+                    if through > start {
+                        return Ok(through.min(end));
+                    }
+                    return Err(error);
+                }
+            }
         }
     };
     let records = frame::decode(&bytes)?;

@@ -429,3 +429,54 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog() -> Result<()> {
+    let f = Fixture::new()?;
+    let threshold = state(1, 1)?.len() + frame::HEADER;
+    let (store, archive) = controlled(&f, threshold, 60_000)?;
+    let mut segment = Segment::open(&store.storage, f.stream.clone(), 1)
+        .await?
+        .unwrap();
+    let manifest = segment.manifest.clone();
+    let worker = archive::Archiver::new(store.storage.clone(), manifest.clone(), 0);
+    archive.stalled.store(true, Ordering::SeqCst);
+    let first = segment.append(1, state(1, 1)?).await?;
+    let mut end_offset = first.len() as u64;
+    worker.append(first, 1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while archive.batches.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    for version in 2..=4 {
+        let frame = segment.append(version, state(version, 1)?).await?;
+        end_offset += frame.len() as u64;
+        worker.append(frame, version);
+    }
+    worker.close();
+    let rescue = f.store()?;
+    rescue
+        .storage
+        .close_segment(
+            &manifest,
+            &archive::ClosedSegment {
+                last_version: 4,
+                end_offset,
+            },
+        )
+        .await?;
+    rescue
+        .storage
+        .sweep(&object_name(&f.stream.prefix)?)
+        .await?;
+    f.cleaned().await?;
+    archive.stalled.store(false, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(2), worker.finish()).await??;
+    assert_eq!(
+        rescue.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(4), state(4, 1)?))
+    );
+    Ok(())
+}
