@@ -4,6 +4,7 @@ use crate::bucket::{ArchiveBatchConfig, BucketObject};
 struct ArchiveBucket {
     inner: Arc<FileBucket>,
     stalled: AtomicBool,
+    fail_batch: AtomicBool,
     batches: AtomicU64,
 }
 
@@ -23,6 +24,10 @@ impl Bucket for ArchiveBucket {
     ) -> Result<bool> {
         if key.ends_with(".batch") {
             self.batches.fetch_add(1, Ordering::SeqCst);
+            ensure!(
+                !self.fail_batch.swap(false, Ordering::SeqCst),
+                "injected archive failure"
+            );
             while self.stalled.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
@@ -39,6 +44,7 @@ fn controlled(
     let archive = Arc::new(ArchiveBucket {
         inner: f.archive.clone(),
         stalled: AtomicBool::new(false),
+        fail_batch: AtomicBool::new(false),
         batches: AtomicU64::new(0),
     });
     let store = RapidSnapshots::new(
@@ -106,6 +112,22 @@ async fn timer_flushes_partial_batches_and_never_uploads_empty_ones() -> Result<
     batches(&f, 1).await?;
     tokio::time::sleep(Duration::from_millis(70)).await;
     assert_eq!(archive.batches.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_partial_batch_retries_without_another_write() -> Result<()> {
+    let f = Fixture::new()?;
+    let (store, archive) = controlled(&f, 16 * 1024 * 1024, 40)?;
+    archive.fail_batch.store(true, Ordering::SeqCst);
+    store.start(&f.stream).await?;
+    store.put(&f.stream.object(1), state(1, 1)?).await?;
+    let keys = batches(&f, 1).await?;
+    let bytes = f.archive.get(&keys[0]).await?.unwrap().bytes.into();
+    let records = frame::decode(&bytes)?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].state, state(1, 1)?);
+    assert_eq!(archive.batches.load(Ordering::SeqCst), 2);
     Ok(())
 }
 
