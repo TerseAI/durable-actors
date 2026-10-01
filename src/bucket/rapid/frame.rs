@@ -28,10 +28,6 @@ impl Record {
 }
 
 pub(super) fn decode(bytes: &Bytes) -> Result<Vec<Record>> {
-    ensure!(
-        bytes.len() as u64 <= MAX_SEGMENT_BYTES,
-        "segment exceeds size limit"
-    );
     let mut records = Vec::new();
     let mut offset = 0;
     while bytes.len() - offset >= HEADER {

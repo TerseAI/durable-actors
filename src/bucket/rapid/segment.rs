@@ -80,7 +80,6 @@ impl Segment {
         );
         let frame = Record { version, state }.encode()?;
         let expected = self.bytes.len() as u64 + frame.len() as u64;
-        ensure!(expected <= MAX_SEGMENT_BYTES, "log segment is full");
         // An interrupted flush may have persisted bytes; this pair must never be reused.
         self.healthy = false;
         let flushed = bounded(async {

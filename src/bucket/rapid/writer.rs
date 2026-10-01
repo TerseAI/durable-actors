@@ -99,19 +99,6 @@ impl Session {
                 .put(&self.stream.object(version), bytes)
                 .await;
         }
-        let frame_size = Record {
-            version,
-            state: bytes.clone(),
-        }
-        .encode()?
-        .len();
-        if self
-            .segment
-            .as_ref()
-            .is_some_and(|segment| segment.bytes.len() + frame_size > MAX_SEGMENT_BYTES as usize)
-        {
-            self.checkpoint(storage).await?;
-        }
         if self.segment.is_none() {
             self.segment = Segment::open(storage, self.stream.clone(), version).await?;
         }

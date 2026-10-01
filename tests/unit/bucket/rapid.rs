@@ -250,22 +250,61 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
 }
 
 #[tokio::test]
-async fn segment_rotation_preserves_all_versions_and_reclaims_archived_replicas() -> Result<()> {
+async fn large_segments_reuse_streams_and_preserve_history_after_archival() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
-    for version in 1..=10 {
-        let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
-        snapshot.result = serde_json::json!({"data": "x".repeat(1_000_000)});
-        store
-            .put(&f.stream.object(version), snapshot.encode()?.into())
-            .await?;
+    let snapshots = large_snapshots()?;
+    for (version, bytes) in &snapshots {
+        store.put(&f.stream.object(*version), bytes.clone()).await?;
     }
-    assert_eq!(f.zones[0].opens.load(Ordering::SeqCst), 2);
-    assert_eq!(f.zones[0].objects.lock().unwrap().len(), 1);
-    assert_eq!(f.store()?.list(&f.stream.prefix).await?.len(), 10);
+    for zone in &f.zones {
+        assert_eq!(zone.opens.load(Ordering::SeqCst), 1);
+        let objects = zone.objects.lock().unwrap();
+        assert_eq!(objects.len(), 1);
+        assert!(objects.values().next().unwrap().bytes.len() > 8 * 1024 * 1024);
+    }
+    assert_eq!(
+        f.store()?.latest(&f.stream.prefix).await?,
+        Some((f.stream.object(10), snapshots[&10].clone()))
+    );
     store.finish(&f.stream).await?;
-    assert_eq!(f.store()?.list(&f.stream.prefix).await?.len(), 10);
+    assert!(
+        f.zones
+            .iter()
+            .all(|zone| zone.objects.lock().unwrap().is_empty())
+    );
+    let reader = f.store()?;
+    assert_eq!(reader.list(&f.stream.prefix).await?.len(), snapshots.len());
+    for (version, bytes) in snapshots {
+        assert_eq!(reader.get(&f.stream.object(version)).await?, Some(bytes));
+    }
+    Ok(())
+}
+
+fn large_snapshots() -> Result<BTreeMap<u64, Bytes>> {
+    (1..=10)
+        .map(|version| {
+            let mut snapshot = StateSnapshot::decode(&state(version, 1)?)?;
+            snapshot.result = serde_json::json!({"data": "x".repeat(1_000_000)});
+            Ok((version, snapshot.encode()?.into()))
+        })
+        .collect()
+}
+
+#[test]
+fn large_segments_decode_every_record() -> Result<()> {
+    let records = (1..=3)
+        .map(|version| Record {
+            version,
+            state: Bytes::from(vec![version as u8; 3 * 1024 * 1024]),
+        })
+        .collect::<Vec<_>>();
+    let mut bytes = Vec::new();
+    for record in &records {
+        bytes.extend_from_slice(&record.encode()?);
+    }
+    assert_eq!(frame::decode(&bytes.into())?, records);
     Ok(())
 }
 
@@ -373,14 +412,20 @@ async fn takeover_with_one_zone_unavailable_fences_old_streams_and_checkpoints_s
     let f = Fixture::new()?;
     let old = f.store()?;
     old.start(&f.stream).await?;
-    old.put(&f.stream.object(1), state(1, 1)?).await?;
+    let snapshots = large_snapshots()?;
+    for (version, bytes) in &snapshots {
+        old.put(&f.stream.object(*version), bytes.clone()).await?;
+    }
     f.zones[1].offline.store(true, Ordering::SeqCst);
     let restored = f.store()?.recover(&f.stream.prefix).await?;
-    assert_eq!(restored, Some((f.stream.object(1), state(1, 1)?)));
-    assert!(old.put(&f.stream.object(2), state(2, 1)?).await.is_err());
     assert_eq!(
-        f.archive.get(&f.stream.object(1)).await?.unwrap().bytes,
-        state(1, 1)?
+        restored,
+        Some((f.stream.object(10), snapshots[&10].clone()))
+    );
+    assert!(old.put(&f.stream.object(11), state(11, 1)?).await.is_err());
+    assert_eq!(
+        f.archive.get(&f.stream.object(10)).await?.unwrap().bytes,
+        snapshots[&10]
     );
     Ok(())
 }

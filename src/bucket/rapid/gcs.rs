@@ -131,10 +131,7 @@ impl LogZone for GcsZone {
             .send()
             .await?;
         let size = descriptor.object().size;
-        ensure!(
-            (0..=MAX_SEGMENT_BYTES as i64).contains(&size),
-            "log segment exceeds size limit"
-        );
+        ensure!(size >= 0, "invalid log segment size");
         if size == 0 {
             return Ok(Bytes::new());
         }

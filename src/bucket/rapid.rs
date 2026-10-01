@@ -22,7 +22,6 @@ use segment::Segment;
 use tokio_util::task::AbortOnDropHandle;
 use writer::Session;
 
-const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
