@@ -214,13 +214,9 @@ pub(super) async fn serve_assigned_host(
     socket_stop.cancel();
     stop_host_tasks(&host, &stop, server, executor_task).await;
     drop(javascript);
-    let unregister_result = tokio::time::timeout_at(
-        shutdown_deadline - Duration::from_secs(2),
-        storage.finish(shutdown_deadline - Duration::from_secs(2)),
-    )
-    .await
-    .context("storage shutdown timed out")
-    .and_then(|result| result);
+    let unregister_result = storage
+        .finish(shutdown_deadline - Duration::from_secs(2))
+        .await;
     let renewal_result = renewal.shutdown().await;
     info!(
         event = "host_shutdown",

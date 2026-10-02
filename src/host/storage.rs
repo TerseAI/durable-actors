@@ -131,10 +131,14 @@ impl HostStorage {
         let started = Instant::now();
         let actor = self.actor.as_ref().context("host actor identity missing")?;
         let drain_deadline = deadline - Duration::from_secs(3);
-        let completed = self
-            .runtime
-            .drain_activation(actor, &self.host, &self.session, drain_deadline)
-            .await;
+        let completed = tokio::time::timeout_at(
+            drain_deadline,
+            self.runtime
+                .drain_activation(actor, &self.host, &self.session, drain_deadline),
+        )
+        .await
+        .context("snapshot drain timed out")
+        .and_then(|result| result);
         let checkpoint = match completed {
             Ok(checkpoint) => Some(checkpoint),
             Err(error) => {
@@ -145,20 +149,29 @@ impl HostStorage {
         let sealed = checkpoint.is_some();
         let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
         let release_started = Instant::now();
-        let _renewal = self.renewal.lock().await;
         self.fence.lock().unwrap().fenced = true;
-        self.runtime
-            .release_with_checkpoint(actor, &self.host, &self.session, checkpoint)
-            .await?;
-        self.notify_observer();
+        // Ownership CAS prevents an in-flight renewal from reviving the released lease.
+        let released = tokio::time::timeout_at(
+            deadline,
+            self.runtime
+                .release_with_checkpoint(actor, &self.host, &self.session, checkpoint),
+        )
+        .await
+        .context("ownership release timed out")
+        .and_then(|result| result);
+        if released.is_ok() {
+            self.notify_observer();
+        }
         tracing::info!(
             event = "host_storage_shutdown",
-            sealed,
+            sealed = sealed && released.is_ok(),
+            released = released.is_ok(),
+            error = released.as_ref().err().map(|error| format!("{error:#}")),
             storage_ms,
             release_ms = release_started.elapsed().as_secs_f64() * 1000.0,
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
-        Ok(())
+        released
     }
 
     fn notify_observer(&self) {
@@ -388,12 +401,8 @@ impl HostLeaseRegistry for HostStorage {
             *host == self.host && session == self.session,
             "host lease scope mismatch"
         );
-        tokio::time::timeout(
-            Duration::from_secs(25),
-            self.finish(tokio::time::Instant::now() + Duration::from_secs(25)),
-        )
-        .await
-        .context("storage shutdown timed out")?
+        self.finish(tokio::time::Instant::now() + Duration::from_secs(25))
+            .await
     }
 }
 
