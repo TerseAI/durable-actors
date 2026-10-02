@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashMap;
+use tracing::instrument::WithSubscriber;
 
 #[test]
 fn host_needs_no_local_state_directory() -> Result<()> {
@@ -102,9 +103,18 @@ async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
 }
 
 async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
+    let values = values();
+    let mut config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
+    config.host_idle_timeout = Duration::from_millis(100);
+    let output = tempfile::NamedTempFile::new()?;
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_writer(output.reopen()?)
+        .finish();
     let mut server = Box::pin(std::future::pending::<Result<()>>());
     let mut executor = Box::pin(std::future::pending::<Result<()>>());
-    let mut shutdown = Box::pin(std::future::pending::<()>());
+    let mut shutdown = Box::pin(std::future::pending::<&'static str>());
     let mut javascript = tokio::process::Command::new("sleep")
         .arg("60")
         .kill_on_drop(true)
@@ -118,20 +128,23 @@ async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
     let evictions = std::cell::Cell::new(0);
     let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
     let (sockets, mut socket_activity) = tokio::sync::watch::channel(usize::from(socket));
-    let mut stopped = Box::pin(wait_for_host_stop(
-        server.as_mut(),
-        executor.as_mut(),
-        &mut javascript,
-        shutdown.as_mut(),
-        &mut lease,
-        (&mut activity, &mut socket_activity, &mut actor_stopped),
-        Duration::from_millis(100),
-        |_| {
-            evictions.set(evictions.get() + 1);
-            requests.send_modify(|activity| activity.resident = false);
-            std::future::ready(Ok(()))
-        },
-    ));
+    let mut stopped = Box::pin(
+        wait_for_host_stop(
+            server.as_mut(),
+            executor.as_mut(),
+            &mut javascript,
+            shutdown.as_mut(),
+            &mut lease,
+            (&mut activity, &mut socket_activity, &mut actor_stopped),
+            &config,
+            |_| {
+                evictions.set(evictions.get() + 1);
+                requests.send_modify(|activity| activity.resident = false);
+                std::future::ready(Ok(()))
+            },
+        )
+        .with_subscriber(subscriber),
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(150), stopped.as_mut())
             .await
@@ -154,14 +167,31 @@ async fn assert_activity_prevents_idle_shutdown(socket: bool) -> Result<()> {
     tokio::time::timeout(remaining, stopped.as_mut()).await??;
     drop(stopped);
     javascript.kill().await?;
+    let logs = std::fs::read_to_string(output.path())?;
+    let event = logs
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|event| event["event"] == "actor_host_stopping")
+        .expect("idle shutdown must explain why the host is stopping");
+    assert_eq!(event["reason"], "idle_timeout");
+    assert_eq!(event["host_id"], config.host_id.as_str());
+    assert_eq!(event["session_id"], config.session_id);
+    assert_eq!(event["active_requests"], 0);
+    assert_eq!(event["open_sockets"], 0);
+    assert!(event["idle_ms"].as_f64().unwrap() >= 100.0);
     Ok(())
 }
 
 #[tokio::test]
 async fn failed_activation_stops_host_during_idle_eviction() -> Result<()> {
+    let values = values();
+    let mut config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
+    config.host_idle_timeout = Duration::from_millis(10);
     let mut server = Box::pin(std::future::pending::<Result<()>>());
     let mut executor = Box::pin(std::future::pending::<Result<()>>());
-    let mut shutdown = Box::pin(std::future::pending::<()>());
+    let mut shutdown = Box::pin(std::future::pending::<&'static str>());
     let mut javascript = tokio::process::Command::new("sleep")
         .arg("60")
         .kill_on_drop(true)
@@ -181,7 +211,7 @@ async fn failed_activation_stops_host_during_idle_eviction() -> Result<()> {
         shutdown.as_mut(),
         &mut lease,
         (&mut activity, &mut socket_activity, &mut actor_stopped),
-        Duration::from_millis(10),
+        &config,
         |_| {
             evicting.set(true);
             std::future::pending::<Result<()>>()

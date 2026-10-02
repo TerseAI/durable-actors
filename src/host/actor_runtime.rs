@@ -546,6 +546,24 @@ impl ActorRuntime {
         state_version: u64,
         loaded: &[u8],
     ) -> Result<CachedActorState> {
+        let started = Instant::now();
+        let progress = |phase: &str, commits_loaded: usize, snapshot_version: u64| {
+            info!(
+                event = "actor_state_recovery",
+                project_id = %actor.project_id,
+                actor_name = %actor.actor_name,
+                actor_id = %actor.actor_id,
+                host_id = %self.endpoint.id,
+                owner_epoch,
+                state_version,
+                snapshot_version,
+                phase,
+                commits_loaded,
+                elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+                "actor state recovery progress"
+            );
+        };
+        progress("decode_snapshot", 0, state_version);
         let snapshot = StateSnapshot::decode(loaded)?;
         ensure!(
             snapshot.state_version == state_version,
@@ -557,12 +575,17 @@ impl ActorRuntime {
         );
         let mut segments = Vec::new();
         let mut current = snapshot.clone();
+        let mut reported = Instant::now();
         loop {
             segments.push(current.sqlite.files.clone());
             let Some(parent) = current.sqlite.parent.clone() else {
                 break;
             };
             let first = current.sqlite.files[0].first;
+            if segments.len() == 1 || reported.elapsed() >= std::time::Duration::from_secs(5) {
+                progress("read_dependencies", segments.len(), parent.state_version);
+                reported = Instant::now();
+            }
             let bytes = self.storage.read_snapshot(actor, &parent).await?;
             parent.verify(&bytes)?;
             current = StateSnapshot::decode(&bytes)?;
@@ -576,9 +599,12 @@ impl ActorRuntime {
                 "SQLite dependency transaction gap"
             );
         }
+        let commits_loaded = segments.len();
         let files = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+        progress("restore_sqlite", commits_loaded, state_version);
         let capture =
             SqliteCapture::restore(self.replication.clone(), &files, snapshot.sqlite.txid).await?;
+        progress("complete", commits_loaded, state_version);
         let mut cached = CachedActorState::new(owner_epoch, capture);
         cached.state_version = state_version;
         cached.state = cached.state();

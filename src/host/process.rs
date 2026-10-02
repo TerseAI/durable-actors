@@ -96,6 +96,7 @@ pub(super) async fn serve_assigned_host(
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
     let mut timings = HostStartupTimings::new(&config);
+    log_startup_progress(&config, timings.started_at, "prepare_host");
     let prepared = match prepare_actor_host(&config, &mut timings, warm).await {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -129,6 +130,7 @@ pub(super) async fn serve_assigned_host(
         sockets.clone(),
     )
     .router();
+    log_startup_progress(&config, timings.started_at, "initialize_executor");
     let initialized = async {
         let (verifier, owner_epoch) =
             initialize_executor(&config, &executor_connection, &host, &sockets).await?;
@@ -193,7 +195,10 @@ pub(super) async fn serve_assigned_host(
     });
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
     let shutdown = async {
-        tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
+        tokio::select! {
+            () = shutdown => "shutdown_requested",
+            () = storage.stop.cancelled() => "storage_cancelled",
+        }
     };
     tokio::pin!(shutdown);
 
@@ -205,7 +210,7 @@ pub(super) async fn serve_assigned_host(
         shutdown.as_mut(),
         &mut lease_lost,
         (&mut activity, &mut socket_activity, &mut actor_stopped),
-        config.host_idle_timeout,
+        &config,
         |last_active| host.evict_idle(last_active),
     )
     .await;
@@ -214,7 +219,7 @@ pub(super) async fn serve_assigned_host(
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
-    info!(host_id = %config.host_id, "durable-actors host stopped");
+    info!(event = "actor_host_stopped", host_id = %config.host_id, session_id = %config.session_id, "durable-actors host stopped");
     stop_result?;
     renewal_result?;
     unregister_result
@@ -424,11 +429,13 @@ async fn prepare_actor_host(
     );
     let started = timings.started_at;
     let storage_ready = async {
+        log_startup_progress(config, started, "prepare_storage");
         let result = prepare_storage(config, &endpoint, storage.clone()).await;
         timings.storage_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
     let executor_ready = async {
+        log_startup_progress(config, started, "load_executor");
         if let Some(artifact) = &config.artifact {
             storage.install_code(artifact).await?;
         }
@@ -461,6 +468,7 @@ async fn prepare_actor_host(
         }
     };
     let sockets = Arc::new(super::sockets::HostSockets::new(storage.clone()));
+    log_startup_progress(config, started, "start_litestream");
     let host = Arc::new(
         ActorHost::new(
             endpoint,
@@ -593,6 +601,20 @@ impl HostStartupTimings {
     }
 }
 
+fn log_startup_progress(config: &ActorHostConfig, started: Instant, phase: &str) {
+    info!(
+        event = "actor_host_startup_progress",
+        host_id = %config.host_id,
+        session_id = %config.session_id,
+        project_id = config.actor.as_ref().map(|actor| actor.project_id.as_str()),
+        actor_name = config.actor.as_ref().map(|actor| actor.actor_name.as_str()),
+        actor_id = config.actor.as_ref().map(|actor| actor.actor_id.as_str()),
+        phase,
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "actor host startup phase started"
+    );
+}
+
 fn log_startup(
     config: &ActorHostConfig,
     timings: &HostStartupTimings,
@@ -643,55 +665,85 @@ async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture, EvictF
         &mut tokio::sync::watch::Receiver<usize>,
         &mut tokio::sync::watch::Receiver<bool>,
     ),
-    idle_timeout: Duration,
+    config: &ActorHostConfig,
     mut evict_idle: impl FnMut(tokio::time::Instant) -> EvictFuture,
 ) -> Result<()>
 where
     ServerFuture: Future<Output = Result<()>> + ?Sized,
     ExecutorFuture: Future<Output = Result<()>> + ?Sized,
-    ShutdownFuture: Future<Output = ()> + ?Sized,
+    ShutdownFuture: Future<Output = &'static str> + ?Sized,
     EvictFuture: Future<Output = Result<()>>,
 {
     let (activity, socket_activity, actor_stopped) = activity;
     let mut eviction: Option<std::pin::Pin<Box<EvictFuture>>> = None;
-    loop {
+    let (reason, result) = loop {
         if *actor_stopped.borrow() {
-            break Err(anyhow::anyhow!(
-                "actor activation stopped; host self-fenced"
-            ));
+            break (
+                "activation_stopped",
+                Err(anyhow::anyhow!(
+                    "actor activation stopped; host self-fenced"
+                )),
+            );
         }
         let current = *activity.borrow_and_update();
         tokio::select! {
             changed = actor_stopped.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("actor lifecycle tracker stopped")); }
+                if changed.is_err() { break ("lifecycle_tracker_stopped", Err(anyhow::anyhow!("actor lifecycle tracker stopped"))); }
             }
-            result = server.as_mut() => break result.context("serve actor host network endpoints"),
-            result = executor.as_mut() => break result.context("run JavaScript actor executor"),
-            result = javascript.wait() => break Err(anyhow::anyhow!("JavaScript actor executor exited with {}", result?)),
-            () = shutdown.as_mut() => break Ok(()),
+            result = server.as_mut() => break ("server_stopped", result.context("serve actor host network endpoints")),
+            result = executor.as_mut() => break ("executor_stopped", result.context("run JavaScript actor executor")),
+            result = javascript.wait() => break ("javascript_exited", match result {
+                Ok(status) => Err(anyhow::anyhow!("JavaScript actor executor exited with {status}")),
+                Err(error) => Err(error.into()),
+            }),
+            reason = shutdown.as_mut() => break (reason, Ok(())),
             changed = lease_lost.changed() => {
                 if changed.is_err() || *lease_lost.borrow() {
-                    break Err(anyhow::anyhow!("host lease expired; host self-fenced"));
+                    break ("lease_lost", Err(anyhow::anyhow!("host lease expired; host self-fenced")));
                 }
             }
             changed = socket_activity.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("socket activity tracker stopped")); }
+                if changed.is_err() { break ("socket_tracker_stopped", Err(anyhow::anyhow!("socket activity tracker stopped"))); }
             }
             changed = activity.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("actor activity tracker stopped")); }
+                if changed.is_err() { break ("activity_tracker_stopped", Err(anyhow::anyhow!("actor activity tracker stopped"))); }
             }
             result = async { eviction.as_mut().unwrap().await }, if eviction.is_some() => {
-                result.context("evict idle actor")?;
+                if let Err(error) = result.context("evict idle actor") {
+                    break ("idle_eviction_failed", Err(error));
+                }
                 eviction = None;
             }
-            () = tokio::time::sleep_until(current.last_active + idle_timeout),
+            () = tokio::time::sleep_until(current.last_active + config.host_idle_timeout),
                 if current.active == 0 && eviction.is_none() && (current.resident || *socket_activity.borrow() == 0) => {
-                if activity.has_changed()? { continue; }
-                if *socket_activity.borrow() == 0 { break Ok(()); }
+                match activity.has_changed() {
+                    Ok(true) => continue,
+                    Ok(false) => {},
+                    Err(error) => break ("activity_tracker_stopped", Err(error.into())),
+                }
+                if *socket_activity.borrow() == 0 { break ("idle_timeout", Ok(())); }
                 eviction = Some(Box::pin(evict_idle(current.last_active)));
             },
         }
-    }
+    };
+    let current = *activity.borrow();
+    info!(
+        event = "actor_host_stopping",
+        host_id = %config.host_id,
+        session_id = %config.session_id,
+        project_id = config.actor.as_ref().map(|actor| actor.project_id.as_str()),
+        actor_name = config.actor.as_ref().map(|actor| actor.actor_name.as_str()),
+        actor_id = config.actor.as_ref().map(|actor| actor.actor_id.as_str()),
+        reason,
+        idle_ms = current.last_active.elapsed().as_secs_f64() * 1_000.0,
+        idle_timeout_ms = config.host_idle_timeout.as_secs_f64() * 1_000.0,
+        active_requests = current.active,
+        open_sockets = *socket_activity.borrow(),
+        resident = current.resident,
+        error = result.as_ref().err().map(|error| format!("{error:#}")),
+        "actor host stopping"
+    );
+    result
 }
 
 async fn stop_host_tasks(

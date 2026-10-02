@@ -121,6 +121,7 @@ async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTick
         pending: VecDeque::new(),
         handler: None,
     };
+    let started = Instant::now();
     session.start(ActorSocketEvent::Connect {
         connection: session.connection.clone(),
     });
@@ -128,6 +129,21 @@ async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTick
         .run(&mut socket)
         .await
         .unwrap_or_else(|closed| closed);
+    tracing::info!(
+        event = "actor_socket_closed",
+        project_id = %session.ticket.actor.project_id,
+        actor_name = %session.ticket.actor.actor_name,
+        actor_id = %session.ticket.actor.actor_id,
+        host_id = session.ticket.target.as_ref().map(|target| target.host_id.as_str()),
+        session_id = session.ticket.target.as_ref().map(|target| target.session_id.as_str()),
+        owner_epoch = session.ticket.target.as_ref().map(|target| target.owner_epoch),
+        connection_id = %session.connection.id,
+        close_code = closed.0,
+        close_reason = closed.1,
+        authorized_until_ms = session.ticket.authorized_until_ms,
+        duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "actor socket closed"
+    );
     close(&mut socket, closed).await;
     session.disconnect(closed).await;
 }

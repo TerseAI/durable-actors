@@ -211,6 +211,19 @@ impl RuntimeStorage {
             record.lease.expires_at_ms <= self.clock.now_ms()?,
             "previous owner lease is still active"
         );
+        tracing::info!(
+            event = "actor_activation_recovery",
+            project_id = %actor.project_id,
+            actor_name = %actor.actor_name,
+            actor_id = %actor.actor_id,
+            host_id = %request.id,
+            session_id = %request.session_id,
+            previous_owner_epoch = record.epoch,
+            base_version = record.base.as_ref().map(|base| base.state_version),
+            sealed = record.sealed,
+            phase = if record.sealed { "load_base_snapshot" } else { "recover_session" },
+            "actor activation recovery started"
+        );
         if record.sealed {
             let started = Instant::now();
             return Ok(ActivationRecovery {
