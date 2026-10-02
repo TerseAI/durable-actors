@@ -49,6 +49,7 @@ trait LogZone: Send + Sync {
 pub(crate) struct RapidSnapshots {
     storage: Arc<LogStorage>,
     session: Arc<Mutex<Option<Session>>>,
+    history: moka::future::Cache<String, Bytes>,
     stop: CancellationToken,
     cleanup: std::sync::Mutex<Option<AbortOnDropHandle<()>>>,
 }
@@ -130,6 +131,13 @@ impl RapidSnapshots {
         Ok(Self {
             storage,
             session,
+            history: moka::future::Cache::builder()
+                .max_capacity(64 * 1024 * 1024)
+                .weigher(|key: &String, bytes: &Bytes| {
+                    key.len().saturating_add(bytes.len()).min(u32::MAX as usize) as u32
+                })
+                .time_to_idle(Duration::from_secs(60))
+                .build(),
             stop,
             cleanup: std::sync::Mutex::new(None),
         })
@@ -148,15 +156,23 @@ impl SnapshotStore for RapidSnapshots {
         {
             return Ok(Some(bytes));
         }
+        if let Some(bytes) = self.history.get(object).await {
+            return Ok(Some(bytes));
+        }
         if let Some(bytes) = self.storage.snapshots.get(object).await? {
             return Ok(Some(bytes));
         }
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
-        Ok(self
-            .storage
-            .records(&format!("{prefix}/"), false)
-            .await?
-            .remove(object))
+        let records = self.storage.records(&format!("{prefix}/"), false).await?;
+        let result = records.get(object).cloned();
+        // These records are immutable; keep the other parents found by this scan.
+        for (key, bytes) in records {
+            // Detach the frame slice so a small entry cannot retain an entire batch.
+            self.history
+                .insert(key, Bytes::copy_from_slice(&bytes))
+                .await;
+        }
+        Ok(result)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys: std::collections::BTreeSet<_> = self

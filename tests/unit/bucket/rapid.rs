@@ -16,6 +16,8 @@ use std::{
 
 #[path = "rapid/batch.rs"]
 mod batch;
+#[path = "rapid/reads.rs"]
+mod reads;
 
 #[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
