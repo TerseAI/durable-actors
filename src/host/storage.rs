@@ -143,6 +143,8 @@ impl HostStorage {
             }
         };
         let sealed = checkpoint.is_some();
+        let storage_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let release_started = Instant::now();
         let _renewal = self.renewal.lock().await;
         self.fence.lock().unwrap().fenced = true;
         self.runtime
@@ -152,6 +154,8 @@ impl HostStorage {
         tracing::info!(
             event = "host_storage_shutdown",
             sealed,
+            storage_ms,
+            release_ms = release_started.elapsed().as_secs_f64() * 1000.0,
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
         Ok(())

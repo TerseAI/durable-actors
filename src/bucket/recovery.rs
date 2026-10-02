@@ -43,7 +43,8 @@ pub(crate) async fn resolve(
         if current.sqlite.parent.is_some()
             && let Some(bytes) = history.checkpoint(&reference.object).await?
         {
-            let sqlite = Checkpoint::decode(&bytes, &reference, current.sqlite.txid)?;
+            let sqlite = Checkpoint::decode(&bytes, &reference, current.sqlite.txid)
+                .with_context(|| format!("validate checkpoint for {}", reference.object))?;
             checkpoint = true;
             segments.push(sqlite.files);
             break;
@@ -53,8 +54,13 @@ pub(crate) async fn resolve(
         let Some(parent) = current.sqlite.parent else {
             break;
         };
-        let bytes = history.read(&parent.object).await?;
-        parent.verify(&bytes)?;
+        let bytes = history
+            .read(&parent.object)
+            .await
+            .with_context(|| format!("read SQLite dependency {}", parent.object))?;
+        parent
+            .verify(&bytes)
+            .with_context(|| format!("verify SQLite dependency {}", parent.object))?;
         current = StateSnapshot::decode(&bytes)?;
         current.validate_object(&parent.object)?;
         ensure!(

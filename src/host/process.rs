@@ -225,7 +225,11 @@ pub(super) async fn serve_assigned_host(
     info!(
         event = "host_shutdown",
         duration_ms = shutdown_started.elapsed().as_secs_f64() * 1000.0,
-        storage_released = unregister_result.is_ok()
+        storage_released = unregister_result.is_ok(),
+        error = unregister_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"))
     );
     info!(host_id = %config.host_id, "durable-actors host stopped");
     stop_result?;
