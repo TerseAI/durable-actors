@@ -77,7 +77,7 @@ struct UploadedSnapshots {
     latest: Option<SnapshotRef>,
 }
 
-struct SessionCheckpoint {
+pub(crate) struct SessionCheckpoint {
     snapshot: Option<SnapshotRef>,
 }
 

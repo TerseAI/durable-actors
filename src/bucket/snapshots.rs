@@ -122,7 +122,11 @@ pub(crate) trait SnapshotStore: Send + Sync {
         object: &str,
         bytes: Bytes,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        recovery::resolve(&mut recovery::StoredHistory(self), object, bytes).await
+        Ok(
+            recovery::resolve(&mut recovery::StoredHistory(self), object, bytes)
+                .await?
+                .sqlite,
+        )
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>>;
     async fn latest(&self, prefix: &str) -> Result<Option<(String, Bytes)>>;
@@ -137,7 +141,11 @@ pub(crate) trait SnapshotStore: Send + Sync {
         }
         Ok(latest)
     }
-    async fn finish(&self, _stream: &crate::storage::StateStream) -> Result<()> {
+    async fn finish(
+        &self,
+        _stream: &crate::storage::StateStream,
+        _deadline: tokio::time::Instant,
+    ) -> Result<()> {
         Ok(())
     }
 }

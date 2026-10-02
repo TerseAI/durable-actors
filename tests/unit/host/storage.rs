@@ -165,6 +165,7 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
         activation: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),
+        renewal: tokio::sync::Mutex::new(()),
     })
 }
 
@@ -326,5 +327,83 @@ async fn socket_authorization_checks_persisted_ownership_without_reading_snapsho
             .await
             .is_err()
     );
+    Ok(())
+}
+
+struct DelayedFinish {
+    snapshots: crate::bucket::BucketSnapshots,
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+    fail: bool,
+}
+
+#[async_trait]
+impl crate::bucket::SnapshotStore for DelayedFinish {
+    async fn get(&self, key: &str) -> Result<Option<bytes::Bytes>> {
+        self.snapshots.get(key).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.snapshots.list(prefix).await
+    }
+    async fn latest(&self, prefix: &str) -> Result<Option<(String, bytes::Bytes)>> {
+        self.snapshots.latest(prefix).await
+    }
+    async fn put(&self, key: &str, bytes: bytes::Bytes) -> Result<()> {
+        self.snapshots.put(key, bytes).await
+    }
+    async fn finish(
+        &self,
+        _: &crate::storage::StateStream,
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        self.entered.notify_one();
+        tokio::time::timeout_at(deadline, self.resume.notified()).await?;
+        ensure!(!self.fail, "archive failure");
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Result<()> {
+    use crate::{bucket::PersistenceConfig, placement::ObjectPlacementStore};
+    for fail in [false, true] {
+        let bucket = Arc::new(MemoryBucket::default());
+        let delayed = Arc::new(DelayedFinish {
+            snapshots: crate::bucket::BucketSnapshots(bucket.clone()),
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+            fail,
+        });
+        let mut storage = host_storage(bucket.clone()).await?;
+        storage.runtime = Arc::new(
+            RuntimeStorage::new(bucket, Arc::new(SystemClock))?
+                .with_persistence(PersistenceConfig::Local, delayed.clone())?,
+        );
+        let storage = Arc::new(storage);
+        let request = HostLeaseRequest {
+            id: storage.host.clone(),
+            session_id: storage.session.clone(),
+            route: "http://host".into(),
+            duration_ms: 30_000,
+        };
+        storage.register(&request).await?;
+        let finishing = {
+            let storage = storage.clone();
+            tokio::spawn(async move { storage.unregister(&storage.host, &storage.session).await })
+        };
+        delayed.entered.notified().await;
+        tokio::time::advance(Duration::from_secs(6)).await;
+        storage.register(&request).await?;
+        storage.ensure_authority()?;
+        delayed.resume.notify_one();
+        finishing.await??;
+        assert!(storage.register(&request).await.is_err());
+        let (_, hint) = storage
+            .runtime
+            .get_owner_with_hint(&storage.actor.as_ref().unwrap().storage_key())
+            .await?;
+        let record = serde_json::to_value(hint.unwrap())?;
+        assert_eq!(record["record"]["sealed"], !fail);
+    }
     Ok(())
 }

@@ -20,23 +20,33 @@ pub(crate) trait SnapshotHistory: Send {
     async fn checkpoint(&mut self, object: &str) -> Result<Option<Bytes>>;
 }
 
+pub(crate) struct ResolvedSqlite {
+    pub sqlite: SqliteSnapshot,
+    pub checkpoint_version: u64,
+    pub checkpoint: bool,
+    pub parents: usize,
+}
+
 pub(crate) async fn resolve(
     history: &mut dyn SnapshotHistory,
     object: &str,
     bytes: Bytes,
-) -> Result<SqliteSnapshot> {
+) -> Result<ResolvedSqlite> {
     let mut current = StateSnapshot::decode(&bytes)?;
     current.validate_object(object)?;
     let txid = current.sqlite.txid;
     let mut reference = SnapshotRef::new(object.into(), &current, &bytes);
     let mut segments = Vec::new();
+    let mut checkpoint = false;
+    let mut parents = 0;
     loop {
-        if current.sqlite.parent.is_some() {
-            if let Some(bytes) = history.checkpoint(&reference.object).await? {
-                let sqlite = Checkpoint::decode(&bytes, &reference, current.sqlite.txid)?;
-                segments.push(sqlite.files);
-                break;
-            }
+        if current.sqlite.parent.is_some()
+            && let Some(bytes) = history.checkpoint(&reference.object).await?
+        {
+            let sqlite = Checkpoint::decode(&bytes, &reference, current.sqlite.txid)?;
+            checkpoint = true;
+            segments.push(sqlite.files);
+            break;
         }
         let first = current.sqlite.files[0].first;
         segments.push(current.sqlite.files);
@@ -57,11 +67,17 @@ pub(crate) async fn resolve(
             "SQLite dependency transaction gap"
         );
         reference = parent;
+        parents += 1;
     }
-    Ok(SqliteSnapshot {
-        txid,
-        parent: None,
-        files: segments.into_iter().rev().flatten().collect(),
+    Ok(ResolvedSqlite {
+        checkpoint_version: reference.state_version,
+        checkpoint,
+        parents,
+        sqlite: SqliteSnapshot {
+            txid,
+            parent: None,
+            files: segments.into_iter().rev().flatten().collect(),
+        },
     })
 }
 

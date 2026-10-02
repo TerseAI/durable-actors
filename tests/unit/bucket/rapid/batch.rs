@@ -10,6 +10,8 @@ struct ArchiveBucket {
     read_requests: AtomicU64,
     read_batches: AtomicU64,
     fail_checkpoint: AtomicBool,
+    stalled_checkpoint: AtomicBool,
+    checkpoint_attempts: AtomicU64,
 }
 
 #[async_trait]
@@ -34,6 +36,12 @@ impl Bucket for ArchiveBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        if key.ends_with(".checkpoint") {
+            self.checkpoint_attempts.fetch_add(1, Ordering::SeqCst);
+            while self.stalled_checkpoint.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
         ensure!(
             !key.ends_with(".checkpoint") || !self.fail_checkpoint.load(Ordering::SeqCst),
             "injected checkpoint failure"
@@ -66,6 +74,8 @@ fn controlled(
         read_requests: AtomicU64::new(0),
         read_batches: AtomicU64::new(0),
         fail_checkpoint: AtomicBool::new(false),
+        stalled_checkpoint: AtomicBool::new(false),
+        checkpoint_attempts: AtomicU64::new(0),
     });
     let store = RapidSnapshots::new(
         archive.clone(),
@@ -119,7 +129,12 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
         anyhow::Ok(())
     })
     .await??;
-    writer.finish(&f.stream).await?;
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     f.cleaned().await?;
 
     let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
@@ -210,28 +225,94 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires pinned Litestream on PATH"]
 async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Result<()> {
+    for stalled in [false, true] {
+        let f = Fixture::new()?;
+        let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+        archive.fail_checkpoint.store(!stalled, Ordering::SeqCst);
+        archive.stalled_checkpoint.store(stalled, Ordering::SeqCst);
+        let (replication, history) = write_history(&f, &writer, 2).await?;
+        writer
+            .finish(
+                &f.stream,
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            )
+            .await?;
+        f.cleaned().await?;
+        let reader = f.store()?;
+        assert_eq!(
+            reader.get(&f.stream.object(2)).await?,
+            Some(history[1].clone())
+        );
+        let sqlite = reader
+            .restore(&f.stream.object(2), history[1].clone())
+            .await?;
+        assert_eq!(
+            crate::litestream::storage::restored_fields(
+                replication.as_ref(),
+                &sqlite.files,
+                sqlite.txid
+            )
+            .await?,
+            serde_json::json!({"count":2})
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pinned Litestream on PATH"]
+async fn resumed_checkpoint_retries_without_new_writes() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
     archive.fail_checkpoint.store(true, Ordering::SeqCst);
-    let (replication, history) = write_history(&f, &writer, 2).await?;
-    assert!(writer.finish(&f.stream).await.is_err());
-    let reader = f.store()?;
-    assert_eq!(
-        reader.get(&f.stream.object(2)).await?,
-        Some(history[1].clone())
-    );
-    let sqlite = reader
-        .restore(&f.stream.object(2), history[1].clone())
-        .await?;
-    assert_eq!(
-        crate::litestream::storage::restored_fields(
-            replication.as_ref(),
-            &sqlite.files,
-            sqlite.txid
+    let (_replication, history) = write_history(&f, &writer, 33).await?;
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(5),
         )
-        .await?,
-        serde_json::json!({"count":2})
-    );
+        .await?;
+    let (resumed, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    archive.fail_checkpoint.store(true, Ordering::SeqCst);
+    let actor_prefix = f
+        .stream
+        .prefix
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .unwrap()
+        .0;
+    let stream = StateStream {
+        prefix: format!("{actor_prefix}/{:032x}/", 2),
+        owner_epoch: 2,
+        base_version: 33,
+        ..f.stream.clone()
+    };
+    resumed.start(&stream).await?;
+    resumed
+        .restore(&f.stream.object(33), history[32].clone())
+        .await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while archive.checkpoint_attempts.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    archive.fail_checkpoint.store(false, Ordering::SeqCst);
+    let key = format!("{}.checkpoint", f.stream.object(33));
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while f.archive.get(&key).await?.is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    assert!(archive.checkpoint_attempts.load(Ordering::SeqCst) >= 2);
+    resumed
+        .finish(
+            &stream,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await?;
     Ok(())
 }
 
@@ -357,7 +438,12 @@ async fn stalled_archive_does_not_block_writes_and_backlog_is_recovered_from_rap
             .all(|z| !z.objects.lock().unwrap().is_empty())
     );
     archive.stalled.store(false, Ordering::SeqCst);
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     f.cleaned().await?;
     let reader = f.store()?;
     for version in 1..=20 {
@@ -408,7 +494,15 @@ async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> R
     );
     f.zones[1].stalled.store(false, Ordering::SeqCst);
     assert!(store.put(&f.stream.object(2), state(2, 1)?).await.is_err());
-    assert!(store.finish(&f.stream).await.is_err());
+    assert!(
+        store
+            .finish(
+                &f.stream,
+                tokio::time::Instant::now() + Duration::from_secs(30)
+            )
+            .await
+            .is_err()
+    );
     assert!(f.archive.get(&f.stream.object(2)).await?.is_none());
     assert_eq!(
         f.store()?.recover(&f.stream.prefix).await?,
@@ -553,7 +647,12 @@ async fn rapid_rotation_continues_writing_while_old_archive_is_stalled() -> Resu
     .await??;
     assert!(f.zones.iter().all(|z| z.opens.load(Ordering::SeqCst) == 2));
     archive.stalled.store(false, Ordering::SeqCst);
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     f.cleaned().await?;
     assert_eq!(
         f.store()?.get(&f.stream.object(1)).await?,
@@ -569,7 +668,12 @@ async fn cleanup_retries_partial_deletion_and_skips_completed_segments() -> Resu
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
     f.zones[1].offline.store(true, Ordering::SeqCst);
-    store.finish(&f.stream).await?;
+    store
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await?;
     tokio::time::timeout(Duration::from_secs(2), async {
         while !f.zones[0].objects.lock().unwrap().is_empty() {
             tokio::task::yield_now().await;

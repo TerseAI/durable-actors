@@ -1,21 +1,39 @@
 use super::*;
-use crate::bucket::recovery::{Checkpoint, SnapshotHistory, resolve};
+use crate::bucket::recovery::{Checkpoint, ResolvedSqlite, SnapshotHistory, resolve};
 use crate::state_log::{SqliteSnapshot, StateSnapshot};
 use crate::storage::SnapshotRef;
 
 pub(super) const CHECKPOINT_INTERVAL: u64 = 32;
 
 impl LogStorage {
-    pub async fn restore(&self, object: &str, bytes: Bytes) -> Result<SqliteSnapshot> {
-        resolve(
-            &mut LogHistory {
-                storage: self,
-                epochs: BTreeMap::new(),
-            },
+    pub async fn restore(&self, object: &str, bytes: Bytes) -> Result<ResolvedSqlite> {
+        let started = std::time::Instant::now();
+        let mut history = LogHistory {
+            storage: self,
+            epochs: BTreeMap::new(),
+            reads: 0,
+            probes: 0,
+        };
+        let resolved = resolve(&mut history, object, bytes).await?;
+        tracing::info!(
+            event = "sqlite_history_restored",
             object,
-            bytes,
-        )
-        .await
+            checkpoint = resolved.checkpoint,
+            checkpoint_version = resolved.checkpoint_version,
+            parents = resolved.parents,
+            archive_epochs = history.epochs.len(),
+            dependency_gets = history.reads,
+            checkpoint_gets = history.probes,
+            files = resolved.sqlite.files.len(),
+            ltx_base64_bytes = resolved
+                .sqlite
+                .files
+                .iter()
+                .map(|file| file.data.len())
+                .sum::<usize>(),
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0
+        );
+        Ok(resolved)
     }
 
     pub async fn checkpoint(&self, object: &str, bytes: Bytes) -> Result<()> {
@@ -29,7 +47,7 @@ impl LogStorage {
             Checkpoint::decode(&bytes, &source, snapshot.sqlite.txid)?;
             return Ok(());
         }
-        let sqlite = self.restore(object, bytes).await?;
+        let sqlite = self.restore(object, bytes).await?.sqlite;
         let input_files = sqlite.files.len();
         let file = self.compactor.compact(&sqlite.files).await?;
         let checkpoint = Checkpoint {
@@ -61,6 +79,8 @@ impl LogStorage {
 struct LogHistory<'a> {
     storage: &'a LogStorage,
     epochs: BTreeMap<String, EpochHistory>,
+    reads: usize,
+    probes: usize,
 }
 
 struct EpochHistory {
@@ -72,11 +92,12 @@ struct EpochHistory {
 impl SnapshotHistory for LogHistory<'_> {
     async fn read(&mut self, object: &str) -> Result<Bytes> {
         let (prefix, _) = object.rsplit_once('/').context("invalid snapshot name")?;
-        if let Some(records) = self.epochs.get(prefix) {
-            if let Some(bytes) = records.records.get(object) {
-                return Ok(bytes.clone());
-            }
+        if let Some(records) = self.epochs.get(prefix)
+            && let Some(bytes) = records.records.get(object)
+        {
+            return Ok(bytes.clone());
         }
+        self.reads += 1;
         if let Some(bytes) = self.storage.snapshots.get(object).await? {
             return Ok(bytes);
         }
@@ -114,6 +135,105 @@ impl SnapshotHistory for LogHistory<'_> {
         {
             return Ok(None);
         }
+        self.probes += 1;
         self.storage.snapshots.get(&key).await
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Progress {
+    completed: u64,
+    task: Option<(u64, AbortOnDropHandle<Result<()>>)>,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+impl Progress {
+    pub fn restored(&mut self, version: u64) {
+        self.completed = self.completed.max(version);
+    }
+
+    pub async fn schedule(
+        &mut self,
+        storage: Arc<LogStorage>,
+        latest: Option<&(String, Bytes)>,
+        version: u64,
+    ) {
+        self.collect().await;
+        if self.task.is_some()
+            || version.saturating_sub(self.completed) < CHECKPOINT_INTERVAL
+            || self
+                .retry_at
+                .is_some_and(|retry| tokio::time::Instant::now() < retry)
+        {
+            return;
+        }
+        if let Some((object, bytes)) = latest {
+            self.start(storage, object.clone(), bytes.clone(), version);
+        }
+    }
+
+    pub async fn finish(
+        &mut self,
+        storage: Arc<LogStorage>,
+        object: &str,
+        bytes: Bytes,
+        version: u64,
+        deadline: tokio::time::Instant,
+    ) {
+        self.collect().await;
+        if self.completed >= version {
+            return;
+        }
+        if self
+            .task
+            .as_ref()
+            .is_some_and(|(running, _)| *running != version)
+        {
+            let (_, task) = self.task.take().unwrap();
+            task.abort();
+            let _ = task.await;
+        }
+        if self.task.is_none() {
+            self.start(storage, object.into(), bytes, version);
+        }
+        let (version, task) = self.task.take().unwrap();
+        match tokio::time::timeout_at(deadline, task).await {
+            Ok(Ok(Ok(()))) => self.completed = version,
+            result => tracing::warn!(event = "sqlite_checkpoint_deferred", state_version = version,
+                error = ?result, "checkpoint incomplete; archived history remains recoverable"),
+        }
+    }
+
+    fn start(&mut self, storage: Arc<LogStorage>, object: String, bytes: Bytes, version: u64) {
+        self.task = Some((
+            version,
+            AbortOnDropHandle::new(tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(120), storage.checkpoint(&object, bytes))
+                    .await
+                    .context("checkpoint timed out")?
+            })),
+        ));
+    }
+
+    async fn collect(&mut self) {
+        if !self
+            .task
+            .as_ref()
+            .is_some_and(|(_, task)| task.is_finished())
+        {
+            return;
+        }
+        let (version, task) = self.task.take().unwrap();
+        match task.await {
+            Ok(Ok(())) => {
+                self.completed = self.completed.max(version);
+                self.retry_at = None;
+            }
+            error => {
+                self.retry_at = Some(tokio::time::Instant::now() + Duration::from_secs(5));
+                tracing::warn!(event = "sqlite_checkpoint_deferred", state_version = version,
+                    error = ?error, "SQLite checkpoint will retry");
+            }
+        }
     }
 }

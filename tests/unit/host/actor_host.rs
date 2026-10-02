@@ -1108,12 +1108,13 @@ impl ActorStorage for FakeAuthority {
             snapshot.state_version,
             &format!("{:032x}", snapshot.owner_epoch),
         )?;
-        crate::bucket::recovery::resolve(
+        Ok(crate::bucket::recovery::resolve(
             &mut FakeHistory(&self.history),
             &object,
             bytes::Bytes::copy_from_slice(bytes),
         )
-        .await
+        .await?
+        .sqlite)
     }
     async fn prepare_state_write(
         &self,

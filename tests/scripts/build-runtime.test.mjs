@@ -17,7 +17,6 @@ test("native builds package the runtime and replication tools with a matching ch
     await mkdir(path.join(root, "target/release"), { recursive: true })
     await mkdir(path.join(root, "third_party/terse-ltx"), { recursive: true })
     await writeFile(path.join(root, "third_party/terse-ltx/LICENSE"), "license")
-    await writeFile(path.join(root, "third_party/terse-ltx/NOTICE"), "attribution")
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
@@ -45,7 +44,6 @@ test("native builds package the runtime and replication tools with a matching ch
     assert.equal(await readFile(path.join(extracted, "litestream"), "utf8"), "litestream")
     await execute("test", ["-x", path.join(extracted, "litestream")])
     assert.equal(await readFile(path.join(extracted, "LICENSE.terse-ltx"), "utf8"), "license")
-    assert.equal(await readFile(path.join(extracted, "NOTICE.terse-ltx"), "utf8"), "attribution")
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

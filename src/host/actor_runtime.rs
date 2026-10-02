@@ -555,9 +555,15 @@ impl ActorRuntime {
             snapshot.owner_epoch <= owner_epoch,
             "actor snapshot belongs to a newer owner epoch"
         );
+        let started = std::time::Instant::now();
         let sqlite = self.storage.read_sqlite(actor, loaded).await?;
+        let history_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let apply_started = std::time::Instant::now();
         let capture =
             SqliteCapture::restore(self.replication.clone(), &sqlite.files, sqlite.txid).await?;
+        tracing::info!(event = "actor_sqlite_restored", actor = %actor.storage_key(), state_version,
+            history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0);
         let mut cached = CachedActorState::new(owner_epoch, capture);
         cached.state_version = state_version;
         cached.state = cached.state();

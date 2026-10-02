@@ -3581,7 +3581,7 @@ dependencies = [
 [[package]]
 name = "terse-ltx"
 version = "0.1.0"
-source = "git+https://github.com/TerseAI/terse-ltx?rev=f012ab729bec5aa5ae556818e3bd8ba9c7d8b341#f012ab729bec5aa5ae556818e3bd8ba9c7d8b341"
+source = "git+https://github.com/TerseAI/terse-ltx?rev=c98203a0e195c3e47a9e02df96fd6c0670faa4df#c98203a0e195c3e47a9e02df96fd6c0670faa4df"
 dependencies = [
  "crc",
  "lz4_flex",

@@ -164,7 +164,18 @@ impl SnapshotStore for RapidSnapshots {
         object: &str,
         bytes: Bytes,
     ) -> Result<crate::state_log::SqliteSnapshot> {
-        self.storage.restore(object, bytes).await
+        let restored = self.storage.restore(object, bytes.clone()).await?;
+        if let Some(session) = self.session.lock().await.as_mut() {
+            session
+                .restored(
+                    self.storage.clone(),
+                    object,
+                    bytes,
+                    restored.checkpoint_version,
+                )
+                .await?;
+        }
+        Ok(restored.sqlite)
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys: std::collections::BTreeSet<_> = self
@@ -218,11 +229,11 @@ impl SnapshotStore for RapidSnapshots {
         }
         Ok(latest)
     }
-    async fn finish(&self, stream: &StateStream) -> Result<()> {
+    async fn finish(&self, stream: &StateStream, deadline: tokio::time::Instant) -> Result<()> {
         let mut session = self.session.lock().await;
         let active = session.as_mut().context("log stream is not activated")?;
         ensure!(active.stream == *stream, "cannot finish another log stream");
-        active.finish(self.storage.clone()).await?;
+        active.finish(self.storage.clone(), deadline).await?;
         *session = None;
         Ok(())
     }
