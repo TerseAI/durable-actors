@@ -7,17 +7,25 @@ struct ArchiveBucket {
     fail_batch: AtomicBool,
     batches: AtomicU64,
     cleaned_reads: AtomicU64,
+    read_requests: AtomicU64,
+    read_batches: AtomicU64,
+    fail_checkpoint: AtomicBool,
 }
 
 #[async_trait]
 impl Bucket for ArchiveBucket {
     async fn get(&self, key: &str) -> Result<Option<BucketObject>> {
+        self.read_requests.fetch_add(1, Ordering::SeqCst);
+        if key.ends_with(".batch") {
+            self.read_batches.fetch_add(1, Ordering::SeqCst);
+        }
         if key.ends_with(".cleaned") {
             self.cleaned_reads.fetch_add(1, Ordering::SeqCst);
         }
         self.inner.get(key).await
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.read_requests.fetch_add(1, Ordering::SeqCst);
         self.inner.list(prefix).await
     }
     async fn compare_and_swap(
@@ -26,6 +34,10 @@ impl Bucket for ArchiveBucket {
         generation: Option<i64>,
         bytes: Vec<u8>,
     ) -> Result<bool> {
+        ensure!(
+            !key.ends_with(".checkpoint") || !self.fail_checkpoint.load(Ordering::SeqCst),
+            "injected checkpoint failure"
+        );
         if key.ends_with(".batch") {
             self.batches.fetch_add(1, Ordering::SeqCst);
             ensure!(
@@ -51,15 +63,21 @@ fn controlled(
         fail_batch: AtomicBool::new(false),
         batches: AtomicU64::new(0),
         cleaned_reads: AtomicU64::new(0),
+        read_requests: AtomicU64::new(0),
+        read_batches: AtomicU64::new(0),
+        fail_checkpoint: AtomicBool::new(false),
     });
     let store = RapidSnapshots::new(
         archive.clone(),
-        Arc::new(BucketSnapshots(f.archive.clone())),
+        Arc::new(BucketSnapshots(archive.clone())),
         f.zones
             .iter()
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
         ArchiveBatchConfig { bytes, interval_ms },
+        Arc::new(crate::litestream::compaction::CompactCommand(
+            "ltx-compact".into(),
+        )),
         CancellationToken::new(),
     )?;
     Ok((store, archive))
@@ -82,6 +100,183 @@ async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
         }
     })
     .await?
+}
+
+#[tokio::test]
+#[ignore = "requires pinned Litestream and ltx-compact on PATH"]
+async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
+    use crate::litestream::storage::{SqliteCapture, restored_fields};
+    let f = Fixture::new()?;
+    let writer = f.store()?;
+    let (replication, history) = write_history(&f, &writer, 35).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f
+            .archive
+            .get(&format!("{}.checkpoint", f.stream.object(32)))
+            .await?
+            .is_none()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    writer.finish(&f.stream).await?;
+    f.cleaned().await?;
+
+    let (reader, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    let sqlite = reader
+        .restore(&f.stream.object(35), history[34].clone())
+        .await?;
+    assert_eq!(archive.read_requests.load(Ordering::SeqCst), 1);
+    assert!(sqlite.parent.is_none());
+    assert_eq!(sqlite.files.len(), 1);
+    let original_size: usize = history
+        .iter()
+        .map(|bytes| {
+            StateSnapshot::decode(bytes)
+                .unwrap()
+                .sqlite
+                .files
+                .iter()
+                .map(|file| file.data.len())
+                .sum::<usize>()
+        })
+        .sum();
+    assert!(sqlite.files[0].data.len() < original_size);
+    let restored = SqliteCapture::restore(replication.clone(), &sqlite.files, sqlite.txid).await?;
+    let db = rusqlite::Connection::open(restored.path())?;
+    assert_eq!(
+        crate::litestream::storage::read_fields(&db)?,
+        serde_json::json!({"count":35})
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))?,
+        35
+    );
+
+    let tail = reader
+        .restore(&f.stream.object(34), history[33].clone())
+        .await?;
+    assert_eq!(tail.files.len(), 3);
+    assert_eq!(
+        restored_fields(replication.as_ref(), &tail.files, tail.txid).await?,
+        serde_json::json!({"count":34})
+    );
+    archive.read_batches.store(0, Ordering::SeqCst);
+    let older = reader
+        .restore(&f.stream.object(31), history[30].clone())
+        .await?;
+    assert_eq!(
+        restored_fields(replication.as_ref(), &older.files, older.txid).await?,
+        serde_json::json!({"count":31})
+    );
+    let batch_count = f
+        .archive
+        .list("")
+        .await?
+        .iter()
+        .filter(|key| key.ends_with(".batch"))
+        .count();
+    assert_eq!(
+        archive.read_batches.load(Ordering::SeqCst),
+        batch_count as u64
+    );
+    assert_eq!(
+        reader.get(&f.stream.object(35)).await?,
+        Some(history[34].clone())
+    );
+    let key = format!("{}.checkpoint", f.stream.object(35));
+    let stored = f.archive.get(&key).await?.unwrap();
+    let mut checkpoint: crate::bucket::recovery::Checkpoint =
+        serde_json::from_slice(&stored.bytes)?;
+    checkpoint.source.digest = "wrong-source".into();
+    assert!(
+        f.archive
+            .compare_and_swap(
+                &key,
+                Some(stored.generation),
+                serde_json::to_vec(&checkpoint)?
+            )
+            .await?
+    );
+    assert!(
+        reader
+            .restore(&f.stream.object(35), history[34].clone())
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pinned Litestream and ltx-compact on PATH"]
+async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;
+    archive.fail_checkpoint.store(true, Ordering::SeqCst);
+    let (replication, history) = write_history(&f, &writer, 2).await?;
+    assert!(writer.finish(&f.stream).await.is_err());
+    let reader = f.store()?;
+    assert_eq!(
+        reader.get(&f.stream.object(2)).await?,
+        Some(history[1].clone())
+    );
+    let sqlite = reader
+        .restore(&f.stream.object(2), history[1].clone())
+        .await?;
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            &sqlite.files,
+            sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":2})
+    );
+    Ok(())
+}
+
+async fn write_history(
+    f: &Fixture,
+    writer: &RapidSnapshots,
+    count: u64,
+) -> Result<(Arc<crate::litestream::Litestream>, Vec<Bytes>)> {
+    use crate::litestream::{
+        Litestream, Replicator,
+        storage::{SqliteCapture, SqliteState},
+    };
+    writer.start(&f.stream).await?;
+    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let mut capture = SqliteCapture::new(replication.clone()).await?;
+    let db = rusqlite::Connection::open(capture.path())?;
+    db.execute_batch(
+        "CREATE TABLE entries(value INTEGER); INSERT INTO __terse_fields VALUES ('count', '0');",
+    )?;
+    let mut parent = None;
+    let mut history = Vec::new();
+    for version in 1..=count {
+        db.execute("INSERT INTO entries VALUES (?)", [version as i64])?;
+        db.execute("UPDATE __terse_fields SET value=?", [version.to_string()])?;
+        let txid = replication.sync(&capture.path()).await?;
+        let files = capture.capture(&SqliteState::position(txid)).await?;
+        let snapshot = StateSnapshot::new(
+            version,
+            1,
+            format!("request-{version}"),
+            crate::state_log::SqliteSnapshot {
+                txid,
+                parent,
+                files,
+            },
+            serde_json::json!(version),
+        )?;
+        let bytes: Bytes = snapshot.encode()?.into();
+        writer.put(&f.stream.object(version), bytes.clone()).await?;
+        parent = Some(f.stream.snapshot(&bytes)?);
+        history.push(bytes);
+    }
+    Ok((replication, history))
 }
 
 #[tokio::test]

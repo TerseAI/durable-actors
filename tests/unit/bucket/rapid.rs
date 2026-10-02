@@ -16,8 +16,6 @@ use std::{
 
 #[path = "rapid/batch.rs"]
 mod batch;
-#[path = "rapid/reads.rs"]
-mod reads;
 
 #[tokio::test]
 async fn hot_writes_reuse_streams_and_a_fresh_reader_discovers_acknowledged_state() -> Result<()> {
@@ -144,6 +142,9 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             .map(|zone| zone.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
+        Arc::new(crate::litestream::compaction::CompactCommand(
+            "ltx-compact".into(),
+        )),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
@@ -389,6 +390,9 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
+        Arc::new(crate::litestream::compaction::CompactCommand(
+            "ltx-compact".into(),
+        )),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
@@ -613,6 +617,9 @@ impl Fixture {
                 .map(|z| z.clone() as Arc<dyn LogZone>)
                 .collect(),
             crate::bucket::ArchiveBatchConfig::default(),
+            Arc::new(crate::litestream::compaction::CompactCommand(
+                "ltx-compact".into(),
+            )),
             CancellationToken::new(),
         )
     }

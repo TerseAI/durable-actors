@@ -11,14 +11,18 @@ import { RuntimeBuilder } from "../../scripts/build-runtime.mjs"
 
 const execute = promisify(execFile)
 
-test("native builds package the runtime and Litestream with a matching checksum", async t => {
+test("native builds package the runtime and replication tools with a matching checksum", async t => {
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
+    await mkdir(path.join(root, "tools/ltx-compact"), { recursive: true })
+    await writeFile(path.join(root, "tools/ltx-compact/LICENSE"), "license")
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
             await writeFile(path.join(root, "target/release/durable-actors"), "runtime", { mode: 0o755 })
+        } else if (command === "go") {
+            await writeFile(args[args.indexOf("-o") + 1], "compactor", { mode: 0o755 })
         } else {
             assert.equal(command, "tar")
             return execute(command, args, options)
@@ -41,6 +45,8 @@ test("native builds package the runtime and Litestream with a matching checksum"
     await execute("test", ["-x", path.join(extracted, "durable-actors")])
     assert.equal(await readFile(path.join(extracted, "litestream"), "utf8"), "litestream")
     await execute("test", ["-x", path.join(extracted, "litestream")])
+    assert.equal(await readFile(path.join(extracted, "ltx-compact"), "utf8"), "compactor")
+    await execute("test", ["-x", path.join(extracted, "ltx-compact")])
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

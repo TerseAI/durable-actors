@@ -47,3 +47,7 @@
 !sdk-python/src/**
 !sdk-python/README.md
 !sdk-python/LICENSE.md
+
+!tools
+!tools/ltx-compact
+!tools/ltx-compact/**

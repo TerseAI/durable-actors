@@ -19,6 +19,8 @@ pub(super) struct Session {
     standard: bool,
     healthy: bool,
     rotated: Instant,
+    checkpoint: Option<AbortOnDropHandle<Result<()>>>,
+    checkpoint_version: u64,
 }
 
 impl Session {
@@ -42,6 +44,8 @@ impl Session {
             standard: false,
             healthy: true,
             rotated: Instant::now(),
+            checkpoint: None,
+            checkpoint_version: version,
         })
     }
 
@@ -100,6 +104,7 @@ impl Session {
         self.version = reference.state_version;
         self.latest = Some((object.into(), bytes));
         self.healthy = true;
+        self.schedule_checkpoint(storage);
         tracing::info!(
             event = "rapid_log_snapshot",
             state_version = self.version,
@@ -109,6 +114,28 @@ impl Session {
             duration_ms = started.elapsed().as_secs_f64() * 1000.0
         );
         Ok(())
+    }
+
+    fn schedule_checkpoint(&mut self, storage: Arc<LogStorage>) {
+        if self.version - self.checkpoint_version < checkpoint::CHECKPOINT_INTERVAL
+            || self
+                .checkpoint
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let Some((object, bytes)) = self.latest.clone() else {
+            return;
+        };
+        self.checkpoint_version = self.version;
+        self.checkpoint = Some(AbortOnDropHandle::new(tokio::spawn(async move {
+            let result = storage.checkpoint(&object, bytes).await;
+            if let Err(error) = &result {
+                tracing::warn!(%error, "SQLite checkpoint deferred");
+            }
+            result
+        })));
     }
 
     fn install(&mut self, storage: Arc<LogStorage>, segment: Option<Segment>) {
@@ -189,6 +216,10 @@ impl Session {
         );
         if let Some((object, bytes)) = &self.latest {
             bounded(storage.snapshots.put(object, bytes.clone())).await?;
+            if let Some(checkpoint) = self.checkpoint.take() {
+                let _ = checkpoint.await;
+            }
+            storage.checkpoint(object, bytes.clone()).await?;
         }
         self.segment = None;
         self.healthy = true;

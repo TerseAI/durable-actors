@@ -75,9 +75,14 @@ jobs:
               with:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.24.0"
+                  cache-dependency-path: tools/ltx-compact/go.sum
             - name: Install pinned Litestream
               run: |
                   node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  (cd tools/ltx-compact && CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/litestream/ltx-compact" .)
                   printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
               run: cargo fmt --all -- --check
@@ -135,9 +140,14 @@ jobs:
             - run: pnpm --dir sdk format:check
             - run: pnpm --dir packages/observer-ui format:check
             - run: pnpm --dir packages/observer-ui test
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.24.0"
+                  cache-dependency-path: tools/ltx-compact/go.sum
             - name: Install pinned Litestream
               run: |
                   node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  (cd tools/ltx-compact && CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$RUNNER_TEMP/litestream/ltx-compact" .)
                   printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - run: pnpm --dir sdk test
             - name: Validate HTTP and build TypeScript documentation

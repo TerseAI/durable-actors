@@ -22,6 +22,11 @@ export class RuntimeBuilder {
         try {
             await this.compile(staging)
             await this.installReplication(staging, { platform: this.platform, arch: this.arch })
+            await this.run("go", ["build", "-mod=readonly", "-trimpath", "-o", path.join(staging, "ltx-compact"), "."], {
+                cwd: path.join(this.root, "tools/ltx-compact"),
+                env: { ...process.env, CGO_ENABLED: "0" }
+            })
+            await copyFile(path.join(this.root, "tools/ltx-compact/LICENSE"), path.join(staging, "LICENSE.ltx-compact"))
             return await this.package(staging, output)
         } finally {
             await rm(staging, { recursive: true, force: true })
@@ -36,7 +41,7 @@ export class RuntimeBuilder {
     async package(staging, output) {
         const name = `durable-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "LICENSE.litestream"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "durable-actors", "litestream", "ltx-compact", "LICENSE.litestream", "LICENSE.ltx-compact"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")
