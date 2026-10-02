@@ -94,6 +94,11 @@ impl Session {
                 .context("Rapid stream missing")?
                 .append(reference.state_version, bytes.clone())
                 .await?;
+            storage.remember(
+                self.segment.as_ref().unwrap(),
+                reference.state_version,
+                frame.len(),
+            );
             self.archive
                 .as_ref()
                 .context("archive worker missing")?

@@ -118,6 +118,23 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
     struct UnavailableArchive;
     #[async_trait]
     impl Bucket for UnavailableArchive {
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<crate::bucket::BucketObject>> {
+            let Some(mut object) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+            anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+            object.bytes = object.bytes.slice(start as usize..end as usize);
+            Ok(Some(object))
+        }
+
         async fn get(&self, _key: &str) -> Result<Option<crate::bucket::BucketObject>> {
             anyhow::bail!("archive unavailable")
         }
@@ -128,7 +145,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             &self,
             _key: &str,
             _generation: Option<i64>,
-            _bytes: Vec<u8>,
+            _bytes: bytes::Bytes,
         ) -> Result<bool> {
             anyhow::bail!("archive unavailable")
         }
@@ -206,7 +223,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
     let plan = first
         .prepare_actor_write(&actor, &active.placement.lease, 1, 1)
         .await?;
-    first.write_snapshot(&plan, state(1, 1)?.to_vec()).await?;
+    first.write_snapshot(&plan, state(1, 1)?).await?;
     assert!(
         runtime()?
             .register_activation(&actor, &request("early"), "us-west", false, None)
@@ -218,7 +235,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
             &first
                 .prepare_actor_write(&actor, &active.placement.lease, 1, 2)
                 .await?,
-            state(2, 1)?.to_vec(),
+            state(2, 1)?,
         )
         .await?;
     clock.0.store(2000, Ordering::SeqCst);
@@ -235,7 +252,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
                 &first
                     .prepare_actor_write(&actor, &active.placement.lease, 1, 3)
                     .await?,
-                state(3, 1)?.to_vec()
+                state(3, 1)?
             )
             .await
             .is_err()
@@ -243,7 +260,7 @@ async fn runtime_crash_recovery_advances_ownership_before_enabling_new_writes() 
     let plan = second
         .prepare_actor_write(&actor, &recovered.placement.lease, 2, 3)
         .await?;
-    second.write_snapshot(&plan, state(3, 2)?.to_vec()).await?;
+    second.write_snapshot(&plan, state(3, 2)?).await?;
     let checkpoint = second
         .drain_activation(
             &actor,
@@ -380,6 +397,23 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
     struct RejectCoverage(Arc<FileBucket>);
     #[async_trait]
     impl Bucket for RejectCoverage {
+        async fn range(
+            &self,
+            key: &str,
+            start: u64,
+            length: u64,
+        ) -> Result<Option<crate::bucket::BucketObject>> {
+            let Some(mut object) = self.get(key).await? else {
+                return Ok(None);
+            };
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| anyhow::anyhow!("range overflow"))?;
+            anyhow::ensure!(end <= object.bytes.len() as u64, "incomplete range");
+            object.bytes = object.bytes.slice(start as usize..end as usize);
+            Ok(Some(object))
+        }
+
         async fn get(&self, key: &str) -> Result<Option<crate::bucket::BucketObject>> {
             self.0.get(key).await
         }
@@ -390,7 +424,7 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             &self,
             key: &str,
             generation: Option<i64>,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
         ) -> Result<bool> {
             ensure!(
                 !key.ends_with(".replicated"),
@@ -597,7 +631,7 @@ async fn manifests_cannot_redirect_a_reader_to_another_actors_log() -> Result<()
             .compare_and_swap(
                 &left,
                 Some(stored.generation),
-                serde_json::to_vec(&manifest)?
+                crate::payload::encode(&manifest)?
             )
             .await?
     );

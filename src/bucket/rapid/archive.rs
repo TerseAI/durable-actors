@@ -51,7 +51,7 @@ impl Archiver {
             closed: false,
         }));
         let wake = Arc::new(Notify::new());
-        let batch_bytes = storage.batch.bytes;
+        let batch_bytes = storage.batch.bytes.min(1024 * 1024);
         let task = AbortOnDropHandle::new(tokio::spawn(run(
             storage,
             manifest,
@@ -145,7 +145,7 @@ async fn run(
                 || end - through >= storage.batch.bytes as u64
                 || due.is_some_and(|at| at <= Instant::now()))
         {
-            let cached = take_cache(&pending, through);
+            let cached = take_cache(&pending, through)?;
             match upload(&storage, &manifest, through, end, cached).await {
                 Ok(next) => {
                     retry = false;
@@ -178,11 +178,11 @@ async fn run(
     }
 }
 
-fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Option<Bytes> {
+fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Result<Option<Bytes>> {
     let frames = {
         let mut p = pending.lock().unwrap();
         if p.cache_start != through || p.cache_bytes == 0 {
-            return None;
+            return Ok(None);
         }
         p.cache_start += p.cache_bytes as u64;
         p.cache_bytes = 0;
@@ -191,7 +191,12 @@ fn take_cache(pending: &StdMutex<Pending>, through: u64) -> Option<Bytes> {
         }
         std::mem::take(&mut p.cache)
     };
-    Some(frames.concat().into())
+    use std::io::Write;
+    let mut spool = crate::payload::Spool::new();
+    for frame in frames {
+        spool.write_all(&frame)?;
+    }
+    Ok(Some(spool.finish()?))
 }
 
 async fn upload(
@@ -251,9 +256,10 @@ impl LogStorage {
         );
         let began = Instant::now();
         ensure!(
-            bounded(replace(self.archive.as_ref(), &key, None, bytes.to_vec())).await?,
+            bounded(replace(self.archive.as_ref(), &key, None, bytes.clone())).await?,
             "conflicting archive batch"
         );
+        self.index_batch(manifest, key, &bytes).await?;
         tracing::info!(
             event = "rapid_log_batch",
             start_offset = start,
@@ -280,7 +286,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("closed")?,
                 None,
-                serde_json::to_vec(closed)?
+                crate::payload::encode(closed)?
             ))
             .await?,
             "conflicting closed segment"
@@ -294,7 +300,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("replicated")?,
                 None,
-                serde_json::to_vec(closed)?
+                crate::payload::encode(closed)?
             ))
             .await?,
             "conflicting replication coverage"
@@ -336,7 +342,7 @@ impl LogStorage {
                 self.archive.as_ref(),
                 &manifest.marker("cleaned")?,
                 None,
-                b"{}".to_vec()
+                Bytes::from_static(b"{}")
             ))
             .await?,
             "conflicting cleanup marker"

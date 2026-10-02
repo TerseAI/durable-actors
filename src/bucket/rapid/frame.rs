@@ -1,5 +1,6 @@
 use super::*;
 use aws_lc_rs::digest::{Context as Digest, SHA256};
+use std::io::Write;
 
 pub(super) const HEADER: usize = 48;
 pub(super) const MAX_STATE: usize = 4 * 1024 * 1024;
@@ -17,13 +18,15 @@ impl Record {
             self.state.len() <= MAX_STATE,
             "state exceeds append-record limit"
         );
-        let mut bytes = Vec::with_capacity(HEADER + self.state.len());
+        let mut bytes = Vec::with_capacity(HEADER);
         bytes.extend_from_slice(b"RLG1");
         bytes.extend_from_slice(&(self.state.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&self.version.to_le_bytes());
         bytes.extend_from_slice(checksum(&bytes, &self.state).as_ref());
-        bytes.extend_from_slice(&self.state);
-        Ok(bytes.into())
+        let mut spool = crate::payload::Spool::new();
+        spool.write_all(&bytes)?;
+        spool.write_all(&self.state)?;
+        spool.finish()
     }
 }
 

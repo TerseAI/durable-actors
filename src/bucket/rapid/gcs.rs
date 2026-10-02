@@ -112,6 +112,7 @@ impl LogZone for GcsZone {
     }
 
     async fn read(&self, replica: &Replica, fence: bool) -> Result<Bytes> {
+        let _transfer = self.clients.transfers.acquire().await?;
         let mut writer = if fence {
             Some(
                 self.clients
@@ -146,24 +147,24 @@ impl LogZone for GcsZone {
         let mut reader = descriptor
             .read_range(ReadRange::segment(0, size as u64))
             .await;
-        let mut bytes = Vec::with_capacity(size as usize);
+        let mut spool = crate::payload::Spool::new();
+        let mut length = 0usize;
         while let Some(chunk) = reader.next().await {
-            bytes.extend_from_slice(&chunk?);
-            ensure!(
-                bytes.len() <= size as usize,
-                "log read exceeded persisted size"
-            );
+            let chunk = chunk?;
+            length += chunk.len();
+            spool = crate::payload::append(spool, chunk).await?;
+            ensure!(length <= size as usize, "log read exceeded persisted size");
         }
         ensure!(
-            bytes.len() == size as usize
-                && persisted.is_none_or(|size| size as usize == bytes.len()),
+            length == size as usize && persisted.is_none_or(|size| size as usize == length),
             "incomplete fenced log read"
         );
         drop(writer);
-        Ok(bytes.into())
+        tokio::task::spawn_blocking(move || spool.finish()).await?
     }
 
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+        let _transfer = self.clients.transfers.acquire().await?;
         let mut reader = self
             .clients
             .storage
@@ -172,16 +173,16 @@ impl LogZone for GcsZone {
             .set_read_range(ReadRange::segment(start, length))
             .send()
             .await?;
-        let mut bytes = Vec::new();
+        let mut spool = crate::payload::Spool::new();
+        let mut received = 0u64;
         while let Some(chunk) = reader.next().await {
-            bytes.extend_from_slice(&chunk?);
-            ensure!(
-                bytes.len() as u64 <= length,
-                "Rapid range exceeded requested length"
-            );
+            let chunk = chunk?;
+            received += chunk.len() as u64;
+            spool = crate::payload::append(spool, chunk).await?;
+            ensure!(received <= length, "Rapid range exceeded requested length");
         }
-        ensure!(bytes.len() as u64 == length, "incomplete Rapid range");
-        Ok(bytes.into())
+        ensure!(received == length, "incomplete Rapid range");
+        tokio::task::spawn_blocking(move || spool.finish()).await?
     }
 
     async fn delete(&self, replica: &Replica) -> Result<()> {

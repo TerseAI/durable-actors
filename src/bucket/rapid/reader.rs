@@ -27,7 +27,7 @@ impl LogStorage {
         let manifests = keys.len();
         let mut segments = stream::iter(keys)
             .map(|key| async move { self.read_manifest(&key, prefix, fence).await })
-            .buffered(4);
+            .buffered(1);
         let mut records = BTreeMap::new();
         while let Some((manifest, segment)) = segments.try_next().await? {
             for record in segment {
