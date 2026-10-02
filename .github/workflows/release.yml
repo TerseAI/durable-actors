@@ -83,6 +83,11 @@ jobs:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.24.0"
+                  cache-dependency-path: crates/terse-ltx/tests/oracle/go.sum
+
             - name: Install pinned Litestream
               run: |
                   node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
@@ -96,7 +101,7 @@ jobs:
               run: cargo test --locked --no-fail-fast
 
             - name: Verify crate package
-              run: cargo publish --locked --dry-run
+              run: cargo publish -p durable-actors --locked --dry-run
 
             - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
               with:
@@ -461,7 +466,7 @@ jobs:
                       echo "durable-actors@$RELEASE_VERSION already published"
                   elif [ "$status" = "404" ]; then
                       # The rust job already verified this tagged source with cargo publish --dry-run.
-                      cargo publish --locked --no-verify
+                      cargo publish -p durable-actors --locked --no-verify
                   else
                       echo "::error::crates.io returned HTTP $status"
                       exit 1

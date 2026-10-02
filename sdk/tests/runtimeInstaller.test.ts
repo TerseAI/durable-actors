@@ -26,7 +26,7 @@ test("installs the runtime from a verified release and reuses the cache offline"
     const binary = await new RuntimeInstaller(options, download).install()
     assert.equal(await readFile(binary, "utf8"), "runtime")
     assert.equal(await readFile(path.join(path.dirname(binary), "litestream"), "utf8"), "litestream")
-    assert.equal(await readFile(path.join(path.dirname(binary), "ltx-compact"), "utf8"), "compactor")
+    assert.equal(await readFile(path.join(path.dirname(binary), "NOTICE.terse-ltx"), "utf8"), "attribution")
     assert.equal(requests.length, 2)
     assert.deepEqual(requests, [
         "https://github.com/TerseAI/durable-actors/releases/download/v1.2.3/durable-actors-darwin-arm64.tar.gz",
@@ -62,15 +62,15 @@ async function fixture(directory: string): Promise<Buffer> {
     await writeFile(path.join(directory, "durable-actors"), "runtime")
     await writeFile(path.join(directory, "litestream"), "litestream")
     await writeFile(path.join(directory, "LICENSE.litestream"), "license")
-    await writeFile(path.join(directory, "ltx-compact"), "compactor")
-    await writeFile(path.join(directory, "LICENSE.ltx-compact"), "license")
+    await writeFile(path.join(directory, "NOTICE.terse-ltx"), "attribution")
+    await writeFile(path.join(directory, "LICENSE.terse-ltx"), "license")
     const archive = path.join(directory, "runtime.tar.gz")
     await c({ gzip: true, file: archive, cwd: directory }, [
         "durable-actors",
         "litestream",
-        "ltx-compact",
+        "NOTICE.terse-ltx",
         "LICENSE.litestream",
-        "LICENSE.ltx-compact"
+        "LICENSE.terse-ltx"
     ])
     return readFile(archive)
 }

@@ -142,9 +142,7 @@ async fn failed_manifest_publication_never_acknowledges_an_undiscoverable_log() 
             .map(|zone| zone.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
-        Arc::new(crate::litestream::compaction::CompactCommand(
-            "ltx-compact".into(),
-        )),
+        Arc::new(crate::litestream::compaction::RustCompactor),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
@@ -390,9 +388,7 @@ async fn failed_coverage_publication_never_deletes_a_durable_rapid_copy() -> Res
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
         crate::bucket::ArchiveBatchConfig::default(),
-        Arc::new(crate::litestream::compaction::CompactCommand(
-            "ltx-compact".into(),
-        )),
+        Arc::new(crate::litestream::compaction::RustCompactor),
         CancellationToken::new(),
     )?;
     store.start(&f.stream).await?;
@@ -617,9 +613,7 @@ impl Fixture {
                 .map(|z| z.clone() as Arc<dyn LogZone>)
                 .collect(),
             crate::bucket::ArchiveBatchConfig::default(),
-            Arc::new(crate::litestream::compaction::CompactCommand(
-                "ltx-compact".into(),
-            )),
+            Arc::new(crate::litestream::compaction::RustCompactor),
             CancellationToken::new(),
         )
     }

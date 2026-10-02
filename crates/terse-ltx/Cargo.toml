@@ -1,0 +1,20 @@
+[package]
+name = "terse-ltx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/TerseAI/durable-actors"
+description = "LTX encoding, decoding, and streaming compaction"
+
+[package.metadata.port]
+source = "https://github.com/superfly/ltx"
+version = "v0.5.2"
+files = ["ltx.go", "encoder.go", "decoder.go", "compactor.go", "checksum.go"]
+
+[dependencies]
+crc = "3.3"
+lz4_flex = "0.13"
+
+[dev-dependencies]
+tempfile = "3"

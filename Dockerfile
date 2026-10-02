@@ -1,8 +1,3 @@
-FROM golang:1.24.0-bookworm AS compactor-builder
-WORKDIR /build
-COPY tools/ltx-compact ./
-RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -o /out/ltx-compact .
-
 FROM rust:1.89.0-bookworm AS builder
 
 WORKDIR /build
@@ -11,6 +6,7 @@ COPY .cargo ./.cargo
 COPY migrations ./migrations
 COPY proto ./proto
 COPY src ./src
+COPY crates/terse-ltx ./crates/terse-ltx
 COPY docs/reference/openapi.yaml ./docs/reference/openapi.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -56,8 +52,7 @@ RUN apt-get update -qq \
 COPY --from=python-sdk /usr/local /usr/local
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY --from=sdk-builder /out/litestream /usr/local/bin/litestream
-COPY --from=compactor-builder /out/ltx-compact /usr/local/bin/ltx-compact
-COPY --from=compactor-builder /build/LICENSE /usr/share/licenses/ltx-compact/LICENSE
+COPY crates/terse-ltx/LICENSE crates/terse-ltx/NOTICE /usr/share/licenses/terse-ltx/
 COPY --from=sdk-builder /out/LICENSE.litestream /usr/share/licenses/litestream/LICENSE
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules

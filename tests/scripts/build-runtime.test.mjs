@@ -15,14 +15,13 @@ test("native builds package the runtime and replication tools with a matching ch
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
-    await mkdir(path.join(root, "tools/ltx-compact"), { recursive: true })
-    await writeFile(path.join(root, "tools/ltx-compact/LICENSE"), "license")
+    await mkdir(path.join(root, "crates/terse-ltx"), { recursive: true })
+    await writeFile(path.join(root, "crates/terse-ltx/LICENSE"), "license")
+    await writeFile(path.join(root, "crates/terse-ltx/NOTICE"), "attribution")
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
             await writeFile(path.join(root, "target/release/durable-actors"), "runtime", { mode: 0o755 })
-        } else if (command === "go") {
-            await writeFile(args[args.indexOf("-o") + 1], "compactor", { mode: 0o755 })
         } else {
             assert.equal(command, "tar")
             return execute(command, args, options)
@@ -45,8 +44,8 @@ test("native builds package the runtime and replication tools with a matching ch
     await execute("test", ["-x", path.join(extracted, "durable-actors")])
     assert.equal(await readFile(path.join(extracted, "litestream"), "utf8"), "litestream")
     await execute("test", ["-x", path.join(extracted, "litestream")])
-    assert.equal(await readFile(path.join(extracted, "ltx-compact"), "utf8"), "compactor")
-    await execute("test", ["-x", path.join(extracted, "ltx-compact")])
+    assert.equal(await readFile(path.join(extracted, "LICENSE.terse-ltx"), "utf8"), "license")
+    assert.equal(await readFile(path.join(extracted, "NOTICE.terse-ltx"), "utf8"), "attribution")
 })
 
 test("a compiler failure does not publish a native bundle", async t => {

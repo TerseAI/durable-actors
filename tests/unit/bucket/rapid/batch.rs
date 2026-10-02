@@ -75,9 +75,7 @@ fn controlled(
             .map(|z| z.clone() as Arc<dyn LogZone>)
             .collect(),
         ArchiveBatchConfig { bytes, interval_ms },
-        Arc::new(crate::litestream::compaction::CompactCommand(
-            "ltx-compact".into(),
-        )),
+        Arc::new(crate::litestream::compaction::RustCompactor),
         CancellationToken::new(),
     )?;
     Ok((store, archive))
@@ -103,7 +101,7 @@ async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream and ltx-compact on PATH"]
+#[ignore = "requires pinned Litestream on PATH"]
 async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     use crate::litestream::storage::{SqliteCapture, restored_fields};
     let f = Fixture::new()?;
@@ -210,7 +208,7 @@ async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pinned Litestream and ltx-compact on PATH"]
+#[ignore = "requires pinned Litestream on PATH"]
 async fn failed_checkpoint_publication_keeps_committed_state_recoverable() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, archive) = controlled(&f, 16 * 1024 * 1024, 10_000)?;

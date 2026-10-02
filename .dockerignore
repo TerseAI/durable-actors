@@ -48,6 +48,6 @@
 !sdk-python/README.md
 !sdk-python/LICENSE.md
 
-!tools
-!tools/ltx-compact
-!tools/ltx-compact/**
+!crates
+!crates/terse-ltx
+!crates/terse-ltx/**

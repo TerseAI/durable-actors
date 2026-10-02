@@ -73,9 +73,7 @@ impl RapidSnapshots {
             snapshots,
             zones,
             *archive_batch,
-            Arc::new(crate::litestream::compaction::CompactCommand(
-                "ltx-compact".into(),
-            )),
+            Arc::new(crate::litestream::compaction::RustCompactor),
             stop,
         )?;
         if let Some(actor) = actor {
