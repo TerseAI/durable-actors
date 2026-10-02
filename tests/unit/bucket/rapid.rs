@@ -702,6 +702,7 @@ struct MemoryZone {
     offline: Arc<AtomicBool>,
     stalled: Arc<AtomicBool>,
     opens: AtomicU64,
+    range_reads: AtomicU64,
 }
 impl MemoryZone {
     fn new(name: &str) -> Self {
@@ -711,6 +712,7 @@ impl MemoryZone {
             offline: Default::default(),
             stalled: Default::default(),
             opens: AtomicU64::new(0),
+            range_reads: AtomicU64::new(0),
         }
     }
 }
@@ -752,6 +754,7 @@ impl LogZone for MemoryZone {
         Ok(Bytes::copy_from_slice(&object.bytes))
     }
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
+        self.range_reads.fetch_add(1, Ordering::SeqCst);
         let bytes = self.read(replica, false).await?;
         let end = start.checked_add(length).context("range overflow")? as usize;
         ensure!(end <= bytes.len(), "incomplete range");

@@ -165,14 +165,16 @@ impl LogZone for GcsZone {
 
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
         let _transfer = self.clients.transfers.acquire().await?;
-        let mut reader = self
+        let descriptor = self
             .clients
             .storage
-            .read_object(&self.bucket, &replica.object)
+            .open_object(&self.bucket, &replica.object)
             .set_generation(replica.generation)
-            .set_read_range(ReadRange::segment(start, length))
             .send()
             .await?;
+        let mut reader = descriptor
+            .read_range(ReadRange::segment(start, length))
+            .await;
         let mut spool = crate::payload::Spool::new();
         let mut received = 0u64;
         while let Some(chunk) = reader.next().await {

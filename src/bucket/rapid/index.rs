@@ -35,21 +35,46 @@ impl LogStorage {
         }
     }
 
-    pub async fn live_record(&self, object: &str) -> Result<Option<Bytes>> {
-        let Some(version) = super::super::snapshots::version(object) else {
-            return Ok(None);
-        };
-        let record = self.live.lock().unwrap().get(&version).cloned();
-        let Some(record) = record.filter(|r| r.manifest.stream.object(version) == object) else {
+    pub async fn live_records(
+        &self,
+        object: &str,
+        first: u64,
+    ) -> Result<Option<BTreeMap<String, Bytes>>> {
+        let Some(record) = self.live_range(object, first) else {
             return Ok(None);
         };
         match self
             .read_range(&record.manifest, record.start, record.length)
             .await
         {
-            Ok(bytes) => decode(object, bytes).map(Some),
+            Ok(bytes) => {
+                let (prefix, _) = object.rsplit_once('/').context("invalid snapshot object")?;
+                let records = decode_records(prefix, bytes)?;
+                ensure!(records.contains_key(object), "live record missing");
+                Ok(Some(records))
+            }
             Err(_) => Ok(None),
         }
+    }
+
+    fn live_range(&self, object: &str, first: u64) -> Option<LiveRecord> {
+        let version = super::super::snapshots::version(object)?;
+        let records = self.live.lock().unwrap();
+        let mut record = records
+            .get(&version)
+            .filter(|r| r.manifest.stream.object(version) == object)?
+            .clone();
+        for (_, prior) in records.range(first..version).rev() {
+            if prior.manifest.id != record.manifest.id
+                || prior.start + prior.length != record.start
+                || record.length + prior.length > self.batch.bytes as u64
+            {
+                break;
+            }
+            record.start = prior.start;
+            record.length += prior.length;
+        }
+        Some(record)
     }
 
     pub async fn index_keys(&self, prefix: &str) -> Result<Vec<String>> {
@@ -162,16 +187,6 @@ impl LogStorage {
         );
         Ok(())
     }
-}
-
-fn decode(object: &str, bytes: Bytes) -> Result<Bytes> {
-    let records = frame::decode(&bytes)?;
-    ensure!(
-        records.len() == 1 && frame::HEADER + records[0].state.len() == bytes.len(),
-        "invalid indexed frame"
-    );
-    validate(object, &records[0])?;
-    Ok(records[0].state.clone())
 }
 
 fn validate(object: &str, record: &Record) -> Result<()> {

@@ -155,8 +155,11 @@ impl SnapshotStore for RapidSnapshots {
         {
             return Ok(Some(bytes));
         }
-        if let Some(bytes) = self.storage.live_record(object).await? {
-            return Ok(Some(bytes));
+        let version = super::snapshots::version(object);
+        if let Some(version) = version
+            && let Some(mut records) = self.storage.live_records(object, version).await?
+        {
+            return Ok(records.remove(object));
         }
         if let Some(bytes) = self.storage.snapshots.get(object).await? {
             return Ok(Some(bytes));
@@ -165,11 +168,7 @@ impl SnapshotStore for RapidSnapshots {
         let keys = self.storage.index_keys(&format!("{prefix}/")).await?;
         if let Some(mut records) = self
             .storage
-            .indexed_records(
-                object,
-                super::snapshots::version(object).context("invalid snapshot version")?,
-                &keys,
-            )
+            .indexed_records(object, version.context("invalid snapshot version")?, &keys)
             .await
         {
             return Ok(records.remove(object));

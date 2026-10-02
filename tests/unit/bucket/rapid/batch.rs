@@ -138,6 +138,34 @@ async fn batches(f: &Fixture, count: usize) -> Result<Vec<String>> {
 
 #[tokio::test]
 #[ignore = "requires pinned Litestream on PATH"]
+async fn live_checkpoint_inputs_are_read_as_one_bounded_range() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, _) = controlled(&f, 16 * 1024 * 1024, 60_000)?;
+    let (replication, history) = write_history(&f, &writer, 31).await?;
+    let sqlite = writer
+        .restore(&f.stream.object(31), history[30].clone())
+        .await?;
+    assert_eq!(
+        crate::litestream::storage::restored_fields(
+            replication.as_ref(),
+            &sqlite.files,
+            sqlite.txid
+        )
+        .await?,
+        serde_json::json!({"count":31})
+    );
+    assert_eq!(
+        f.zones
+            .iter()
+            .map(|zone| zone.range_reads.load(Ordering::SeqCst))
+            .sum::<u64>(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires pinned Litestream on PATH"]
 async fn checkpoints_compact_sqlite_history_for_cold_recovery() -> Result<()> {
     use crate::litestream::storage::{SqliteCapture, restored_fields};
     let f = Fixture::new()?;

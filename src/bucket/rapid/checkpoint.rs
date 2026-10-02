@@ -151,9 +151,6 @@ impl SnapshotHistory for LogHistory<'_> {
                 },
             );
         }
-        if let Some(bytes) = self.storage.live_record(object).await? {
-            return Ok(bytes);
-        }
         let epoch = self.epochs.get_mut(prefix).unwrap();
         if let Some(bytes) = epoch
             .records
@@ -163,10 +160,6 @@ impl SnapshotHistory for LogHistory<'_> {
             return Ok(bytes.clone());
         }
         if let Some(bytes) = epoch.indexed.remove(object) {
-            return Ok(bytes);
-        }
-        self.reads += 1;
-        if let Some(bytes) = self.storage.snapshots.get(object).await? {
             return Ok(bytes);
         }
         let version =
@@ -179,6 +172,18 @@ impl SnapshotHistory for LogHistory<'_> {
             .filter(|v| *v <= version)
             .max()
             .unwrap_or(0);
+        if let Some(records) = self.storage.live_records(object, first).await? {
+            self.reads += 1;
+            epoch.indexed = records;
+            return epoch
+                .indexed
+                .remove(object)
+                .context("live SQLite dependency missing");
+        }
+        self.reads += 1;
+        if let Some(bytes) = self.storage.snapshots.get(object).await? {
+            return Ok(bytes);
+        }
         if let Some(records) = self
             .storage
             .indexed_records(object, first, &epoch.indexes)
