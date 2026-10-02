@@ -22,8 +22,8 @@ export class RuntimeBuilder {
         try {
             await this.compile(staging)
             await this.installReplication(staging, { platform: this.platform, arch: this.arch })
-            await copyFile(path.join(this.root, "crates/terse-ltx/LICENSE"), path.join(staging, "LICENSE.terse-ltx"))
-            await copyFile(path.join(this.root, "crates/terse-ltx/NOTICE"), path.join(staging, "NOTICE.terse-ltx"))
+            await copyFile(path.join(this.root, "third_party/terse-ltx/LICENSE"), path.join(staging, "LICENSE.terse-ltx"))
+            await copyFile(path.join(this.root, "third_party/terse-ltx/NOTICE"), path.join(staging, "NOTICE.terse-ltx"))
             return await this.package(staging, output)
         } finally {
             await rm(staging, { recursive: true, force: true })

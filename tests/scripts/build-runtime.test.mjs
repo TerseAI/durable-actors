@@ -15,9 +15,9 @@ test("native builds package the runtime and replication tools with a matching ch
     const root = await mkdtemp(path.join(tmpdir(), "ldo-bundle-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "target/release"), { recursive: true })
-    await mkdir(path.join(root, "crates/terse-ltx"), { recursive: true })
-    await writeFile(path.join(root, "crates/terse-ltx/LICENSE"), "license")
-    await writeFile(path.join(root, "crates/terse-ltx/NOTICE"), "attribution")
+    await mkdir(path.join(root, "third_party/terse-ltx"), { recursive: true })
+    await writeFile(path.join(root, "third_party/terse-ltx/LICENSE"), "license")
+    await writeFile(path.join(root, "third_party/terse-ltx/NOTICE"), "attribution")
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
