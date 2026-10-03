@@ -22,6 +22,7 @@ RESERVED = {
     "db",
     "get_connections",
     "broadcast",
+    "broadcast_after_commit",
     "get",
     "connect",
     "prepare_websocket",

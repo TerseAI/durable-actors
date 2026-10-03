@@ -6,7 +6,7 @@ import { actorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 import type { ActorSchema } from "./schema.js"
-import { actorConnections, broadcastActor } from "./socket.js"
+import { actorConnections, broadcastActor, broadcastActorAfterCommit } from "./socket.js"
 import type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage } from "./socket.js"
 import { outgoingMessage, socketMetadata } from "./socketValidation.js"
 import type { ActorSchemas } from "./socketValidation.js"
@@ -77,6 +77,11 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /** Sends JSON to matching connections, including the sender by default. Messages are not saved. */
     protected broadcast(message: Outgoing, options?: ActorBroadcastOptions<Tag>): void {
         broadcastActor(this, message, options)
+    }
+
+    /** Sends after this invocation commits. Discarded on failure; use stored event IDs for replay. */
+    protected broadcastAfterCommit(message: Outgoing, options?: ActorBroadcastOptions<Tag>): void {
+        broadcastActorAfterCommit(this, message, options)
     }
 }
 
@@ -195,7 +200,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast" || name === "db")
+        if (name === "connect" || name === "broadcast" || name === "broadcastAfterCommit" || name === "db")
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)

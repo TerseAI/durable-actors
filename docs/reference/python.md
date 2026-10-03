@@ -101,6 +101,8 @@ class Room(Actor[Member, Message, Message]):
 
 Regenerate after adding `Room`, then connect with its required metadata. Connections also deliver `StateSnapshot` and `StateUpdate` events when an actor emits state.
 
+For authoritative acknowledgments, use `socket.send_after_commit(message)` or `self.broadcast_after_commit(message, ...)`. The host sends them only after state is durable and discards them on invocation failure; ordinary sends still stream immediately. The output queue is bounded to 512 effects and 24 MiB. These sends do not guarantee receipt or replay: persist pending messages with stable IDs, replay on reconnect, deduplicate repeated events, and remove pending messages only after acknowledgment.
+
 ```python
 from generated import actors
 from durable_actors import StateSnapshot, StateUpdate

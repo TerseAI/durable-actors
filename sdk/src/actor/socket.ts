@@ -20,6 +20,8 @@ interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends st
     readonly state: ActorSocketState
     /** Sends JSON. Throws if closed. Delivery does not confirm saved state. */
     send(message: Outgoing): void
+    /** Sends only after this invocation's state commits. Discarded on failure; not replayed. */
+    sendAfterCommit(message: Outgoing): void
     /**
      * @param code - Defaults to 1000; accepts 1000 or application codes 3000–4999.
      * @param reason - Defaults to an empty string; at most 123 UTF-8 bytes.
@@ -94,6 +96,10 @@ function broadcastActor(instance: object, message: unknown, options?: ActorBroad
     socketScope(instance).broadcast(message, options)
 }
 
+function broadcastActorAfterCommit(instance: object, message: unknown, options?: ActorBroadcastOptions): void {
+    socketScope(instance).broadcastAfterCommit(message, options)
+}
+
 async function runWithActorSockets<T>(
     instance: object,
     connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
@@ -101,15 +107,16 @@ async function runWithActorSockets<T>(
     publish?: (effects: readonly SocketEffect[]) => Promise<void>,
     schemas: ActorSchemas = {}
 ): Promise<{ readonly value: T; readonly effects: readonly SocketEffect[] }> {
-    const effects: SocketEffect[] = []
+    const buffer = new SocketBuffer()
     const output = publish === undefined ? undefined : new SocketOutput(publish)
-    const scope = new ActorSocketScope(connections, output ?? effects, schemas)
+    const scope = new ActorSocketScope(connections, output ?? buffer, schemas, buffer)
     const context = { instance, scope, active: true }
     return scopes.run(context, async () => {
         try {
-            return { value: await operation(scope), effects }
+            return { value: await operation(scope), effects: buffer.effects }
         } finally {
             context.active = false
+            buffer.active = false
             await scope.settle()
             await output?.flush()
         }
@@ -123,7 +130,8 @@ class ActorSocketScope {
     constructor(
         private readonly connections: readonly SocketConnection[] | (() => Promise<readonly SocketConnection[]>),
         readonly effects: Pick<SocketEffect[], "push">,
-        private readonly schemas: ActorSchemas
+        private readonly schemas: ActorSchemas,
+        private readonly committedEffects: Pick<SocketEffect[], "push">
     ) {
         if (typeof connections !== "function") this.loading = Promise.resolve(this.wrap(connections))
     }
@@ -146,7 +154,7 @@ class ActorSocketScope {
             socket.setState(state)
             return socket
         }
-        return new RuntimeActorSocket(connection, this.effects, this.schemas, state)
+        return new RuntimeActorSocket(connection, this.effects, this.schemas, this.committedEffects, state)
     }
 
     connection(connectionId: string): RuntimeActorSocket {
@@ -157,19 +165,29 @@ class ActorSocketScope {
     }
 
     broadcast(message: unknown, options: ActorBroadcastOptions = {}): void {
+        this.effects.push(this.broadcastEffect(message, options))
+    }
+
+    broadcastAfterCommit(message: unknown, options: ActorBroadcastOptions = {}): void {
+        this.committedEffects.push(this.broadcastEffect(message, options))
+    }
+
+    private broadcastEffect(message: unknown, options: ActorBroadcastOptions): SocketEffect {
         if (options.tagMatch !== undefined && options.tagMatch !== "all" && options.tagMatch !== "any")
             throw new ActorProtocolError('broadcast tagMatch must be "all" or "any"')
-        this.effects.push({
+        return {
             type: "broadcast",
             message: socketMessage(message, this.schemas),
             except_connection_ids: excludedSocketIds(options.except),
             tags: socketTags(options.tags ?? [], this.schemas),
             ...(options.tagMatch === undefined ? {} : { tag_match: options.tagMatch })
-        })
+        }
     }
 
     private wrap(connections: readonly SocketConnection[]): readonly RuntimeActorSocket[] {
-        const sockets = connections.map(connection => new RuntimeActorSocket(connection, this.effects, this.schemas))
+        const sockets = connections.map(
+            connection => new RuntimeActorSocket(connection, this.effects, this.schemas, this.committedEffects)
+        )
         for (const socket of sockets) this.byId.set(socket.id, socket)
         return sockets
     }
@@ -183,6 +201,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
         connection: SocketConnection,
         private readonly effects: Pick<SocketEffect[], "push">,
         private readonly schemas: ActorSchemas,
+        private readonly committedEffects: Pick<SocketEffect[], "push">,
         private stateValue: ActorSocketState = "open"
     ) {
         this.id = connection.id
@@ -211,8 +230,16 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
     }
 
     send(message: ActorSocketMessage): void {
+        this.sendTo(this.effects, message)
+    }
+
+    sendAfterCommit(message: ActorSocketMessage): void {
+        this.sendTo(this.committedEffects, message)
+    }
+
+    private sendTo(effects: Pick<SocketEffect[], "push">, message: ActorSocketMessage): void {
         if (this.stateValue === "closed") throw new ActorProtocolError("cannot send on a closed actor socket")
-        this.effects.push({ type: "send", connection_id: this.id, message: socketMessage(message, this.schemas) })
+        effects.push({ type: "send", connection_id: this.id, message: socketMessage(message, this.schemas) })
     }
 
     close(code = 1000, reason = ""): void {
@@ -238,6 +265,21 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
 
     setState(state: ActorSocketState): void {
         this.stateValue = state
+    }
+}
+
+class SocketBuffer {
+    readonly effects: SocketEffect[] = []
+    active = true
+    private bytes = 0
+
+    push(...effects: SocketEffect[]): number {
+        if (!this.active) throw new ActorProtocolError("socket scope is no longer active")
+        const bytes = Buffer.byteLength(JSON.stringify(effects))
+        if (this.effects.length + effects.length > 512 || this.bytes + bytes > 24 * 1024 * 1024)
+            throw new ActorProtocolError("actor socket output queue is full")
+        this.bytes += bytes
+        return this.effects.push(...effects)
     }
 }
 
@@ -317,7 +359,14 @@ function excludedSocketIds(except: ActorBroadcastOptions["except"]): readonly st
     return Array.isArray(except) ? except.map(socket => socket.id) : [(except as ActorSocket).id]
 }
 
-export { actorConnections, broadcastActor, decodeSocketMessage, runWithActorSockets, socketMessage }
+export {
+    actorConnections,
+    broadcastActor,
+    broadcastActorAfterCommit,
+    decodeSocketMessage,
+    runWithActorSockets,
+    socketMessage
+}
 export type {
     ActorSocketScope,
     ActorBroadcastOptions,

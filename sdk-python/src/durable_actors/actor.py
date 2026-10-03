@@ -137,6 +137,19 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
 
         current_scope(self).broadcast(message, except_ids, tags, tag_match)
 
+    def broadcast_after_commit(
+        self,
+        message: Outgoing,
+        *,
+        except_ids: tuple[str, ...] = (),
+        tags: tuple[Tag, ...] = (),
+        tag_match: Literal["all", "any"] = "all",
+    ) -> None:
+        """Send after this invocation commits; use stored event IDs for replay."""
+        from .socket import current_scope
+
+        current_scope(self).broadcast(message, except_ids, tags, tag_match, after_commit=True)
+
 
 def reentrant(method: F) -> F:
     """Allow other invocations to enter before this method finishes.

@@ -42,9 +42,17 @@ function validateRpc(rpc: RpcContract): void {
     for (const method of rpc.methods) {
         unique(methods, method.name, "RPC method")
         if (
-            ["constructor", "then", "connect", "broadcast", "db", "onConnect", "onMessage", "onDisconnect"].includes(
-                method.name
-            )
+            [
+                "constructor",
+                "then",
+                "connect",
+                "broadcast",
+                "broadcastAfterCommit",
+                "db",
+                "onConnect",
+                "onMessage",
+                "onDisconnect"
+            ].includes(method.name)
         )
             throw new Error(`reserved RPC method ${method.name}`)
         let optionalSeen = false

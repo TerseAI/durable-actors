@@ -22,3 +22,7 @@ SQL and `@Persisted` fields commit together after successful methods or socket h
 Use `this.db.transactionSync(() => { /* SQL operations */ })` for nested SQL savepoints. A thrown callback rolls back its SQL; releasing a savepoint does not commit the invocation. Callbacks must be synchronous. Savepoints do not roll back actor fields or external effects; ordinary invocation failure still rolls back SQL and persisted fields together.
 
 Database access is available during actor invocations, after construction. The runtime owns transactions and database files; transaction control, attached databases, vacuuming, and storage-related pragmas are unavailable. SQLite on Node.js requires 22.19+. Deploy matching SDK and runtime versions.
+
+## Commit-safe socket messages
+
+Use `socket.sendAfterCommit(message)` or `this.broadcastAfterCommit(message, options)` for authoritative acknowledgments: the host releases them only after the invocation's state is durable and discards them if it fails. Ordinary sends still stream immediately. Post-commit sends are bounded to 512 queued effects and 24 MiB per invocation; they do not guarantee receipt or replay. For recovery, persist pending messages with stable event IDs, replay them on reconnect, deduplicate repeated events, and remove pending messages only after acknowledgment.

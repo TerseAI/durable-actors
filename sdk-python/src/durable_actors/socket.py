@@ -90,10 +90,18 @@ class ActorSocket(Generic[Metadata, Outgoing, Tag]):
         Encoded messages are limited to 16 MiB. The top-level message types
         "state" and "state_update" are reserved for emitted state.
         """
+        self._send(message, False)
+
+    def send_after_commit(self, message: Outgoing) -> None:
+        """Send after this invocation commits; discarded on failure and not replayed."""
+        self._send(message, True)
+
+    def _send(self, message: Outgoing, after_commit: bool) -> None:
         if self._state == "closed":
             raise ValueError("cannot send on a closed socket")
         self._scope.push(
-            {"type": "send", "connection_id": self.id, "message": self._scope.message(message)}
+            {"type": "send", "connection_id": self.id, "message": self._scope.message(message)},
+            after_commit=after_commit,
         )
 
     def close(self, code: int = 1000, reason: str = "") -> None:
@@ -154,6 +162,7 @@ class SocketScope:
         self.live = live
         self.active = True
         self.pending: list[Document] = []
+        self.committed: list[Document] = []
         self.output: asyncio.Task[None] | None = None
         self.failure: Exception | None = None
         self.sockets: dict[str, ActorSocket[Any, Any, Any]] = {}
@@ -198,7 +207,13 @@ class SocketScope:
         return self.sockets[connection["id"]]
 
     def broadcast(
-        self, message: Any, except_ids: tuple[str, ...], tags: tuple[str, ...], tag_match: str
+        self,
+        message: Any,
+        except_ids: tuple[str, ...],
+        tags: tuple[str, ...],
+        tag_match: str,
+        *,
+        after_commit: bool = False,
     ) -> None:
         if tag_match not in ("all", "any") or len(except_ids) > 128:
             raise ValueError("invalid broadcast selectors")
@@ -209,7 +224,8 @@ class SocketScope:
                 "except_connection_ids": list(except_ids),
                 "tags": self.validate_tags(tags),
                 "tag_match": tag_match,
-            }
+            },
+            after_commit=after_commit,
         )
 
     def validate_tags(self, tags: tuple[str, ...]) -> list[str]:
@@ -222,31 +238,34 @@ class SocketScope:
         data = json.dumps(encoded, separators=(",", ":"), allow_nan=False)
         return {"type": "text", "data": data}
 
-    def push(self, effect: Document) -> None:
+    def push(self, effect: Document, *, after_commit: bool = False) -> None:
         if get_ident() != self.thread:
-            self.blocking(partial(self.enqueue, effect))
+            self.blocking(partial(self.enqueue, effect, after_commit=after_commit))
             return
         self.ensure_active()
         if self.failure:
             raise self.failure
         if (
-            len(self.pending) >= 512
-            or len(json.dumps([*self.pending, effect]).encode()) > 24 * 1024 * 1024
+            len(self.pending) + len(self.committed) >= 512
+            or len(json.dumps([*self.pending, *self.committed, effect]).encode()) > 24 * 1024 * 1024
         ):
             raise ValueError("socket output queue is full")
+        if after_commit and self.live:
+            self.committed.append(effect)
+            return
         self.pending.append(effect)
         if self.live and self.output is None:
             self.output = asyncio.create_task(self.drain())
 
-    async def enqueue(self, effect: Document) -> None:
-        self.push(effect)
+    async def enqueue(self, effect: Document, *, after_commit: bool = False) -> None:
+        self.push(effect, after_commit=after_commit)
 
     async def finish(self) -> list[Document]:
         if self.output is not None:
             await self.output
         if self.failure:
             raise self.failure
-        return list(self.pending)
+        return [*self.pending, *self.committed]
 
     async def drain(self) -> None:
         try:
