@@ -2,6 +2,7 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
+import { waitUntil } from "./background.js"
 import { actorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
@@ -49,6 +50,11 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /** Actor-local SQLite. Changes commit with persisted fields after a successful invocation. */
     protected get db(): ActorDatabase {
         return actorDatabase(this)
+    }
+
+    /** Runs a callback after this call commits, in a separate serialized invocation. Not retried after a crash. */
+    protected waitUntil(task: () => Promise<unknown>): void {
+        waitUntil(this, task)
     }
 
     /**
@@ -200,7 +206,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast" || name === "broadcastAfterCommit" || name === "db")
+        if (["connect", "broadcast", "broadcastAfterCommit", "db", "waitUntil", "__background"].includes(name))
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)

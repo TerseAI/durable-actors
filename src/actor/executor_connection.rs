@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 21;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 22;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
@@ -138,6 +138,10 @@ pub enum ActorSocketEffect {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
+    Background {
+        outcome: Box<ActorMethodOutcome>,
+        tasks: Vec<u64>,
+    },
     Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
@@ -149,6 +153,10 @@ pub enum ActorMethodOutcome {
 
 #[derive(Debug, PartialEq)]
 pub enum ActorSocketOutcome {
+    Background {
+        outcome: Box<ActorSocketOutcome>,
+        tasks: Vec<u64>,
+    },
     Interleaved(ActorInterleavedOutcome),
     Handled {
         state: ActorState,
@@ -466,19 +474,30 @@ impl ActorExecutor for JsActorExecutor {
                 state,
                 effects,
                 sequence,
-            } => Ok(match sequence {
-                Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
-                    sequence,
-                    result,
-                    state,
-                    effects,
-                }),
-                None => ActorMethodOutcome::Completed {
-                    result,
-                    state,
-                    effects,
-                },
-            }),
+                background_tasks,
+            } => {
+                let outcome = match sequence {
+                    Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
+                        sequence,
+                        result,
+                        state,
+                        effects,
+                    }),
+                    None => ActorMethodOutcome::Completed {
+                        result,
+                        state,
+                        effects,
+                    },
+                };
+                Ok(if background_tasks.is_empty() {
+                    outcome
+                } else {
+                    ActorMethodOutcome::Background {
+                        outcome: Box::new(outcome),
+                        tasks: background_tasks,
+                    }
+                })
+            }
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
                     code,
@@ -507,15 +526,26 @@ impl ActorExecutor for JsActorExecutor {
                 state,
                 effects,
                 sequence,
-            } => Ok(match sequence {
-                Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
-                    sequence,
-                    result: Value::Null,
-                    state,
-                    effects,
-                }),
-                None => ActorSocketOutcome::Handled { state, effects },
-            }),
+                background_tasks,
+            } => {
+                let outcome = match sequence {
+                    Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
+                        sequence,
+                        result: Value::Null,
+                        state,
+                        effects,
+                    }),
+                    None => ActorSocketOutcome::Handled { state, effects },
+                };
+                Ok(if background_tasks.is_empty() {
+                    outcome
+                } else {
+                    ActorSocketOutcome::Background {
+                        outcome: Box::new(outcome),
+                        tasks: background_tasks,
+                    }
+                })
+            }
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
                     code,
@@ -1117,6 +1147,8 @@ enum ExecutorReply {
         #[serde(default)]
         sequence: Option<u64>,
         #[serde(default)]
+        background_tasks: Vec<u64>,
+        #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
@@ -1124,6 +1156,8 @@ enum ExecutorReply {
         state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
+        #[serde(default)]
+        background_tasks: Vec<u64>,
         effects: Vec<ActorSocketEffect>,
     },
     Failed {

@@ -196,6 +196,8 @@ impl ActorHost {
         let request = ActorRequest {
             trace: self.trace(&operation, started),
             waiting: None,
+            background: std::collections::VecDeque::new(),
+            continue_background: false,
             operation,
             owner_epoch,
 
@@ -571,6 +573,8 @@ struct ActorMailbox {
 }
 
 struct ActorRequest {
+    continue_background: bool,
+    background: std::collections::VecDeque<u64>,
     waiting: Option<WaitingRequest>,
     trace: Option<RequestSpan>,
     operation: ActorOperation,

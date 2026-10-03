@@ -130,6 +130,15 @@ impl ActorRuntime {
         &self.endpoint
     }
 
+    pub(super) async fn publish_background_effects(
+        &self,
+        actor: &crate::actor::ActorKey,
+        effects: Vec<ActorSocketEffect>,
+    ) -> Result<()> {
+        self.storage.ensure_authority()?;
+        self.publisher.publish(actor, effects).await
+    }
+
     pub(super) fn executor(&self) -> Arc<dyn ActorExecutor> {
         self.executor.clone()
     }
@@ -600,7 +609,7 @@ impl ActorRuntime {
     ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
     {
         match outcome {
-            Ok(ActorMethodOutcome::Interleaved(_)) => {
+            Ok(ActorMethodOutcome::Background { .. }) | Ok(ActorMethodOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
             }
             Ok(ActorMethodOutcome::Completed {
@@ -647,7 +656,7 @@ impl ActorRuntime {
     ) -> std::result::Result<(ActorState, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
         match self.executor.handle_socket_shared(invocation, state).await {
-            Ok(ActorSocketOutcome::Interleaved(_)) => {
+            Ok(ActorSocketOutcome::Background { .. }) | Ok(ActorSocketOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
             }
             Ok(ActorSocketOutcome::Handled { state, effects }) => {

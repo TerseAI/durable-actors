@@ -195,3 +195,9 @@ include = ["templates/*.txt", "data/*.json"]
 ```
 
 Use editor hover or `help()` for full API signatures, including `ActorSessionTransport` for renewable sessions and `ActorInvocationError` for failures.
+
+## Background tasks
+
+`wait_until` accepts a deferred callback: `self.wait_until(start_sandbox_and_update_status)`. The request commits without waiting for callbacks, which begin after that commit. Each callback runs in a separate serialized invocation with actor database and socket access; its successful changes commit independently. A failed callback rolls back persisted changes; ephemeral state may reset on failure. Sibling callbacks continue with the restored fields. Callbacks registered by a failing invocation are discarded. Read actor fields and reacquire socket handles inside each callback.
+
+Up to 64 callbacks may be pending. Pending work prevents idle eviction and participates in graceful shutdown, but is lost on a crash and is never retried. Callbacks still serialize with incoming requests: use short callbacks. Background tasks are unavailable on classes with reentrant methods.

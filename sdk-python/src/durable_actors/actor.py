@@ -47,6 +47,15 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
             )
             setattr(self, field.name, value)
 
+    def wait_until(self, task: Callable[[], Any]) -> None:
+        """Run a callback after this call commits, in its own serialized invocation.
+
+        Work retains the actor's lifetime but is not retried after a crash.
+        """
+        from .background import wait_until
+
+        wait_until(self, task)
+
     @classmethod
     def get(cls, actor_id: str, transport: ActorTransport | None = None) -> Self:
         """Return a typed synchronous reference without activating the actor locally.

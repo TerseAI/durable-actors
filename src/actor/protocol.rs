@@ -52,6 +52,7 @@ impl ActorInvocation {
         );
         self.actor.validate()?;
         validate_component("actor method", &self.method, MAX_METHOD_BYTES)?;
+        ensure!(self.method != "__background", "actor method is reserved");
         Ok(())
     }
 }

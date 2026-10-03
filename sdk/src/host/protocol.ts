@@ -72,7 +72,7 @@ const executorCommandSchema = z.discriminatedUnion("type", [
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(21), supports_residency: z.boolean().optional() }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(22), supports_residency: z.boolean().optional() }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -113,7 +113,7 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 21
+    readonly protocol: 22
     readonly actor_names: readonly string[]
 }
 
@@ -125,6 +125,7 @@ interface ReplyMessage {
 
 interface InvokedReply {
     readonly type: "invoked"
+    readonly background_tasks?: readonly number[]
     readonly sequence?: number
     readonly result: JsonValue
     readonly sqlite: SqliteState
@@ -133,6 +134,7 @@ interface InvokedReply {
 
 interface WebSocketHandledReply {
     readonly type: "websocket_handled"
+    readonly background_tasks?: readonly number[]
     readonly sequence?: number
     readonly sqlite: SqliteState
     readonly effects: readonly SocketEffect[]

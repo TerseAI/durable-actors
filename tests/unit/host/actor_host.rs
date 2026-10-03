@@ -571,6 +571,9 @@ impl ActorExecutor for ControlledExecutor {
             )
             .await?;
         match result {
+            ActorMethodOutcome::Background { .. } => {
+                unreachable!("controlled executor has no background tasks")
+            }
             ActorMethodOutcome::Interleaved(outcome) => {
                 Ok(ActorSocketOutcome::Interleaved(outcome))
             }

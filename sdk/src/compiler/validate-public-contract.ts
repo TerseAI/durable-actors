@@ -49,6 +49,8 @@ function validateRpc(rpc: RpcContract): void {
                 "broadcast",
                 "broadcastAfterCommit",
                 "db",
+                "waitUntil",
+                "__background",
                 "onConnect",
                 "onMessage",
                 "onDisconnect"

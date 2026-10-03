@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .actor import Actor
+from .background import BackgroundTasks
 from .contract import Document, Method, decode, describe_actor, encode
 from .database import bind_database
 from .socket import Effects, SocketScope, scope_context
@@ -21,6 +22,7 @@ class ActorRuntime:
         effects: Effects,
         database: Storage | None = None,
     ) -> None:
+        self.background = BackgroundTasks()
         self.effects = effects
         self.database = database if database is not None else SqliteStorage()
         self.completion = asyncio.Lock()
@@ -63,6 +65,7 @@ class ActorRuntime:
         self.instance = None
         self.fatal = None
         self.database.close()
+        self.background.clear()
         return {"type": "evicted"}
 
     async def run(self, command: Document) -> Document:
@@ -103,14 +106,22 @@ class ActorRuntime:
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
-        return await self.invoke(command, admit)
+        assert self.instance is not None
+        with self.background.scope(self.instance, bool(self.definition.reentrant_methods)) as tasks:
+            reply = await self.invoke(command, admit)
+            if reply["type"] in {"invoked", "websocket_handled"}:
+                if tasks:
+                    reply["background_tasks"] = tasks
+            else:
+                self.background.discard(tasks)
+            return reply
 
     async def invoke(self, command: Document, admit: Any) -> Document:
         instance = self.instance
         assert instance is not None
         socket_event = command["type"] == "websocket_event"
         name = "on_" + command["event"]["type"] if socket_event else command["method"]
-        if not socket_event and name not in self.definition.methods:
+        if not socket_event and name != "__background" and name not in self.definition.methods:
             return failed("method_not_found", name)
         before = self.snapshot()
         connecting = socket_event and command["event"]["type"] == "connect"
@@ -129,6 +140,13 @@ class ActorRuntime:
                 admit()
                 if hasattr(instance, name):
                     await invoke_handler(scope, getattr(instance, name), *args)
+                result = None
+            elif name == "__background":
+                value = await invoke_handler(scope, self.background.take(command["args"][0]))
+                if inspect.isawaitable(value):
+                    if inspect.iscoroutine(value):
+                        value.close()
+                    raise TypeError("background callbacks must be synchronous functions")
                 result = None
             else:
                 method = self.definition.methods[name]
@@ -169,8 +187,11 @@ class ActorRuntime:
                 return reply
         except Exception as error:
             if not self.definition.reentrant_methods:
+                preserve_callbacks = name == "__background"
+                if not preserve_callbacks:
+                    self.background.clear()
                 await asyncio.to_thread(self.database.rollback)
-                self.restore(before)
+                self.restore(before, preserve_callbacks)
             return failed(
                 "actor_socket_failed" if socket_event else "actor_method_failed", str(error)
             )
@@ -216,7 +237,7 @@ class ActorRuntime:
                 )
         return effects
 
-    def restore(self, state: Any) -> None:
+    def restore(self, state: Any, preserve_callbacks: bool = False) -> None:
         instance = self.definition.actor()
         if state is not None:
             if not isinstance(state, dict):
@@ -224,8 +245,12 @@ class ActorRuntime:
             for name, field in self.definition.fields.items():
                 if field.persisted and name in state:
                     setattr(instance, name, decode(field.adapter, state[name]))
-        bind_database(instance, self.database)
-        self.instance = instance
+        if preserve_callbacks and self.instance is not None:
+            vars(self.instance).clear()
+            vars(self.instance).update(vars(instance))
+        else:
+            bind_database(instance, self.database)
+            self.instance = instance
         self.last_state = self.snapshot()
 
     def snapshot(self) -> Document:

@@ -20,6 +20,7 @@ Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
 RESERVED = {
     "db",
+    "wait_until",
     "get_connections",
     "broadcast",
     "broadcast_after_commit",

@@ -66,6 +66,7 @@ jobs:
                   pnpm --dir sdk build
                   pnpm --dir sdk exec tsc -p tsconfig.test.json
                   node --test sdk/.test-dist/tests/cli/python.test.js
+                  DURABLE_ACTORS_TEST_TYPESCRIPT=1 uv run --project sdk-python --locked pytest -q sdk-python/tests/test_background_e2e.py -k typescript
             - name: Build distributions
               if: matrix.python == '3.13'
               working-directory: sdk-python

@@ -26,3 +26,9 @@ Database access is available during actor invocations, after construction. The r
 ## Commit-safe socket messages
 
 Use `socket.sendAfterCommit(message)` or `this.broadcastAfterCommit(message, options)` for authoritative acknowledgments: the host releases them only after the invocation's state is durable and discards them if it fails. Ordinary sends still stream immediately. Post-commit sends are bounded to 512 queued effects and 24 MiB per invocation; they do not guarantee receipt or replay. For recovery, persist pending messages with stable event IDs, replay them on reconnect, deduplicate repeated events, and remove pending messages only after acknowledgment.
+
+## Background tasks
+
+`waitUntil` accepts a deferred callback: `this.waitUntil(async () => { await startSandbox(); this.status = "ready" })`. The request commits without waiting for callbacks, which begin after that commit. Each callback runs in a separate serialized invocation with actor database and socket access; its successful changes commit independently. A failed callback rolls back persisted changes; ephemeral state may reset on failure. Sibling callbacks continue with the restored fields. Callbacks registered by a failing invocation are discarded. Read actor fields and reacquire socket handles inside each callback.
+
+Up to 64 callbacks may be pending. Pending work prevents idle eviction and participates in graceful shutdown, but is lost on a crash and is never retried. Callbacks still serialize with incoming requests: use short callbacks. Background tasks are unavailable on classes with reentrant methods.

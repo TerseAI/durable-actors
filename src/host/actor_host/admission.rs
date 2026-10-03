@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 
@@ -29,9 +29,19 @@ pub(super) async fn run(
         next_invocation: 0,
         blocked_on: None,
         interleaved: false,
+        deferred: VecDeque::new(),
     };
     let mut open = true;
     loop {
+        if mailbox.blocked_on.is_none()
+            && let Some(request) = mailbox.deferred.pop_front()
+        {
+            admission.borrow_and_update();
+            if !mailbox.admit(request, true).await {
+                return;
+            }
+            continue;
+        }
         tokio::select! {
             biased;
             Some((id, request, result)) = mailbox.running.next(), if !mailbox.running.is_empty() => {
@@ -66,10 +76,12 @@ struct Mailbox {
     blocked_on: Option<u64>,
     interleaved: bool,
     next_sequence: u64,
+    deferred: VecDeque<ActorRequest>,
 }
 
 impl Mailbox {
     async fn admit(&mut self, mut request: ActorRequest, accepting: bool) -> bool {
+        request.continue_background = false;
         if !accepting && !request.operation.is_disconnect() {
             self.finish(request, Ok(ActorExecutionResult::HostUnavailable))
                 .await;
@@ -139,6 +151,23 @@ impl Mailbox {
     }
 
     async fn executed(&mut self, id: u64, mut request: ActorRequest, result: Execution) -> bool {
+        let result = match result {
+            Ok(ActorMethodOutcome::Background { outcome, tasks }) => {
+                if tasks.len() + request.background.len() > 64 {
+                    return self
+                        .stop(
+                            request,
+                            anyhow::anyhow!("actor background task limit reached"),
+                        )
+                        .await;
+                }
+                request.background.extend(tasks);
+                Ok(*outcome)
+            }
+            other => other,
+        };
+        request.continue_background = request.operation.invocation().method == "__background"
+            && matches!(&result, Ok(ActorMethodOutcome::Failed(failure)) if failure.code == "actor_method_failed");
         if let Ok(ActorMethodOutcome::Interleaved(outcome)) = result {
             self.interleaved = true;
             if outcome.sequence < self.next_sequence || self.ready.contains_key(&outcome.sequence) {
@@ -248,7 +277,21 @@ impl Mailbox {
         false
     }
 
-    async fn finish(&mut self, mut request: ActorRequest, result: Result<ActorExecutionResult>) {
+    async fn finish(
+        &mut self,
+        mut request: ActorRequest,
+        mut result: Result<ActorExecutionResult>,
+    ) {
+        if request.operation.invocation().method == "__background"
+            && let Ok(ActorExecutionResult::Completed { effects, .. }) = &mut result
+            && !effects.is_empty()
+            && let Err(error) = self
+                .runtime
+                .publish_background_effects(request.operation.actor(), std::mem::take(effects))
+                .await
+        {
+            tracing::warn!(%error, actor = %self.object, "background task notification failed after commit");
+        }
         ActorRuntime::log_invocation(
             self.runtime.endpoint(),
             &request.operation.invocation(),
@@ -258,6 +301,36 @@ impl Mailbox {
         if let Some(trace) = &mut request.trace {
             trace.state_version(self.runtime.state_version());
             trace.complete(&result);
+        }
+        if request.operation.invocation().method == "__background"
+            && !matches!(result, Ok(ActorExecutionResult::Completed { .. }))
+        {
+            tracing::warn!(result = ?result, actor = %self.object, "background task failed");
+        }
+        let completed = matches!(result, Ok(ActorExecutionResult::Completed { .. }));
+        let failed_callback = request.continue_background
+            && matches!(&result, Ok(ActorExecutionResult::Failed { failure }) if failure.code == "actor_error");
+        if !completed && !failed_callback && !request.background.is_empty() {
+            self.runtime.evict(request.operation.actor()).await;
+            request.background.clear();
+        }
+        if completed || failed_callback {
+            if let Some(task) = request.background.pop_front() {
+                let (unused, _) = oneshot::channel();
+                let reply = std::mem::replace(&mut request.reply, unused);
+                let _ = reply.send(result);
+                let actor = request.operation.actor().clone();
+                request.operation = ActorOperation::Method(ActorInvocation {
+                    actor,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    method: "__background".into(),
+                    args: vec![task.into()],
+                });
+                request.trace = None;
+                request.timings = InvocationTimings::new();
+                self.deferred.push_back(request);
+                return;
+            }
         }
         let _ = self
             .completed
@@ -295,6 +368,22 @@ async fn execute(
                 .handle_socket_shared(invocation.clone(), state)
                 .await?
             {
+                ActorSocketOutcome::Background { outcome, tasks } => {
+                    let outcome = match *outcome {
+                        ActorSocketOutcome::Handled { state, effects } => {
+                            ActorMethodOutcome::Completed {
+                                result: serde_json::Value::Null,
+                                state,
+                                effects,
+                            }
+                        }
+                        _ => anyhow::bail!("background socket task returned an invalid outcome"),
+                    };
+                    ActorMethodOutcome::Background {
+                        outcome: Box::new(outcome),
+                        tasks,
+                    }
+                }
                 ActorSocketOutcome::Interleaved(outcome) => {
                     ActorMethodOutcome::Interleaved(outcome)
                 }

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
+import { ActorBackgroundTasks } from "../actor/background.js"
 import { bindActorDatabase, runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
@@ -22,6 +23,7 @@ import type { ActorDatabaseStorage, SqliteState } from "./sqlite.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
+    private readonly background = new ActorBackgroundTasks()
     private instance: AnyActor | undefined
     private identity: ActorIdentity | undefined
     private readonly schemas: ActorSchemas
@@ -86,13 +88,16 @@ class ActorRuntime {
         const prepared = this.prepare(command)
         if (!(prepared instanceof Actor)) return prepared
         const instance = prepared
-        if (!this.definition.methods.has(command.method)) {
+        if (command.method !== "__background" && !this.definition.methods.has(command.method)) {
             return failedReply(
                 "method_not_found",
                 `actor method ${this.definition.actorName}.${command.method} was not found`
             )
         }
-        const method: unknown = Reflect.get(instance, command.method)
+        const method: unknown =
+            command.method === "__background"
+                ? this.background.take(command.args[0])
+                : Reflect.get(instance, command.method)
         if (typeof method !== "function") {
             return failedReply(
                 "method_not_callable",
@@ -101,20 +106,33 @@ class ActorRuntime {
         }
 
         const before = snapshotActorState(instance, this.definition.state)
+        let registered: readonly number[] = []
         try {
             this.admitNext(command.method)
-            const operation = await runWithActorSockets(
-                instance,
-                this.connections,
-                async () =>
-                    runWithActorDatabase(
-                        instance,
-                        async () => Reflect.apply(method, instance, command.args) as Promise<unknown>
-                    ),
-                this.publish,
-                this.schemas
+            const background = await this.background.run(instance, this.interleaved, () =>
+                runWithActorSockets(
+                    instance,
+                    this.connections,
+                    async () =>
+                        runWithActorDatabase(
+                            instance,
+                            async () =>
+                                Reflect.apply(
+                                    method,
+                                    instance,
+                                    command.method === "__background" ? [] : command.args
+                                ) as Promise<unknown>
+                        ),
+                    this.publish,
+                    this.schemas
+                )
             )
-            const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
+            registered = background.tasks
+            const operation = background.value
+            const result: JsonValue =
+                command.method === "__background" || operation.value === undefined
+                    ? null
+                    : cloneJson(operation.value, "actor result")
             return await this.complete(async () => {
                 const state = snapshotActorState(instance, this.definition.state)
                 const effects = [...operation.effects, ...this.stateUpdates(before, state)]
@@ -122,16 +140,23 @@ class ActorRuntime {
                     type: "invoked",
                     result,
                     sqlite: await this.databaseState(state),
+                    ...(background.tasks.length === 0 ? {} : { background_tasks: background.tasks }),
                     ...this.completionOrder(),
                     ...(effects.length === 0 ? {} : { effects })
                 }
             })
         } catch (error) {
+            this.background.discard(registered)
             if (error instanceof SqliteCaptureError) {
                 this.fatal = failedReply("actor_database_failed", errorMessage(error))
                 return this.fatal
             }
-            if (!this.interleaved) this.restoreInstance(command.actor, before)
+            if (!this.interleaved)
+                this.restoreInstance(
+                    command.actor,
+                    before,
+                    command.type === "invoke" && command.method === "__background"
+                )
             return failedReply("actor_method_failed", errorMessage(error))
         }
     }
@@ -143,26 +168,31 @@ class ActorRuntime {
         const methodName = lifecycleMethod(command)
         const method: unknown = Reflect.get(instance, methodName)
         const before = snapshotActorState(instance, this.definition.state)
+        let registered: readonly number[] = []
         try {
             this.admitNext(methodName)
-            const operation = await runWithActorSockets(
-                instance,
-                command.connections,
-                async scope => {
-                    const args = lifecycleArguments(command, scope, this.schemas)
-                    if (method === undefined) return
-                    if (typeof method !== "function")
-                        throw new ActorProtocolError(
-                            `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
+            const background = await this.background.run(instance, this.interleaved, () =>
+                runWithActorSockets(
+                    instance,
+                    command.connections,
+                    async scope => {
+                        const args = lifecycleArguments(command, scope, this.schemas)
+                        if (method === undefined) return
+                        if (typeof method !== "function")
+                            throw new ActorProtocolError(
+                                `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
+                            )
+                        await runWithActorDatabase(
+                            instance,
+                            async () => Reflect.apply(method, instance, args) as Promise<unknown>
                         )
-                    await runWithActorDatabase(
-                        instance,
-                        async () => Reflect.apply(method, instance, args) as Promise<unknown>
-                    )
-                },
-                command.event.type === "connect" ? undefined : this.publish,
-                this.schemas
+                    },
+                    command.event.type === "connect" ? undefined : this.publish,
+                    this.schemas
+                )
             )
+            registered = background.tasks
+            const operation = background.value
             return await this.complete(async () => {
                 const state = snapshotActorState(instance, this.definition.state)
                 const effects = [
@@ -176,11 +206,13 @@ class ActorRuntime {
                 return {
                     type: "websocket_handled",
                     sqlite: await this.databaseState(state),
+                    ...(background.tasks.length === 0 ? {} : { background_tasks: background.tasks }),
                     ...this.completionOrder(),
                     effects: socketEffects(command, state, effects, this.definition.state)
                 }
             })
         } catch (error) {
+            this.background.discard(registered)
             if (error instanceof SqliteCaptureError) {
                 this.fatal = failedReply("actor_database_failed", errorMessage(error))
                 return this.fatal
@@ -234,9 +266,22 @@ class ActorRuntime {
         return await this.database.snapshot()
     }
 
-    private restoreInstance(identity: ActorIdentity, state: JsonObject): void {
+    private restoreInstance(identity: ActorIdentity, state: JsonObject, preserveCallbacks = false): void {
+        const previous = this.instance
+        if (!preserveCallbacks) this.background.clear()
         this.database.rollback()
-        this.createInstance(identity, state)
+        const restored = this.createInstance(identity, state)
+        if (preserveCallbacks && previous !== undefined) {
+            for (const key of Reflect.ownKeys(previous)) {
+                if (!Object.hasOwn(restored, key) && !Reflect.deleteProperty(previous, key))
+                    throw new ActorSerializationError(`actor field ${String(key)} cannot be removed`)
+            }
+            for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(restored))) {
+                if (!Reflect.defineProperty(previous, key, descriptor))
+                    throw new ActorSerializationError(`actor field ${key} cannot be restored`)
+            }
+            this.instance = previous
+        }
     }
 
     private stateUpdates(before: JsonObject, state: JsonObject, except?: string): SocketEffect[] {
@@ -246,6 +291,7 @@ class ActorRuntime {
     }
 
     private reset(): void {
+        this.background.clear()
         this.database.close()
         this.instance = undefined
         this.identity = undefined

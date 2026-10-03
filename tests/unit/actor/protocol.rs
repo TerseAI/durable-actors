@@ -75,3 +75,24 @@ fn project_identity_separates_same_named_actors() {
         first
     );
 }
+
+#[test]
+fn callers_cannot_dispatch_internal_background_callbacks() {
+    let invocation = ActorInvocation {
+        request_id: "request".into(),
+        actor: ActorKey {
+            project_id: "default".into(),
+            actor_name: "Actor".into(),
+            actor_id: "one".into(),
+        },
+        method: "__background".into(),
+        args: vec![serde_json::json!(1)],
+    };
+    assert!(
+        invocation
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("reserved")
+    );
+}
