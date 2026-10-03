@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, time::Duration};
+use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tokio::net::TcpListener;
@@ -6,6 +6,7 @@ use tokio::net::TcpListener;
 use super::process::{ActorHostConfig, serve_assigned_host, spawn_executor_process};
 use crate::actor::{ActorExecutorListener, WarmExecutor};
 use crate::bucket::WarmGcs;
+use crate::litestream::{Litestream, Replicator};
 
 pub(super) struct WarmHost {
     pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
@@ -15,6 +16,7 @@ pub(super) struct WarmHost {
     pub entrypoint: String,
     pub storage: WarmGcs,
     pub control_plane: Option<WarmControlPlane>,
+    pub replication: Arc<dyn Replicator>,
 }
 
 pub(super) struct WarmControlPlane {
@@ -54,11 +56,12 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
                     storage.preconnect().await;
                     anyhow::Ok(storage)
                 },
+                Litestream::start("litestream".into()),
             )
         },
         prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
     );
-    let (mut executor, storage) = warmed?;
+    let (mut executor, storage, replication) = warmed?;
     let control_plane = Some(control_plane?);
     tokio::fs::write(&ready, b"ready\n").await?;
     tokio::pin!(shutdown);
@@ -103,6 +106,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         entrypoint,
         storage,
         control_plane,
+        replication: Arc::new(replication),
     };
     serve_assigned_host(config, Some(warm), shutdown).await
 }

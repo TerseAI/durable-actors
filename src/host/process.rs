@@ -363,15 +363,17 @@ async fn prepare_actor_host(
 ) -> Result<PreparedActorHost> {
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
-        Some(warm) => (
-            Some(warm.listener),
-            Some((warm.executor, warm.javascript, warm.entrypoint)),
-            Some(warm.storage),
-            warm.control_plane,
-        ),
-        None => (None, None, None, None),
-    };
+    let (warm_listener, warm_executor, warm_storage, warm_control_plane, warm_replication) =
+        match warm {
+            Some(warm) => (
+                Some(warm.listener),
+                Some((warm.executor, warm.javascript, warm.entrypoint)),
+                Some(warm.storage),
+                warm.control_plane,
+                Some(warm.replication),
+            ),
+            None => (None, None, None, None, None),
+        };
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
         async {
             match warm_control_plane.filter(|warm| warm.url == config.control_plane_url) {
@@ -428,10 +430,21 @@ async fn prepare_actor_host(
         timings.executor_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
         result
     };
-    let (lease, executor) = tokio::join!(storage_ready, executor_ready);
+    let replication_ready = async {
+        let replication: Arc<dyn crate::litestream::Replicator> = match warm_replication {
+            Some(replication) => replication,
+            None => Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+        };
+        timings.replication_ready_at_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        anyhow::Ok(replication)
+    };
+    let (lease, executor, replication) =
+        tokio::join!(storage_ready, executor_ready, replication_ready);
     let (lease, renewal) = lease?;
-    let (executor_connection, javascript) = match executor {
-        Ok(executor) => executor,
+    let ((executor_connection, javascript), replication) = match executor
+        .and_then(|executor| replication.map(|replication| (executor, replication)))
+    {
+        Ok(ready) => ready,
         Err(error) => {
             let _ = lease.unregister().await;
             let _ = renewal.shutdown().await;
@@ -449,7 +462,7 @@ async fn prepare_actor_host(
             storage.clone(),
             super::persistence::ActorPersistence::new(storage.clone()),
             sockets.clone(),
-            Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+            replication,
         )
         .with_traces(crate::request_traces::TraceSender::start(
             control_plane.clone(),
@@ -548,6 +561,7 @@ struct HostStartupTimings {
     control_plane_ready_at_ms: Option<f64>,
     storage_ready_at_ms: Option<f64>,
     executor_ready_at_ms: Option<f64>,
+    replication_ready_at_ms: Option<f64>,
     javascript_spawned_at_ms: Option<f64>,
     lease_registered_at_ms: Option<f64>,
     executor_notified_at_ms: Option<f64>,
@@ -562,6 +576,7 @@ impl HostStartupTimings {
             control_plane_ready_at_ms: None,
             storage_ready_at_ms: None,
             executor_ready_at_ms: None,
+            replication_ready_at_ms: None,
             javascript_spawned_at_ms: None,
             lease_registered_at_ms: None,
             executor_notified_at_ms: None,
@@ -589,6 +604,7 @@ fn log_startup(
         control_plane_ready_at_ms = timings.control_plane_ready_at_ms,
         storage_ready_at_ms = timings.storage_ready_at_ms,
         executor_ready_at_ms = timings.executor_ready_at_ms,
+        replication_ready_at_ms = timings.replication_ready_at_ms,
         javascript_spawned_at_ms = timings.javascript_spawned_at_ms,
         lease_registered_at_ms = timings.lease_registered_at_ms,
         executor_notified_at_ms = timings.executor_notified_at_ms,
