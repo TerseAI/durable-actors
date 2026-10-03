@@ -3,6 +3,7 @@ use anyhow::{Context, Result, ensure};
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use std::{
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -275,8 +276,12 @@ async fn restore_database(
         tokio::fs::create_dir_all(path.parent().context("LTX directory missing")?).await?;
         let file = file.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut output = std::fs::File::create(path)?;
+            let mut output = BufWriter::with_capacity(
+                crate::payload::IO_BUFFER_BYTES,
+                std::fs::File::create(path)?,
+            );
             std::io::copy(&mut file.reader(), &mut output)?;
+            output.flush()?;
             Ok(())
         })
         .await??;

@@ -47,3 +47,25 @@ async fn uploads_have_bounded_chunks_and_replay_the_requested_offset() -> Result
     assert!(upload.next().await.is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn downloads_bound_pending_bytes_and_preserve_the_final_partial_batch() -> Result<()> {
+    use crate::payload::{Download, IO_BUFFER_BYTES};
+    use bytes::Bytes;
+
+    let expected = Bytes::from((0..1024 * 1024 + 17).map(|n| n as u8).collect::<Vec<_>>());
+    for chunk_size in [8192, 100_003, 300_001] {
+        let mut download = Download::new();
+        for chunk in expected.chunks(chunk_size) {
+            download = download.append(Bytes::copy_from_slice(chunk)).await?;
+            assert!(download.buffer.len() < IO_BUFFER_BYTES);
+            assert!(download.buffer.capacity() <= IO_BUFFER_BYTES);
+        }
+        assert_eq!(download.finish().await?, expected);
+    }
+    let mut download = Download::new();
+    download = download.append(expected.slice(..17)).await?;
+    assert_eq!(download.finish().await?, expected.slice(..17));
+    assert!(Download::new().finish().await?.is_empty());
+    Ok(())
+}

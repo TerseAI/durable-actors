@@ -147,20 +147,20 @@ impl LogZone for GcsZone {
         let mut reader = descriptor
             .read_range(ReadRange::segment(0, size as u64))
             .await;
-        let mut spool = crate::payload::Spool::new();
+        let mut download = crate::payload::Download::new();
         let mut length = 0usize;
         while let Some(chunk) = reader.next().await {
             let chunk = chunk?;
             length += chunk.len();
-            spool = crate::payload::append(spool, chunk).await?;
             ensure!(length <= size as usize, "log read exceeded persisted size");
+            download = download.append(chunk).await?;
         }
         ensure!(
             length == size as usize && persisted.is_none_or(|size| size as usize == length),
             "incomplete fenced log read"
         );
         drop(writer);
-        tokio::task::spawn_blocking(move || spool.finish()).await?
+        download.finish().await
     }
 
     async fn read_range(&self, replica: &Replica, start: u64, length: u64) -> Result<Bytes> {
@@ -175,16 +175,16 @@ impl LogZone for GcsZone {
         let mut reader = descriptor
             .read_range(ReadRange::segment(start, length))
             .await;
-        let mut spool = crate::payload::Spool::new();
+        let mut download = crate::payload::Download::new();
         let mut received = 0u64;
         while let Some(chunk) = reader.next().await {
             let chunk = chunk?;
             received += chunk.len() as u64;
-            spool = crate::payload::append(spool, chunk).await?;
             ensure!(received <= length, "Rapid range exceeded requested length");
+            download = download.append(chunk).await?;
         }
         ensure!(received == length, "incomplete Rapid range");
-        tokio::task::spawn_blocking(move || spool.finish()).await?
+        download.finish().await
     }
 
     async fn delete(&self, replica: &Replica) -> Result<()> {

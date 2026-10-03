@@ -270,11 +270,11 @@ impl GcsBucket {
         let length = range.map_or(response.object().size as u64, |(_, length)| length);
         let _transfer = self.clients.transfer(length).await?;
         let generation = response.object().generation;
-        let mut spool = crate::payload::Spool::new();
+        let mut download = crate::payload::Download::new();
         while let Some(chunk) = response.next().await {
-            spool = crate::payload::append(spool, chunk?).await?;
+            download = download.append(chunk?).await?;
         }
-        let bytes = tokio::task::spawn_blocking(move || spool.finish()).await??;
+        let bytes = download.finish().await?;
         Ok(Some(BucketObject { generation, bytes }))
     }
 }

@@ -9,6 +9,7 @@ use std::{
 };
 
 pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const IO_BUFFER_BYTES: usize = 256 * 1024;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub(crate) struct Spool {
@@ -155,7 +156,7 @@ impl google_cloud_storage::streaming_source::StreamingSource for Upload {
         if self.offset == self.bytes.len() {
             return None;
         }
-        let end = self.bytes.len().min(self.offset + 256 * 1024);
+        let end = self.bytes.len().min(self.offset + IO_BUFFER_BYTES);
         let bytes = self.bytes.slice(self.offset..end);
         self.offset = end;
         Some(Ok(bytes))
@@ -175,12 +176,51 @@ impl google_cloud_storage::streaming_source::Seek for Upload {
     }
 }
 
-pub(crate) async fn append(mut spool: Spool, bytes: Bytes) -> Result<Spool> {
-    tokio::task::spawn_blocking(move || {
-        spool.write_all(&bytes)?;
-        Ok(spool)
-    })
-    .await?
+pub(crate) struct Download {
+    spool: Spool,
+    buffer: Vec<u8>,
+}
+
+impl Download {
+    pub fn new() -> Self {
+        Self {
+            spool: Spool::new(),
+            buffer: Vec::new(),
+        }
+    }
+
+    pub async fn append(mut self, bytes: Bytes) -> Result<Self> {
+        let mut remaining = bytes.as_ref();
+        while !remaining.is_empty() {
+            let length = remaining.len().min(IO_BUFFER_BYTES - self.buffer.len());
+            let capacity = (self.buffer.len() + length).next_power_of_two();
+            self.buffer.reserve_exact(capacity - self.buffer.len());
+            self.buffer.extend_from_slice(&remaining[..length]);
+            remaining = &remaining[length..];
+            if self.buffer.len() == IO_BUFFER_BYTES {
+                self = tokio::task::spawn_blocking(move || -> Result<Self> {
+                    self.flush()?;
+                    Ok(self)
+                })
+                .await??;
+            }
+        }
+        Ok(self)
+    }
+
+    pub async fn finish(mut self) -> Result<Bytes> {
+        tokio::task::spawn_blocking(move || {
+            self.flush()?;
+            self.spool.finish()
+        })
+        .await?
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.spool.write_all(&self.buffer)?;
+        self.buffer.clear();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
