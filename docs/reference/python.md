@@ -109,7 +109,11 @@ with room.connect(actors.Room.Metadata(name="Ada")) as connection:
             print(event.text)
 ```
 
-Idle actor sandboxes shut down while their sockets, metadata and tags remain at the gateway. Within an actor handler, `self.get_connection_count()` reads the maintained count and `self.get_connections("member")` fetches matching connections on demand. Use `self.set_websocket_auto_response('"ping"', '"pong"')` for an exact raw-text reply without waking the actor; omit both arguments to clear it. Gateway replacement disconnects clients. See [WebSocket configuration](configuration.md#websockets).
+Idle actor sandboxes shut down while their sockets, metadata and tags remain at the gateway. Within an actor handler, `self.get_connection_count()` reads one maintained integer without enumerating sockets or transferring metadata. Use `self.get_connections("member")` only when you need the matching connections themselves.
+
+`self.set_websocket_auto_response('"ping"', '"pong"')` installs one exact text match and fixed reply per actor. A client sending the JSON string `"ping"` receives `"pong"` from the gateway without running `on_message`, resetting the actor's idle timer, or waking its sandbox. Other messages run the handler normally. The quotes in the example match the SDK's JSON encoding; a raw WebSocket client must send the same bytes. This is separate from WebSocket protocol ping/pong frames. Omit both arguments to clear the pair.
+
+The pair survives actor hibernation while the gateway owns the room. Gateway replacement disconnects clients. See [WebSocket configuration](configuration.md#websockets).
 
 ## CLI and configuration
 

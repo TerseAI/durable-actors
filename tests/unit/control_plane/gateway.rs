@@ -72,12 +72,14 @@ async fn test_gateway(
 
 #[tokio::test]
 async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() -> Result<()> {
+    use super::super::socket_directory::SocketDirectory;
     use super::super::{
         ActorTokenPurpose,
         admin::{AdminRegistry, AdminService, HostLaunchSpec, LocalAdminRegistry},
         socket_gateway::{SocketEventReply, SocketEventRequest},
     };
     use crate::actor::{ActorKey, ActorSocketEffect, ActorSocketEvent, ActorSocketMessage};
+    use axum::response::IntoResponse;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -85,6 +87,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
     let issuer = super::super::service::tests::test_issuer()?;
     let retiring = Arc::new(AtomicBool::new(false));
     let rejections = Arc::new(AtomicUsize::new(4));
+    let uncertain_executions = Arc::new(AtomicUsize::new(0));
     let mut hosts = Vec::new();
     let mut host_routes = Vec::new();
     for instance in [1, 2] {
@@ -92,9 +95,11 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         host_routes.push(format!("http://{}", listener.local_addr()?));
         let retiring = retiring.clone();
         let rejections = rejections.clone();
+        let uncertain_executions = uncertain_executions.clone();
         let handler = move |axum::Json(request): axum::Json<SocketEventRequest>| {
             let retiring = retiring.clone();
             let rejections = rejections.clone();
+            let uncertain_executions = uncertain_executions.clone();
             async move {
                 if instance == 2
                     && rejections
@@ -103,10 +108,17 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                         })
                         .is_ok()
                 {
-                    return axum::Json(SocketEventReply::NotExecuted);
+                    return axum::Json(SocketEventReply::NotExecuted).into_response();
                 }
                 if instance == 1 && retiring.load(Ordering::SeqCst) {
-                    return axum::Json(SocketEventReply::NotExecuted);
+                    return axum::Json(SocketEventReply::NotExecuted).into_response();
+                }
+                if matches!(&request.invocation.event, ActorSocketEvent::Message {
+                    message: ActorSocketMessage::Text { data }, ..
+                } if data == "uncertain")
+                {
+                    uncertain_executions.fetch_add(1, Ordering::SeqCst);
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
                 let effects = match request.invocation.event {
                     ActorSocketEvent::Connect { connection } => vec![
@@ -136,7 +148,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                     }
                     ActorSocketEvent::Disconnect { .. } => vec![],
                 };
-                axum::Json(SocketEventReply::Completed { effects })
+                axum::Json(SocketEventReply::Completed { effects }).into_response()
             }
         };
         let routes = Router::new().route(
@@ -171,6 +183,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         route: std::sync::Mutex::new(host_routes[0].clone()),
         started: tokio::sync::Semaphore::new(0),
         ready: tokio::sync::Semaphore::new(0),
+        unavailable: AtomicUsize::new(0),
     });
     let service = ControlPlaneService::new(
         Arc::new(crate::placement::testing::LocalObjectPlacementStore::default()),
@@ -250,8 +263,11 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
             async fn actor_inventory(
                 &self,
                 _: &str,
-            ) -> Result<Vec<crate::placement::ActorInventory>> {
-                Ok(vec![])
+            ) -> Result<crate::placement::ActorInventorySnapshot> {
+                Ok(crate::placement::ActorInventorySnapshot {
+                    actors: vec![],
+                    connections_complete: true,
+                })
             }
         }
         let reader = super::super::socket_inventory::GatewayInventoryReader::new(
@@ -261,6 +277,8 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         );
         let overview =
             crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
+        assert!(overview.connections_complete);
+        let overview = overview.actors;
         assert_eq!(overview.len(), 1);
         assert_eq!(overview[0].dormant, 1);
         assert_eq!(overview[0].instances[0].connections.len(), 2);
@@ -280,10 +298,32 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 .connections
                 .inventory("unrelated", "Bearer api-key")
                 .await?
+                .rooms
                 .is_empty()
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let unavailable = super::super::socket_directory::GatewayOwner {
+            id: "unavailable".into(),
+            route: format!("http://{}", listener.local_addr()?),
+        };
+        drop(listener);
+        directory.register(&unavailable, true).await?;
+        directory
+            .claim(
+                &ActorKey {
+                    actor_id: "unavailable".into(),
+                    ..actor.clone()
+                },
+                &unavailable,
+            )
+            .await?;
+        let partial =
+            crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
+        assert!(!partial.connections_complete);
+        assert_eq!(partial.actors[0].instances[0].connections.len(), 2);
         retiring.store(true, Ordering::SeqCst);
         *provisioner.route.lock().unwrap() = host_routes[1].clone();
+        provisioner.unavailable.store(2, Ordering::SeqCst);
         provisioner.ready.add_permits(5);
         for socket in &mut sockets {
             socket.send(UpstreamMessage::Text("message".into())).await?;
@@ -297,7 +337,16 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
             5,
             "known non-execution may retry through the handoff"
         );
-        for socket in &mut sockets {
+        assert_eq!(provisioner.unavailable.load(Ordering::SeqCst), 0);
+        sockets[0]
+            .send(UpstreamMessage::Text("uncertain".into()))
+            .await?;
+        assert!(matches!(
+            sockets[0].next().await.transpose()?,
+            Some(UpstreamMessage::Close(_))
+        ));
+        assert_eq!(uncertain_executions.load(Ordering::SeqCst), 1);
+        for socket in &mut sockets[1..] {
             socket.close(None).await?;
         }
         let health = format!("{}/healthz", gateways[0].origin);
@@ -324,6 +373,7 @@ struct PausedProvisioner {
     route: std::sync::Mutex<String>,
     started: tokio::sync::Semaphore,
     ready: tokio::sync::Semaphore,
+    unavailable: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -355,6 +405,17 @@ impl super::super::service::HostProvisioner for PausedProvisioner {
         assert_eq!(region, "north-america-east");
         assert_eq!(actor.actor_id, "one");
         assert!(new_actor);
+        if self
+            .unavailable
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |value| value.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(crate::sandbox::HostNotReady.into());
+        }
         self.started.add_permits(1);
         self.ready.acquire().await?.forget();
         Ok((

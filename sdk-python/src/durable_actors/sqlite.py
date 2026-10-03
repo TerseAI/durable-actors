@@ -126,6 +126,7 @@ class SqliteStorage:
     def field_database(self) -> sqlite3.Connection:
         database = self.open()
         if not database.in_transaction:
+            # Acquire the writer lock before reads to avoid a busy read-to-write upgrade.
             database.execute("BEGIN IMMEDIATE")
         database.execute(
             "CREATE TABLE IF NOT EXISTS __terse_fields "

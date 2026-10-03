@@ -1553,14 +1553,15 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         metadata: json!({ "userId": "user-1" }),
         tags: Vec::new(),
     };
+    let executor = Arc::new(IncrementingExecutor {
+        invocations: AtomicU64::new(0),
+    });
     let host = ActorHost::new(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
         },
-        Arc::new(IncrementingExecutor {
-            invocations: AtomicU64::new(0),
-        }),
+        executor.clone(),
         authority.clone(),
         state.clone(),
         Arc::new(EmptySocketPublisher),
@@ -1576,6 +1577,14 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         connections: Vec::new(),
     };
     let activity = host.activity();
+    authority.fenced.store(true, Ordering::SeqCst);
+    assert_eq!(
+        host.submit(ActorOperation::Socket(invocation("fenced")), 1)
+            .await?,
+        ActorExecutionResult::HostUnavailable
+    );
+    assert_eq!(executor.invocations.load(Ordering::SeqCst), 0);
+    authority.fenced.store(false, Ordering::SeqCst);
     let before_connect = activity.borrow().last_active;
     let result = host
         .submit(ActorOperation::Socket(invocation("committed")), 1)

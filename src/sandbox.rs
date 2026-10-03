@@ -144,6 +144,17 @@ pub struct HostTermination {
     pub resource_ids: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct HostNotReady;
+
+impl std::fmt::Display for HostNotReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("actor host is not ready")
+    }
+}
+
+impl std::error::Error for HostNotReady {}
+
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {

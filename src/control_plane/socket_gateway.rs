@@ -252,7 +252,17 @@ impl SocketGateway {
                 Instant::now() < retry_deadline,
                 "actor remained unavailable during socket handoff"
             );
-            let target = self.target(service, ticket).await?;
+            let target = tokio::time::timeout_at(retry_deadline, self.target(service, ticket))
+                .await
+                .context("actor remained unavailable during socket handoff")?;
+            let target = match target {
+                Ok(target) => target,
+                Err(error) if error.is::<crate::sandbox::HostNotReady>() => {
+                    self.wait_to_retry().await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let actor = &ticket.actor;
             let url = format!(
                 "{}/v1/projects/{}/actors/{}/{}/socket-events",
@@ -300,10 +310,14 @@ impl SocketGateway {
                     }
                 },
             }
-            tokio::select! {
-                _ = self.stop.cancelled() => anyhow::bail!("socket gateway stopped"),
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {},
-            }
+            self.wait_to_retry().await?;
+        }
+    }
+
+    async fn wait_to_retry(&self) -> Result<()> {
+        tokio::select! {
+            _ = self.stop.cancelled() => anyhow::bail!("socket gateway stopped"),
+            _ = tokio::time::sleep(Duration::from_millis(100)) => Ok(()),
         }
     }
 }

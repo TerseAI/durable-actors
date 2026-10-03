@@ -29,4 +29,8 @@ const members = await this.getConnections("member")
 this.setWebSocketAutoResponse({ request: JSON.stringify("ping"), response: JSON.stringify("pong") })
 ```
 
-Counts do not enumerate sockets. Connection lists load only when requested. Automatic replies run in the gateway without waking the actor; call `this.setWebSocketAutoResponse()` to clear the pair. Gateway replacement still disconnects clients. See [configuration](configuration.md#websockets) for limits and deployment details.
+Counts read one maintained integer without enumerating sockets or transferring their metadata. Fetch a connection list only when you need the connections themselves, optionally filtered by tag.
+
+An automatic response is one exact text match and fixed reply per actor. In this example, a client sending the JSON string `"ping"` receives `"pong"` directly from the gateway. The actor's `onMessage` handler does not run, its idle timer is not reset, and a sleeping sandbox stays asleep. Other messages still run the handler normally. This is separate from WebSocket protocol ping/pong frames.
+
+The SDK encodes application messages as JSON, so the example uses `JSON.stringify` to match the actual text on the wire. A raw WebSocket client must send the same bytes. Call `this.setWebSocketAutoResponse()` to clear the pair. The pair, metadata and tags survive actor hibernation while the gateway owns the room; gateway replacement disconnects clients. See [configuration](configuration.md#websockets) for limits and deployment details.

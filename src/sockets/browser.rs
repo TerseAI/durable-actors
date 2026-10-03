@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, time::Duration};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use futures_util::SinkExt;
 use tokio::task::JoinHandle;
 
 use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
@@ -32,7 +33,21 @@ pub(crate) struct SocketServerState {
     pub stop: CancellationToken,
 }
 
-type Closed = (u16, &'static str);
+struct Closed {
+    code: u16,
+    reason: String,
+    received: bool,
+}
+
+impl Closed {
+    fn new(code: u16, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+            received: false,
+        }
+    }
+}
 
 pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
     let connection = ActorSocketConnection {
@@ -46,7 +61,11 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
         .insert(&ticket.actor, connection.clone(), sender)
         .await
     {
-        close(&mut socket, (1013, "actor connection limit reached")).await;
+        close(
+            &mut socket,
+            &Closed::new(1013, "actor connection limit reached"),
+        )
+        .await;
         return;
     }
     let mut session = Session {
@@ -64,8 +83,8 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
         .run(&mut socket)
         .await
         .unwrap_or_else(|closed| closed);
-    close(&mut socket, closed).await;
-    session.disconnect(closed).await;
+    let was_clean = close(&mut socket, &closed).await;
+    session.disconnect(closed, was_clean).await;
 }
 
 struct Session {
@@ -84,20 +103,20 @@ impl Session {
             let remaining = self.remaining()?;
             tokio::select! {
                 biased;
-                _ = self.state.stop.cancelled() => return Err((1012, "socket gateway stopping")),
+                _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
                 _ = authority_checks.tick() => {
-                    self.state.dispatcher.ensure_authority().map_err(|_| (1012, "socket gateway lease expired"))?;
+                    self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
                 }
-                _ = tokio::time::sleep(remaining) => return Err((4408, "socket authorization expired")),
+                _ = tokio::time::sleep(remaining) => return Err(Closed::new(4408, "socket authorization expired")),
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
-                    if !result.unwrap_or(false) { return Err((4400, "actor socket handler failed")); }
+                    if !result.unwrap_or(false) { return Err(Closed::new(4400, "actor socket handler failed")); }
                     if let Some(message) = self.pending.pop_front() {
                         self.start_message(message);
                     }
                 }
                 inbound = socket.recv() => self.receive(socket, inbound).await?,
-                outbound = self.outbound.recv() => self.send_outbound(socket, outbound.ok_or((1006, "socket closed"))?).await?,
+                outbound = self.outbound.recv() => self.send_outbound(socket, outbound.ok_or_else(|| Closed::new(1006, "socket closed"))?).await?,
             }
         }
     }
@@ -125,12 +144,18 @@ impl Session {
             }
             Some(Ok(Message::Ping(data))) => self.send_frame(socket, Message::Pong(data)).await,
             Some(Ok(Message::Pong(_))) => Ok(()),
-            Some(Ok(Message::Close(_))) => Err((1000, "client closed")),
-            Some(Ok(Message::Binary(_))) => Err((4400, "socket messages must be JSON text")),
-            Some(Err(error)) if super::message_too_large(&error) => {
-                Err((1009, "message exceeds 32 MiB"))
+            Some(Ok(Message::Close(frame))) => Err(Closed {
+                code: frame.as_ref().map_or(1005, |frame| frame.code),
+                reason: frame.map_or_else(String::new, |frame| frame.reason.to_string()),
+                received: true,
+            }),
+            Some(Ok(Message::Binary(_))) => {
+                Err(Closed::new(4400, "socket messages must be JSON text"))
             }
-            Some(Err(_)) | None => Err((1006, "transport closed")),
+            Some(Err(error)) if super::message_too_large(&error) => {
+                Err(Closed::new(1009, "message exceeds 32 MiB"))
+            }
+            Some(Err(_)) | None => Err(Closed::new(1006, "transport closed")),
         }
     }
 
@@ -171,19 +196,10 @@ impl Session {
             OutboundMessage::Message(ActorSocketMessage::Text { data }) => {
                 self.send_frame(socket, Message::Text(data.into())).await
             }
-            OutboundMessage::Message(_) => Err((4400, "actor produced a binary message")),
-            OutboundMessage::Close { code, reason } => {
-                let _ = self
-                    .send_frame(
-                        socket,
-                        Message::Close(Some(CloseFrame {
-                            code,
-                            reason: reason.into(),
-                        })),
-                    )
-                    .await;
-                Err((code, "actor closed connection"))
+            OutboundMessage::Message(_) => {
+                Err(Closed::new(4400, "actor produced a binary message"))
             }
+            OutboundMessage::Close { code, reason } => Err(Closed::new(code, reason)),
         }
     }
 
@@ -191,7 +207,7 @@ impl Session {
         self.state
             .dispatcher
             .ensure_authority()
-            .map_err(|_| (1012, "actor host lease expired"))?;
+            .map_err(|_| Closed::new(1012, "socket gateway lease expired"))?;
         let deadline = tokio::time::Instant::now() + self.remaining()?;
         let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
         let send = socket.send(frame);
@@ -199,10 +215,10 @@ impl Session {
         loop {
             tokio::select! {
                 biased;
-                _ = self.state.stop.cancelled() => return Err((1012, "socket gateway stopping")),
-                _ = tokio::time::sleep_until(deadline) => return Err((4408, "socket authorization expired")),
-                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| (1012, "socket gateway lease expired"))?,
-                result = &mut send => return result.map_err(|_| (1006, "transport closed")),
+                _ = self.state.stop.cancelled() => return Err(Closed::new(1012, "socket gateway stopping")),
+                _ = tokio::time::sleep_until(deadline) => return Err(Closed::new(4408, "socket authorization expired")),
+                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| Closed::new(1012, "socket gateway lease expired"))?,
+                result = &mut send => return result.map_err(|_| Closed::new(1006, "transport closed")),
             }
         }
     }
@@ -210,12 +226,12 @@ impl Session {
     fn remaining(&self) -> Result<Duration, Closed> {
         let millis = self.ticket.authorized_until_ms - now_ms();
         if millis <= 0 {
-            return Err((4408, "socket authorization expired"));
+            return Err(Closed::new(4408, "socket authorization expired"));
         }
         Ok(Duration::from_millis(millis as u64))
     }
 
-    async fn disconnect(mut self, closed: Closed) {
+    async fn disconnect(mut self, closed: Closed, was_clean: bool) {
         self.pending.clear();
         let connection = self
             .state
@@ -228,9 +244,9 @@ impl Session {
         }
         let event = ActorSocketEvent::Disconnect {
             connection,
-            code: closed.0,
-            reason: closed.1.into(),
-            was_clean: closed.0 == 1000,
+            code: closed.code,
+            reason: closed.reason,
+            was_clean,
         };
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
@@ -247,18 +263,33 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-async fn close(socket: &mut WebSocket, (code, reason): Closed) {
-    if code == 1006 {
-        return;
+async fn close(socket: &mut WebSocket, closed: &Closed) -> bool {
+    if closed.code == 1006 {
+        return false;
     }
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        socket.send(Message::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
-        }))),
-    )
-    .await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        if closed.received {
+            return socket.flush().await.is_ok();
+        }
+        if socket
+            .send(Message::Close(Some(CloseFrame {
+                code: closed.code,
+                reason: closed.reason.clone().into(),
+            })))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        while let Some(Ok(message)) = socket.recv().await {
+            if matches!(message, Message::Close(_)) {
+                return socket.flush().await.is_ok();
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
 }
 
 async fn dispatch(
@@ -278,10 +309,20 @@ async fn dispatch(
     let effects = state.dispatcher.dispatch(ticket, invocation).await?;
     state.dispatcher.ensure_authority()?;
     validate_socket_effects(&effects)?;
-    state.registry.apply(&ticket.actor, effects).await;
     if let ActorSocketEvent::Connect { connection } = &event {
-        state.registry.activate(&ticket.actor, &connection.id).await;
+        let rejected = effects.iter().any(|effect| {
+            matches!(effect,
+            ActorSocketEffect::Close { connection_id, .. } if connection_id == &connection.id)
+        });
+        if !rejected {
+            state.registry.activate(&ticket.actor, &connection.id).await;
+        }
     }
+    state.registry.apply(&ticket.actor, effects).await;
     state.dispatcher.notify(ticket, &event);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/sockets/browser.rs"]
+mod tests;

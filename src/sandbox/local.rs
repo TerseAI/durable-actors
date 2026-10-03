@@ -77,11 +77,11 @@ impl SandboxProvider for LocalSandboxProvider {
                 .store
                 .host(host.as_str())
                 .await?
-                .context("local host missing")?;
+                .ok_or(super::HostNotReady)?;
             match record.status.as_str() {
                 "ready" => return Ok(()),
                 "starting" => self.runtime.changed(&mut changes).await?,
-                _ => anyhow::bail!("local actor is not ready"),
+                _ => return Err(super::HostNotReady.into()),
             }
         }
     }

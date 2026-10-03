@@ -15,8 +15,8 @@ use crate::{
     host::HostId,
     host_leases::{ActivationInventory, HostLease},
     placement::{
-        ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorResidency,
-        ObjectPlacement, ObjectPlacementStore,
+        ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorInventorySnapshot,
+        ActorResidency, ObjectPlacement, ObjectPlacementStore,
     },
     storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
@@ -416,7 +416,7 @@ impl SnapshotReader for RuntimeStorage {
 }
 #[async_trait]
 impl ActorInventoryReader for RuntimeStorage {
-    async fn actor_inventory(&self, project: &str) -> Result<Vec<ActorInventory>> {
+    async fn actor_inventory(&self, project: &str) -> Result<ActorInventorySnapshot> {
         self.reader.actor_inventory(project).await
     }
 }
@@ -527,7 +527,7 @@ impl RuntimeStorage {
 
 #[async_trait]
 impl ActorInventoryReader for RuntimeStorageReader {
-    async fn actor_inventory(&self, project_id: &str) -> Result<Vec<ActorInventory>> {
+    async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot> {
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);
         for key in self.authority.list(&prefix).await? {
@@ -555,15 +555,18 @@ impl ActorInventoryReader for RuntimeStorageReader {
             }
             row.instances.push(instance);
         }
-        Ok(actors
-            .into_values()
-            .map(|mut actor| {
-                actor
-                    .instances
-                    .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
-                actor
-            })
-            .collect())
+        Ok(ActorInventorySnapshot {
+            actors: actors
+                .into_values()
+                .map(|mut actor| {
+                    actor
+                        .instances
+                        .sort_by(|left, right| left.actor_id.cmp(&right.actor_id));
+                    actor
+                })
+                .collect(),
+            connections_complete: true,
+        })
     }
 }
 

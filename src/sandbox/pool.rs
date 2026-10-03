@@ -85,12 +85,12 @@ impl SparePool {
                 match row.as_ref().map(|row| row.get::<_, &str>(0)) {
                     Some("active") => return Ok(()),
                     Some("claimed") => tokio::time::sleep(Duration::from_millis(20)).await,
-                    _ => anyhow::bail!("actor sandbox did not become ready"),
+                    _ => return Err(super::HostNotReady.into()),
                 }
             }
         })
         .await
-        .context("actor sandbox readiness timed out")?
+        .map_err(|_| super::HostNotReady)?
     }
 
     pub async fn remember(&self, host: &str, config_key: &str, spare: &SpareHandle) -> Result<()> {
