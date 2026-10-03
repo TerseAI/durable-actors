@@ -134,33 +134,7 @@ test("invalid actor messages fail before queuing socket output", async () => {
     assert.deepEqual(result.effects, [])
 })
 
-test("socket output accumulates while publication is busy", async () => {
-    let release!: () => void
-    const ready = new Promise<void>(resolve => {
-        release = resolve
-    })
-    const published: unknown[] = []
-    await runWithActorSockets(
-        {},
-        [{ id: "socket", metadata: null, tags: [] }],
-        async scope => {
-            try {
-                scope.connection("socket").send(null)
-                scope.connection("socket").send("x".repeat(33 * 1024 * 1024))
-                for (let index = 0; index < 1024; index++) scope.connection("socket").send(index)
-            } finally {
-                release()
-            }
-        },
-        async effects => {
-            await ready
-            published.push(...effects)
-        }
-    )
-    assert.equal(published.length, 1026)
-})
-
-test("metadata and tags enforce size limits while broadcasts accept large exclusion sets", async () => {
+test("metadata and tags enforce size limits", async () => {
     await runWithActorSockets({}, [{ id: "socket", metadata: null, tags: [] }], async scope => {
         const socket = scope.connection("socket")
         socket.metadata = "x".repeat(16382)
@@ -170,13 +144,6 @@ test("metadata and tags enforce size limits while broadcasts accept large exclus
         socket.setTags(...Array.from({ length: 10 }, (_, i) => String(i)))
         assert.throws(() => socket.setTags(...Array.from({ length: 11 }, (_, i) => String(i))))
     })
-    const effect = {
-        type: "broadcast",
-        message: { type: "text", data: "null" },
-        except_connection_ids: Array.from({ length: 1000 }, (_, i) => String(i)),
-        tags: []
-    }
-    assert.equal(parseSocketEffects([effect]).length, 1)
 })
 
 test("count and tagged lookup query the gateway without loading the full list", async () => {

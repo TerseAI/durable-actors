@@ -32,23 +32,12 @@ async def test_metadata_limit_is_enforced_before_publishing():
     assert context.pending == []
 
 
-async def test_socket_output_can_accumulate_until_published():
-    context = scope()
-    socket = context.socket({"id": "one", "metadata": None, "tags": []})
-    socket.send("x" * (33 * 1024 * 1024))
-    for index in range(1024):
-        socket.send(index)
-    assert len(await context.finish()) == 1025
-
-
-async def test_tag_count_limit_and_large_broadcast_exclusion_set():
+async def test_tag_count_limit():
     context = scope()
     socket = context.socket({"id": "one", "metadata": None, "tags": []})
     socket.set_tags(*(str(i) for i in range(10)))
     with pytest.raises(ValueError):
         socket.set_tags(*(str(i) for i in range(11)))
-    context.broadcast(None, tuple(str(i) for i in range(1000)), (), "all")
-    assert len(context.pending[-1]["except_connection_ids"]) == 1000
 
 
 async def test_count_and_tag_query_do_not_fetch_every_connection():

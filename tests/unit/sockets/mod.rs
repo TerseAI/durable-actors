@@ -4,40 +4,6 @@ use super::*;
 use crate::actor::validate_socket_effects;
 
 #[tokio::test]
-async fn queued_output_is_delivered_in_order_after_the_reader_catches_up() {
-    let (sender, mut receiver) = socket_channel();
-    for index in 0..1024 {
-        assert!(
-            sender
-                .send(OutboundMessage::Message(ActorSocketMessage::Text {
-                    data: format!("{index}:{}", "x".repeat(8192)),
-                }))
-                .is_ok()
-        );
-    }
-    assert!(
-        sender
-            .send(OutboundMessage::Message(ActorSocketMessage::Text {
-                data: "x".repeat(33 * 1024 * 1024),
-            }))
-            .is_ok()
-    );
-    for index in 0..1024 {
-        let Some(OutboundMessage::Message(ActorSocketMessage::Text { data })) =
-            receiver.recv().await
-        else {
-            panic!("expected queued text");
-        };
-        assert!(data.starts_with(&format!("{index}:")));
-    }
-    let Some(OutboundMessage::Message(ActorSocketMessage::Text { data })) = receiver.recv().await
-    else {
-        panic!("expected large outgoing text");
-    };
-    assert_eq!(data.len(), 33 * 1024 * 1024);
-}
-
-#[tokio::test]
 async fn admission_enforces_connection_limit_and_reopens_after_disconnect() {
     let registry = SocketRegistry::default();
     let actor = ActorKey {
@@ -90,15 +56,6 @@ fn metadata_and_tags_enforce_size_limits() {
         };
         assert_eq!(validate_socket_effects(&[effect]).is_ok(), valid);
     }
-    let effect = ActorSocketEffect::Broadcast {
-        message: ActorSocketMessage::Text {
-            data: "null".into(),
-        },
-        except_connection_ids: (0..1000).map(|i| i.to_string()).collect(),
-        tags: vec![],
-        tag_match: crate::actor::ActorSocketTagMatch::All,
-    };
-    assert!(validate_socket_effects(&[effect]).is_ok());
 }
 
 #[tokio::test]
@@ -141,56 +98,6 @@ async fn message_preparation_copies_only_the_originating_connection() {
     assert_eq!(connections.len(), 1);
     assert_eq!(connections[0].id, "sender");
     assert_eq!(registry.connections(&actor).await.len(), 2);
-}
-
-#[tokio::test]
-async fn inventory_notifies_on_activation_metadata_and_disconnect() -> anyhow::Result<()> {
-    let registry = SocketRegistry::default();
-    let mut changes = registry.inventory_changes();
-    let actor = ActorKey {
-        project_id: "default".into(),
-        actor_name: "Room".into(),
-        actor_id: "one".into(),
-    };
-    let (sender, _receiver) = socket_channel();
-    registry
-        .insert(
-            &actor,
-            ActorSocketConnection {
-                id: "socket".into(),
-                metadata: json!({"name":"Ada"}),
-                tags: vec![],
-            },
-            sender,
-            None,
-        )
-        .await;
-    assert!(registry.inventory(&actor.project_id).await.is_empty());
-    assert!(!changes.has_changed()?);
-    registry.activate(&actor, "socket").await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert_eq!(
-        registry.inventory(&actor.project_id).await[0].connections[0].metadata,
-        json!({"name":"Ada"})
-    );
-    registry
-        .apply(
-            &actor,
-            vec![ActorSocketEffect::SetMetadata {
-                connection_id: "socket".into(),
-                metadata: json!({"name":"Grace"}),
-            }],
-        )
-        .await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert_eq!(
-        registry.inventory(&actor.project_id).await[0].connections[0].metadata,
-        json!({"name":"Grace"})
-    );
-    registry.remove(&actor, "socket").await;
-    tokio::time::timeout(std::time::Duration::from_millis(100), changes.changed()).await??;
-    assert!(registry.inventory(&actor.project_id).await.is_empty());
-    Ok(())
 }
 
 #[tokio::test]

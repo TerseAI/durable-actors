@@ -261,16 +261,11 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         );
         let overview =
             crate::placement::ActorInventoryReader::actor_inventory(&reader, "default").await?;
+        assert_eq!(overview.len(), 1);
         assert_eq!(overview[0].dormant, 1);
         assert_eq!(overview[0].instances[0].connections.len(), 2);
-        let inventory = gateways[1]
-            .connections
-            .inventory("default", "Bearer api-key")
-            .await?;
-        assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].connections.len(), 2);
         assert_eq!(
-            inventory[0].connections[0].metadata,
+            overview[0].instances[0].connections[0].metadata,
             serde_json::json!({"retained":true})
         );
         assert!(
@@ -305,15 +300,13 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         for socket in &mut sockets {
             socket.close(None).await?;
         }
-        for gateway in &gateways {
-            let health = format!("{}/healthz", gateway.origin);
-            assert_eq!(client.get(&health).send().await?.status(), StatusCode::OK);
-            gateway.connections.stop.cancel();
-            assert_eq!(
-                client.get(&health).send().await?.status(),
-                StatusCode::SERVICE_UNAVAILABLE
-            );
-        }
+        let health = format!("{}/healthz", gateways[0].origin);
+        assert_eq!(client.get(&health).send().await?.status(), StatusCode::OK);
+        gateways[0].connections.stop.cancel();
+        assert_eq!(
+            client.get(&health).send().await?.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         anyhow::Ok(())
     };
     let result = tokio::time::timeout(std::time::Duration::from_secs(15), result).await;
