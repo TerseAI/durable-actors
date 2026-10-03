@@ -51,9 +51,14 @@ function validateRpc(rpc: RpcContract): void {
                 "db",
                 "waitUntil",
                 "__background",
+                "getAlarm",
+                "setAlarm",
+                "deleteAlarm",
+                "__alarm",
                 "onConnect",
                 "onMessage",
-                "onDisconnect"
+                "onDisconnect",
+                "onAlarm"
             ].includes(method.name)
         )
             throw new Error(`reserved RPC method ${method.name}`)

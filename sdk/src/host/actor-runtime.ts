@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
+import { bindActorAlarm, deliverAlarm, runWithActorAlarm } from "../actor/alarm.js"
 import { ActorBackgroundTasks } from "../actor/background.js"
 import { bindActorDatabase, runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
@@ -88,7 +89,7 @@ class ActorRuntime {
         const prepared = this.prepare(command)
         if (!(prepared instanceof Actor)) return prepared
         const instance = prepared
-        if (command.method !== "__background" && !this.definition.methods.has(command.method)) {
+        if (!["__background", "__alarm"].includes(command.method) && !this.definition.methods.has(command.method)) {
             return failedReply(
                 "method_not_found",
                 `actor method ${this.definition.actorName}.${command.method} was not found`
@@ -97,7 +98,9 @@ class ActorRuntime {
         const method: unknown =
             command.method === "__background"
                 ? this.background.take(command.args[0])
-                : Reflect.get(instance, command.method)
+                : command.method === "__alarm"
+                  ? async () => deliverAlarm(instance, command.args[0])
+                  : Reflect.get(instance, command.method)
         if (typeof method !== "function") {
             return failedReply(
                 "method_not_callable",
@@ -110,21 +113,23 @@ class ActorRuntime {
         try {
             this.admitNext(command.method)
             const background = await this.background.run(instance, this.interleaved, () =>
-                runWithActorSockets(
-                    instance,
-                    this.connections,
-                    async () =>
-                        runWithActorDatabase(
-                            instance,
-                            async () =>
-                                Reflect.apply(
-                                    method,
-                                    instance,
-                                    command.method === "__background" ? [] : command.args
-                                ) as Promise<unknown>
-                        ),
-                    this.publish,
-                    this.schemas
+                runWithActorAlarm(instance, () =>
+                    runWithActorSockets(
+                        instance,
+                        this.connections,
+                        async () =>
+                            runWithActorDatabase(
+                                instance,
+                                async () =>
+                                    Reflect.apply(
+                                        method,
+                                        instance,
+                                        command.method === "__background" ? [] : command.args
+                                    ) as Promise<unknown>
+                            ),
+                        this.publish,
+                        this.schemas
+                    )
                 )
             )
             registered = background.tasks
@@ -172,23 +177,25 @@ class ActorRuntime {
         try {
             this.admitNext(methodName)
             const background = await this.background.run(instance, this.interleaved, () =>
-                runWithActorSockets(
-                    instance,
-                    command.connections,
-                    async scope => {
-                        const args = lifecycleArguments(command, scope, this.schemas)
-                        if (method === undefined) return
-                        if (typeof method !== "function")
-                            throw new ActorProtocolError(
-                                `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
+                runWithActorAlarm(instance, () =>
+                    runWithActorSockets(
+                        instance,
+                        command.connections,
+                        async scope => {
+                            const args = lifecycleArguments(command, scope, this.schemas)
+                            if (method === undefined) return
+                            if (typeof method !== "function")
+                                throw new ActorProtocolError(
+                                    `actor lifecycle hook ${this.definition.actorName}.${methodName} is not callable`
+                                )
+                            await runWithActorDatabase(
+                                instance,
+                                async () => Reflect.apply(method, instance, args) as Promise<unknown>
                             )
-                        await runWithActorDatabase(
-                            instance,
-                            async () => Reflect.apply(method, instance, args) as Promise<unknown>
-                        )
-                    },
-                    command.event.type === "connect" ? undefined : this.publish,
-                    this.schemas
+                        },
+                        command.event.type === "connect" ? undefined : this.publish,
+                        this.schemas
+                    )
                 )
             )
             registered = background.tasks
@@ -301,6 +308,7 @@ class ActorRuntime {
         const instance = Reflect.construct(this.definition.actorClass, []) as AnyActor
         bindActorIdentity(instance, identity.actor_id)
         bindActorDatabase(instance, this.database)
+        bindActorAlarm(instance, this.database)
         validateActorState(instance, this.definition.state)
         if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
         if (this.interleaved) this.lastCompletedState = snapshotActorState(instance, this.definition.state)

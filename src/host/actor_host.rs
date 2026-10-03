@@ -656,7 +656,7 @@ impl ActorOperation {
     }
 
     fn validate(&self) -> Result<()> {
-        self.invocation().validate()
+        self.invocation().validate_internal()
     }
 
     fn invocation(&self) -> Cow<'_, ActorInvocation> {

@@ -278,6 +278,57 @@ impl ActorJwtIssuer {
         grant: Option<super::session::InvocationGrant>,
         route: &str,
     ) -> Result<IssuedActorToken> {
+        self.issue_invocation_target_kind(
+            actor,
+            host_id,
+            session_id,
+            host_config_key,
+            region,
+            owner_epoch,
+            grant,
+            route,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_alarm_target(
+        &self,
+        actor: &ActorKey,
+        host_id: &HostId,
+        session_id: &str,
+        host_config_key: &str,
+        region: &str,
+        owner_epoch: u64,
+        grant: Option<super::session::InvocationGrant>,
+        route: &str,
+    ) -> Result<IssuedActorToken> {
+        self.issue_invocation_target_kind(
+            actor,
+            host_id,
+            session_id,
+            host_config_key,
+            region,
+            owner_epoch,
+            grant,
+            route,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_invocation_target_kind(
+        &self,
+        actor: &ActorKey,
+        host_id: &HostId,
+        session_id: &str,
+        host_config_key: &str,
+        region: &str,
+        owner_epoch: u64,
+        grant: Option<super::session::InvocationGrant>,
+        route: &str,
+        alarm: bool,
+    ) -> Result<IssuedActorToken> {
         actor.validate()?;
         validate_region(region)?;
         ensure!(owner_epoch > 0, "actor owner epoch must be positive");
@@ -312,6 +363,7 @@ impl ActorJwtIssuer {
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch,
+                alarm,
                 grant,
             }),
         })

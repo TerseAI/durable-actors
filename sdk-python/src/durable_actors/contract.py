@@ -17,10 +17,14 @@ from .json import JsonValue
 from .sandbox import sandbox_contract
 
 Document = dict[str, Any]
-HOOKS = {"on_connect", "on_message", "on_disconnect"}
+HOOKS = {"on_connect", "on_message", "on_disconnect", "on_alarm"}
 RESERVED = {
     "db",
     "wait_until",
+    "get_alarm",
+    "set_alarm",
+    "delete_alarm",
+    "__alarm",
     "get_connections",
     "broadcast",
     "broadcast_after_commit",

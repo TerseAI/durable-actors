@@ -8,6 +8,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .actor import Actor
+from .alarm import deliver_alarm
+from .alarm import scope as alarm_scope
 from .background import BackgroundTasks
 from .contract import Document, Method, decode, describe_actor, encode
 from .database import bind_database
@@ -121,7 +123,11 @@ class ActorRuntime:
         assert instance is not None
         socket_event = command["type"] == "websocket_event"
         name = "on_" + command["event"]["type"] if socket_event else command["method"]
-        if not socket_event and name != "__background" and name not in self.definition.methods:
+        if (
+            not socket_event
+            and name not in {"__background", "__alarm"}
+            and name not in self.definition.methods
+        ):
             return failed("method_not_found", name)
         before = self.snapshot()
         connecting = socket_event and command["event"]["type"] == "connect"
@@ -134,6 +140,7 @@ class ActorRuntime:
             not connecting,
         )
         token = scope_context.set(scope)
+        alarm_token = alarm_scope.set((instance, self.database))
         try:
             if socket_event:
                 args = await socket_arguments(command["event"], scope)
@@ -147,6 +154,10 @@ class ActorRuntime:
                     if inspect.iscoroutine(value):
                         value.close()
                     raise TypeError("background callbacks must be synchronous functions")
+                result = None
+            elif name == "__alarm":
+                admit()
+                await invoke_handler(scope, deliver_alarm, instance, command["args"][0])
                 result = None
             else:
                 method = self.definition.methods[name]
@@ -206,6 +217,7 @@ class ActorRuntime:
                     await asyncio.gather(output, return_exceptions=True)
             finally:
                 scope_context.reset(token)
+                alarm_scope.reset(alarm_token)
 
     def state_updates(self, before: Document, after: Document, command: Document) -> list[Document]:
         fields = self.definition.fields

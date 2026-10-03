@@ -11,6 +11,8 @@ use std::{
 pub struct SqliteState {
     pub txid: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alarm: Option<crate::control_plane::alarm::Alarm>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
@@ -27,6 +29,7 @@ impl SqliteState {
     pub(crate) fn position(txid: u64) -> Self {
         Self {
             txid,
+            alarm: None,
             path: None,
             socket: None,
         }
@@ -100,6 +103,7 @@ impl SqliteCapture {
     pub(crate) fn state(&self) -> SqliteState {
         SqliteState {
             txid: self.txid,
+            alarm: None,
             path: Some(self.path().to_string_lossy().into_owned()),
             socket: Some(self.replication.socket().to_string_lossy().into_owned()),
         }

@@ -195,6 +195,16 @@ impl HostStorage {
 
 #[async_trait]
 impl ActorStorage for HostStorage {
+    async fn register_alarm(
+        &self,
+        actor: &ActorKey,
+        alarm: &crate::control_plane::alarm::Alarm,
+    ) -> Result<()> {
+        self.authorize(actor, &self.host)?;
+        self.ensure_authority()?;
+        self.observer.register_alarm(alarm.clone()).await
+    }
+
     fn ensure_authority(&self) -> Result<()> {
         ensure!(
             !self.stop.is_cancelled(),

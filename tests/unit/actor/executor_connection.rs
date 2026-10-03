@@ -483,6 +483,7 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
 async fn executor_receives_the_shared_database_and_replication_socket() -> Result<()> {
     let state = ActorState {
         sqlite: crate::actor::SqliteState {
+            alarm: None,
             txid: 1,
             path: Some("/tmp/actor.sqlite".into()),
             socket: Some("/tmp/litestream.sock".into()),

@@ -2,6 +2,7 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
+import { deleteAlarm, getAlarm, setAlarm } from "./alarm.js"
 import { waitUntil } from "./background.js"
 import { actorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
@@ -20,6 +21,8 @@ const asyncFunction = Object.getPrototypeOf(async () => {}).constructor
 const referenceClasses = new WeakMap<Function, ActorReferenceClass>()
 
 interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string> {
+    /** Runs at least once for a scheduled deadline; failures retry. */
+    onAlarm?(): Promise<void>
     /** Accepts a joining connection on success. Call `socket.reject(4003, reason)` to deny it. */
     onConnect?(socket: ActorSocket<Metadata, Outgoing, Tag>): Promise<void>
     /** Handles a parsed JSON message. */
@@ -46,6 +49,19 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     declare readonly [actorTypes]: { metadata: Metadata; incoming: Incoming; outgoing: Outgoing; tag: Tag }
 
     protected constructor() {}
+
+    /** Current one-off deadline in Unix milliseconds, or null. */
+    protected getAlarm(): number | null {
+        return getAlarm(this)
+    }
+    /** Replaces the deadline; the change commits with this invocation. */
+    protected setAlarm(deadline: number): void {
+        setAlarm(this, deadline)
+    }
+    /** Cancels the deadline when this invocation commits. */
+    protected deleteAlarm(): void {
+        deleteAlarm(this)
+    }
 
     /** Actor-local SQLite. Changes commit with persisted fields after a successful invocation. */
     protected get db(): ActorDatabase {
@@ -206,7 +222,20 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (["connect", "broadcast", "broadcastAfterCommit", "db", "waitUntil", "__background"].includes(name))
+        if (
+            [
+                "connect",
+                "broadcast",
+                "broadcastAfterCommit",
+                "db",
+                "waitUntil",
+                "__background",
+                "getAlarm",
+                "setAlarm",
+                "deleteAlarm",
+                "__alarm"
+            ].includes(name)
+        )
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)
@@ -215,7 +244,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
     })
 }
 
-const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect"])
+const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect", "onAlarm"])
 
 function validateActorClass(actorClass: ActorClass, actorName: string): void {
     if (Object.getPrototypeOf(actorClass.prototype) !== Actor.prototype)
@@ -291,7 +320,7 @@ type ActorReference<Instance extends AnyActor> = {
     /** Sends to all connections without running actor code. Messages are not saved. */
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
-type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect"
+type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect" | "onAlarm"
 type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["metadata"]
 type SocketIncoming<Instance extends AnyActor> = Instance[typeof actorTypes]["incoming"]
 type SocketOutgoing<Instance extends AnyActor> = Instance[typeof actorTypes]["outgoing"]

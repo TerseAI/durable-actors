@@ -266,7 +266,7 @@ class Relay(Actor):
 
 
 @contextmanager
-def actor_server(project, entrypoint, port):
+def actor_server(project, entrypoint, port, *, sdk_host=None):
     with (project / "runtime.log").open("w+") as log:
         process = subprocess.Popen(
             [
@@ -278,6 +278,7 @@ def actor_server(project, entrypoint, port):
                 entrypoint,
                 "--port",
                 str(port),
+                *(["--sdk-host", str(sdk_host)] if sdk_host is not None else []),
             ],
             env={**os.environ, "DURABLE_ACTORS_PYTHON": sys.executable},
             stdout=log,

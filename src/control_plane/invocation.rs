@@ -148,7 +148,7 @@ pub(super) struct PublishRequest {
     effects: Vec<crate::actor::ActorSocketEffect>,
 }
 
-async fn dispatch(
+pub(super) async fn dispatch(
     client: &reqwest::Client,
     route: &str,
     token: &str,

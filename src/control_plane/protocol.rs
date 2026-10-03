@@ -7,6 +7,9 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
     RefreshStorageAccess,
+    RegisterAlarm {
+        alarm: super::alarm::Alarm,
+    },
     InventoryChanged,
     RequestTraces {
         traces: Vec<crate::request_traces::RequestTrace>,

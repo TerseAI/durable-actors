@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks"
 import { createRequire } from "node:module"
 
+import type { Alarm, AlarmStorage } from "../actor/alarm.js"
 import type { ActorDatabase, SqliteResult, SqliteValue } from "../actor/database.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
@@ -8,6 +9,7 @@ import { syncLitestream } from "./litestream.js"
 import type { LitestreamDatabase } from "./litestream.js"
 
 interface SqliteState {
+    readonly alarm?: Alarm
     readonly txid: number
     readonly path?: string
     readonly socket?: string
@@ -15,7 +17,7 @@ interface SqliteState {
 
 class SqliteCaptureError extends Error {}
 
-interface ActorDatabaseStorage extends ActorDatabase {
+interface ActorDatabaseStorage extends ActorDatabase, AlarmStorage {
     fields(): JsonObject
     persistFields(fields: JsonObject): void
     restore(state: SqliteState | undefined): void
@@ -96,6 +98,31 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         }
     }
 
+    alarm(): Alarm | undefined {
+        const row = this.alarmDatabase().prepare("SELECT generation, deadline FROM __terse_alarm WHERE id = 1").get()
+        return row == null ? undefined : (row as unknown as Alarm)
+    }
+
+    setAlarm(alarm: Alarm | undefined): void {
+        const database = this.alarmDatabase()
+        if (alarm === undefined) database.exec("DELETE FROM __terse_alarm")
+        else
+            database
+                .prepare(
+                    "INSERT INTO __terse_alarm VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET generation = excluded.generation, deadline = excluded.deadline"
+                )
+                .all(alarm.generation, alarm.deadline)
+    }
+
+    private alarmDatabase(): SqliteConnection {
+        const database = this.open()
+        if (!database.isTransaction) database.exec("BEGIN")
+        database.exec(
+            "CREATE TABLE IF NOT EXISTS __terse_alarm (id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, deadline INTEGER NOT NULL)"
+        )
+        return database
+    }
+
     fields(): JsonObject {
         const rows = this.fieldDatabase().prepare("SELECT name, value FROM __terse_fields").all() as {
             name: string
@@ -127,6 +154,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
     async snapshot(): Promise<SqliteState> {
         try {
             const database = this.open()
+            const alarm = this.alarm()
             const version = this.changeToken()
             if (database.isTransaction) database.exec("COMMIT")
             if (version !== this.version) {
@@ -135,7 +163,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
                 this.txid = txid
                 this.version = version
             }
-            return { txid: this.txid }
+            return { txid: this.txid, ...(alarm === undefined ? {} : { alarm }) }
         } catch (cause) {
             this.failure = new SqliteCaptureError("failed to replicate actor SQLite commit", { cause })
             throw this.failure

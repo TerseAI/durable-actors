@@ -150,7 +150,16 @@ async fn invoke(
         method: request.method,
         args: request.args,
     };
-    invocation.validate().map_err(bad_request)?;
+    if invocation.method == "__alarm"
+        && principal
+            .invocation
+            .as_ref()
+            .is_some_and(|capability| capability.alarm)
+    {
+        invocation.validate_internal().map_err(bad_request)?;
+    } else {
+        invocation.validate().map_err(bad_request)?;
+    }
     Ok(Json(service.execute(invocation, request.owner_epoch).await))
 }
 

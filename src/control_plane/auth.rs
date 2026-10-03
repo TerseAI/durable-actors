@@ -45,6 +45,8 @@ pub(crate) struct ActorInvocationCapability {
     pub actor: crate::actor::ActorKey,
     pub host_id: HostId,
     pub owner_epoch: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alarm: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<super::session::InvocationGrant>,
 }

@@ -56,6 +56,28 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
 
         wait_until(self, task)
 
+    def get_alarm(self) -> int | None:
+        """Return the current one-off deadline in Unix milliseconds, or None."""
+        from .alarm import get_alarm
+
+        return get_alarm(self)
+
+    def set_alarm(self, deadline: int) -> None:
+        """Replace the deadline; the change commits with this invocation."""
+        from .alarm import set_alarm
+
+        set_alarm(self, deadline)
+
+    def delete_alarm(self) -> None:
+        """Cancel the deadline when this invocation commits."""
+        from .alarm import delete_alarm
+
+        delete_alarm(self)
+
+    def on_alarm(self) -> None:
+        """Handle a scheduled deadline; failures retry with at-least-once delivery."""
+        pass
+
     @classmethod
     def get(cls, actor_id: str, transport: ActorTransport | None = None) -> Self:
         """Return a typed synchronous reference without activating the actor locally.

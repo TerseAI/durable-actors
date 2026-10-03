@@ -106,6 +106,8 @@ pub async fn serve_local(
         )
         .await?,
     );
+    let stop = CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
     let routes = local_routes(
         &options,
         &project,
@@ -113,6 +115,7 @@ pub async fn serve_local(
         &storage,
         provider.clone(),
         &directory,
+        stop.clone(),
     )
     .await?;
     let server = LocalServer::start(listener, routes, provider);
@@ -274,6 +277,7 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     directory: &Path,
+    stop: CancellationToken,
 ) -> Result<tonic::service::Routes> {
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
@@ -306,6 +310,9 @@ async fn local_routes(
         SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)
             .with_runtime_access(storage.access.clone()),
     );
+    let alarms = Arc::new(super::alarm::SqliteAlarmStore::open(
+        directory.join("alarms.sqlite3"),
+    )?);
     let service = ControlPlaneService::new(
         storage.runtime.clone(),
         auth,
@@ -321,9 +328,11 @@ async fn local_routes(
             options.sdk_host.clone(),
         )),
     )))
-    .with_traces(storage.traces.clone());
+    .with_traces(storage.traces.clone())
+    .with_alarms(alarms.clone());
     let admin = AdminService::new(options.api_key.clone(), registry, issuer)?;
     service.deploy_source(&admin, &spec, None).await?;
+    super::alarm::AlarmScheduler::start(alarms, service.clone(), stop)?;
     let inspector = super::inspection::ActorInspector::new(
         storage.runtime.clone(),
         storage.runtime.clone(),

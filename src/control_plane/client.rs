@@ -29,6 +29,12 @@ pub struct ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    pub(crate) async fn register_alarm(&self, alarm: super::alarm::Alarm) -> Result<()> {
+        self.execute(ControlPlaneCommand::RegisterAlarm { alarm })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn report_traces(
         &self,
         traces: Vec<crate::request_traces::RequestTrace>,

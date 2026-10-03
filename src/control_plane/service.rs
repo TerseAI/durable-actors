@@ -46,10 +46,16 @@ pub struct ControlPlaneService {
     registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
+    alarms: Option<Arc<dyn super::alarm::AlarmStore>>,
     local_builds: Option<Arc<super::local_build::LocalBuilds>>,
 }
 
 impl ControlPlaneService {
+    pub(super) fn with_alarms(mut self, alarms: Arc<dyn super::alarm::AlarmStore>) -> Self {
+        self.alarms = Some(alarms);
+        self
+    }
+
     pub(super) fn with_local_builds(
         mut self,
         builds: Arc<super::local_build::LocalBuilds>,
@@ -86,6 +92,7 @@ impl ControlPlaneService {
             provisioner,
             socket_events: None,
             local_builds: None,
+            alarms: None,
         }
     }
 
@@ -332,6 +339,31 @@ impl ControlPlaneService {
         );
     }
 
+    pub(super) async fn resolve_alarm_target(
+        &self,
+        actor: &ActorKey,
+        region: &str,
+    ) -> Result<ActorTarget> {
+        let target = self.route_actor(actor, region, Some(region), None).await?;
+        let issued = self.host_token_issuer.issue_alarm_target(
+            actor,
+            &target.lease.id,
+            &target.lease.session_id,
+            &target.spec.host_config_key(),
+            &target.placement.home_region,
+            target.placement.owner_epoch,
+            None,
+            &target.lease.route,
+        )?;
+        Ok(ActorTarget {
+            home_region: target.placement.home_region,
+            route: target.lease.route,
+            token: issued.token,
+            owner_epoch: target.placement.owner_epoch,
+            expires_at_ms: issued.expires_at_ms,
+        })
+    }
+
     async fn resolve_actor_route(
         &self,
         actor: &ActorKey,
@@ -470,6 +502,15 @@ impl ControlPlaneService {
                         traces,
                         dropped,
                     )
+                    .await?;
+                Ok(ControlPlaneCommandReply::Unit)
+            }
+            ControlPlaneCommand::RegisterAlarm { alarm } => {
+                self.require_active_host(principal).await?;
+                self.alarms
+                    .as_ref()
+                    .context("alarm scheduler is unavailable")?
+                    .register(&principal.actor, &principal.region, &alarm)
                     .await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }

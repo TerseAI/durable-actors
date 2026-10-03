@@ -39,8 +39,22 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
                 throw new ActorDefinitionError(`${label}: callable fields must be declared as async methods`)
             continue
         }
-        if (["onConnect", "onMessage", "onDisconnect"].includes(name)) continue
-        if (["then", "connect", "broadcast", "broadcastAfterCommit", "db", "waitUntil", "__background"].includes(name))
+        if (["onConnect", "onMessage", "onDisconnect", "onAlarm"].includes(name)) continue
+        if (
+            [
+                "then",
+                "connect",
+                "broadcast",
+                "broadcastAfterCommit",
+                "db",
+                "waitUntil",
+                "__background",
+                "getAlarm",
+                "setAlarm",
+                "deleteAlarm",
+                "__alarm"
+            ].includes(name)
+        )
             throw new ActorDefinitionError(`${label}: reserved RPC method name`)
         validateActorComponent("actor method", name)
         if (symbol?.declarations?.filter(ts.isMethodDeclaration).length !== 1)

@@ -24,6 +24,8 @@ class SqliteCaptureError(RuntimeError):
 class Storage(Database, Protocol):
     def restore(self, state: Document | None) -> None: ...
     def fields(self) -> Document: ...
+    def alarm(self) -> Document | None: ...
+    def set_alarm(self, alarm: Document | None) -> None: ...
     def persist_fields(self, fields: Document) -> None: ...
     async def snapshot(self) -> Document: ...
     def rollback(self) -> None: ...
@@ -119,6 +121,36 @@ class SqliteStorage:
             self.txid = state["txid"]
             self.version = self.change_token()
 
+    def alarm(self) -> Document | None:
+        with self.lock:
+            row = (
+                self.alarm_database()
+                .execute("SELECT generation, deadline FROM __terse_alarm WHERE id=1")
+                .fetchone()
+            )
+            return None if row is None else {"generation": row[0], "deadline": row[1]}
+
+    def set_alarm(self, alarm: Document | None) -> None:
+        with self.lock:
+            database = self.alarm_database()
+            if alarm is None:
+                database.execute("DELETE FROM __terse_alarm")
+            else:
+                database.execute(
+                    "INSERT INTO __terse_alarm VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET generation=excluded.generation, deadline=excluded.deadline",
+                    (alarm["generation"], alarm["deadline"]),
+                )
+
+    def alarm_database(self) -> sqlite3.Connection:
+        with self.lock:
+            database = self.open()
+            if not database.in_transaction:
+                database.execute("BEGIN")
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS __terse_alarm(id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL, deadline INTEGER NOT NULL)"
+            )
+            return database
+
     def fields(self) -> Document:
         with self.lock:
             return {
@@ -146,7 +178,7 @@ class SqliteStorage:
 
     async def snapshot(self) -> Document:
         try:
-            version = await asyncio.to_thread(self.commit)
+            version, alarm = await asyncio.to_thread(self.commit)
             if version != self.version:
                 assert self.seed is not None
                 txid = await self.sync(self.seed)
@@ -154,16 +186,17 @@ class SqliteStorage:
                     raise ValueError("invalid Litestream transaction")
                 self.txid = txid
                 self.version = version
-            return {"txid": self.txid}
+            return {"txid": self.txid, **({"alarm": alarm} if alarm is not None else {})}
         except Exception as error:
             self.failure = SqliteCaptureError("failed to replicate actor SQLite commit")
             raise self.failure from error
 
-    def commit(self) -> tuple[int, int, int]:
+    def commit(self) -> tuple[tuple[int, int, int], Document | None]:
         with self.lock:
+            alarm = self.alarm()
             version = self.change_token()
             self.open().commit()
-            return version
+            return version, alarm
 
     def rollback(self) -> None:
         with self.lock:

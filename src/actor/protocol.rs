@@ -45,6 +45,11 @@ pub struct ActorInvocation {
 
 impl ActorInvocation {
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.method != "__alarm", "actor method is reserved");
+        self.validate_internal()
+    }
+
+    pub(crate) fn validate_internal(&self) -> Result<()> {
         ensure!(!self.request_id.is_empty(), "request ID must not be empty");
         ensure!(
             self.request_id.len() <= 255,

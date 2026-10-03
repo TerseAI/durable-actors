@@ -167,13 +167,14 @@ async fn control_plane_routes(
     let placements = storage.clone();
     let gateway =
         super::gateway::Gateway::new(&issuer, config.sandbox_provider.gke.public_origin.clone())?;
+    let alarms = Arc::new(super::alarm::PostgresAlarmStore::new(database.clone()));
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
         database,
         registry.clone(),
-        stop,
+        stop.clone(),
     )
     .await?;
     let socket_events = config
@@ -192,10 +193,12 @@ async fn control_plane_routes(
     )
     .with_runtime_access(runtime_access)
     .with_traces(traces)
-    .with_socket_event_sink(socket_events);
+    .with_socket_event_sink(socket_events)
+    .with_alarms(alarms.clone());
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    super::alarm::AlarmScheduler::start(alarms, service.clone(), stop)?;
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let inspector = super::inspection::ActorInspector::new(
         storage.clone(),

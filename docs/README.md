@@ -5,4 +5,4 @@
 | TypeScript | [TypeScript SDK](../sdk/README.md) | [API](reference/typescript.md) | [Chatroom](../examples/chat/README.md) |
 | Python | [Python SDK](../sdk-python/README.md) | [API](reference/python.md) | [Chat](../examples/python/README.md) |
 
-[HTTP API](reference/openapi.md) · [Configuration](reference/configuration.md)
+[HTTP API](reference/openapi.md) · [Configuration](reference/configuration.md) · [One-off alarms](reference/alarms.md)

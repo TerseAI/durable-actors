@@ -50,6 +50,11 @@ pub(crate) trait ActorStorage: Send + Sync {
         bytes: &[u8],
     ) -> Result<SqliteSnapshot>;
     fn ensure_authority(&self) -> Result<()>;
+    async fn register_alarm(
+        &self,
+        actor: &crate::actor::ActorKey,
+        alarm: &crate::control_plane::alarm::Alarm,
+    ) -> Result<()>;
     async fn prepare_state_write(
         &self,
         actor: &crate::actor::ActorKey,
@@ -755,6 +760,12 @@ impl ActorRuntime {
             "write capability belongs to another owner epoch"
         );
         timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
+        if let Some(alarm) = &next_state.sqlite.alarm {
+            // Publish the wakeup first: a failed actor commit leaves only a fenced, stale delivery.
+            self.storage
+                .register_alarm(&invocation.actor, alarm)
+                .await?;
+        }
         let mut snapshot = StateSnapshot::new(
             next_version,
             owner_epoch,

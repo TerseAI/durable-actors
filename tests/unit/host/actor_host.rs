@@ -1042,6 +1042,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
 
 #[derive(Default)]
 struct FakeAuthority {
+    alarms: Mutex<Vec<crate::control_plane::alarm::Alarm>>,
     persisted: Option<Arc<FakeStateTransport>>,
     history: std::collections::HashMap<String, Vec<u8>>,
     fenced: std::sync::atomic::AtomicBool,
@@ -1053,6 +1054,15 @@ struct FakeAuthority {
 
 #[async_trait]
 impl ActorStorage for FakeAuthority {
+    async fn register_alarm(
+        &self,
+        _actor: &ActorKey,
+        alarm: &crate::control_plane::alarm::Alarm,
+    ) -> Result<()> {
+        self.alarms.lock().unwrap().push(alarm.clone());
+        Ok(())
+    }
+
     async fn acquire_actor(
         &self,
         _actor: &ActorKey,
@@ -1685,3 +1695,105 @@ fn ticket(state_version: u64) -> WritePlan {
 
 #[path = "http_invocation.rs"]
 mod http_invocation;
+
+#[tokio::test]
+async fn due_alarm_waits_for_pending_publication_even_when_commit_response_is_lost() -> Result<()> {
+    struct Executor(AtomicUsize);
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            state: Option<&ActorState>,
+        ) -> Result<ActorMethodOutcome> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let scheduled = invocation.method != "__alarm";
+            if !scheduled {
+                assert_eq!(fields(state)?["scheduled"], json!(true));
+            }
+            let mut state = write_fields(state, json!({"scheduled": scheduled})).await?;
+            if scheduled {
+                state.sqlite.alarm = Some(crate::control_plane::alarm::Alarm {
+                    generation: uuid::Uuid::new_v4().to_string(),
+                    deadline: 0,
+                });
+            }
+            Ok(ActorMethodOutcome::Completed {
+                state,
+                result: json!(scheduled),
+                effects: vec![],
+            })
+        }
+    }
+    let (started, mut committing) = mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let authority = Arc::new(FakeAuthority::default());
+    let writes = Arc::new(FakeStateTransport {
+        failures: AtomicUsize::new(1),
+        paused_commit: Some((started, release.clone())),
+        ..Default::default()
+    });
+    let executor = Arc::new(Executor(AtomicUsize::new(0)));
+    let host = Arc::new(ActorHost::new(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid".into(),
+        },
+        executor.clone(),
+        authority.clone(),
+        writes,
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    ));
+    let caller = host.clone();
+    let schedule = tokio::spawn(async move { invoke(&caller, "first").await });
+    tokio::time::timeout(Duration::from_secs(2), committing.recv())
+        .await?
+        .context("commit did not start")?;
+    assert_eq!(
+        authority.alarms.lock().unwrap().len(),
+        1,
+        "wakeup is durable before actor publication starts"
+    );
+    let caller = host.clone();
+    let mut delivery = tokio::spawn(async move {
+        caller
+            .invoke_actor(
+                ActorInvocation {
+                    actor: ActorKey {
+                        project_id: "default".into(),
+                        actor_name: "Counter".into(),
+                        actor_id: "counter-1".into(),
+                    },
+                    request_id: "delivery".into(),
+                    method: "__alarm".into(),
+                    args: vec![],
+                },
+                1,
+            )
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut delivery)
+            .await
+            .is_err()
+    );
+    assert_eq!(executor.0.load(Ordering::SeqCst), 1);
+    release.add_permits(2);
+    assert!(matches!(
+        schedule.await??,
+        ActorExecutionResult::Failed { .. }
+    ));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), delivery).await???,
+        ActorExecutionResult::Completed {
+            result: json!(false),
+            effects: vec![]
+        }
+    );
+    assert_eq!(executor.0.load(Ordering::SeqCst), 2);
+    Ok(())
+}
