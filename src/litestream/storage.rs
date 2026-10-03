@@ -119,6 +119,7 @@ impl SqliteCapture {
             .into_iter()
             .filter(|file| file.last > self.published)
             .max_by_key(|file| file.last);
+        let snapshot = checkpoint.as_ref().map(|file| file.last);
         let mut next = checkpoint
             .as_ref()
             .map_or(self.published + 1, |file| file.last + 1);
@@ -144,9 +145,29 @@ impl SqliteCapture {
                 .context("Litestream transaction overflow")?,
             "Litestream has not replicated the actor commit"
         );
+        if let Some(snapshot) = snapshot {
+            self.prune(snapshot).await?;
+        }
         self.txid = state.txid;
         self.published = state.txid;
         Ok(files)
+    }
+
+    async fn prune(&self, snapshot: u64) -> Result<()> {
+        let replica = self.replica();
+        tokio::task::spawn_blocking(move || {
+            use terse_litestream::ReplicaStore;
+            let store = terse_litestream::FileStore::new(replica);
+            for level in [0, 9] {
+                for segment in store.list(level)? {
+                    if segment.max_txid < snapshot || (level == 0 && segment.max_txid == snapshot) {
+                        store.remove(&segment)?;
+                    }
+                }
+            }
+            anyhow::Ok(())
+        })
+        .await?
     }
 
     async fn open(replication: Arc<dyn Replicator>, directory: tempfile::TempDir) -> Result<Self> {

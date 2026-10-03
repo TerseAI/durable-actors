@@ -39,6 +39,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
                   fetch-depth: 0
 
@@ -78,6 +79,7 @@ jobs:
             - name: Checkout the pinned LTX source
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   repository: TerseAI/terse-ltx
                   ref: ${{ needs.preflight.outputs.ltx-revision }}
                   persist-credentials: false
@@ -126,9 +128,50 @@ jobs:
                       exit 1
                   fi
 
+    litestream:
+        name: Validate and publish embedded capture dependency
+        needs: [preflight, ltx]
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        timeout-minutes: 20
+        defaults:
+            run:
+                working-directory: third_party/terse-litestream
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  submodules: recursive
+                  ref: ${{ github.sha }}
+            - name: Install Rust toolchain
+              run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
+            - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+              with:
+                  go-version: "1.27.1"
+                  cache: false
+            - name: Validate capture and upstream compatibility
+              run: |
+                  scripts/verify.sh
+                  cargo publish --locked --dry-run
+            - name: Publish terse-litestream
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+              run: |
+                  version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+                  status=$(curl -sS \
+                    --user-agent "durable-actors-release/1.0 (+https://github.com/TerseAI/durable-actors)" \
+                    -o /dev/null -w "%{http_code}" \
+                    "https://crates.io/api/v1/crates/terse-litestream/$version")
+                  if [ "$status" = "200" ]; then
+                      echo "terse-litestream@$version already published"
+                  elif [ "$status" = "404" ]; then
+                      cargo publish --locked --no-verify
+                  else
+                      echo "::error::crates.io returned HTTP $status"
+                      exit 1
+                  fi
+
     rust:
         name: Test Rust runtime
-        needs: [preflight, ltx]
+        needs: [preflight, litestream]
         runs-on: blacksmith-4vcpu-ubuntu-2404
         services:
             postgres:
@@ -148,6 +191,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
@@ -200,6 +244,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -262,6 +307,7 @@ jobs:
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
             - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
               with:
@@ -319,6 +365,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Set up Blacksmith Docker builder
@@ -448,6 +495,8 @@ jobs:
         runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  submodules: recursive
             - name: Install Helm
               run: |
                   curl -fsSLO https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
@@ -477,6 +526,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -517,6 +567,7 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
+                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain

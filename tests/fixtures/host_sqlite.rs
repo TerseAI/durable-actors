@@ -7,11 +7,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub async fn replication() -> Arc<dyn Replicator> {
-    Arc::new(
-        Litestream::start("litestream".into())
-            .await
-            .expect("test Litestream"),
-    )
+    Arc::new(Litestream::start().await.expect("test Litestream"))
 }
 
 pub fn fields(state: Option<&ActorState>) -> Result<Value> {
