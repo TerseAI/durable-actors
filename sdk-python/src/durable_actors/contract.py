@@ -19,6 +19,7 @@ from .sandbox import sandbox_contract
 Document = dict[str, Any]
 HOOKS = {"on_connect", "on_message", "on_disconnect"}
 RESERVED = {
+    "db",
     "get_connections",
     "broadcast",
     "get",

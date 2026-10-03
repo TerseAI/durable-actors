@@ -295,3 +295,15 @@ def test_subscription_method_name_is_reserved():
 
     with pytest.raises(ValueError, match="reserved"):
         describe_actor(Conflicting)
+
+
+@pytest.mark.parametrize("member", ["field", "method"])
+def test_database_member_name_is_reserved(member):
+    def db(self) -> None:
+        pass
+
+    namespace = (
+        {"db": db} if member == "method" else {"__annotations__": {"db": int}, "db": persisted(0)}
+    )
+    with pytest.raises(ValueError, match="reserved actor"):
+        describe_actor(type("Conflicting", (Actor,), namespace))
