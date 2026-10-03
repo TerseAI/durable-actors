@@ -9,6 +9,9 @@ from .client import Client as Client
 from .client import SocketGrant as SocketGrant
 from .connection import StateSnapshot as StateSnapshot
 from .connection import StateUpdate as StateUpdate
+from .database import ActorDatabase as ActorDatabase
+from .database import SqliteResult as SqliteResult
+from .database import SqliteValue as SqliteValue
 from .fields import emitted as emitted
 from .fields import ephemeral as ephemeral
 from .fields import persisted as persisted

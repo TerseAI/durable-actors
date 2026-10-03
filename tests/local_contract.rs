@@ -22,8 +22,19 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
         @Persisted payload = "";
         async initialize(): Promise<void> {
             this.payload = "x".repeat(17 * 1024 * 1024);
-            this.db.exec("CREATE TABLE entries (value TEXT NOT NULL)");
-            this.db.exec("CREATE TABLE payload (data BLOB)");
+            this.db.execute("CREATE TABLE entries (value TEXT NOT NULL); CREATE TABLE payload (data BLOB)");
+            this.db.transactionSync(() => {
+                const inserted = this.db.execute("INSERT INTO entries VALUES (?) RETURNING value", "outer");
+                if (inserted.rowsWritten !== 1 || inserted.rows[0]?.value !== "outer") throw new Error("incorrect write metadata");
+                try {
+                    this.db.transactionSync(() => {
+                        this.db.exec("INSERT INTO entries VALUES ('discarded')");
+                        throw new Error("rollback inner");
+                    });
+                } catch {}
+                const result = this.db.transactionSync(() => this.db.execute("INSERT INTO entries VALUES ('inner-2'); SELECT value FROM entries WHERE value = ?", "outer"));
+                if (result.rowsWritten !== 0 || result.rows[0]?.value !== "outer") throw new Error("incorrect script result");
+            });
             this.db.exec("INSERT INTO payload VALUES (zeroblob(?))", 25 * 1024 * 1024);
         }
         async insert(value: string): Promise<void> { this.db.exec("INSERT INTO entries (value) VALUES (?)", value); }
@@ -34,7 +45,7 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
         }
         async fail(): Promise<void> {
             ++this.count;
-            this.db.exec("INSERT INTO entries VALUES ('discarded')");
+            this.db.transactionSync(() => this.db.exec("INSERT INTO entries VALUES ('discarded')"));
             throw new Error("rollback");
         }
         async read(): Promise<{count: number; schemaVersion: number; fieldBytes: number; databaseBytes: number; entries: {value: string}[]}> {
@@ -69,7 +80,7 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
             }}
             assert.deepEqual(await call('read'), {{
                 count: {initialize} ? 1 : 2, schemaVersion: {initialize} ? 0 : 2, fieldBytes: 17 * 1024 * 1024, databaseBytes: 25 * 1024 * 1024,
-                entries: {initialize} ? [{{value: 'retained'}}] : [{{value: 'retained'}}, {{value: 'after-restart'}}]
+                entries: [{{value: 'outer'}}, {{value: 'inner-2'}}, {{value: 'retained'}}, ...({initialize} ? [] : [{{value: 'after-restart'}}])]
             }});
         "#,
             serde_json::to_string(&sdk)?

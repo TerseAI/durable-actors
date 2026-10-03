@@ -17,4 +17,8 @@ Each actor has its own database through protected `this.db.exec<Row>(sql, ...bin
 
 SQL and `@Persisted` fields commit together after successful methods or socket hooks. Fields occupy JSON values in the reserved `__terse_fields` table; names beginning with `__terse_` or `_litestream_` are reserved. Failed ordinary calls roll both back. Overlapping `@Reentrant` calls share state, and a failed call cannot roll back another call's changes.
 
+`this.db.execute(sql, ...bindings)` returns `{ rows, rowsWritten }`. It accepts a SQL script atomically, with bindings and results belonging only to the final statement; `rowsWritten` includes triggers and foreign-key actions and is zero for reads. `this.db.exec()` keeps its single-statement, row-array contract.
+
+Use `this.db.transactionSync(() => { /* SQL operations */ })` for nested SQL savepoints. A thrown callback rolls back its SQL; releasing a savepoint does not commit the invocation. Callbacks must be synchronous. Savepoints do not roll back actor fields or external effects; ordinary invocation failure still rolls back SQL and persisted fields together.
+
 Database access is available during actor invocations, after construction. The runtime owns transactions and database files; transaction control, attached databases, vacuuming, and storage-related pragmas are unavailable. SQLite on Node.js requires 22.19+. Deploy matching SDK and runtime versions.

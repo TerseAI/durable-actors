@@ -9,6 +9,7 @@ from typing import Any
 
 from .actor import Actor
 from .contract import Document, Method, decode, describe_actor, encode
+from .database import bind_database
 from .socket import Effects, SocketScope, scope_context
 from .sqlite import SqliteCaptureError, SqliteStorage, Storage
 
@@ -147,7 +148,7 @@ class ActorRuntime:
                 state = self.snapshot()
                 previous = self.last_state if self.definition.reentrant_methods else before
                 effects.extend(self.state_updates(previous, state, command))
-                self.database.persist_fields(state)
+                await asyncio.to_thread(self.database.persist_fields, state)
                 try:
                     sqlite = await self.database.snapshot()
                 except SqliteCaptureError as error:
@@ -168,7 +169,7 @@ class ActorRuntime:
                 return reply
         except Exception as error:
             if not self.definition.reentrant_methods:
-                self.database.rollback()
+                await asyncio.to_thread(self.database.rollback)
                 self.restore(before)
             return failed(
                 "actor_socket_failed" if socket_event else "actor_method_failed", str(error)
@@ -223,6 +224,7 @@ class ActorRuntime:
             for name, field in self.definition.fields.items():
                 if field.persisted and name in state:
                     setattr(instance, name, decode(field.adapter, state[name]))
+        bind_database(instance, self.database)
         self.instance = instance
         self.last_state = self.snapshot()
 

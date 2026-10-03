@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createRequire } from "node:module"
 
-import type { ActorDatabase, SqliteValue } from "../actor/database.js"
+import type { ActorDatabase, SqliteResult, SqliteValue } from "../actor/database.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
 import { syncLitestream } from "./litestream.js"
@@ -26,6 +27,8 @@ interface ActorDatabaseStorage extends ActorDatabase {
 class SqliteActorDatabase implements ActorDatabaseStorage {
     private connection: SqliteConnection | undefined
     private seed: LitestreamDatabase | undefined
+    private readonly transaction = new AsyncLocalStorage<{ active: boolean }>()
+    private savepoint = 0
     private txid = 0
     private version = ""
     private failure: SqliteCaptureError | undefined
@@ -42,6 +45,51 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         const statement = database.prepare(sql)
         if (!database.isTransaction) database.exec("BEGIN")
         return statement.all(...bindings) as Row[]
+    }
+
+    execute<Row extends object>(sql: string, ...bindings: SqliteValue[]): SqliteResult<Row> {
+        return this.transactionSync(() => {
+            const database = this.open()
+            let rest = sql
+            for (;;) {
+                if (!withoutComments(rest)) throw new Error("SQL code did not contain a statement")
+                validateStatement(rest)
+                const [source, tail] = firstStatement(database, rest)
+                const statement = database.prepare(source)
+                if (withoutComments(tail)) {
+                    if (hasBindings(source)) throw new Error("only the final SQL statement accepts bindings")
+                    statement.all()
+                    rest = tail
+                    continue
+                }
+                const before = totalChanges(database)
+                const rows = statement.all(...bindings) as Row[]
+                return { rows, rowsWritten: totalChanges(database) - before }
+            }
+        })
+    }
+
+    transactionSync<T>(operation: () => T): T {
+        const database = this.open()
+        if (!database.isTransaction) database.exec("BEGIN")
+        const savepoint = `terse_savepoint_${++this.savepoint}`
+        database.exec(`SAVEPOINT ${savepoint}`)
+        const scope = { active: true }
+        try {
+            const result = this.transaction.run(scope, operation)
+            if (result !== null && (typeof result === "object" || typeof result === "function") && "then" in result) {
+                void Promise.resolve(result).catch(() => {})
+                throw new Error("SQLite transaction callbacks must be synchronous")
+            }
+            database.exec(`RELEASE ${savepoint}`)
+            return result
+        } catch (error) {
+            database.exec(`ROLLBACK TO ${savepoint}`)
+            database.exec(`RELEASE ${savepoint}`)
+            throw error
+        } finally {
+            scope.active = false
+        }
     }
 
     fields(): JsonObject {
@@ -124,6 +172,8 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
     }
 
     private open(): SqliteConnection {
+        if (this.transaction.getStore()?.active === false)
+            throw new Error("SQLite transaction callbacks must be synchronous")
         if (this.failure !== undefined) throw this.failure
         if (this.connection !== undefined) return this.connection
         if (this.seed === undefined) throw new Error("actor SQLite database has not been restored")
@@ -187,20 +237,35 @@ function validateStatement(sql: string): void {
 }
 
 function validateSingleStatement(database: SqliteConnection, sql: string): void {
-    const tokens = sql.matchAll(
-        /--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|;/g
-    )
-    for (const token of tokens) {
-        if (token[0] !== ";" || !withoutComments(sql.slice(token.index + 1))) continue
+    const [, tail] = firstStatement(database, sql)
+    if (withoutComments(tail)) throw new Error("actor database exec accepts one SQL statement")
+}
+
+function firstStatement(database: SqliteConnection, sql: string): [string, string] {
+    for (const token of sql.matchAll(sqlTokens)) {
+        if (token[0] !== ";") continue
+        const end = token.index + 1
+        if (!withoutComments(sql.slice(0, end))) continue
         try {
-            // SQLite distinguishes a statement boundary from a semicolon inside a trigger body.
-            database.prepare(sql.slice(0, token.index + 1))
+            // SQLite distinguishes a statement boundary from semicolons inside a trigger body.
+            database.prepare(sql.slice(0, end))
+            return [sql.slice(0, end), sql.slice(end)]
         } catch (error) {
             if (!(error instanceof Error) || !error.message.includes("incomplete input")) throw error
-            continue
         }
-        throw new Error("actor database exec accepts one SQL statement")
     }
+    return [sql, ""]
+}
+
+const sqlTokens =
+    /--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|;|\?|[$:@][a-zA-Z0-9_]+/g
+
+function hasBindings(sql: string): boolean {
+    return [...sql.matchAll(sqlTokens)].some(token => /^[?$:@]/.test(token[0]))
+}
+
+function totalChanges(database: SqliteConnection): number {
+    return Number(database.prepare("SELECT total_changes() AS count").get()!.count)
 }
 
 function withoutComments(sql: string): string {

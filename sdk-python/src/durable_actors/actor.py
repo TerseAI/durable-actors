@@ -13,6 +13,7 @@ from .json import JsonValue
 if TYPE_CHECKING:
     from .client import ActorTransport
     from .connection import Connection
+    from .database import ActorDatabase
     from .socket import ActorSocket
 
 Metadata = DefaultTypeVar("Metadata", default=JsonValue)
@@ -60,6 +61,13 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
     def connect(self, metadata: Metadata) -> Connection[Incoming, Outgoing, JsonValue, JsonValue]:
         """Open a typed WebSocket through a source-class reference from get()."""
         raise RuntimeError("connect() requires an actor reference from get()")
+
+    @property
+    def db(self) -> ActorDatabase:
+        """SQLite access during an active invocation, committed with persisted actor fields."""
+        from .database import actor_database
+
+        return actor_database(self)
 
     @property
     def id(self) -> str:

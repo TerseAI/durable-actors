@@ -128,3 +128,86 @@ test("exec rejects multiple statements before applying writes and accepts trigge
     assert.equal(row!.value, ";")
     assert.equal(row!["a;b"], 1)
 })
+
+test("savepoints compose, scripts report final writes, and invocation rollback remains authoritative", async context => {
+    const database = new SqliteActorDatabase()
+    context.after(() => database.close())
+    const source = await seed()
+    database.restore(source)
+    database.execute("CREATE TABLE entries (value TEXT UNIQUE); CREATE TABLE audit (value TEXT)")
+    database.exec(
+        "CREATE TRIGGER record_entry AFTER INSERT ON entries BEGIN INSERT INTO audit VALUES (NEW.value); INSERT INTO audit VALUES ('trigger; value'); END;"
+    )
+    const committed = await database.snapshot()
+    const result = database.transactionSync(() => {
+        assert.equal(database.execute("INSERT INTO entries VALUES (?)", "outer").rowsWritten, 3)
+        assert.throws(
+            () =>
+                database.transactionSync(() => {
+                    database.exec("INSERT INTO entries VALUES ('inner')")
+                    throw new Error("discard inner")
+                }),
+            /discard inner/
+        )
+        return database.transactionSync(() =>
+            database.execute("INSERT INTO entries VALUES ('last'); SELECT value FROM entries WHERE value = ?", "outer")
+        )
+    })
+    assert.deepEqual(
+        { ...result, rows: result.rows.map(row => ({ ...row })) },
+        { rows: [{ value: "outer" }], rowsWritten: 0 }
+    )
+    assert.equal(database.execute("UPDATE entries SET value = 'missing' WHERE value = 'absent'").rowsWritten, 0)
+    const updated = database.execute("UPDATE entries SET value = 'changed' WHERE value = 'last' RETURNING value")
+    assert.deepEqual(
+        { ...updated, rows: updated.rows.map(row => ({ ...row })) },
+        { rows: [{ value: "changed" }], rowsWritten: 1 }
+    )
+    for (const sql of [
+        "INSERT INTO entries VALUES ('partial'); COMMIT",
+        "INSERT INTO entries VALUES (?); SELECT 1",
+        "INSERT INTO entries VALUES ('partial'); DROP TABLE __terse_fields"
+    ])
+        assert.throws(() => database.execute(sql, "parameter"))
+    assert.deepEqual(
+        database.exec("SELECT value FROM entries ORDER BY rowid").map(row => ({ ...row })),
+        [{ value: "outer" }, { value: "changed" }]
+    )
+    database.rollback()
+    assert.deepEqual(database.exec("SELECT value FROM entries"), [])
+    assert.deepEqual(await database.snapshot(), committed)
+})
+
+test("transaction callbacks cannot escape their savepoint asynchronously", async context => {
+    const database = new SqliteActorDatabase()
+    context.after(() => database.close())
+    database.restore(await seed())
+    database.exec("CREATE TABLE entries (value TEXT)")
+    assert.throws(
+        () =>
+            database.transactionSync(() => {
+                database.exec("INSERT INTO entries VALUES ('discarded')")
+                return Promise.resolve()
+            }),
+        /synchronous/
+    )
+    assert.deepEqual(database.exec("SELECT value FROM entries"), [])
+    let resume!: () => void
+    const gate = new Promise<void>(resolve => {
+        resume = resolve
+    })
+    let escaped!: Promise<void>
+    assert.throws(
+        () =>
+            database.transactionSync(() => {
+                escaped = gate.then(() => {
+                    database.exec("INSERT INTO entries VALUES ('escaped')")
+                })
+                return escaped
+            }),
+        /synchronous/
+    )
+    resume()
+    await assert.rejects(escaped, /synchronous/)
+    assert.deepEqual(database.exec("SELECT value FROM entries"), [])
+})

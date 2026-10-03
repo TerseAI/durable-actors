@@ -22,6 +22,12 @@ class Chat(Actor):
         return self.messages
 ```
 
+## SQLite
+
+Inside a method or socket hook, `self.db.exec(sql, *bindings)` returns row dictionaries for one statement. `self.db.execute(sql, *bindings)` accepts a SQL script atomically and returns `SqliteResult(rows, rows_written)`; only the final statement accepts bindings and contributes results. Write counts include triggers and foreign-key actions and are zero for reads.
+
+`self.db.transaction_sync(callback)` runs synchronous SQL in a nested savepoint. A thrown callback rolls back its SQL, but not actor fields or external effects. Releasing a savepoint does not commit the invocation: SQL and persisted fields commit together after success and roll back together on ordinary invocation failure. Reentrant actors share state and cannot roll back failed invocations. The runtime reserves names containing `__terse_` or `_litestream_` and owns transaction control, database files, and storage pragmas.
+
 ## Types and clients
 
 Use concrete types at public boundaries: JSON primitives, typed collections, unions, models, dataclasses, dates, or UUIDs; `Any` and bare collections are rejected. Generated clients validate values and expose models and method types through the actor namespace.

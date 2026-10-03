@@ -72,6 +72,53 @@ class Counter(Actor):
 @pytest.mark.skipif(
     not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
 )
+def test_python_sql_savepoints_and_fields_survive_runtime_restart(tmp_path):
+    (tmp_path / "sql_actors.py").write_text("""from durable_actors import Actor, persisted
+class DatabaseActor(Actor):
+    count: int = persisted(0)
+    def initialize(self) -> int:
+        self.db.execute("CREATE TABLE entries(value TEXT); CREATE TABLE audit(value TEXT)")
+        self.db.exec("CREATE TRIGGER audit_insert AFTER INSERT ON entries BEGIN INSERT INTO audit VALUES(NEW.value); INSERT INTO audit VALUES('trigger; value'); END")
+        def outer():
+            self.count += 1
+            written = self.db.execute("INSERT INTO entries VALUES (?) RETURNING value", "outer")
+            assert written.rows == [{"value": "outer"}]
+            def inner():
+                self.db.exec("INSERT INTO entries VALUES ('discarded')")
+                raise ValueError("rollback inner")
+            try:
+                self.db.transaction_sync(inner)
+            except ValueError:
+                pass
+            result = self.db.transaction_sync(lambda: self.db.execute("INSERT INTO entries VALUES ('inner-2'); SELECT value FROM entries WHERE value = ?", "outer"))
+            assert result.rows_written == 0 and result.rows == [{"value": "outer"}]
+            return written.rows_written
+        return self.db.transaction_sync(outer)
+    def fail(self) -> None:
+        self.count += 1
+        self.db.transaction_sync(lambda: self.db.exec("INSERT INTO entries VALUES ('discarded')"))
+        raise ValueError("rollback invocation")
+    def read(self) -> dict[str, int | list[str]]:
+        return {"count": self.count, "entries": [str(row["value"]) for row in self.db.exec("SELECT value FROM entries ORDER BY rowid")]}
+""")
+    from durable_actors import ActorInvocationError
+
+    port = free_port()
+    for initialize in (True, False):
+        with actor_server(tmp_path, "sql_actors.py", port) as (client, _):
+            if initialize:
+                assert client.invoke("DatabaseActor", "one", "initialize", []) == 3
+                with pytest.raises(ActorInvocationError, match="rollback invocation"):
+                    client.invoke("DatabaseActor", "one", "fail", [])
+            assert client.invoke("DatabaseActor", "one", "read", []) == {
+                "count": 1,
+                "entries": ["outer", "inner-2"],
+            }
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DURABLE_ACTORS_TEST_RUNTIME"), reason="requires built Rust runtime"
+)
 def test_python_generated_socket_and_state_events(tmp_path, monkeypatch):
     from durable_actors import StateSnapshot, StateUpdate
 
