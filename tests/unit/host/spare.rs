@@ -108,6 +108,7 @@ async fn run_activation(
         javascript,
         entrypoint: code.to_str().unwrap().into(),
         storage: WarmGcs::new().await?,
+        replication: Arc::new(Litestream::start("litestream".into()).await?),
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
