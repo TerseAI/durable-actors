@@ -183,6 +183,10 @@ test("transaction callbacks cannot escape their savepoint asynchronously", async
     context.after(() => database.close())
     database.restore(await seed())
     database.exec("CREATE TABLE entries (value TEXT)")
+    assert.deepEqual(
+        database.transactionSync(() => ({ then: "value" })),
+        { then: "value" }
+    )
     assert.throws(
         () =>
             database.transactionSync(() => {

@@ -77,7 +77,11 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         const scope = { active: true }
         try {
             const result = this.transaction.run(scope, operation)
-            if (result !== null && (typeof result === "object" || typeof result === "function") && "then" in result) {
+            if (
+                result !== null &&
+                (typeof result === "object" || typeof result === "function") &&
+                typeof Reflect.get(result, "then") === "function"
+            ) {
                 void Promise.resolve(result).catch(() => {})
                 throw new Error("SQLite transaction callbacks must be synchronous")
             }
