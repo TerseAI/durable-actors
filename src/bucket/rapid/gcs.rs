@@ -213,7 +213,11 @@ impl LogZone for GcsZone {
 #[async_trait]
 impl LogWriter for GcsWriter {
     async fn append_and_flush(&mut self, bytes: Bytes) -> Result<u64> {
-        self.0.append(bytes).await?;
+        use google_cloud_storage::streaming_source::StreamingSource;
+        let mut upload = crate::payload::Upload::new(bytes);
+        while let Some(chunk) = upload.next().await {
+            self.0.append(chunk?).await?;
+        }
         Ok(self.0.flush().await?.try_into()?)
     }
 }
@@ -245,3 +249,7 @@ pub(crate) fn validate_retention(bucket: &google_cloud_storage::model::Bucket) -
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/bucket/rapid/gcs.rs"]
+mod tests;

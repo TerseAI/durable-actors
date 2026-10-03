@@ -368,7 +368,7 @@ fn lifecycle_rules_must_exclude_unarchived_logs() -> Result<()> {
 }
 
 #[tokio::test]
-async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Result<()> {
+async fn large_records_and_subsequent_small_writes_stay_on_rapid() -> Result<()> {
     let f = Fixture::new()?;
     let store = f.store()?;
     store.start(&f.stream).await?;
@@ -376,19 +376,31 @@ async fn oversized_states_use_standard_and_preserve_existing_log_history() -> Re
     let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
     snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
     let bytes: Bytes = snapshot.encode()?.into();
-    assert!(bytes.len() > frame::MAX_STATE);
     store.put(&f.stream.object(2), bytes.clone()).await?;
-    store
-        .finish(
-            &f.stream,
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        )
-        .await?;
-    assert_eq!(f.store()?.get(&f.stream.object(2)).await?, Some(bytes));
+    store.put(&f.stream.object(3), state(3, 1)?).await?;
+    for zone in &f.zones {
+        let objects = zone.objects.lock().unwrap();
+        let records = frame::decode(&Bytes::copy_from_slice(
+            &objects.values().next().unwrap().bytes,
+        ))?;
+        assert_eq!(
+            records.iter().map(|r| r.version).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(records[1].state, bytes);
+    }
+    assert!(f.archive.get(&f.stream.object(2)).await?.is_none());
+    assert!(f.archive.get(&f.stream.object(3)).await?.is_none());
+    drop(store);
+    f.zones[1].offline.store(true, Ordering::SeqCst);
+    let reader = f.store()?;
     assert_eq!(
-        f.store()?.get(&f.stream.object(1)).await?,
-        Some(state(1, 1)?)
+        reader.recover(&f.stream.prefix).await?,
+        Some((f.stream.object(3), state(3, 1)?))
     );
+    f.zones[0].offline.store(true, Ordering::SeqCst);
+    assert_eq!(reader.get(&f.stream.object(2)).await?, Some(bytes));
+    assert_eq!(reader.get(&f.stream.object(1)).await?, Some(state(1, 1)?));
     Ok(())
 }
 
@@ -525,6 +537,13 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
     let store = f.store()?;
     store.start(&f.stream).await?;
     store.put(&f.stream.object(1), state(1, 1)?).await?;
+    let mut snapshot = StateSnapshot::decode(&state(2, 1)?)?;
+    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    let interrupted = Record {
+        version: 2,
+        state: snapshot.encode()?,
+    }
+    .encode()?;
     f.zones[0]
         .objects
         .lock()
@@ -533,7 +552,7 @@ async fn recovery_ignores_incomplete_tail_but_rejects_corrupt_complete_records()
         .next()
         .unwrap()
         .bytes
-        .extend_from_slice(b"RLG1partial");
+        .extend_from_slice(&interrupted[..crate::payload::IO_BUFFER_BYTES]);
     assert_eq!(
         f.store()?.latest(&f.stream.prefix).await?,
         Some((f.stream.object(1), state(1, 1)?))

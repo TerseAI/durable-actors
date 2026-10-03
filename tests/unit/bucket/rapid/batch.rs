@@ -840,6 +840,40 @@ async fn archiver_finishes_when_another_worker_archived_and_cleaned_its_backlog(
 }
 
 #[tokio::test]
+async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
+    let f = Fixture::new()?;
+    let (writer, archive) = controlled(&f, 64 * 1024, 60_000)?;
+    archive.fail_batch.store(true, Ordering::SeqCst);
+    writer.start(&f.stream).await?;
+    let mut snapshot = StateSnapshot::decode(&state(1, 1)?)?;
+    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    let bytes = snapshot.encode()?;
+    writer.put(&f.stream.object(1), bytes.clone()).await?;
+    writer.put(&f.stream.object(2), state(2, 1)?).await?;
+    writer
+        .finish(
+            &f.stream,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await?;
+    f.cleaned().await?;
+    assert!(
+        f.zones
+            .iter()
+            .any(|z| z.range_reads.load(Ordering::SeqCst) > 0)
+    );
+    let (reader, archive) = controlled(&f, 64 * 1024, 60_000)?;
+    assert_eq!(reader.get(&f.stream.object(1)).await?, Some(bytes.clone()));
+    assert_eq!(archive.read_batches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        archive.range_bytes.load(Ordering::SeqCst),
+        (bytes.len() + frame::HEADER) as u64
+    );
+    assert_eq!(reader.get(&f.stream.object(2)).await?, Some(state(2, 1)?));
+    Ok(())
+}
+
+#[tokio::test]
 async fn indexed_reads_fetch_only_the_requested_archived_record() -> Result<()> {
     let f = Fixture::new()?;
     let (writer, _) = controlled(&f, 1, 10_000)?;

@@ -239,7 +239,7 @@ impl Index {
             ensure!(
                 entry.start == offset
                     && entry.length >= frame::HEADER as u64
-                    && entry.length <= (frame::HEADER + frame::MAX_STATE) as u64
+                    && entry.length <= frame::HEADER as u64 + u64::from(u32::MAX)
                     && previous.is_none_or(|v| v.checked_add(1) == Some(entry.version)),
                 "invalid archive index entry"
             );

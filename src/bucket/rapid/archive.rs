@@ -209,9 +209,7 @@ async fn upload(
     let bytes = match cached {
         Some(bytes) => bytes,
         None => {
-            let length =
-                (end - start).min((storage.batch.bytes + frame::MAX_STATE + frame::HEADER) as u64);
-            match storage.read_range(manifest, start, length).await {
+            match read_batch(storage, manifest, start, end).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     // Another worker may have archived and deleted the Rapid copies.
@@ -243,6 +241,29 @@ async fn upload(
         .put_batch(manifest, start, bytes.slice(..length))
         .await?;
     Ok(start + length as u64)
+}
+
+async fn read_batch(
+    storage: &LogStorage,
+    manifest: &Manifest,
+    start: u64,
+    end: u64,
+) -> Result<Bytes> {
+    let requested = (end - start).min(storage.batch.bytes.max(frame::HEADER) as u64);
+    let bytes = storage.read_range(manifest, start, requested).await?;
+    let length = frame::length(&bytes)? as u64;
+    if length <= requested {
+        return Ok(bytes);
+    }
+    ensure!(length <= end - start, "incomplete committed record");
+    let tail = storage
+        .read_range(manifest, start + requested, length - requested)
+        .await?;
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        crate::payload::copy(bytes.as_ref().chain(tail.as_ref()))
+    })
+    .await?
 }
 
 impl LogStorage {

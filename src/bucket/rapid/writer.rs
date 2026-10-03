@@ -82,9 +82,6 @@ impl Session {
                 preparing.await.context("Rapid preparation failed")??,
             );
         }
-        if bytes.len() > frame::MAX_STATE {
-            self.standard = true;
-        }
         if self.standard {
             bounded(storage.snapshots.put(object, bytes.clone())).await?;
         } else {
