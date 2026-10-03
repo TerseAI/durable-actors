@@ -4,6 +4,8 @@ This benchmark measures one busy room at 128, 1,024, 8,192 and 32,768 connection
 
 Monitor the recorded actor pod names with Kubernetes during the idle window to confirm the old sandbox has terminated and heartbeat replies do not start another sandbox. A changed actor instance ID alone is insufficient evidence. The final result is emitted only if all phases pass; report the highest fully passing phase separately from partial admission.
 
+See the [completed GKE run from 2026-10-03](gke-results-2026-10-03.md) for measured throughput, resource usage, and limitations.
+
 ## Run on GKE
 
 Prerequisites: a matching Linux runtime image built from this checkout, Node 22+, pnpm, Python 3, OpenSSL, gcloud, kubectl, and access to the cluster and configured actor artifact bucket. Run commands from the repository root. Choose a unique benchmark name and confirm the context and reference deployment before applying anything.
