@@ -71,6 +71,12 @@ class ActorRuntime:
         return {"type": "evicted"}
 
     async def run(self, command: Document) -> Document:
+        if command.get("method") == "__task":
+            try:
+                completion = await asyncio.to_thread(self.background.take(command["args"][0]))
+                return {"type": "task_finished", **completion}
+            except Exception as error:
+                return failed("actor_task_failed", str(error))
         await self.serial.acquire()
         name = command.get("method") or "on_" + command.get("event", {}).get("type", "")
         released = False
@@ -109,13 +115,18 @@ class ActorRuntime:
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
         assert self.instance is not None
-        with self.background.scope(self.instance, bool(self.definition.reentrant_methods)) as tasks:
+        with self.background.scope(self.instance, bool(self.definition.reentrant_methods)) as (
+            tasks,
+            external_tasks,
+        ):
             reply = await self.invoke(command, admit)
             if reply["type"] in {"invoked", "websocket_handled"}:
                 if tasks:
                     reply["background_tasks"] = tasks
+                if external_tasks:
+                    reply["external_tasks"] = external_tasks
             else:
-                self.background.discard(tasks)
+                self.background.discard(tasks + external_tasks)
             return reply
 
     async def invoke(self, command: Document, admit: Any) -> Document:
@@ -198,7 +209,7 @@ class ActorRuntime:
                 return reply
         except Exception as error:
             if not self.definition.reentrant_methods:
-                preserve_callbacks = name == "__background"
+                preserve_callbacks = name == "__background" or self.background.has_pending
                 if not preserve_callbacks:
                     self.background.clear()
                 await asyncio.to_thread(self.database.rollback)

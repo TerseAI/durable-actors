@@ -48,6 +48,8 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
                 "broadcastAfterCommit",
                 "db",
                 "waitUntil",
+                "runTask",
+                "__task",
                 "__background",
                 "getAlarm",
                 "setAlarm",

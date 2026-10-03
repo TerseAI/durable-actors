@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util"
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
 import { bindActorAlarm, deliverAlarm, runWithActorAlarm } from "../actor/alarm.js"
+import type { ExternalTask } from "../actor/background.js"
 import { ActorBackgroundTasks } from "../actor/background.js"
 import { bindActorDatabase, runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
@@ -48,6 +49,14 @@ class ActorRuntime {
 
     async handle(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): Promise<ActorExecutorReply> {
         if (command.type === "hydrate") return this.execute(command)
+        if (command.type === "invoke" && command.method === "__task") {
+            try {
+                const completion = await (this.background.take(command.args[0]) as ExternalTask)()
+                return { type: "task_finished", ...completion }
+            } catch (error) {
+                return failedReply("actor_task_failed", errorMessage(error))
+            }
+        }
         const method = command.type === "invoke" ? command.method : lifecycleMethod(command)
         const reentrant = this.definition.state.reentrantMethods?.includes(method) ?? false
         const operation = this.serial.then(() => this.execute(command))
@@ -132,7 +141,7 @@ class ActorRuntime {
                     )
                 )
             )
-            registered = background.tasks
+            registered = [...background.tasks, ...background.externalTasks]
             const operation = background.value
             const result: JsonValue =
                 command.method === "__background" || operation.value === undefined
@@ -146,6 +155,7 @@ class ActorRuntime {
                     result,
                     sqlite: await this.databaseState(state),
                     ...(background.tasks.length === 0 ? {} : { background_tasks: background.tasks }),
+                    ...(background.externalTasks.length === 0 ? {} : { external_tasks: background.externalTasks }),
                     ...this.completionOrder(),
                     ...(effects.length === 0 ? {} : { effects })
                 }
@@ -198,7 +208,7 @@ class ActorRuntime {
                     )
                 )
             )
-            registered = background.tasks
+            registered = [...background.tasks, ...background.externalTasks]
             const operation = background.value
             return await this.complete(async () => {
                 const state = snapshotActorState(instance, this.definition.state)
@@ -214,6 +224,7 @@ class ActorRuntime {
                     type: "websocket_handled",
                     sqlite: await this.databaseState(state),
                     ...(background.tasks.length === 0 ? {} : { background_tasks: background.tasks }),
+                    ...(background.externalTasks.length === 0 ? {} : { external_tasks: background.externalTasks }),
                     ...this.completionOrder(),
                     effects: socketEffects(command, state, effects, this.definition.state)
                 }
@@ -274,6 +285,7 @@ class ActorRuntime {
     }
 
     private restoreInstance(identity: ActorIdentity, state: JsonObject, preserveCallbacks = false): void {
+        preserveCallbacks ||= this.background.hasPending
         const previous = this.instance
         if (!preserveCallbacks) this.background.clear()
         this.database.rollback()

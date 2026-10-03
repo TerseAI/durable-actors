@@ -25,6 +25,7 @@ RESERVED = {
     "set_alarm",
     "delete_alarm",
     "__alarm",
+    "run_task",
     "get_connections",
     "broadcast",
     "broadcast_after_commit",

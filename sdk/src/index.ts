@@ -1,4 +1,5 @@
 /** @module durable-actors */
+export type { TaskOutcome } from "./actor/background.js"
 export { Actor } from "./actor/actor.js"
 export type { ActorDatabase, SqliteResult, SqliteValue } from "./actor/database.js"
 export { Sandbox } from "./actor/sandbox.js"

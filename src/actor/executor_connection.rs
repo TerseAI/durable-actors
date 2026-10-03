@@ -137,10 +137,20 @@ pub enum ActorSocketEffect {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct ActorBackgroundTask {
+    pub id: u64,
+    pub external: bool,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ActorMethodOutcome {
+    TaskFinished {
+        method: String,
+        args: Vec<Value>,
+    },
     Background {
         outcome: Box<ActorMethodOutcome>,
-        tasks: Vec<u64>,
+        tasks: Vec<ActorBackgroundTask>,
     },
     Interleaved(ActorInterleavedOutcome),
     Completed {
@@ -155,7 +165,7 @@ pub enum ActorMethodOutcome {
 pub enum ActorSocketOutcome {
     Background {
         outcome: Box<ActorSocketOutcome>,
-        tasks: Vec<u64>,
+        tasks: Vec<ActorBackgroundTask>,
     },
     Interleaved(ActorInterleavedOutcome),
     Handled {
@@ -475,6 +485,7 @@ impl ActorExecutor for JsActorExecutor {
                 effects,
                 sequence,
                 background_tasks,
+                external_tasks,
             } => {
                 let outcome = match sequence {
                     Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
@@ -489,14 +500,30 @@ impl ActorExecutor for JsActorExecutor {
                         effects,
                     },
                 };
-                Ok(if background_tasks.is_empty() {
-                    outcome
-                } else {
-                    ActorMethodOutcome::Background {
-                        outcome: Box::new(outcome),
-                        tasks: background_tasks,
-                    }
-                })
+                Ok(
+                    if background_tasks.is_empty() && external_tasks.is_empty() {
+                        outcome
+                    } else {
+                        ActorMethodOutcome::Background {
+                            outcome: Box::new(outcome),
+                            tasks: background_tasks
+                                .into_iter()
+                                .map(|id| ActorBackgroundTask {
+                                    id,
+                                    external: false,
+                                })
+                                .chain(
+                                    external_tasks
+                                        .into_iter()
+                                        .map(|id| ActorBackgroundTask { id, external: true }),
+                                )
+                                .collect(),
+                        }
+                    },
+                )
+            }
+            ExecutorReply::TaskFinished { method, args } => {
+                Ok(ActorMethodOutcome::TaskFinished { method, args })
             }
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
@@ -527,6 +554,7 @@ impl ActorExecutor for JsActorExecutor {
                 effects,
                 sequence,
                 background_tasks,
+                external_tasks,
             } => {
                 let outcome = match sequence {
                     Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
@@ -537,14 +565,27 @@ impl ActorExecutor for JsActorExecutor {
                     }),
                     None => ActorSocketOutcome::Handled { state, effects },
                 };
-                Ok(if background_tasks.is_empty() {
-                    outcome
-                } else {
-                    ActorSocketOutcome::Background {
-                        outcome: Box::new(outcome),
-                        tasks: background_tasks,
-                    }
-                })
+                Ok(
+                    if background_tasks.is_empty() && external_tasks.is_empty() {
+                        outcome
+                    } else {
+                        ActorSocketOutcome::Background {
+                            outcome: Box::new(outcome),
+                            tasks: background_tasks
+                                .into_iter()
+                                .map(|id| ActorBackgroundTask {
+                                    id,
+                                    external: false,
+                                })
+                                .chain(
+                                    external_tasks
+                                        .into_iter()
+                                        .map(|id| ActorBackgroundTask { id, external: true }),
+                                )
+                                .collect(),
+                        }
+                    },
+                )
             }
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
@@ -553,6 +594,7 @@ impl ActorExecutor for JsActorExecutor {
                 }))
             }
             ExecutorReply::Hydrated
+            | ExecutorReply::TaskFinished { .. }
             | ExecutorReply::Invoked { .. }
             | ExecutorReply::Evicted
             | ExecutorReply::StateRequired => {
@@ -570,7 +612,9 @@ impl ActorExecutor for JsActorExecutor {
             ExecutorReply::Failed { code, message } => {
                 anyhow::bail!("actor executor rejected eviction ({code}): {message}")
             }
-            ExecutorReply::Hydrated | ExecutorReply::Invoked { .. } => {
+            ExecutorReply::Hydrated
+            | ExecutorReply::TaskFinished { .. }
+            | ExecutorReply::Invoked { .. } => {
                 anyhow::bail!("actor executor returned the wrong reply to eviction")
             }
             ExecutorReply::WebsocketHandled { .. } | ExecutorReply::StateRequired => {
@@ -921,6 +965,7 @@ impl ExecutorDriver {
         if matches!(
             reply,
             ExecutorReply::Hydrated
+                | ExecutorReply::TaskFinished { .. }
                 | ExecutorReply::Invoked { .. }
                 | ExecutorReply::WebsocketHandled { .. }
         ) {
@@ -1138,6 +1183,10 @@ enum ExecutorCommand {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorReply {
+    TaskFinished {
+        method: String,
+        args: Vec<Value>,
+    },
     Hydrated,
     StateRequired,
     Invoked {
@@ -1149,6 +1198,8 @@ enum ExecutorReply {
         #[serde(default)]
         background_tasks: Vec<u64>,
         #[serde(default)]
+        external_tasks: Vec<u64>,
+        #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
@@ -1158,6 +1209,8 @@ enum ExecutorReply {
         sequence: Option<u64>,
         #[serde(default)]
         background_tasks: Vec<u64>,
+        #[serde(default)]
+        external_tasks: Vec<u64>,
         effects: Vec<ActorSocketEffect>,
     },
     Failed {

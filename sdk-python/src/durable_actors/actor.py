@@ -78,6 +78,15 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
         """Handle a scheduled deadline; failures retry with at-least-once delivery."""
         pass
 
+    def run_task(self, task: Callable[[Any], Any], value: Any, completion: str) -> None:
+        """Run static external work after commit, then invoke a serialized completion.
+
+        Completion receives input, ok, and value or error. Tasks are not crash-retried.
+        """
+        from .background import run_task
+
+        run_task(self, task, value, completion)
+
     @classmethod
     def get(cls, actor_id: str, transport: ActorTransport | None = None) -> Self:
         """Return a typed synchronous reference without activating the actor locally.

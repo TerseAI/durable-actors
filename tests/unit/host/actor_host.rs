@@ -571,7 +571,7 @@ impl ActorExecutor for ControlledExecutor {
             )
             .await?;
         match result {
-            ActorMethodOutcome::Background { .. } => {
+            ActorMethodOutcome::TaskFinished { .. } | ActorMethodOutcome::Background { .. } => {
                 unreachable!("controlled executor has no background tasks")
             }
             ActorMethodOutcome::Interleaved(outcome) => {

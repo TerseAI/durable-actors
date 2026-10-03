@@ -97,6 +97,7 @@ type EvictCommand = z.infer<typeof evictCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
+    | { readonly type: "task_finished"; readonly method: string; readonly args: readonly JsonValue[] }
     | InvokedReply
     | WebSocketHandledReply
     | FailedReply
@@ -126,6 +127,7 @@ interface ReplyMessage {
 interface InvokedReply {
     readonly type: "invoked"
     readonly background_tasks?: readonly number[]
+    readonly external_tasks?: readonly number[]
     readonly sequence?: number
     readonly result: JsonValue
     readonly sqlite: SqliteState
@@ -135,6 +137,7 @@ interface InvokedReply {
 interface WebSocketHandledReply {
     readonly type: "websocket_handled"
     readonly background_tasks?: readonly number[]
+    readonly external_tasks?: readonly number[]
     readonly sequence?: number
     readonly sqlite: SqliteState
     readonly effects: readonly SocketEffect[]

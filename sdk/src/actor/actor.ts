@@ -3,7 +3,7 @@ import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
 import { deleteAlarm, getAlarm, setAlarm } from "./alarm.js"
-import { waitUntil } from "./background.js"
+import { runTask, waitUntil } from "./background.js"
 import { actorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
@@ -71,6 +71,15 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /** Runs a callback after this call commits, in a separate serialized invocation. Not retried after a crash. */
     protected waitUntil(task: () => Promise<unknown>): void {
         waitUntil(this, task)
+    }
+
+    /** Runs static external work after commit, then invokes a serialized completion with a TaskOutcome. Not retried after a crash. */
+    protected runTask<Input, Output>(
+        task: (input: Input) => Promise<Output>,
+        input: Input,
+        completion: keyof this & string
+    ): void {
+        runTask(this, task, input, completion)
     }
 
     /**
@@ -229,6 +238,8 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
                 "broadcastAfterCommit",
                 "db",
                 "waitUntil",
+                "runTask",
+                "__task",
                 "__background",
                 "getAlarm",
                 "setAlarm",

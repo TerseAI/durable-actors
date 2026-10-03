@@ -614,7 +614,9 @@ impl ActorRuntime {
     ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
     {
         match outcome {
-            Ok(ActorMethodOutcome::Background { .. }) | Ok(ActorMethodOutcome::Interleaved(_)) => {
+            Ok(ActorMethodOutcome::TaskFinished { .. })
+            | Ok(ActorMethodOutcome::Background { .. })
+            | Ok(ActorMethodOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
             }
             Ok(ActorMethodOutcome::Completed {

@@ -50,6 +50,8 @@ function validateRpc(rpc: RpcContract): void {
                 "broadcastAfterCommit",
                 "db",
                 "waitUntil",
+                "runTask",
+                "__task",
                 "__background",
                 "getAlarm",
                 "setAlarm",

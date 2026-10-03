@@ -115,7 +115,11 @@ impl Mailbox {
         let executor = self.runtime.executor();
         self.next_invocation += 1;
         let id = self.next_invocation;
-        self.blocked_on = Some(id);
+        self.blocked_on = if invocation.method == "__task" {
+            None
+        } else {
+            Some(id)
+        };
         self.running.push(
             async move {
                 let result = execute(&*executor, &request.operation, state).await;
@@ -151,6 +155,31 @@ impl Mailbox {
     }
 
     async fn executed(&mut self, id: u64, mut request: ActorRequest, result: Execution) -> bool {
+        if let Ok(ActorMethodOutcome::TaskFinished { method, args }) = result {
+            if request.operation.invocation().method != "__task" {
+                return self
+                    .stop(
+                        request,
+                        anyhow::anyhow!("unexpected external task completion"),
+                    )
+                    .await;
+            }
+            let invocation = ActorInvocation {
+                actor: request.operation.actor().clone(),
+                request_id: uuid::Uuid::new_v4().to_string(),
+                method,
+                args,
+            };
+            if let Err(error) = invocation.validate() {
+                return self.stop(request, error).await;
+            }
+            request.operation = ActorOperation::Method(invocation);
+            request.task_completion = true;
+            request.timings = InvocationTimings::new();
+            self.deferred.push_back(request);
+            self.release(id);
+            return true;
+        }
         let result = match result {
             Ok(ActorMethodOutcome::Background { outcome, tasks }) => {
                 if tasks.len() + request.background.len() > 64 {
@@ -166,7 +195,11 @@ impl Mailbox {
             }
             other => other,
         };
-        request.continue_background = request.operation.invocation().method == "__background"
+        request.continue_background = (request.task_completion
+            || matches!(
+                request.operation.invocation().method.as_str(),
+                "__background" | "__task"
+            ))
             && matches!(&result, Ok(ActorMethodOutcome::Failed(failure)) if failure.code == "actor_method_failed");
         if let Ok(ActorMethodOutcome::Interleaved(outcome)) = result {
             self.interleaved = true;
@@ -282,7 +315,11 @@ impl Mailbox {
         mut request: ActorRequest,
         mut result: Result<ActorExecutionResult>,
     ) {
-        if request.operation.invocation().method == "__background"
+        if (request.task_completion
+            || matches!(
+                request.operation.invocation().method.as_str(),
+                "__background" | "__task"
+            ))
             && let Ok(ActorExecutionResult::Completed { effects, .. }) = &mut result
             && !effects.is_empty()
             && let Err(error) = self
@@ -302,7 +339,11 @@ impl Mailbox {
             trace.state_version(self.runtime.state_version());
             trace.complete(&result);
         }
-        if request.operation.invocation().method == "__background"
+        if (request.task_completion
+            || matches!(
+                request.operation.invocation().method.as_str(),
+                "__background" | "__task"
+            ))
             && !matches!(result, Ok(ActorExecutionResult::Completed { .. }))
         {
             tracing::warn!(result = ?result, actor = %self.object, "background task failed");
@@ -323,9 +364,15 @@ impl Mailbox {
                 request.operation = ActorOperation::Method(ActorInvocation {
                     actor,
                     request_id: uuid::Uuid::new_v4().to_string(),
-                    method: "__background".into(),
-                    args: vec![task.into()],
+                    method: if task.external {
+                        "__task"
+                    } else {
+                        "__background"
+                    }
+                    .into(),
+                    args: vec![task.id.into()],
                 });
+                request.task_completion = false;
                 request.trace = None;
                 request.timings = InvocationTimings::new();
                 self.deferred.push_back(request);
