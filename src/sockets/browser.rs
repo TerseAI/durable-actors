@@ -312,7 +312,8 @@ async fn dispatch(
     if let ActorSocketEvent::Connect { connection } = &event {
         let rejected = effects.iter().any(|effect| {
             matches!(effect,
-            ActorSocketEffect::Close { connection_id, .. } if connection_id == &connection.id)
+            ActorSocketEffect::Close { connection_id, .. }
+                | ActorSocketEffect::Reject { connection_id, .. } if connection_id == &connection.id)
         });
         if !rejected {
             state.registry.activate(&ticket.actor, &connection.id).await;

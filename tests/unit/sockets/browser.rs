@@ -29,7 +29,7 @@ impl SocketDispatcher for Dispatcher {
                     tags: vec![],
                     tag_match: Default::default(),
                 },
-                ActorSocketEffect::Close {
+                ActorSocketEffect::Reject {
                     connection_id: connection.id,
                     code: 4403,
                     reason: "denied".into(),
