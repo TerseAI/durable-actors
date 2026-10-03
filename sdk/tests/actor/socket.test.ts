@@ -160,7 +160,7 @@ test("socket output accumulates while publication is busy", async () => {
     assert.equal(published.length, 1026)
 })
 
-test("metadata and tags use Cloudflare budgets while broadcasts accept large exclusion sets", async () => {
+test("metadata and tags enforce size limits while broadcasts accept large exclusion sets", async () => {
     await runWithActorSockets({}, [{ id: "socket", metadata: null, tags: [] }], async scope => {
         const socket = scope.connection("socket")
         socket.metadata = "x".repeat(16382)

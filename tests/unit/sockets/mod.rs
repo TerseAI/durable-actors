@@ -38,7 +38,7 @@ async fn queued_output_is_delivered_in_order_after_the_reader_catches_up() {
 }
 
 #[tokio::test]
-async fn admission_matches_cloudflare_and_reopens_after_disconnect() {
+async fn admission_enforces_connection_limit_and_reopens_after_disconnect() {
     let registry = SocketRegistry::default();
     let actor = ActorKey {
         project_id: "default".into(),
@@ -78,7 +78,7 @@ async fn admission_matches_cloudflare_and_reopens_after_disconnect() {
 }
 
 #[test]
-fn metadata_and_tags_follow_cloudflare_limits() {
+fn metadata_and_tags_enforce_size_limits() {
     assert!(crate::actor::validate_socket_metadata(&json!("x".repeat(16382))).is_ok());
     assert!(crate::actor::validate_socket_metadata(&json!("x".repeat(16383))).is_err());
     for (count, valid) in [(10, true), (11, false)] {

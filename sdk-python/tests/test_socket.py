@@ -41,7 +41,7 @@ async def test_socket_output_can_accumulate_until_published():
     assert len(await context.finish()) == 1025
 
 
-async def test_cloudflare_tag_count_and_large_broadcast_exclusion_set():
+async def test_tag_count_limit_and_large_broadcast_exclusion_set():
     context = scope()
     socket = context.socket({"id": "one", "metadata": None, "tags": []})
     socket.set_tags(*(str(i) for i in range(10)))
