@@ -18,3 +18,15 @@ Each actor has its own database through protected `this.db.exec<Row>(sql, ...bin
 SQL and `@Persisted` fields commit together after successful methods or socket hooks. Fields occupy JSON values in the reserved `__terse_fields` table; names beginning with `__terse_` or `_litestream_` are reserved. Failed ordinary calls roll both back. Overlapping `@Reentrant` calls share state, and a failed call cannot roll back another call's changes.
 
 Database access is available during actor invocations, after construction. The runtime owns transactions and database files; transaction control, attached databases, vacuuming, and storage-related pragmas are unavailable. SQLite on Node.js requires 22.19+. Deploy matching SDK and runtime versions.
+
+## Hibernating WebSockets
+
+Open connections remain at the gateway when an idle actor sandbox shuts down. A message activates a new sandbox with the connection's metadata and tags intact. Inside an actor call:
+
+```ts
+const count = await this.getConnectionCount()
+const members = await this.getConnections("member")
+this.setWebSocketAutoResponse({ request: JSON.stringify("ping"), response: JSON.stringify("pong") })
+```
+
+Counts do not enumerate sockets. Connection lists load only when requested. Automatic replies run in the gateway without waking the actor; call `this.setWebSocketAutoResponse()` to clear the pair. Gateway replacement still disconnects clients. See [configuration](configuration.md#websockets) for limits and deployment details.

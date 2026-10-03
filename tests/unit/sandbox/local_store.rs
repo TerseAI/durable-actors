@@ -81,6 +81,8 @@ fn request(id: &str) -> EnsureHostRequest {
         working_directory: "/project".into(),
         actor_entrypoint: None,
         secret_refs: vec![],
+        max_socket_connections: 1024,
+        socket_events: false,
         host_idle_timeout_ms: 300_000,
     }
 }

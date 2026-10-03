@@ -580,6 +580,8 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             control_plane_url: "http://control".into(),
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
+            max_socket_connections: 1024,
+            socket_events: false,
             host_idle_timeout_ms: 10_000,
         },
         test_issuer()?,
@@ -1763,4 +1765,70 @@ mod invoke;
 
 fn local_document(digest: &str) -> serde_json::Value {
     serde_json::json!({"workingDirectory": format!("/project/{digest}"), "actorEntrypoint":"src/actors.ts"})
+}
+
+#[tokio::test]
+async fn socket_authorization_accepts_a_host_renewing_its_lease() -> Result<()> {
+    struct RenewingPlacement(std::sync::atomic::AtomicU64, ObjectPlacement);
+    #[async_trait]
+    impl ObjectPlacementStore for RenewingPlacement {
+        async fn get_owner_with_hint(
+            &self,
+            object: &ActorStorageKey,
+        ) -> Result<(Option<ObjectPlacement>, Option<OwnershipHint>)> {
+            Ok((self.get(object).await?, None))
+        }
+        async fn get(&self, _: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
+            let mut placement = self.1.clone();
+            placement.lease.expires_at_ms +=
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Some(placement))
+        }
+    }
+    let actor = ActorKey {
+        project_id: "p".into(),
+        actor_name: "Room".into(),
+        actor_id: "one".into(),
+    };
+    let host = HostId::new("host.v3.test.one");
+    let mut lease = test_lease(&host);
+    lease.expires_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? + 60_000;
+    let principal = ActorPrincipal {
+        actor: actor.clone(),
+        host_id: host.clone(),
+        session_id: lease.session_id.clone(),
+        region: "us-east".into(),
+        host_config_key: None,
+        invocation: None,
+    };
+    let placement = ObjectPlacement {
+        object: actor.storage_key(),
+        owner: host,
+        owner_epoch: 1,
+        home_region: principal.region.clone(),
+        state_version: 0,
+        state_object: None,
+        last_request_id: None,
+        lease,
+    };
+    let issuer = test_issuer()?;
+    let auth = ActorJwtVerifier::for_scope(
+        issuer.verifier_keys_json()?,
+        "issuer",
+        "authority",
+        ActorTokenPurpose::ControlPlane,
+        Duration::from_secs(60),
+    )?;
+    let service = ControlPlaneService::new(
+        Arc::new(RenewingPlacement(Default::default(), placement)),
+        auth,
+        Arc::new(LocalAdminRegistry::default()),
+        issuer,
+        Arc::new(UnavailableProvisioner),
+    );
+    service.authorize_socket_host(&principal, &actor).await?;
+    let mut stale = principal.clone();
+    stale.session_id = "other-session".into();
+    assert!(service.authorize_socket_host(&stale, &actor).await.is_err());
+    Ok(())
 }

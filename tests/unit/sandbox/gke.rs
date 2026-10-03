@@ -117,6 +117,8 @@ fn request() -> Result<EnsureHostRequest> {
         working_directory: "/customer".into(),
         actor_entrypoint: Some("/customer/actors.mjs".into()),
         secret_refs: vec!["customer".into()],
+        max_socket_connections: 1024,
+        socket_events: false,
         host_idle_timeout_ms: 10000,
     })
 }

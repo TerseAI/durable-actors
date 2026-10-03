@@ -177,6 +177,14 @@ fn assignment_environment(
             "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE".into(),
             request.socket_jwt_audience.clone(),
         ),
+        (
+            "DURABLE_ACTORS_SOCKET_EVENTS".into(),
+            request.socket_events.to_string(),
+        ),
+        (
+            "DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS".into(),
+            request.max_socket_connections.to_string(),
+        ),
         ("DURABLE_ACTORS_HOST_ID".into(), request.host_id.to_string()),
         (
             "DURABLE_ACTORS_SESSION_ID".into(),

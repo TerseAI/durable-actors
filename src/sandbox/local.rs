@@ -461,6 +461,14 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
     ] {
         environment.insert(key.into(), value);
     }
+    environment.insert(
+        "DURABLE_ACTORS_SOCKET_EVENTS".into(),
+        request.socket_events.to_string(),
+    );
+    environment.insert(
+        "DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS".into(),
+        request.max_socket_connections.to_string(),
+    );
     if let Some(config) = &request.runtime_config {
         environment.insert("DURABLE_ACTORS_RUNTIME_CONFIG".into(), config.clone());
     }

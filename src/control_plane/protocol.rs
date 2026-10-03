@@ -6,6 +6,10 @@ use crate::grpc::proto::{ControlPlaneReply, ControlPlaneRequest};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommand {
+    SocketOperation {
+        actor: crate::actor::ActorKey,
+        operation: super::socket_gateway::SocketOperation,
+    },
     RefreshStorageAccess,
     InventoryChanged,
     RequestTraces {
@@ -21,6 +25,9 @@ pub(crate) enum ControlPlaneCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlPlaneCommandReply {
+    SocketOperation {
+        reply: super::socket_gateway::SocketOperationReply,
+    },
     StorageAccess {
         token: Option<crate::bucket::access::StorageToken>,
         replacement_token: String,

@@ -274,6 +274,8 @@ fn fixture_with_idle_timeout(
                 control_plane_url: "http://control".into(),
                 jwt_issuer: "issuer".into(),
                 invocation_jwt_audience: "invocation".into(),
+                max_socket_connections: 1024,
+                socket_events: false,
                 host_idle_timeout_ms,
             },
             issuer.clone(),

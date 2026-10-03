@@ -6,6 +6,26 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use super::*;
 use std::collections::HashMap;
 
+#[test]
+fn hosts_only_report_socket_messages_when_an_event_sink_is_configured() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert!(!parse(&values)?.sandbox_provider.runtime.socket_events);
+    values.insert(
+        "DURABLE_ACTORS_SOCKET_EVENT_URL",
+        "https://events.example.com/socket",
+    );
+    values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "4096");
+    let config = parse(&values)?;
+    assert!(config.sandbox_provider.runtime.socket_events);
+    assert_eq!(config.sandbox_provider.runtime.max_socket_connections, 4096);
+    values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "0");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
 #[tokio::test]
 async fn server_carries_websocket_upgrades() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -242,6 +262,7 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
+        ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
         (
             "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
             "test@project.iam.gserviceaccount.com",

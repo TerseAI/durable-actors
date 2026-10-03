@@ -109,6 +109,8 @@ with room.connect(actors.Room.Metadata(name="Ada")) as connection:
             print(event.text)
 ```
 
+Idle actor sandboxes shut down while their sockets, metadata and tags remain at the gateway. Within an actor handler, `self.get_connection_count()` reads the maintained count and `self.get_connections("member")` fetches matching connections on demand. Use `self.set_websocket_auto_response('"ping"', '"pong"')` for an exact raw-text reply without waking the actor; omit both arguments to clear it. Gateway replacement disconnects clients. See [WebSocket configuration](configuration.md#websockets).
+
 ## CLI and configuration
 
 The shared Node CLI uses the project's `.venv` and runs strict mypy on actor definitions and generated clients. Keep the CLI, Python SDK, and native runtime versions aligned.

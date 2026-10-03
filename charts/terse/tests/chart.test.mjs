@@ -18,6 +18,37 @@ function render(overrides = {}) {
     }
 }
 
+test("dedicated socket replicas serve upgrades independently of control-plane replicas", () => {
+    const result = render({ sockets: { dedicatedGateway: true, replicaCount: 4, maxConnectionsPerActor: 2048, resources: { requests: { memory: "3Gi" } } } })
+    assert.equal(result.status, 0, result.stderr)
+    const documents = result.stdout.split("---")
+    const sockets = documents.find(document => document.includes("kind: Deployment\n") && document.includes("name: test-terse-sockets\n"))
+    assert.ok(sockets)
+    assert.match(sockets, /DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS, value: "true"/)
+    const control = documents.find(document => document.includes("kind: Deployment\n") && document.includes("name: test-terse\n"))
+    assert.match(control, /DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS, value: "false"/)
+    assert.match(sockets, /replicas: 4\b/)
+    assert.match(sockets, /memory: 3Gi/)
+    assert.match(sockets, /app.kubernetes.io\/component: socket-gateway/)
+    assert.match(sockets, /http:\/\/test-terse.terse-control.svc.cluster.local:7100/)
+    for (const deployment of documents.filter(document => document.includes("kind: Deployment\n")))
+        assert.match(deployment, /DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS, value: "2048"/)
+    const route = documents.find(document => document.includes("kind: HTTPRoute\n"))
+    assert.match(route, /type: Exact\s+value: \/v1\/socket[\s\S]*name: test-terse-sockets/)
+    assert.match(route, /- backendRefs:\s+- name: test-terse\s/)
+    for (const kind of ["Service", "PodDisruptionBudget", "HealthCheckPolicy", "GCPBackendPolicy"])
+        assert.ok(documents.some(document => document.includes(`kind: ${kind}\n`) && document.includes("name: test-terse-sockets\n")), kind)
+})
+
+test("socket isolation is opt-in and the actor cap is always configured", () => {
+    const result = render()
+    assert.equal(result.status, 0, result.stderr)
+    assert.doesNotMatch(result.stdout, /name: test-terse-sockets/)
+    assert.match(result.stdout, /DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS, value: "32768"/)
+})
+
+test("rejects a zero actor socket cap", () => assert.notEqual(render({ sockets: { maxConnectionsPerActor: 0 } }).status, 0))
+
 for (const [name, overrides, cpuMillis] of [
     ["default", {}, 1000],
     ["configured", { pool: { cpuMillis: 750 } }, 750]

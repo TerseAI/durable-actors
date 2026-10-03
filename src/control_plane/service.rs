@@ -41,7 +41,7 @@ pub struct ControlPlaneService {
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     pub(super) gateway: Option<super::gateway::Gateway>,
     placements: Arc<dyn ObjectPlacementStore>,
-    auth: ActorJwtVerifier,
+    pub(super) auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
     registry: Arc<dyn AdminRegistry>,
     provisioner: Arc<dyn HostProvisioner>,
@@ -332,7 +332,7 @@ impl ControlPlaneService {
         );
     }
 
-    async fn resolve_actor_route(
+    pub(super) async fn resolve_actor_route(
         &self,
         actor: &ActorKey,
         home_region: Option<&str>,
@@ -340,7 +340,6 @@ impl ControlPlaneService {
         grant: Option<super::session::InvocationGrant>,
     ) -> Result<ActorTarget> {
         actor.validate()?;
-        let requested_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
         let target = self
             .route_actor(
                 actor,
@@ -349,7 +348,8 @@ impl ControlPlaneService {
                 timings.as_deref_mut(),
             )
             .await?;
-        let idle_expires_at_ms = requested_at_ms.saturating_add(
+        let resolved_at_ms = crate::clock::Clock::now_ms(&crate::clock::SystemClock)?;
+        let idle_expires_at_ms = resolved_at_ms.saturating_add(
             target
                 .spec
                 .sandboxes
@@ -387,6 +387,7 @@ impl ControlPlaneService {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct ActorTarget {
     pub home_region: String,
     pub route: String,
@@ -436,12 +437,35 @@ impl ActorControlPlaneService for ControlPlaneService {
         request: Request<ControlPlaneRequest>,
     ) -> std::result::Result<Response<ControlPlaneReply>, Status> {
         let principal = self.auth.authenticate(&request).await?;
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         let command = decode_command(request.into_inner())
             .map_err(|error| Status::invalid_argument(format!("invalid command: {error:#}")))?;
-        let reply = self
-            .execute_command(&principal, command)
-            .await
-            .map_err(failed_precondition)?;
+        let reply = match command {
+            ControlPlaneCommand::SocketOperation { actor, operation } => {
+                self.authorize_socket_host(&principal, &actor)
+                    .await
+                    .map_err(failed_precondition)?;
+                let gateway = self
+                    .gateway
+                    .as_ref()
+                    .ok_or_else(|| Status::unavailable("socket gateway is unavailable"))?;
+                let reply = gateway
+                    .connections
+                    .operation(&actor, operation, &authorization)
+                    .await
+                    .map_err(failed_precondition)?;
+                ControlPlaneCommandReply::SocketOperation { reply }
+            }
+            command => self
+                .execute_command(&principal, command)
+                .await
+                .map_err(failed_precondition)?,
+        };
         Ok(Response::new(encode_reply(reply).map_err(internal)?))
     }
 }
@@ -453,6 +477,9 @@ impl ControlPlaneService {
         command: ControlPlaneCommand,
     ) -> Result<ControlPlaneCommandReply> {
         match command {
+            ControlPlaneCommand::SocketOperation { .. } => {
+                anyhow::bail!("socket operation requires authenticated routing")
+            }
             ControlPlaneCommand::RequestTraces { traces, dropped } => {
                 self.require_active_host(principal).await?;
                 ensure!(
@@ -529,25 +556,15 @@ impl ControlPlaneService {
         }
     }
 
-    async fn authorize_socket_host(
+    pub(super) async fn authorize_socket_host(
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
     ) -> Result<()> {
         actor.validate()?;
         ensure!(&principal.actor == actor, "host actor scope mismatch");
-        let lease = self.require_active_host(principal).await?;
-        let placement = self.current_placement(actor).await?;
-        ensure!(
-            placement.lease == lease && placement.owner == lease.id,
-            "actor ownership belongs to another session"
-        );
-        validate_state_owner(
-            principal,
-            &principal.host_id,
-            placement.owner_epoch,
-            &placement,
-        )
+        self.require_active_host(principal).await?;
+        Ok(())
     }
 
     async fn route_actor(
@@ -1165,6 +1182,8 @@ impl SandboxHostProvisioner {
                 .clone()
                 .or_else(|| spec.code_snapshot.as_ref().map(|_| "actors.mjs".into())),
             secret_refs: spec.secret_refs.clone(),
+            max_socket_connections: self.runtime.max_socket_connections,
+            socket_events: self.runtime.socket_events,
             host_idle_timeout_ms: options
                 .idle_timeout_ms
                 .unwrap_or(self.runtime.host_idle_timeout_ms),
@@ -1221,24 +1240,6 @@ impl RoutedActor {
 
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1_000.0
-}
-
-fn validate_state_owner(
-    principal: &ActorPrincipal,
-    host_id: &HostId,
-    owner_epoch: u64,
-    placement: &ObjectPlacement,
-) -> Result<()> {
-    ensure!(placement.owner == *host_id, "host does not own this actor");
-    ensure!(
-        placement.owner_epoch == owner_epoch,
-        "actor owner epoch is stale"
-    );
-    ensure!(
-        placement.home_region == principal.region,
-        "host is outside the actor home region"
-    );
-    Ok(())
 }
 
 fn host_matches_config(host: &HostId, config_key: &str) -> bool {

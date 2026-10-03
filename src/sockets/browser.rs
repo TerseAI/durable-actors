@@ -3,15 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{
-    extract::{
-        Query, State, WebSocketUpgrade,
-        ws::{CloseFrame, Message, WebSocket},
-    },
-    http::StatusCode,
-    response::Response,
-};
-use serde::Deserialize;
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use tokio::task::JoinHandle;
 
 use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
@@ -19,7 +11,7 @@ use crate::actor::{
     ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
     ActorSocketMessage, validate_socket_effects,
 };
-use crate::control_plane::socket_ticket::{SocketTicket, SocketTicketVerifier};
+use crate::control_plane::socket_ticket::SocketTicket;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -27,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 
 #[async_trait]
 pub(crate) trait SocketDispatcher: Send + Sync {
-    async fn authorize(&self, ticket: &SocketTicket) -> Result<()>;
     fn ensure_authority(&self) -> Result<()>;
     async fn dispatch(
         &self,
@@ -56,49 +47,13 @@ pub(crate) trait SocketDispatcher: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct SocketServerState {
     pub registry: SocketRegistry,
-    pub verifier: SocketTicketVerifier,
     pub dispatcher: Arc<dyn SocketDispatcher>,
     pub stop: CancellationToken,
 }
 
-pub(crate) fn router(state: SocketServerState) -> axum::Router {
-    axum::Router::new()
-        .route("/v1/socket", axum::routing::get(connect))
-        .layer(axum::extract::DefaultBodyLimit::disable())
-        .with_state(state)
-}
-
-#[derive(Deserialize)]
-pub(super) struct SocketQuery {
-    key: Option<String>,
-}
-
 type Closed = (u16, &'static str);
 
-pub(super) async fn connect(
-    State(state): State<SocketServerState>,
-    Query(query): Query<SocketQuery>,
-    upgrade: WebSocketUpgrade,
-) -> Result<Response, StatusCode> {
-    let ticket = state
-        .verifier
-        .verify(query.key.as_deref().unwrap_or_default())
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    state
-        .dispatcher
-        .authorize(&ticket)
-        .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    if state.stop.is_cancelled() {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
-    Ok(upgrade
-        .max_frame_size(usize::MAX)
-        .max_message_size(usize::MAX)
-        .on_upgrade(move |socket| run(socket, state, ticket)))
-}
-
-async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
+pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket: SocketTicket) {
     let connection = ActorSocketConnection {
         id: uuid::Uuid::new_v4().to_string(),
         metadata: ticket.metadata.clone(),
@@ -156,7 +111,9 @@ impl Session {
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
                     if !result.unwrap_or(false) { return Err((4400, "actor socket handler failed")); }
-                    if let Some((message, received)) = self.pending.pop_front() { self.start_message(message, received); }
+                    if let Some((message, received)) = self.pending.pop_front() {
+                        self.start_message(message, received);
+                    }
                 }
                 inbound = socket.recv() => self.receive(socket, inbound).await?,
                 outbound = self.outbound.recv() => self.send_outbound(socket, outbound.ok_or((1006, "socket closed"))?).await?,
@@ -170,13 +127,28 @@ impl Session {
         inbound: Option<Result<Message, axum::Error>>,
     ) -> Result<(), Closed> {
         match inbound {
-            Some(Ok(Message::Text(text))) => self.enqueue(ActorSocketMessage::Text {
-                data: text.to_string(),
-            }),
+            Some(Ok(Message::Text(text))) => {
+                if let Some(response) = self
+                    .state
+                    .registry
+                    .auto_response(&self.ticket.actor, &text)
+                    .await
+                {
+                    self.send_frame(socket, Message::Text(response.into()))
+                        .await
+                } else {
+                    self.enqueue(ActorSocketMessage::Text {
+                        data: text.to_string(),
+                    })
+                }
+            }
             Some(Ok(Message::Ping(data))) => self.send_frame(socket, Message::Pong(data)).await,
             Some(Ok(Message::Pong(_))) => Ok(()),
             Some(Ok(Message::Close(_))) => Err((1000, "client closed")),
             Some(Ok(Message::Binary(_))) => Err((4400, "socket messages must be JSON text")),
+            Some(Err(error)) if super::message_too_large(&error) => {
+                Err((1009, "message exceeds 32 MiB"))
+            }
             Some(Err(_)) | None => Err((1006, "transport closed")),
         }
     }
@@ -185,15 +157,8 @@ impl Session {
         let received = Instant::now();
         if self.handler.is_none() {
             self.start_message(message, received);
-        } else if self.pending.len() < 32 {
-            self.pending.push_back((message, received));
         } else {
-            self.discard(
-                message,
-                received,
-                crate::request_traces::RequestOutcome::Rejected,
-            );
-            return Err((1013, "socket operation queue is full"));
+            self.pending.push_back((message, received));
         }
         Ok(())
     }
@@ -273,13 +238,19 @@ impl Session {
             .dispatcher
             .ensure_authority()
             .map_err(|_| (1012, "actor host lease expired"))?;
-        tokio::time::timeout(
-            self.remaining()?.min(Duration::from_secs(5)),
-            socket.send(frame),
-        )
-        .await
-        .map_err(|_| (4408, "socket delivery timed out"))?
-        .map_err(|_| (1006, "transport closed"))
+        let deadline = tokio::time::Instant::now() + self.remaining()?;
+        let mut authority_checks = tokio::time::interval(Duration::from_secs(1));
+        let send = socket.send(frame);
+        tokio::pin!(send);
+        loop {
+            tokio::select! {
+                biased;
+                _ = self.state.stop.cancelled() => return Err((1012, "socket gateway stopping")),
+                _ = tokio::time::sleep_until(deadline) => return Err((4408, "socket authorization expired")),
+                _ = authority_checks.tick() => self.state.dispatcher.ensure_authority().map_err(|_| (1012, "socket gateway lease expired"))?,
+                result = &mut send => return result.map_err(|_| (1006, "transport closed")),
+            }
+        }
     }
 
     fn remaining(&self) -> Result<Duration, Closed> {

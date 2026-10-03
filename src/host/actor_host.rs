@@ -30,7 +30,6 @@ use super::{
 
 mod admission;
 
-const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
 const HOST_COMMAND_CAPACITY: usize = 256;
 
 pub(crate) struct ActorHost {
@@ -345,17 +344,13 @@ impl HostDispatcher {
             self.start_actor(request.operation.actor().clone(), completed.clone());
         }
         let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
-        if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
-            request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
-            return;
-        }
         if !matches!(&request.operation, ActorOperation::Activate { .. }) {
             request.waiting = Some(self.queues.enqueue(
                 request.operation.actor(),
                 request.operation.invocation().method.clone(),
             ));
         }
-        match mailbox.sender.try_send(request) {
+        match mailbox.sender.send(request) {
             Ok(()) => {
                 mailbox.resident = true;
                 mailbox.admitted += 1;
@@ -364,7 +359,7 @@ impl HostDispatcher {
             }
             Err(error) => {
                 error
-                    .into_inner()
+                    .0
                     .finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
             }
         }
@@ -400,7 +395,7 @@ impl HostDispatcher {
             self.publisher.clone(),
             self.replication.clone(),
         );
-        let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
+        let (sender, requests) = mpsc::unbounded_channel();
         let task = self.tasks.spawn(run_actor(
             actor.storage_key(),
             runtime,
@@ -425,9 +420,7 @@ impl HostDispatcher {
             mailbox.admitted -= 1;
             self.active -= 1;
         }
-        if completion.resets_idle_timer {
-            self.last_active = tokio::time::Instant::now();
-        }
+        self.last_active = tokio::time::Instant::now();
         self.publish_activity();
         let _ = completion.reply.send(completion.result);
     }
@@ -489,7 +482,7 @@ impl HostDispatcher {
 async fn run_actor(
     object: ActorStorageKey,
     mut runtime: ActorRuntime,
-    mut requests: mpsc::Receiver<ActorRequest>,
+    mut requests: mpsc::UnboundedReceiver<ActorRequest>,
     completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
 ) {
@@ -498,7 +491,6 @@ async fn run_actor(
         return;
     }
     while let Some(mut request) = requests.recv().await {
-        let resets_idle_timer = request.operation.resets_idle_timer();
         drop(request.waiting.take());
         let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
             let result = Ok(ActorExecutionResult::HostUnavailable);
@@ -540,7 +532,6 @@ async fn run_actor(
         }
         if completed
             .send(ActorCompletion {
-                resets_idle_timer,
                 object: object.clone(),
                 reply: request.reply,
                 result,
@@ -565,7 +556,7 @@ enum HostCommand {
 struct ActorMailbox {
     actor: ActorKey,
     resident: bool,
-    sender: mpsc::Sender<ActorRequest>,
+    sender: mpsc::UnboundedSender<ActorRequest>,
     admitted: usize,
     task_id: Id,
 }
@@ -581,7 +572,6 @@ struct ActorRequest {
 }
 
 struct ActorCompletion {
-    resets_idle_timer: bool,
     object: ActorStorageKey,
     reply: oneshot::Sender<Result<ActorExecutionResult>>,
     result: Result<ActorExecutionResult>,
@@ -619,18 +609,6 @@ impl ActorOperation {
             }
             _ => super::actor_runtime::CommitOrigin::default(),
         }
-    }
-
-    fn resets_idle_timer(&self) -> bool {
-        matches!(
-            self,
-            Self::Activate { .. }
-                | Self::Method(_)
-                | Self::Socket(ActorSocketInvocation {
-                    event: ActorSocketEvent::Message { .. },
-                    ..
-                })
-        )
     }
 
     fn actor(&self) -> &ActorKey {

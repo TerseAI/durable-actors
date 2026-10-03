@@ -30,13 +30,15 @@ Used by `dev`.
 
 ## Kubernetes hosting
 
-Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox. It colocates the control plane and HTTPS/WebSocket gateway with a prewarmed actor pool. The chart sets these runtime variables:
+Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox. It runs the control plane, a WebSocket connection gateway, and a prewarmed actor pool. The chart can place WebSocket gateways in a separate deployment. The chart sets these runtime variables:
 
 | Variable | Meaning |
 | --- | --- |
 | `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` for the server; the provider assigns actor/spare roles. |
 | `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
+| `DURABLE_ACTORS_GATEWAY_ROUTE` | Required private HTTP origin of this gateway pod; the chart uses the pod IP. |
+| `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process can own socket rooms; defaults to `true`. The chart disables it on ordinary control-plane replicas when dedicated gateways are enabled. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace and spare bookkeeping database; migrations required. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS authority bucket for CAS ownership and leases. |
@@ -51,11 +53,25 @@ Use the [Helm chart](../../charts/terse/README.md) for production on GKE Sandbox
 
 ## Advanced settings
 
+### WebSockets
+
+`DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS` sets the per-actor connection limit (1–32,768), including pending connect handlers. The default and Helm `sockets.maxConnectionsPerActor` are **32,768**, matching [Cloudflare's Hibernation API ceiling](https://developers.cloudflare.com/durable-objects/api/state/#acceptwebsocket). Capacity depends on workload and gateway resources; the configured ceiling is not a measured capacity guarantee.
+
+Incoming WebSocket frames and complete messages have a **32 MiB** limit and oversized messages close with **1009**, matching [Cloudflare](https://developers.cloudflare.com/workers/runtime-apis/websockets/). Connection metadata is JSON limited to **16 KiB**; each socket supports **10 tags of up to 256 Unicode characters**. Outgoing messages, the actor mailbox, and socket/SDK output queues have no fixed count or byte caps. Gateway queues consume gateway pod memory; handlers and SDK effects consume sandbox memory. Transport buffers start at 8 KiB. A slow consumer can exhaust gateway memory, so benchmark the actual workload and size gateway pods accordingly.
+
+Sockets live in a gateway independently of the actor sandbox. Idle actors shut down their entire sandbox while connections, tags, metadata, and automatic-response settings remain in the gateway. The next application message activates a replacement sandbox. Gateway pods hold TCP connections and connection state in memory: replacing a socket-owning gateway disconnects its clients. PostgreSQL leases choose one owner per actor across replicas and fence expired gateways; they do not persist TCP sessions or socket metadata.
+
+Socket events include only their originating connection. `getConnectionCount()` / `get_connection_count()` returns the gateway's maintained count without enumerating sockets. `getConnections(tag?)` / `get_connections(tag=None)` fetches connections on demand, optionally filtered by tag, and includes the joining socket inside its connect handler. Ordinary host lease renewals do not carry connection lists.
+
+`setWebSocketAutoResponse({ request, response })` / `set_websocket_auto_response(request, response)` configures one exact raw-text request/response pair per actor. Each string permits at most **2,048 Unicode characters**; omit arguments to clear it. Matching messages receive a gateway response without activating the sandbox or running a handler. Normal SDK messages remain JSON; for JSON string heartbeats use `JSON.stringify("ping")` and `JSON.stringify("pong")`. Binary application messages and Cloudflare's complete API surface are not implemented.
+
+The gateway delivers optional incoming-message notifications when `DURABLE_ACTORS_SOCKET_EVENT_URL` is configured. Keep gateway limits and callback settings consistent across replicas. Use the [GKE benchmark](../../tests/benchmarks/README.md) before choosing production resources. The host/SDK protocol is **23**; deploy matching runtime and SDK hosts together. There is no compatibility mode for the previous host-owned socket transport.
+
 ### Capacity and placement
 
 | Variable                                    | Default              | Meaning                                                                                                                                                                                                         |
 | ------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`      | `10000`              | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket messages reset the timer; running handlers defer eviction. Open WebSockets retain the host and connections, but not the actor instance. Without open sockets, an idle host shuts down. |
+| `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`      | `10000`              | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket handlers reset the timer; running handlers defer eviction. Open WebSockets remain at the gateway and do not keep the sandbox alive. Automatic gateway replies do not reset actor idle time. |
 | `DURABLE_ACTORS_HOST_STARTUP_MS`            | `10000`              | Positive actor-host startup timeout in milliseconds.                                                                                                                                                            |
 | `DURABLE_ACTORS_SPARE_IDLE`                 | `64`                 | Ready actor sandboxes per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment. |
 | `DURABLE_ACTORS_SPARE_FLEET_MAX` | `256` | Maximum unassigned spares across pools. Active actors do not count against this budget. |

@@ -313,6 +313,8 @@ impl LocalFixture {
             working_directory: self.directory.path().display().to_string(),
             actor_entrypoint: None,
             secret_refs: vec![],
+            max_socket_connections: 1024,
+            socket_events: false,
             host_idle_timeout_ms: 300_000,
         }
     }
@@ -414,6 +416,8 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         working_directory: project.display().to_string(),
         actor_entrypoint: None,
         secret_refs: vec![],
+        max_socket_connections: 1024,
+        socket_events: false,
         host_idle_timeout_ms: 300_000,
     };
     assert_eq!(

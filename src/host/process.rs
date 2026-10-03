@@ -54,6 +54,8 @@ pub struct ActorHostConfig {
     pub lease_duration: Duration,
     pub renew_every: Duration,
     pub host_idle_timeout: Duration,
+    pub max_socket_connections: usize,
+    pub socket_events: bool,
     metadata: Option<HostMetadataFile>,
     startup_started_at: Instant,
     configuration_loaded_at_ms: f64,
@@ -113,14 +115,12 @@ pub(super) async fn serve_assigned_host(
         lease,
         renewal,
         sockets,
-        control_plane,
         credentials: _credentials,
         storage,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
     let mut actor_stopped = host.stopped();
-    let mut socket_activity = sockets.registry.activity();
 
     let service = ActorHostHttpService::new(
         host.clone(),
@@ -130,7 +130,7 @@ pub(super) async fn serve_assigned_host(
     )
     .router();
     let initialized = async {
-        let (verifier, owner_epoch) =
+        let owner_epoch =
             initialize_executor(&config, &executor_connection, &host, &sockets).await?;
         let ready = HostReadiness {
             host_id: config.host_id.clone(),
@@ -145,10 +145,10 @@ pub(super) async fn serve_assigned_host(
             tokio::fs::write(&temporary, serde_json::to_vec(&ready)?).await?;
             tokio::fs::rename(temporary, path).await?;
         }
-        anyhow::Ok((verifier, ready))
+        anyhow::Ok(ready)
     }
     .await;
-    let (socket_verifier, ready) = match initialized {
+    let ready = match initialized {
         Ok(ready) => ready,
         Err(error) => {
             log_startup(&config, &timings, "failed", Some(&error));
@@ -157,11 +157,7 @@ pub(super) async fn serve_assigned_host(
             return Err(error);
         }
     };
-    lease.observe(
-        executor_connection.executor(),
-        sockets.registry.clone(),
-        host.queues(),
-    );
+    lease.observe(executor_connection.executor(), host.queues());
     if let Some(readiness) = readiness {
         let _ = readiness.send(ready);
     }
@@ -169,22 +165,7 @@ pub(super) async fn serve_assigned_host(
     log_startup(&config, &timings, "ready", None);
     let stop = CancellationToken::new();
     let server_stop = stop.clone();
-    let socket_stop = CancellationToken::new();
-    let socket_routes =
-        crate::sockets::browser::router(crate::sockets::browser::SocketServerState {
-            registry: sockets.registry.clone(),
-            verifier: socket_verifier,
-            dispatcher: Arc::new(
-                super::sockets::HostSocketDispatcher::new(
-                    host.clone(),
-                    sockets,
-                    config.session_id.clone(),
-                )
-                .with_events(control_plane, socket_stop.clone()),
-            ),
-            stop: socket_stop.clone(),
-        });
-    let routes = socket_routes.merge(service);
+    let routes = service;
     let mut server = Box::pin(async move {
         axum::serve(listener, routes)
             .with_graceful_shutdown(async move { server_stop.cancelled().await })
@@ -204,14 +185,12 @@ pub(super) async fn serve_assigned_host(
         &mut javascript,
         shutdown.as_mut(),
         &mut lease_lost,
-        (&mut activity, &mut socket_activity, &mut actor_stopped),
+        (&mut activity, &mut actor_stopped),
         config.host_idle_timeout,
-        |last_active| host.evict_idle(last_active),
     )
     .await;
     let shutdown_started = Instant::now();
     let shutdown_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    socket_stop.cancel();
     stop_host_tasks(&host, &stop, server, executor_task).await;
     drop(javascript);
     let unregister_result = storage
@@ -238,15 +217,7 @@ async fn initialize_executor(
     connection: &ActorExecutorConnection,
     host: &ActorHost,
     sockets: &Arc<super::sockets::HostSockets>,
-) -> Result<(
-    crate::control_plane::socket_ticket::SocketTicketVerifier,
-    u64,
-)> {
-    let verifier = crate::control_plane::socket_ticket::SocketTicketVerifier::new(
-        &config.jwt_public_keys,
-        config.jwt_issuer.clone(),
-        config.socket_jwt_audience.clone(),
-    )?;
+) -> Result<u64> {
     connection
         .mark_ready(Some(sockets.clone()), Some(sockets.clone()))
         .await?;
@@ -254,7 +225,7 @@ async fn initialize_executor(
         Some(actor) => host.activate_actor(actor.clone()).await?.owner_epoch,
         None => 0,
     };
-    Ok((verifier, owner_epoch))
+    Ok(owner_epoch)
 }
 
 impl ActorHostConfig {
@@ -351,6 +322,11 @@ impl ActorHostConfig {
             lease_duration,
             renew_every,
             host_idle_timeout,
+            max_socket_connections: crate::sockets::max_connections(&mut get)?,
+            socket_events: get("DURABLE_ACTORS_SOCKET_EVENTS")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(false),
             metadata,
             configuration_loaded_at_ms: startup_started_at.elapsed().as_secs_f64() * 1_000.0,
             startup_started_at,
@@ -380,7 +356,6 @@ struct PreparedActorHost {
     storage: Arc<super::storage::HostStorage>,
     credentials: DropGuard,
     sockets: Arc<super::sockets::HostSockets>,
-    control_plane: Arc<ControlPlaneClient>,
     invocation_auth: ActorJwtVerifier,
     listener: TcpListener,
     route: String,
@@ -473,7 +448,10 @@ async fn prepare_actor_host(
             return Err(error);
         }
     };
-    let sockets = Arc::new(super::sockets::HostSockets::new(storage.clone()));
+    let sockets = Arc::new(super::sockets::HostSockets::new(
+        storage.clone(),
+        control_plane.clone(),
+    ));
     let host = Arc::new(
         ActorHost::new(
             endpoint,
@@ -493,7 +471,6 @@ async fn prepare_actor_host(
         storage,
         credentials,
         sockets,
-        control_plane,
         invocation_auth,
         listener,
         route,
@@ -645,7 +622,7 @@ async fn connect_executor(
     Ok((listener.accept().await?, javascript))
 }
 
-async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture, EvictFuture>(
+async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture>(
     mut server: std::pin::Pin<&mut ServerFuture>,
     mut executor: std::pin::Pin<&mut ExecutorFuture>,
     javascript: &mut tokio::process::Child,
@@ -653,20 +630,16 @@ async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture, EvictF
     lease_lost: &mut tokio::sync::watch::Receiver<bool>,
     activity: (
         &mut tokio::sync::watch::Receiver<ActorActivity>,
-        &mut tokio::sync::watch::Receiver<usize>,
         &mut tokio::sync::watch::Receiver<bool>,
     ),
     idle_timeout: Duration,
-    mut evict_idle: impl FnMut(tokio::time::Instant) -> EvictFuture,
 ) -> Result<()>
 where
     ServerFuture: Future<Output = Result<()>> + ?Sized,
     ExecutorFuture: Future<Output = Result<()>> + ?Sized,
     ShutdownFuture: Future<Output = ()> + ?Sized,
-    EvictFuture: Future<Output = Result<()>>,
 {
-    let (activity, socket_activity, actor_stopped) = activity;
-    let mut eviction: Option<std::pin::Pin<Box<EvictFuture>>> = None;
+    let (activity, actor_stopped) = activity;
     loop {
         if *actor_stopped.borrow() {
             break Err(anyhow::anyhow!(
@@ -687,21 +660,12 @@ where
                     break Err(anyhow::anyhow!("host lease expired; host self-fenced"));
                 }
             }
-            changed = socket_activity.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("socket activity tracker stopped")); }
-            }
             changed = activity.changed() => {
                 if changed.is_err() { break Err(anyhow::anyhow!("actor activity tracker stopped")); }
             }
-            result = async { eviction.as_mut().unwrap().await }, if eviction.is_some() => {
-                result.context("evict idle actor")?;
-                eviction = None;
-            }
-            () = tokio::time::sleep_until(current.last_active + idle_timeout),
-                if current.active == 0 && eviction.is_none() && (current.resident || *socket_activity.borrow() == 0) => {
+            () = tokio::time::sleep_until(current.last_active + idle_timeout), if current.active == 0 => {
                 if activity.has_changed()? { continue; }
-                if *socket_activity.borrow() == 0 { break Ok(()); }
-                eviction = Some(Box::pin(evict_idle(current.last_active)));
+                break Ok(());
             },
         }
     }

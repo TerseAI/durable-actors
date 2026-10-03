@@ -519,6 +519,27 @@ async fn delayed_renewal_cannot_overwrite_a_completed_takeover() -> Result<()> {
 }
 
 #[tokio::test]
+async fn inventory_reads_ownership_records_only_for_the_requested_project() -> Result<()> {
+    let f = Fixture::new()?;
+    f.runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let other = ActorKey {
+        project_id: "other-project".into(),
+        ..f.actor.clone()
+    };
+    f.runtime
+        .register_activation(&other, &request("other"), "us-east", true, None)
+        .await?;
+    f.bucket.reads.store(0, Ordering::SeqCst);
+    let inventory = f.runtime.actor_inventory(&f.actor.project_id).await?;
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].instances[0].actor_id, f.actor.actor_id);
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn inventory_follows_activation_lease_without_separate_host_records() -> Result<()> {
     let f = Fixture::new()?;
     let first = request("first");

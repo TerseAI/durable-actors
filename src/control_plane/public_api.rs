@@ -30,7 +30,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
     let gateway = invocations
         .gateway
         .clone()
-        .map(|gateway| gateway.router(invocations.clone()))
+        .map(|gateway| gateway.router(invocations.clone(), admin.clone()))
         .unwrap_or_default();
     let hosts = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -39,7 +39,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .expect("actor invocation HTTP client");
     Router::new()
         .route("/openapi.yaml", get(openapi))
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(health))
         .route("/v1/projects/{project_id}/sessions", post(issue_session))
         .route(
             "/v1/projects/{project_id}/deployment",
@@ -71,6 +71,21 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         })
         .merge(contracts)
         .merge(gateway)
+}
+
+async fn health(State(state): State<PublicApiState>) -> (StatusCode, &'static str) {
+    if state
+        .invocations
+        .gateway
+        .as_ref()
+        .is_some_and(|gateway| gateway.connections.ensure_authority().is_err())
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "socket gateway lease expired",
+        );
+    }
+    (StatusCode::OK, "ok")
 }
 
 async fn openapi() -> impl IntoResponse {

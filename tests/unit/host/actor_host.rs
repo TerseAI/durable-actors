@@ -807,14 +807,14 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 }
 
 #[tokio::test]
-async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Result<()> {
+async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<()> {
     let (host, mut started, release) = controlled_host().await;
     let mut activity = host.activity();
     let caller = host.clone();
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
     assert_eq!(started.recv().await.as_deref(), Some("first"));
     let mut queued = Vec::new();
-    for index in 0..32 {
+    for index in 0..128 {
         let caller = host.clone();
         queued.push(tokio::spawn(async move {
             invoke(&caller, &format!("queued-{index}")).await
@@ -822,13 +822,9 @@ async fn actor_admission_is_bounded_and_other_identities_are_rejected() -> Resul
     }
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|activity| activity.active == 33),
+        activity.wait_for(|activity| activity.active == 129),
     )
     .await??;
-    assert_eq!(
-        invoke(&host, "overflow").await?,
-        ActorExecutionResult::HostUnavailable
-    );
     let other = host.invoke_actor(
         ActorInvocation {
             request_id: "other".into(),
@@ -1607,9 +1603,12 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         },
         connections: Vec::new(),
     };
+    let activity = host.activity();
+    let before_connect = activity.borrow().last_active;
     let result = host
         .submit(ActorOperation::Socket(invocation("committed")), 1)
         .await?;
+    assert!(activity.borrow().last_active > before_connect);
 
     assert!(matches!(
         result,

@@ -531,6 +531,9 @@ impl ActorInventoryReader for RuntimeStorageReader {
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);
         for key in self.authority.list(&prefix).await? {
+            if !crate::storage_paths::owner_in_project(&key, project_id) {
+                continue;
+            }
             let Some(object) = self.authority.get(&key).await? else {
                 continue;
             };

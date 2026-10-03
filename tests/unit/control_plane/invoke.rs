@@ -357,6 +357,14 @@ impl Fixture {
         service.gateway = Some(super::super::super::gateway::Gateway::new(
             &issuer,
             origin.clone(),
+            super::super::super::socket_gateway::SocketGateway::start(
+                origin.clone(),
+                Arc::new(super::super::super::socket_directory::MemorySocketDirectory::default()),
+                32768,
+                true,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?,
         )?);
         let routes = super::super::super::public_api::router(service, admin.clone());
         let server = tokio::spawn(async move { axum::serve(listener, routes).await });

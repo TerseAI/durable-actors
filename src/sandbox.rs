@@ -93,6 +93,8 @@ pub struct EnsureHostRequest {
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
     pub host_idle_timeout_ms: u64,
+    pub max_socket_connections: usize,
+    pub socket_events: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -187,6 +189,8 @@ pub struct HostSandboxRuntimeConfig {
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub host_idle_timeout_ms: u64,
+    pub max_socket_connections: usize,
+    pub socket_events: bool,
 }
 
 #[cfg(test)]
