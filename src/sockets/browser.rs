@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, time::Duration};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use tokio::task::JoinHandle;
@@ -26,22 +23,6 @@ pub(crate) trait SocketDispatcher: Send + Sync {
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>>;
     fn notify(&self, _ticket: &SocketTicket, _event: &ActorSocketEvent) {}
-    async fn dispatch_since(
-        &self,
-        ticket: &SocketTicket,
-        invocation: ActorSocketInvocation,
-        _received: Instant,
-    ) -> Result<Vec<ActorSocketEffect>> {
-        self.dispatch(ticket, invocation).await
-    }
-    fn discard(
-        &self,
-        _ticket: &SocketTicket,
-        _event: ActorSocketEvent,
-        _received: Instant,
-        _outcome: crate::request_traces::RequestOutcome,
-    ) {
-    }
 }
 
 #[derive(Clone)]
@@ -62,7 +43,7 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
     let (sender, receiver) = socket_channel();
     if !state
         .registry
-        .insert(&ticket.actor, connection.clone(), sender, None)
+        .insert(&ticket.actor, connection.clone(), sender)
         .await
     {
         close(&mut socket, (1013, "actor connection limit reached")).await;
@@ -92,7 +73,7 @@ struct Session {
     ticket: SocketTicket,
     connection: ActorSocketConnection,
     outbound: SocketReceiver,
-    pending: VecDeque<(ActorSocketMessage, Instant)>,
+    pending: VecDeque<ActorSocketMessage>,
     handler: Option<JoinHandle<bool>>,
 }
 
@@ -103,16 +84,16 @@ impl Session {
             let remaining = self.remaining()?;
             tokio::select! {
                 biased;
-                _ = self.state.stop.cancelled() => return Err((1012, "actor host stopping")),
+                _ = self.state.stop.cancelled() => return Err((1012, "socket gateway stopping")),
                 _ = authority_checks.tick() => {
-                    self.state.dispatcher.ensure_authority().map_err(|_| (1012, "actor host lease expired"))?;
+                    self.state.dispatcher.ensure_authority().map_err(|_| (1012, "socket gateway lease expired"))?;
                 }
                 _ = tokio::time::sleep(remaining) => return Err((4408, "socket authorization expired")),
                 result = async { self.handler.as_mut().unwrap().await }, if self.handler.is_some() => {
                     self.handler.take();
                     if !result.unwrap_or(false) { return Err((4400, "actor socket handler failed")); }
-                    if let Some((message, received)) = self.pending.pop_front() {
-                        self.start_message(message, received);
+                    if let Some(message) = self.pending.pop_front() {
+                        self.start_message(message);
                     }
                 }
                 inbound = socket.recv() => self.receive(socket, inbound).await?,
@@ -154,54 +135,27 @@ impl Session {
     }
 
     fn enqueue(&mut self, message: ActorSocketMessage) -> Result<(), Closed> {
-        let received = Instant::now();
         if self.handler.is_none() {
-            self.start_message(message, received);
+            self.start_message(message);
         } else {
-            self.pending.push_back((message, received));
+            self.pending.push_back(message);
         }
         Ok(())
     }
 
-    fn start_message(&mut self, message: ActorSocketMessage, received: Instant) {
-        self.start_since(
-            ActorSocketEvent::Message {
-                connection_id: self.connection.id.clone(),
-                message,
-            },
-            received,
-        );
+    fn start_message(&mut self, message: ActorSocketMessage) {
+        self.start(ActorSocketEvent::Message {
+            connection_id: self.connection.id.clone(),
+            message,
+        });
     }
 
     fn start(&mut self, event: ActorSocketEvent) {
-        self.start_since(event, Instant::now());
-    }
-
-    fn start_since(&mut self, event: ActorSocketEvent, received: Instant) {
         let state = self.state.clone();
         let ticket = self.ticket.clone();
         self.handler = Some(tokio::spawn(async move {
-            dispatch_since(&state, &ticket, event, received)
-                .await
-                .is_ok()
+            dispatch(&state, &ticket, event).await.is_ok()
         }));
-    }
-
-    fn discard(
-        &self,
-        message: ActorSocketMessage,
-        received: Instant,
-        outcome: crate::request_traces::RequestOutcome,
-    ) {
-        self.state.dispatcher.discard(
-            &self.ticket,
-            ActorSocketEvent::Message {
-                connection_id: self.connection.id.clone(),
-                message,
-            },
-            received,
-            outcome,
-        );
     }
 
     async fn send_outbound(
@@ -262,13 +216,7 @@ impl Session {
     }
 
     async fn disconnect(mut self, closed: Closed) {
-        while let Some((message, received)) = self.pending.pop_front() {
-            self.discard(
-                message,
-                received,
-                crate::request_traces::RequestOutcome::Interrupted,
-            );
-        }
+        self.pending.clear();
         let connection = self
             .state
             .registry
@@ -318,16 +266,7 @@ async fn dispatch(
     ticket: &SocketTicket,
     event: ActorSocketEvent,
 ) -> Result<()> {
-    dispatch_since(state, ticket, event, Instant::now()).await
-}
-
-async fn dispatch_since(
-    state: &SocketServerState,
-    ticket: &SocketTicket,
-    event: ActorSocketEvent,
-    received: Instant,
-) -> Result<()> {
-    ensure!(!state.stop.is_cancelled(), "actor host stopping");
+    ensure!(!state.stop.is_cancelled(), "socket gateway stopping");
     state.dispatcher.ensure_authority()?;
     let (event, connections) = state.registry.prepare_event(&ticket.actor, event).await;
     let invocation = ActorSocketInvocation {
@@ -336,10 +275,7 @@ async fn dispatch_since(
         event: event.clone(),
         connections,
     };
-    let effects = state
-        .dispatcher
-        .dispatch_since(ticket, invocation, received)
-        .await?;
+    let effects = state.dispatcher.dispatch(ticket, invocation).await?;
     state.dispatcher.ensure_authority()?;
     validate_socket_effects(&effects)?;
     state.registry.apply(&ticket.actor, effects).await;

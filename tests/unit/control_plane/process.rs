@@ -7,20 +7,15 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-fn hosts_only_report_socket_messages_when_an_event_sink_is_configured() -> Result<()> {
+fn configures_gateway_connection_limit() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
     };
-    assert!(!parse(&values)?.sandbox_provider.runtime.socket_events);
-    values.insert(
-        "DURABLE_ACTORS_SOCKET_EVENT_URL",
-        "https://events.example.com/socket",
-    );
+    assert_eq!(parse(&values)?.max_socket_connections, 32768);
     values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "4096");
     let config = parse(&values)?;
-    assert!(config.sandbox_provider.runtime.socket_events);
-    assert_eq!(config.sandbox_provider.runtime.max_socket_connections, 4096);
+    assert_eq!(config.max_socket_connections, 4096);
     values.insert("DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS", "0");
     assert!(parse(&values).is_err());
     Ok(())

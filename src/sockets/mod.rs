@@ -7,7 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{RwLock, mpsc};
 
 pub(crate) mod browser;
 pub(crate) mod operations;
@@ -43,7 +43,6 @@ pub(crate) fn message_too_large(error: &axum::Error) -> bool {
 #[derive(Clone)]
 pub(crate) struct SocketRegistry {
     max_connections: usize,
-    inventory_changes: watch::Sender<()>,
     entries: Arc<RwLock<HashMap<ActorKey, RoomSockets>>>,
 }
 
@@ -85,7 +84,6 @@ impl Default for SocketRegistry {
     fn default() -> Self {
         Self {
             max_connections: DEFAULT_MAX_CONNECTIONS,
-            inventory_changes: watch::channel(()).0,
             entries: Default::default(),
         }
     }
@@ -97,10 +95,6 @@ impl SocketRegistry {
             max_connections,
             ..Self::default()
         }
-    }
-
-    pub(crate) fn inventory_changes(&self) -> watch::Receiver<()> {
-        self.inventory_changes.subscribe()
     }
 
     pub(crate) async fn inventory(
@@ -137,7 +131,6 @@ impl SocketRegistry {
         actor: &ActorKey,
         connection: ActorSocketConnection,
         outbound: SocketSender,
-        _trigger_id: Option<String>,
     ) -> bool {
         let mut entries = self.entries.write().await;
         let connections = entries.entry(actor.clone()).or_default();
@@ -172,14 +165,7 @@ impl SocketRegistry {
         if connections.is_empty() && connections.auto_response.is_none() {
             entries.remove(actor);
         }
-        if removed.is_some() {
-            self.inventory_changes.send_replace(());
-        }
         removed
-    }
-
-    pub(crate) async fn connections(&self, actor: &ActorKey) -> Vec<ActorSocketConnection> {
-        self.connections_with_tag(actor, None).await
     }
 
     pub(crate) async fn connections_with_tag(
@@ -380,7 +366,6 @@ impl SocketRegistry {
                     .and_then(|connections| connections.get_mut(&connection_id))
                 {
                     entry.connection.metadata = metadata;
-                    self.inventory_changes.send_replace(());
                 }
             }
             ActorSocketEffect::SetTags {
@@ -438,7 +423,6 @@ impl SocketRegistry {
                 if !entry.open {
                     entry.open = true;
                     room.active += 1;
-                    self.inventory_changes.send_replace(());
                 }
             }
         }

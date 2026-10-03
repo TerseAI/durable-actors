@@ -606,34 +606,6 @@ async fn controlled_host() -> (
     (Arc::new(host), receiver, release)
 }
 
-#[tokio::test]
-async fn idle_eviction_rechecks_activity_before_unloading_the_actor() -> Result<()> {
-    let (host, mut started, release) = controlled_host().await;
-    let activity = host.activity();
-    assert_eq!(invoke(&host, "warm").await?, completed(1));
-    assert_eq!(started.recv().await.as_deref(), Some("warm"));
-    let last_active = activity.borrow().last_active;
-
-    let caller = host.clone();
-    let running = tokio::spawn(async move { invoke(&caller, "first").await });
-    assert_eq!(started.recv().await.as_deref(), Some("first"));
-    host.evict_idle(last_active).await?;
-    assert!(activity.borrow().resident);
-    assert_eq!(activity.borrow().active, 1);
-
-    release.add_permits(1);
-    assert_eq!(running.await??, completed(2));
-    host.evict_idle(last_active).await?;
-    assert!(activity.borrow().resident);
-
-    let last_active = activity.borrow().last_active;
-    host.evict_idle(last_active).await?;
-    assert!(!activity.borrow().resident);
-    assert_eq!(invoke(&host, "after-eviction").await?, completed(3));
-    assert!(activity.borrow().resident);
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {

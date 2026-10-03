@@ -580,8 +580,6 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             control_plane_url: "http://control".into(),
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
-            max_socket_connections: 1024,
-            socket_events: false,
             host_idle_timeout_ms: 10_000,
         },
         test_issuer()?,
@@ -751,17 +749,6 @@ impl HostProvisioner for FakeRoutingProvisioner {
         Option<crate::control_plane::contracts::PublicActorContract>,
     )> {
         Ok((source.clone(), None))
-    }
-
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        Ok(crate::sandbox::SocketCredentials {
-            url: lease.route.clone(),
-        })
     }
 
     async fn ensure_actor_host(
@@ -960,7 +947,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
             calls: Mutex::new(vec![]),
         }),
     );
-    let routes = super::super::public_api::router(service, admin);
+    let routes = super::super::public_api::router(with_socket_gateway(service).await?, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
@@ -987,11 +974,11 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
             .1
             .into_owned();
         url.set_query(None);
-        assert_eq!(url.as_str(), "wss://host.example.com/v1/socket");
+        assert_eq!(url.as_str(), "wss://gateway.example.com/v1/socket");
         let ticket = issuer.verify_socket(&key)?;
         assert_eq!(ticket.actor.actor_id, "lobby");
         assert_eq!(ticket.metadata, body["metadata"]);
-        assert_eq!(issued["homeRegion"], "north-america-east");
+        assert_eq!(issued["homeRegion"], FALLBACK_REGION);
         assert!(issued.get("key").is_none());
     }
     assert_eq!(
@@ -1055,7 +1042,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
             calls: Mutex::new(vec![]),
         }),
     );
-    let routes = super::super::public_api::router(service, admin);
+    let routes = super::super::public_api::router(with_socket_gateway(service).await?, admin);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
@@ -1090,25 +1077,6 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         .send()
         .await?
         .error_for_status()?;
-    for operation in ["find-websocket", "find-actor"] {
-        let response = client
-            .post(format!(
-                "{origin}/v1/projects/default/actors/Room/lobby/{operation}"
-            ))
-            .bearer_auth("api-key")
-            .json(&if operation == "find-websocket" {
-                serde_json::json!({"metadata":{},"homeRegion":"north-america-west"})
-            } else {
-                serde_json::json!({"homeRegion":"north-america-west"})
-            })
-            .send()
-            .await?;
-        assert_eq!(
-            response.status(),
-            reqwest::StatusCode::CONFLICT,
-            "{operation}"
-        );
-    }
     let issued = client
         .post(&url)
         .bearer_auth("api-key")
@@ -1126,7 +1094,7 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
         .1
         .into_owned();
     assert_eq!(socket_url.scheme(), "wss");
-    assert_eq!(socket_url.host_str(), Some("host.example.com"));
+    assert_eq!(socket_url.host_str(), Some("gateway.example.com"));
     assert_eq!(socket_url.path(), "/v1/socket");
     assert_eq!(
         socket_url.query_pairs().collect::<Vec<_>>(),
@@ -1682,7 +1650,8 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     provisioner.clone(),
                 );
                 service.region = Some("north-america-west".into());
-                let routes = super::super::public_api::router(service, admin);
+                let routes =
+                    super::super::public_api::router(with_socket_gateway(service).await?, admin);
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
                 let url = format!(
                     "http://{}/v1/projects/{project}/actors/Room/lobby/{operation}",
@@ -1708,13 +1677,17 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     reqwest::StatusCode::OK,
                     "{operation}, existing={existing}: {grant}"
                 );
-                let expected_region = if existing {
+                let expected_region = if existing && operation == "find-actor" {
                     "north-america-east"
                 } else {
                     "north-america-west"
                 };
                 assert_eq!(grant["homeRegion"], expected_region);
-                assert_eq!(*provisioner.calls.lock().unwrap(), vec![expected_region]);
+                if operation == "find-actor" {
+                    assert_eq!(*provisioner.calls.lock().unwrap(), vec![expected_region]);
+                } else {
+                    assert!(provisioner.calls.lock().unwrap().is_empty());
+                }
                 if operation == "find-websocket" {
                     let url = reqwest::Url::parse(grant["websocketUrl"].as_str().unwrap())?;
                     assert_eq!(url.scheme(), "wss");
@@ -1728,6 +1701,8 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
                     assert_eq!(ticket.region, expected_region);
                     assert_eq!(ticket.actor, actor);
                     assert_eq!(ticket.metadata, body["metadata"]);
+                    server.abort();
+                    continue;
                 }
                 body["homeRegion"] = "north-america-east".into();
                 assert_eq!(
@@ -1831,4 +1806,22 @@ async fn socket_authorization_accepts_a_host_renewing_its_lease() -> Result<()> 
     stale.session_id = "other-session".into();
     assert!(service.authorize_socket_host(&stale, &actor).await.is_err());
     Ok(())
+}
+
+async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<ControlPlaneService> {
+    let origin = "https://gateway.example.com".to_owned();
+    let sockets = super::super::socket_gateway::SocketGateway::start(
+        origin.clone(),
+        Arc::new(super::super::socket_directory::MemorySocketDirectory::default()),
+        crate::sockets::DEFAULT_MAX_CONNECTIONS,
+        true,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await?;
+    service.gateway = Some(super::super::gateway::Gateway::new(
+        &service.host_token_issuer,
+        origin,
+        sockets,
+    )?);
+    Ok(service)
 }

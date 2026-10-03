@@ -65,7 +65,7 @@ Socket events include only their originating connection. `getConnectionCount()` 
 
 `setWebSocketAutoResponse({ request, response })` / `set_websocket_auto_response(request, response)` configures one exact raw-text request/response pair per actor. Each string permits at most **2,048 Unicode characters**; omit arguments to clear it. Matching messages receive a gateway response without activating the sandbox or running a handler. Normal SDK messages remain JSON; for JSON string heartbeats use `JSON.stringify("ping")` and `JSON.stringify("pong")`. Binary application messages are not supported.
 
-The gateway delivers optional incoming-message notifications when `DURABLE_ACTORS_SOCKET_EVENT_URL` is configured. Keep gateway limits and callback settings consistent across replicas. Use the [GKE benchmark](../../tests/benchmarks/README.md) before choosing production resources. The host/SDK protocol is **23**; deploy matching runtime and SDK hosts together. There is no compatibility mode for the previous host-owned socket transport.
+The gateway delivers optional incoming-message notifications when `DURABLE_ACTORS_SOCKET_EVENT_URL` is configured. Keep gateway limits and callback settings consistent across replicas. The host/SDK protocol is **23**; deploy matching runtime and SDK hosts together.
 
 ### Capacity and placement
 
@@ -113,7 +113,6 @@ Supported regions: `canada`, `north-america-east`, `north-america-central`, `nor
 | `DURABLE_ACTORS_JWT_ISSUER`             | `durable-actors-control-plane`       | Token issuer.                                                                          |
 | `DURABLE_ACTORS_AUTHORITY_JWT_AUDIENCE` | `durable-actors-authority`           | Server authentication audience.                                                        |
 | `DURABLE_ACTORS_INVOKE_JWT_AUDIENCE`    | `durable-actors-invoke`              | Actor-call audience.                                                                   |
-| `DURABLE_ACTORS_SOCKET_JWT_AUDIENCE`    | `durable-actors-authority:websocket` | Socket audience for manual hosts; must match the authority audience plus `:websocket`. |
 | `DURABLE_ACTORS_JWT_MAX_TTL_SECONDS`    | `86400`                              | Positive maximum credential lifetime in seconds.                                       |
 | `DURABLE_ACTORS_SOCKET_EVENT_URL`       | Disabled                             | Incoming-message callback URL. Callbacks send the shared secret when configured and omit authorization otherwise; see [OpenAPI](openapi.yaml).                            |
 

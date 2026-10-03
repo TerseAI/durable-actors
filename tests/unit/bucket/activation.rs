@@ -553,7 +553,6 @@ async fn inventory_follows_activation_lease_without_separate_host_records() -> R
     ));
     let inventory = crate::host_leases::ActivationInventory {
         resident: Some(true),
-        connections: vec![],
         waiting: Some(vec![crate::host_leases::WaitingOperation {
             id: "queued".into(),
             operation: "increment".into(),

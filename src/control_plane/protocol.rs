@@ -16,10 +16,6 @@ pub(crate) enum ControlPlaneCommand {
         traces: Vec<crate::request_traces::RequestTrace>,
         dropped: u64,
     },
-    SocketMessage {
-        actor: crate::actor::ActorKey,
-        event: crate::actor::ActorSocketEvent,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

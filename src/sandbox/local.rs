@@ -86,28 +86,6 @@ impl SandboxProvider for LocalSandboxProvider {
         }
     }
 
-    async fn socket_credentials(
-        &self,
-        request: &super::SocketCredentialsRequest,
-    ) -> Result<super::SocketCredentials> {
-        let record = self
-            .runtime
-            .store
-            .host(request.host_id.as_str())
-            .await?
-            .context("local host missing")?;
-        ensure!(record.status == "ready", "local actor is not ready");
-        let lease = self
-            .active_lease(&record)
-            .await?
-            .context("socket host lease expired")?;
-        ensure!(
-            lease.session_id == request.session_id,
-            "socket host session replaced"
-        );
-        Ok(super::SocketCredentials { url: lease.route })
-    }
-
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle> {
         ensure!(
             !self.runtime.stop.is_cancelled(),
@@ -439,10 +417,6 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
         ),
         ("DURABLE_ACTORS_JWT_ISSUER", request.jwt_issuer.clone()),
         (
-            "DURABLE_ACTORS_SOCKET_JWT_AUDIENCE",
-            request.socket_jwt_audience.clone(),
-        ),
-        (
             "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE",
             request.invocation_jwt_audience.clone(),
         ),
@@ -461,14 +435,6 @@ fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap
     ] {
         environment.insert(key.into(), value);
     }
-    environment.insert(
-        "DURABLE_ACTORS_SOCKET_EVENTS".into(),
-        request.socket_events.to_string(),
-    );
-    environment.insert(
-        "DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS".into(),
-        request.max_socket_connections.to_string(),
-    );
     if let Some(config) = &request.runtime_config {
         environment.insert("DURABLE_ACTORS_RUNTIME_CONFIG".into(), config.clone());
     }

@@ -1,4 +1,4 @@
-use crate::request_traces::{RequestKind, RequestOutcome, RequestSpan, TraceSender};
+use crate::request_traces::{RequestKind, RequestSpan, TraceSender};
 use std::{
     borrow::Cow,
     sync::Arc,
@@ -44,7 +44,6 @@ pub(crate) struct ActorHost {
 #[derive(Clone, Copy)]
 pub(super) struct ActorActivity {
     pub active: usize,
-    pub resident: bool,
     pub last_active: tokio::time::Instant,
 }
 
@@ -52,7 +51,6 @@ impl Default for ActorActivity {
     fn default() -> Self {
         Self {
             active: 0,
-            resident: false,
             last_active: tokio::time::Instant::now(),
         }
     }
@@ -105,17 +103,6 @@ impl ActorHost {
         self.stopped.clone()
     }
 
-    pub(super) async fn evict_idle(&self, last_active: tokio::time::Instant) -> Result<()> {
-        let (reply, result) = oneshot::channel();
-        self.commands
-            .send(HostCommand::EvictIdle { last_active, reply })
-            .await
-            .context("actor dispatcher stopped")?;
-        result
-            .await
-            .context("idle actor eviction was not completed")?
-    }
-
     pub(crate) fn with_traces(mut self, traces: TraceSender) -> Self {
         self.traces = Some(traces);
         self
@@ -129,17 +116,6 @@ impl ActorHost {
     ) -> Result<ActorExecutionResult> {
         self.submit_since(ActorOperation::Socket(invocation), owner_epoch, started)
             .await
-    }
-
-    pub(crate) fn discard_socket_event(
-        &self,
-        invocation: ActorSocketInvocation,
-        started: Instant,
-        outcome: RequestOutcome,
-    ) {
-        if let Some(mut span) = self.trace(&ActorOperation::Socket(invocation), started) {
-            span.finish(outcome);
-        }
     }
 
     pub(crate) fn id(&self) -> &super::HostId {
@@ -304,15 +280,6 @@ impl HostDispatcher {
                 Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
                 command = commands.recv() => match command {
                     Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
-                    Some(HostCommand::EvictIdle { last_active, reply }) => {
-                        let result = self.evict_idle(last_active).await;
-                        let failed = result.is_err();
-                        let _ = reply.send(result);
-                        if failed {
-                            self.stopped.send_replace(true);
-                            return;
-                        }
-                    }
                     Some(HostCommand::Drain(reply)) => {
                         self.accepting.send_replace(false);
                         self.drained.retain(|waiter| !waiter.is_closed());
@@ -352,7 +319,6 @@ impl HostDispatcher {
         }
         match mailbox.sender.send(request) {
             Ok(()) => {
-                mailbox.resident = true;
                 mailbox.admitted += 1;
                 self.active += 1;
                 self.publish_activity();
@@ -404,8 +370,6 @@ impl HostDispatcher {
             self.accepting.subscribe(),
         ));
         self.mailbox = Some(ActorMailbox {
-            actor,
-            resident: false,
             sender,
             admitted: 0,
             task_id: task.id(),
@@ -423,23 +387,6 @@ impl HostDispatcher {
         self.last_active = tokio::time::Instant::now();
         self.publish_activity();
         let _ = completion.reply.send(completion.result);
-    }
-
-    async fn evict_idle(&mut self, last_active: tokio::time::Instant) -> Result<()> {
-        if self.active != 0 || self.last_active != last_active {
-            return Ok(());
-        }
-        let Some(mailbox) = self.mailbox.as_mut().filter(|mailbox| mailbox.resident) else {
-            return Ok(());
-        };
-        self.executor
-            .evict(crate::actor::ActorMethodEviction {
-                actor: mailbox.actor.clone(),
-            })
-            .await?;
-        mailbox.resident = false;
-        self.publish_activity();
-        Ok(())
     }
 
     fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
@@ -465,10 +412,6 @@ impl HostDispatcher {
     fn publish_activity(&mut self) {
         self.activity.send_replace(ActorActivity {
             active: self.active,
-            resident: self
-                .mailbox
-                .as_ref()
-                .is_some_and(|mailbox| mailbox.resident),
             last_active: self.last_active,
         });
         if self.active == 0 {
@@ -546,16 +489,10 @@ async fn run_actor(
 
 enum HostCommand {
     Invoke(Box<ActorRequest>),
-    EvictIdle {
-        last_active: tokio::time::Instant,
-        reply: oneshot::Sender<Result<()>>,
-    },
     Drain(oneshot::Sender<()>),
 }
 
 struct ActorMailbox {
-    actor: ActorKey,
-    resident: bool,
     sender: mpsc::UnboundedSender<ActorRequest>,
     admitted: usize,
     task_id: Id,

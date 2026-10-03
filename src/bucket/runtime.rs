@@ -15,8 +15,8 @@ use crate::{
     host::HostId,
     host_leases::{ActivationInventory, HostLease},
     placement::{
-        ActorConnectionInventory, ActorInstanceOverview, ActorInventory, ActorInventoryReader,
-        ActorResidency, ObjectPlacement, ObjectPlacementStore,
+        ActorInstanceOverview, ActorInventory, ActorInventoryReader, ActorResidency,
+        ObjectPlacement, ObjectPlacementStore,
     },
     storage::{SnapshotReader, SnapshotRef, StateStream, WritePlan, snapshot_object_name},
 };
@@ -583,15 +583,7 @@ fn actor_instance_overview(record: &Ownership, now: u64) -> ActorInstanceOvervie
             Some(false) => ActorResidency::Dormant,
             None => ActorResidency::Unknown,
         },
-        connections: record
-            .inventory
-            .connections
-            .iter()
-            .map(|connection| ActorConnectionInventory {
-                id: connection.id.clone(),
-                metadata: connection.metadata.clone(),
-            })
-            .collect(),
+        connections: vec![],
         waiting: record.inventory.waiting.clone(),
     }
 }

@@ -298,15 +298,12 @@ async fn local_routes(
         control_plane_url: origin.to_owned(),
         jwt_issuer: "durable-actors-control-plane".into(),
         invocation_jwt_audience: "durable-actors-invoke".into(),
-        max_socket_connections: crate::sockets::max_connections(&mut |name| {
-            std::env::var(name).ok()
-        })?,
-        socket_events: false,
         host_idle_timeout_ms: crate::host::host_idle_timeout_ms(&mut |name| {
             std::env::var(name).ok()
         })?,
     };
-    let max_socket_connections = runtime.max_socket_connections;
+    let max_socket_connections =
+        crate::sockets::max_connections(&mut |name| std::env::var(name).ok())?;
     let provisioner = Arc::new(
         SandboxHostProvisioner::new(provider, runtime, issuer.clone(), None)
             .with_runtime_access(storage.access.clone()),

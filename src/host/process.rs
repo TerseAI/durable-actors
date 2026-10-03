@@ -49,13 +49,10 @@ pub struct ActorHostConfig {
     pub host_route: Option<String>,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
-    pub socket_jwt_audience: String,
     pub jwt_max_lifetime: Duration,
     pub lease_duration: Duration,
     pub renew_every: Duration,
     pub host_idle_timeout: Duration,
-    pub max_socket_connections: usize,
-    pub socket_events: bool,
     metadata: Option<HostMetadataFile>,
     startup_started_at: Instant,
     configuration_loaded_at_ms: f64,
@@ -316,17 +313,10 @@ impl ActorHostConfig {
             host_route,
             jwt_issuer,
             invocation_jwt_audience,
-            socket_jwt_audience: get("DURABLE_ACTORS_SOCKET_JWT_AUDIENCE")
-                .unwrap_or_else(|| "durable-actors-authority:websocket".into()),
             jwt_max_lifetime,
             lease_duration,
             renew_every,
             host_idle_timeout,
-            max_socket_connections: crate::sockets::max_connections(&mut get)?,
-            socket_events: get("DURABLE_ACTORS_SOCKET_EVENTS")
-                .map(|value| value.parse())
-                .transpose()?
-                .unwrap_or(false),
             metadata,
             configuration_loaded_at_ms: startup_started_at.elapsed().as_secs_f64() * 1_000.0,
             startup_started_at,

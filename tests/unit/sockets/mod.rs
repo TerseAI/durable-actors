@@ -23,7 +23,6 @@ async fn admission_enforces_connection_limit_and_reopens_after_disconnect() {
                         tags: vec![]
                     },
                     sender.clone(),
-                    None
                 )
                 .await,
             "connection {index}"
@@ -36,11 +35,11 @@ async fn admission_enforces_connection_limit_and_reopens_after_disconnect() {
     };
     assert!(
         !registry
-            .insert(&actor, connection.clone(), sender.clone(), None)
+            .insert(&actor, connection.clone(), sender.clone())
             .await
     );
     registry.remove(&actor, "0").await;
-    assert!(registry.insert(&actor, connection, sender, None).await);
+    assert!(registry.insert(&actor, connection, sender).await);
 }
 
 #[test]
@@ -78,7 +77,6 @@ async fn message_preparation_copies_only_the_originating_connection() {
                         tags: vec![]
                     },
                     outbound,
-                    None
                 )
                 .await
         );
@@ -97,7 +95,7 @@ async fn message_preparation_copies_only_the_originating_connection() {
         .await;
     assert_eq!(connections.len(), 1);
     assert_eq!(connections[0].id, "sender");
-    assert_eq!(registry.connections(&actor).await.len(), 2);
+    assert_eq!(registry.connections_with_tag(&actor, None).await.len(), 2);
 }
 
 #[tokio::test]
@@ -128,7 +126,6 @@ async fn broadcast_matches_all_or_any_tags_and_preserves_exclusions() {
                         tags: Vec::new(),
                     },
                     outbound,
-                    None
                 )
                 .await
         );
@@ -258,7 +255,6 @@ async fn registry_retains_metadata_tags_and_outbound_messages() {
                     tags: Vec::new(),
                 },
                 outbound,
-                None,
             )
             .await
     );
@@ -295,7 +291,7 @@ async fn registry_retains_metadata_tags_and_outbound_messages() {
         .await;
 
     assert_eq!(
-        registry.connections(&actor).await,
+        registry.connections_with_tag(&actor, None).await,
         vec![ActorSocketConnection {
             id: "socket-1".into(),
             metadata: json!({ "userId": "user-1", "ready": true }),
@@ -332,7 +328,6 @@ async fn connection_queries_count_active_sockets_and_filter_tags() {
                         tags
                     },
                     sender.clone(),
-                    None
                 )
                 .await
         );

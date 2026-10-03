@@ -155,36 +155,24 @@ async fn find_websocket(
         .invocations
         .validate_home_region(request.home_region.as_deref())
         .map_err(ApiError::assignment)?;
-    let mut grant = super::socket_ticket::SocketGrant {
+    let grant = super::socket_ticket::SocketGrant {
         actor: path.into_actor(),
         region: request
             .home_region
             .clone()
             .unwrap_or_else(|| state.invocations.default_region().into()),
-        target: None,
         home_region: request.home_region.clone(),
         metadata: request.metadata,
         authorization_lifetime_ms: request.authorization_lifetime_ms,
     };
     grant.validate().map_err(ApiError::bad_request)?;
-    let credentials = if let Some(gateway) = &state.invocations.gateway {
-        crate::sandbox::SocketCredentials {
-            url: gateway.origin.clone(),
-        }
-    } else {
-        let (region, target, credentials) = state
-            .invocations
-            .socket_destination(&grant.actor, &grant.region, request.home_region.as_deref())
-            .await
-            .map_err(ApiError::routing)?;
-        grant.region = region;
-        grant.target = Some(target);
-        grant.home_region = None;
-        credentials
-    };
+    let gateway =
+        state.invocations.gateway.as_ref().ok_or_else(|| {
+            ApiError::internal(anyhow::anyhow!("socket gateway is not configured"))
+        })?;
     let issued = state
         .admin
-        .issue_direct_socket(grant, credentials)
+        .issue_socket(grant, &gateway.origin)
         .map_err(ApiError::internal)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response())
 }

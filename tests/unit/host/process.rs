@@ -2,20 +2,6 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-fn host_socket_settings_follow_assignment() -> Result<()> {
-    let mut values = values();
-    values.insert("DURABLE_ACTORS_SOCKET_EVENTS".into(), "true".into());
-    values.insert(
-        "DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS".into(),
-        "2048".into(),
-    );
-    let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
-    assert!(config.socket_events);
-    assert_eq!(config.max_socket_connections, 2048);
-    Ok(())
-}
-
-#[test]
 fn host_needs_no_local_state_directory() -> Result<()> {
     let values = values();
     let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
@@ -117,7 +103,6 @@ async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
     let (requests, mut activity) = tokio::sync::watch::channel(ActorActivity {
         active: 1,
-        resident: true,
         ..Default::default()
     });
     let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
@@ -155,7 +140,6 @@ async fn failed_activation_stops_a_busy_host() -> Result<()> {
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
     let (_activity_sender, mut activity) = tokio::sync::watch::channel(ActorActivity {
         active: 1,
-        resident: true,
         ..Default::default()
     });
     let (stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);

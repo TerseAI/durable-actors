@@ -411,7 +411,13 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     assert_eq!(clients[0]["tags"], serde_json::json!(["member"]));
     let mut outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
-    assert!(stack.publisher.connections(&outside).await.is_err());
+    assert!(
+        stack
+            .publisher
+            .query(&outside, Default::default())
+            .await
+            .is_err()
+    );
     stack
         .invoke("notifyClient", vec![clients[0]["id"].clone()])
         .await?;
@@ -437,7 +443,13 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
-    assert!(stack.publisher.connections(&stack.actor).await.is_err());
+    assert!(
+        stack
+            .publisher
+            .query(&stack.actor, Default::default())
+            .await
+            .is_err()
+    );
     assert!(stack.invoke("clients", vec![]).await.is_err());
     stack.child.kill().await?;
     Ok(())
@@ -479,7 +491,13 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
 
     let mut outside = stack.actor.clone();
     outside.actor_id = "another-actor".into();
-    assert!(stack.publisher.connections(&outside).await.is_err());
+    assert!(
+        stack
+            .publisher
+            .query(&outside, Default::default())
+            .await
+            .is_err()
+    );
     stack
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
@@ -944,16 +962,6 @@ impl HostProvisioner for SocketTestProvisioner {
         Ok((source.clone(), None))
     }
 
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        Ok(crate::sandbox::SocketCredentials {
-            url: lease.route.clone(),
-        })
-    }
     async fn ensure_actor_host(
         &self,
         _spec: &HostLaunchSpec,

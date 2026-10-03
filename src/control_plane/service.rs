@@ -256,43 +256,6 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    pub(super) async fn bind_socket(
-        &self,
-        mut ticket: super::socket_ticket::SocketTicket,
-    ) -> Result<(super::socket_ticket::SocketTarget, String)> {
-        let routed = self
-            .route_actor(
-                &ticket.actor,
-                &ticket.region,
-                ticket.home_region.as_deref(),
-                None,
-            )
-            .await?;
-        let target = routed.socket_target();
-        ticket.region = routed.placement.home_region;
-        ticket.target = Some(target.clone());
-        Ok((target, self.host_token_issuer.bind_socket(ticket)?))
-    }
-
-    pub(super) async fn socket_destination(
-        &self,
-        actor: &ActorKey,
-        region: &str,
-        home_region: Option<&str>,
-    ) -> Result<(
-        String,
-        super::socket_ticket::SocketTarget,
-        crate::sandbox::SocketCredentials,
-    )> {
-        let routed = self.route_actor(actor, region, home_region, None).await?;
-        let credentials = self
-            .provisioner
-            .socket_credentials(&routed.spec, &routed.placement.home_region, &routed.lease)
-            .await?;
-        let target = routed.socket_target();
-        Ok((routed.placement.home_region, target, credentials))
-    }
-
     pub(super) fn deliver_socket_message_event(
         &self,
         actor: &ActorKey,
@@ -511,11 +474,6 @@ impl ControlPlaneService {
                     "host session does not match"
                 );
                 self.changes.notify().await;
-                Ok(ControlPlaneCommandReply::Unit)
-            }
-            ControlPlaneCommand::SocketMessage { actor, event } => {
-                self.authorize_socket_host(principal, &actor).await?;
-                self.deliver_socket_message_event(&actor, None, &event);
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::RefreshStorageAccess => {
@@ -826,15 +784,6 @@ pub(crate) trait HostProvisioner: Send + Sync {
         Ok(())
     }
 
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        _region: &str,
-        _lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        anyhow::bail!("host provider does not support direct sockets")
-    }
-
     async fn ensure_actor_host(
         &self,
         spec: &HostLaunchSpec,
@@ -926,28 +875,6 @@ impl HostProvisioner for SandboxHostProvisioner {
             Some(pool) => pool.wait_ready(host.as_str()).await,
             None => self.provider.wait_ready(host).await,
         }
-    }
-
-    async fn socket_credentials(
-        &self,
-        _spec: &HostLaunchSpec,
-        region: &str,
-        lease: &HostLease,
-    ) -> Result<crate::sandbox::SocketCredentials> {
-        self.provider
-            .socket_credentials(&crate::sandbox::SocketCredentialsRequest {
-                resource_id: match &self.pool {
-                    Some(pool) => pool
-                        .host(lease.id.as_str())
-                        .await?
-                        .map(|spare| spare.resource_id),
-                    None => None,
-                },
-                canonical_region: region.into(),
-                host_id: lease.id.clone(),
-                session_id: lease.session_id.clone(),
-            })
-            .await
     }
 
     async fn ensure_actor_host(
@@ -1174,7 +1101,6 @@ impl SandboxHostProvisioner {
             control_plane_url: self.runtime.control_plane_url.clone(),
             jwt_issuer: self.runtime.jwt_issuer.clone(),
             invocation_jwt_audience: self.runtime.invocation_jwt_audience.clone(),
-            socket_jwt_audience: self.issuer.socket_audience(),
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec
@@ -1182,8 +1108,6 @@ impl SandboxHostProvisioner {
                 .clone()
                 .or_else(|| spec.code_snapshot.as_ref().map(|_| "actors.mjs".into())),
             secret_refs: spec.secret_refs.clone(),
-            max_socket_connections: self.runtime.max_socket_connections,
-            socket_events: self.runtime.socket_events,
             host_idle_timeout_ms: options
                 .idle_timeout_ms
                 .unwrap_or(self.runtime.host_idle_timeout_ms),
@@ -1225,17 +1149,6 @@ struct RoutedActor {
     placement: ObjectPlacement,
     lease: HostLease,
     spec: HostLaunchSpec,
-}
-
-impl RoutedActor {
-    fn socket_target(&self) -> super::socket_ticket::SocketTarget {
-        super::socket_ticket::SocketTarget {
-            route: self.lease.route.clone(),
-            host_id: self.lease.id.clone(),
-            session_id: self.lease.session_id.clone(),
-            owner_epoch: self.placement.owner_epoch,
-        }
-    }
 }
 
 fn elapsed_ms(started_at: Instant) -> f64 {

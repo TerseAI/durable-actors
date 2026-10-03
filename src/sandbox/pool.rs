@@ -103,18 +103,6 @@ impl SparePool {
         Ok(())
     }
 
-    pub async fn host(&self, host: &str) -> Result<Option<SpareHandle>> {
-        self.store
-            .0
-            .query_opt(
-                "SELECT handle FROM durable_actors_spares WHERE host_id = $1 AND status = 'active'",
-                &[&host],
-            )
-            .await?
-            .map(|row| serde_json::from_str(row.get::<_, &str>(0)).map_err(Into::into))
-            .transpose()
-    }
-
     pub async fn failed(&self, host: &str) -> Result<()> {
         self.store
             .0

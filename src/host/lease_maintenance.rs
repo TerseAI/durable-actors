@@ -246,7 +246,7 @@ impl HostLeaseMaintainer {
         let queues = observation.queues.as_ref().map(|queues| queues.inventory());
         let lease = self
             .store
-            .register_with_inventory(&request, residents.as_deref(), &[], queues.as_deref())
+            .register_with_inventory(&request, residents.as_deref(), queues.as_deref())
             .await?;
         debug!(
             host_id = %lease.id,

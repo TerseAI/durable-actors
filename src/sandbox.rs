@@ -87,14 +87,11 @@ pub struct EnsureHostRequest {
     pub control_plane_url: String,
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
-    pub socket_jwt_audience: String,
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
     pub secret_refs: Vec<String>,
     pub host_idle_timeout_ms: u64,
-    pub max_socket_connections: usize,
-    pub socket_events: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -147,20 +144,6 @@ pub struct HostTermination {
     pub resource_ids: Vec<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SocketCredentialsRequest {
-    pub resource_id: Option<String>,
-    pub canonical_region: String,
-    pub host_id: HostId,
-    pub session_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct SocketCredentials {
-    pub url: String,
-}
-
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
@@ -175,10 +158,6 @@ pub trait SandboxProvider: Send + Sync {
     }
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
 
-    async fn socket_credentials(
-        &self,
-        request: &SocketCredentialsRequest,
-    ) -> Result<SocketCredentials>;
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;
 }
@@ -189,8 +168,6 @@ pub struct HostSandboxRuntimeConfig {
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub host_idle_timeout_ms: u64,
-    pub max_socket_connections: usize,
-    pub socket_events: bool,
 }
 
 #[cfg(test)]

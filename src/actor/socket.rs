@@ -25,12 +25,6 @@ pub(crate) enum SocketLookup {
 #[async_trait]
 pub(crate) trait ActorSocketSource: Send + Sync {
     async fn query(&self, actor: &ActorKey, query: SocketQuery) -> Result<SocketLookup>;
-    async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>> {
-        match self.query(actor, SocketQuery::default()).await? {
-            SocketLookup::Connections(connections) => Ok(connections),
-            SocketLookup::Count(_) => anyhow::bail!("unexpected socket count"),
-        }
-    }
 }
 
 pub(crate) const MAX_SOCKET_METADATA_BYTES: usize = 16 * 1024;

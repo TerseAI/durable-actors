@@ -1,6 +1,6 @@
 # Durable Actors
 
-> _an open-source runtime for stateful applications, with self-hosting and built-in observability._
+> _an open-source alternative to Cloudflare Durable Objects... with no vendor lock-in, memory limits, and observability built in._
 
 Durable Actors help you **build real-time applications** like chat systems (e.g. ChatGPT, Codex), collaboration tools (e.g. Notion), and agent swarms (e.g. Devin).
 

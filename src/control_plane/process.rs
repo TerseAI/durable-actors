@@ -24,6 +24,7 @@ pub struct ControlPlaneProcessConfig {
     pub bind: SocketAddr,
     pub gateway_route: String,
     pub gateway_accept_connections: bool,
+    pub max_socket_connections: usize,
     pub jwt_signing_key: String,
     pub jwt_key_id: String,
     pub jwt_issuer: String,
@@ -172,7 +173,7 @@ async fn control_plane_routes(
         Arc::new(super::socket_directory::PostgresSocketDirectory::new(
             database.clone(),
         )),
-        config.sandbox_provider.runtime.max_socket_connections,
+        config.max_socket_connections,
         config.gateway_accept_connections,
         stop.child_token(),
     )
@@ -337,6 +338,7 @@ impl ControlPlaneProcessConfig {
         Ok(Self {
             bind,
             gateway_route,
+            max_socket_connections: crate::sockets::max_connections(&mut get)?,
             gateway_accept_connections: get("DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS")
                 .map(|value| value.parse())
                 .transpose()
@@ -443,8 +445,6 @@ fn sandbox_provider_config(
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
-            max_socket_connections: crate::sockets::max_connections(get)?,
-            socket_events: get("DURABLE_ACTORS_SOCKET_EVENT_URL").is_some(),
         },
     })
 }

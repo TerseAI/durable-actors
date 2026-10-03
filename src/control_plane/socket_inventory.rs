@@ -41,15 +41,10 @@ impl GatewayInventoryReader {
 #[async_trait]
 impl ActorInventoryReader for GatewayInventoryReader {
     async fn actor_inventory(&self, project: &str) -> Result<Vec<ActorInventory>> {
-        let (mut actors, sockets) = tokio::try_join!(
+        let (actors, sockets) = tokio::try_join!(
             self.actors.actor_inventory(project),
             self.gateway.inventory(project, &self.authorization)
         )?;
-        for actor in &mut actors {
-            for instance in &mut actor.instances {
-                instance.connections.clear();
-            }
-        }
         Ok(merge_rooms(actors, sockets))
     }
 }

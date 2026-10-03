@@ -63,16 +63,6 @@ impl ControlPlaneClient {
         }
     }
 
-    pub(crate) async fn notify_socket_message(
-        &self,
-        actor: ActorKey,
-        event: crate::actor::ActorSocketEvent,
-    ) -> Result<()> {
-        self.execute(ControlPlaneCommand::SocketMessage { actor, event })
-            .await?;
-        Ok(())
-    }
-
     pub(crate) fn token_expires_at_ms(&self) -> Result<u64> {
         use base64::Engine;
         let authorization = self
