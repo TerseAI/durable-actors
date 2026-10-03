@@ -32,8 +32,9 @@ const server = createServer(async (request, response) => {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(JSON.stringify(result))
     } catch (error) {
+        console.error(error)
         response.writeHead(500, { "content-type": "application/json" })
-        response.end(JSON.stringify({ error: String(error), failures: failures.slice(-10) }))
+        response.end(JSON.stringify({ error: "benchmark command failed; inspect load pod logs" }))
     }
 })
 server.requestTimeout = 0
