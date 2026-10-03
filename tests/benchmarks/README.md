@@ -69,6 +69,19 @@ gcloud storage rm "gs://$bench_bucket/$bench_object"
 
 Inspect the sandbox namespace and remove any remaining actor pods belonging to this run by their recorded names. Preserve results before deleting the temporary directory. Never delete sandbox pods using a shared production selector.
 
+## Sustained busy-room measurement
+
+The ramp deliberately uses a one-second idle timeout. Stop-and-wait broadcasts can therefore include another sandbox activation when delivering a round takes longer than that timeout. To measure a continuously active room separately, restart all four load pods, then run:
+
+```sh
+kubectl --context "$bench_context" -n "$bench_namespace" rollout restart statefulset/"$bench_name-load"
+kubectl --context "$bench_context" -n "$bench_namespace" rollout status statefulset/"$bench_name-load"
+kubectl --context "$bench_context" -n "$bench_namespace" exec -i "$bench_name-load-0" -- node --input-type=module \
+  < tests/benchmarks/gke-busy.mjs | tee "$bench_directory/busy-results.jsonl"
+```
+
+This reconnects 32,768 clients and delivers 25 full-room broadcasts while one client sends application probes, pausing 100 ms after each reply. It verifies that the actor stays in one sandbox and that every broadcast reaches every client exactly once. Probes share the normal actor handler path; gateway automatic replies would not keep the actor active. Keep its resource measurements separate from the hibernation ramp.
+
 ## Local smoke test
 
 ```sh
