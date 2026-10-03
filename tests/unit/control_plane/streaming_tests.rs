@@ -726,7 +726,7 @@ impl Stack {
             storage.clone(),
             storage.runtime.clone(),
             local_sockets.clone(),
-            Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+            Arc::new(crate::litestream::Litestream::start().await?),
         ));
         host.activate_actor(actor.clone()).await?;
         tasks.spawn(async move {

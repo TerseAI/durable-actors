@@ -2,9 +2,8 @@ use super::*;
 use crate::litestream::Litestream;
 
 #[tokio::test]
-#[ignore = "requires the pinned Litestream binary on PATH"]
 async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Result<()> {
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::start().await?);
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
@@ -46,9 +45,8 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
 }
 
 #[tokio::test]
-#[ignore = "requires the pinned Litestream binary on PATH"]
 async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
-    let replication = Arc::new(Litestream::start("litestream".into()).await?);
+    let replication = Arc::new(Litestream::start().await?);
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute("INSERT INTO __terse_fields VALUES ('count','1')", [])?;
@@ -60,6 +58,44 @@ async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
             .capture(&SqliteState::position(position))
             .await
             .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn acknowledged_snapshot_prunes_old_capture_files_and_restores_every_row() -> Result<()> {
+    let replication = Arc::new(Litestream::start().await?);
+    let mut capture = SqliteCapture::new(replication.clone()).await?;
+    let sql = rusqlite::Connection::open(capture.path())?;
+    sql.execute_batch("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let first = replication.sync(&capture.path()).await?;
+    capture.capture(&SqliteState::position(first)).await?;
+    let entry = replication
+        .registry
+        .databases
+        .lock()
+        .unwrap()
+        .get(&capture.path())
+        .unwrap()
+        .clone();
+    entry.lock().unwrap().as_mut().unwrap().snapshot_at =
+        std::time::Instant::now() - std::time::Duration::from_secs(61);
+    sql.execute("INSERT INTO data VALUES(2)", [])?;
+    let second = replication.sync(&capture.path()).await?;
+    let files = capture.capture(&SqliteState::position(second)).await?;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].level, 9);
+    use terse_litestream::ReplicaStore;
+    let store = terse_litestream::FileStore::new(capture.replica());
+    assert!(store.list(0)?.is_empty());
+    let restored = SqliteCapture::restore(replication, &files, second).await?;
+    assert_eq!(
+        rusqlite::Connection::open(restored.path())?.query_row(
+            "SELECT count(*) FROM data",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?,
+        2
     );
     Ok(())
 }
