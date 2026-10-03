@@ -5,27 +5,20 @@ const name = process.env.DURABLE_ACTORS_PROJECT_ID
 const peers = Array.from({ length: 4 }, (_, index) => `http://${name}-load-${index}.${name}-load:8080`)
 const connections = 32768
 const startedAt = new Date().toISOString()
-let stopped = false
-let trafficError
-let traffic = Promise.resolve()
-const hosts = new Set()
-let probes = 0
 
 try {
     const started = Date.now()
     const admission = await all("/connect", { count: connections / 4, concurrency: 32 })
     const connectMs = Date.now() - started
     assert.equal((await call(0, "/inspect")).connections, connections)
-    traffic = keepBusy().catch(error => {
-        trafficError = error
-    })
+    await call(3, "/probe")
+    await call(3, "/traffic", { start: true })
     const latencies = []
     const measured = Date.now()
     for (let sequence = 0; sequence < 25; sequence++) {
         const sent = Date.now()
         await call(0, "/broadcast", { sequence })
         while (true) {
-            if (trafficError) throw trafficError
             const stats = await all("/stats")
             stats.forEach(worker => {
                 assert.deepEqual(worker.failures, [])
@@ -39,10 +32,8 @@ try {
         latencies.push(Date.now() - sent)
     }
     const measuredMs = Date.now() - measured
-    stopped = true
-    await traffic
-    if (trafficError) throw trafficError
-    assert.equal(hosts.size, 1, "sustained traffic must keep the actor sandbox active")
+    const traffic = await call(3, "/traffic", { start: false })
+    assert.equal(traffic.hosts.length, 1, "sustained traffic must keep the actor sandbox active")
     latencies.sort((a, b) => a - b)
     console.log(
         JSON.stringify({
@@ -52,8 +43,8 @@ try {
             connections,
             connectMs,
             admission,
-            probes,
-            actorHost: [...hosts][0],
+            traffic,
+            actorHost: traffic.hosts[0],
             failures: [],
             broadcast: {
                 rounds: 25,
@@ -67,18 +58,7 @@ try {
         })
     )
 } finally {
-    stopped = true
-    await traffic
     await all("/close")
-}
-
-async function keepBusy() {
-    while (!stopped) {
-        const probe = await call(3, "/probe")
-        hosts.add(probe.currentHost)
-        probes++
-        await sleep(100)
-    }
 }
 
 function all(path, body = {}) {

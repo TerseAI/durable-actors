@@ -18,7 +18,7 @@ async function message() {
 try {
     const deadline = Date.now() + 5000
     let first = await inspect()
-    while (first.count === 0 && Date.now() < deadline) {
+    while ((first.count === 0 || first.sockets.length === 0) && Date.now() < deadline) {
         await setTimeout(10)
         first = await inspect()
     }

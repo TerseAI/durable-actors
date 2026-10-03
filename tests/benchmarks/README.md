@@ -1,6 +1,6 @@
 # WebSocket scalability benchmark
 
-This benchmark measures one busy room at 128, 1,024, 8,192 and 32,768 connections with four load generators, two gateways and one active actor sandbox. It starts with a concurrent cold connection burst, then measures echo traffic, 25 complete-room broadcast rounds, and a 3,276-client reconnect burst. Counts, on-demand tagged lookup, observer inventory, metadata retention, and connection survival across a changed sandbox hostname are checked at each stage. At 128 connections it also pauses one reader for eight seconds while the actor queues 16 MiB to that socket, then checks ordered delivery after resuming. The configured actor idle timeout is one second; the test waits 20 seconds and sends gateway heartbeat requests before waking the actor.
+This benchmark measures one busy room at 128, 1,024, 8,192 and 32,768 connections with four load generators, two gateways and one active actor sandbox. It starts with a concurrent cold connection burst, then measures echo traffic, 25 complete-room broadcast rounds, and a 3,276-client reconnect burst. During broadcast measurements, one client sends an application message every 100 ms; every reply must drain. The aggressive one-second idle timeout can still cause sandbox handoffs during fanout; the measured rate includes those handoffs. Use the separate busy-room measurement below for a continuously active sandbox. Counts, on-demand tagged lookup, observer inventory, metadata retention, and connection survival across a changed sandbox hostname are checked at each stage. At 128 connections it also pauses one reader for eight seconds while the actor queues 16 MiB to that socket, then checks ordered delivery after resuming. The configured actor idle timeout is one second; the test waits 20 seconds and sends gateway heartbeat requests before waking the actor.
 
 Monitor the recorded actor pod names with Kubernetes during the idle window to confirm the old sandbox has terminated and heartbeat replies do not start another sandbox. A changed actor instance ID alone is insufficient evidence. The final result is emitted only if all phases pass; report the highest fully passing phase separately from partial admission.
 
@@ -71,16 +71,19 @@ Inspect the sandbox namespace and remove any remaining actor pods belonging to t
 
 ## Sustained busy-room measurement
 
-The ramp deliberately uses a one-second idle timeout. Stop-and-wait broadcasts can therefore include another sandbox activation when delivering a round takes longer than that timeout. To measure a continuously active room separately, restart all four load pods, then run:
+The ramp deliberately uses a one-second idle timeout and checks hibernation before measuring traffic. Even with the fixed-cadence sender, gateway fanout can delay application events longer than one second and allow another sandbox activation. To measure the continuously active 32,768-client workload, set the benchmark host idle timeout to 60 seconds, wait for the rollout, register the deployment again using the command above, then restart all four load pods and run:
 
 ```sh
+kubectl --context "$bench_context" -n "$bench_namespace" set env deployment/"$bench_name" DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS=60000
+kubectl --context "$bench_context" -n "$bench_namespace" rollout status deployment/"$bench_name"
+# Repeat the deployment registration command above before connecting clients.
 kubectl --context "$bench_context" -n "$bench_namespace" rollout restart statefulset/"$bench_name-load"
 kubectl --context "$bench_context" -n "$bench_namespace" rollout status statefulset/"$bench_name-load"
 kubectl --context "$bench_context" -n "$bench_namespace" exec -i "$bench_name-load-0" -- node --input-type=module \
   < tests/benchmarks/gke-busy.mjs | tee "$bench_directory/busy-results.jsonl"
 ```
 
-This reconnects 32,768 clients and delivers 25 full-room broadcasts while one client sends application probes, pausing 100 ms after each reply. It verifies that the actor stays in one sandbox and that every broadcast reaches every client exactly once. Probes share the normal actor handler path; gateway automatic replies would not keep the actor active. Keep its resource measurements separate from the hibernation ramp.
+This reconnects 32,768 clients and delivers 25 full-room broadcasts while one client sends an application message every 100 ms and verifies that every reply drains. It verifies that the actor stays in one sandbox and that every broadcast reaches every client exactly once. Probes share the normal actor handler path; gateway automatic replies would not keep the actor active. Keep its resource measurements separate from the hibernation ramp.
 
 ## Local smoke test
 

@@ -90,33 +90,43 @@ try {
 }
 
 async function broadcasts(target, rounds) {
+    await call(3, "/probe")
+    await call(3, "/traffic", { start: true })
     const durations = []
     const start = Date.now()
-    for (let index = 0; index < rounds; index++) {
-        const id = sequence++
-        const sent = Date.now()
-        await call(0, "/broadcast", { sequence: id })
-        while (true) {
-            const stats = await all("/stats")
-            for (const shard of stats) {
-                assert.deepEqual(shard.failures, [])
-                assert.ok((shard.rounds[id]?.count ?? 0) <= target / 4, "duplicate broadcast")
+    let finished
+    let traffic
+    try {
+        for (let index = 0; index < rounds; index++) {
+            const id = sequence++
+            const sent = Date.now()
+            await call(0, "/broadcast", { sequence: id })
+            while (true) {
+                const stats = await all("/stats")
+                for (const shard of stats) {
+                    assert.deepEqual(shard.failures, [])
+                    assert.ok((shard.rounds[id]?.count ?? 0) <= target / 4, "duplicate broadcast")
+                }
+                if (stats.every(s => s.rounds[id]?.count === target / 4)) break
+                assert.ok(Date.now() - sent < 30000, "full-room broadcast timed out")
+                await sleep(10)
             }
-            if (stats.every(s => s.rounds[id]?.count === target / 4)) break
-            assert.ok(Date.now() - sent < 30000, "full-room broadcast timed out")
-            await sleep(10)
+            durations.push(Date.now() - sent)
         }
-        durations.push(Date.now() - sent)
+        finished = Date.now()
+    } finally {
+        traffic = await call(3, "/traffic", { start: false })
     }
     durations.sort((a, b) => a - b)
     return {
         rounds,
         deliveries: target * rounds,
-        deliveriesPerSecond: (target * rounds * 1000) / (Date.now() - start),
+        deliveriesPerSecond: (target * rounds * 1000) / (finished - start),
         p50Ms: durations[Math.floor(rounds * 0.5)],
         p95Ms: durations[Math.floor(rounds * 0.95)],
         maximumMs: durations.at(-1),
-        measurement: "coordinator completion, includes 10ms polling and HTTP control overhead"
+        traffic,
+        measurement: "coordinator completion, includes 10ms polling and HTTP control overhead; application traffic every 100ms; one-second idle timeout may still cause sandbox handoffs during fanout"
     }
 }
 

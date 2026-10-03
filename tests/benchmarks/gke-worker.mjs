@@ -22,6 +22,8 @@ const heartbeats = new WeakMap()
 let firstInstance
 let connectionsCreated = 0
 let stopping = false
+let trafficTimer
+const traffic = { sent: 0, replies: 0, hosts: new Set() }
 
 const server = createServer(async (request, response) => {
     try {
@@ -106,6 +108,7 @@ async function command(path, body) {
         })
         return { milliseconds: performance.now() - started }
     }
+    if (path === "/traffic") return backgroundTraffic(body.start)
     if (path === "/echo") return echo(body.seconds ?? 5, body.concurrency ?? 8)
     if (path === "/probe") {
         const reply = await exchange(sockets.values().next().value)
@@ -128,6 +131,7 @@ async function command(path, body) {
         return connectMany(selected.length, body.concurrency ?? 64)
     }
     if (path === "/close") {
+        clearInterval(trafficTimer)
         stopping = true
         await Promise.all([...sockets].map(close))
         return { live: sockets.size }
@@ -174,6 +178,9 @@ async function connect(url) {
                 firstInstance ??= message.instance
                 connectionsCreated++
                 resolve()
+            } else if (message.sequence <= -1000000000) {
+                traffic.replies++
+                traffic.hosts.add(message.host)
             } else if (message.broadcast) {
                 const round = rounds.get(message.sequence) ?? { count: 0, firstAt: Date.now(), lastAt: 0 }
                 round.count++
@@ -245,4 +252,27 @@ async function close(socket) {
             if (sockets.has(socket)) throw new Error("close timed out")
         })
     ])
+}
+
+async function backgroundTraffic(start) {
+    if (start) {
+        assert.equal(trafficTimer, undefined)
+        traffic.sent = 0
+        traffic.replies = 0
+        traffic.hosts.clear()
+        const socket = sockets.values().next().value
+        const send = () => socket.send(JSON.stringify({ sequence: -1000000000 - traffic.sent++, broadcast: false }))
+        send()
+        trafficTimer = setInterval(send, 100)
+        return {}
+    }
+    clearInterval(trafficTimer)
+    trafficTimer = undefined
+    const deadline = Date.now() + 30000
+    while (traffic.replies < traffic.sent) {
+        assert.ok(Date.now() < deadline, "background messages did not drain")
+        await sleep(10)
+    }
+    assert.equal(traffic.replies, traffic.sent)
+    return { sent: traffic.sent, replies: traffic.replies, hosts: [...traffic.hosts] }
 }
