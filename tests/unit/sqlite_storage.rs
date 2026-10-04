@@ -3,7 +3,7 @@ use crate::litestream::Litestream;
 
 #[tokio::test]
 async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Result<()> {
-    let replication = Arc::new(Litestream::start().await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
@@ -46,7 +46,7 @@ async fn capture_restores_fields_and_user_tables_at_the_requested_commit() -> Re
 
 #[tokio::test]
 async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
-    let replication = Arc::new(Litestream::start().await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute("INSERT INTO __terse_fields VALUES ('count','1')", [])?;
@@ -64,7 +64,7 @@ async fn missing_replication_files_cannot_be_acknowledged() -> Result<()> {
 
 #[tokio::test]
 async fn acknowledged_snapshot_prunes_old_capture_files_and_restores_every_row() -> Result<()> {
-    let replication = Arc::new(Litestream::start().await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let sql = rusqlite::Connection::open(capture.path())?;
     sql.execute_batch("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;

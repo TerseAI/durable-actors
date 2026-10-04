@@ -11,7 +11,7 @@ import { buildActor } from "../../src/compiler/actor-build.js"
 import { ActorSession, parseHostSettings } from "../../src/host/actor-host.js"
 import type { ActorExecutorReply } from "../../src/host/protocol.js"
 import { ActorWorkerSupervisor } from "../../src/host/worker-supervisor.js"
-import { seed } from "../fixtures/litestream.js"
+import { commit, seed } from "../fixtures/litestream.js"
 import { assertReply } from "../fixtures/reply.js"
 
 before(
@@ -34,7 +34,7 @@ test("loads a prepared JavaScript artifact only inside the first execution Worke
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_names, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 24 })}\n`)
             socket.end()
         })
     })
@@ -113,12 +113,13 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 23,
+            protocol: 24,
             actor_names: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 23 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 24 })}\n`)
         await startup
 
+        const sqlite = await seed(null)
         customerSocket.write(
             `${JSON.stringify({
                 type: "command",
@@ -133,9 +134,13 @@ test("the actor session carries only owned execution commands", async t => {
                     },
                     method: "increment",
                     args: [4],
-                    sqlite: await seed(null)
+                    sqlite
                 }
             })}\n`
+        )
+        assert.deepEqual(await readMessage(iterator), { type: "commit_sqlite", message_id: 1 })
+        customerSocket.write(
+            `${JSON.stringify({ type: "sqlite_committed", message_id: 1, txid: await commit(sqlite) })}\n`
         )
         assertSessionReply(await readMessage(iterator), 1, { type: "invoked", result: 4 })
 
@@ -183,6 +188,10 @@ test("the actor session carries only owned execution commands", async t => {
                     sqlite: await seed({ count: 4 })
                 }
             })}\n`
+        )
+        assert.deepEqual(await readMessage(iterator), { type: "commit_sqlite", message_id: 3 })
+        customerSocket.write(
+            `${JSON.stringify({ type: "sqlite_committed", message_id: 3, txid: await commit(sqlite) })}\n`
         )
         assertSessionReply(await readMessage(iterator), 3, { type: "invoked", result: 5 })
 
@@ -277,7 +286,7 @@ test("reports resident instances when the Rust host advertises support", { timeo
         lines.on("line", line => {
             const message = JSON.parse(line)
             if (message.type === "attach")
-                socket.write(`${JSON.stringify({ type: "attached", protocol: 23, supports_residency: true })}\n`)
+                socket.write(`${JSON.stringify({ type: "attached", protocol: 24, supports_residency: true })}\n`)
             else if (message.type === "residency") {
                 received = message.actors
                 socket.end()
@@ -318,4 +327,84 @@ function actorBundle(): Promise<string> {
         await buildActor(source, output, { local: true })
         return output
     })())
+}
+
+for (const failure of ["capture", "disconnect", "missing_position", "disconnected_before_commit"] as const) {
+    test(`executor commit acknowledgement settles on ${failure}`, { timeout: 5_000 }, async t => {
+        const root = await mkdtemp("/tmp/actor-commit-")
+        const server = createServer()
+        const connected = once(server, "connection")
+        server.listen(`${root}/executor.sock`)
+        await once(server, "listening")
+        t.after(async () => {
+            server.close()
+            await rm(root, { recursive: true, force: true })
+        })
+        let settled = false
+        let resume!: () => void
+        const startCommit = new Promise<void>(resolve => {
+            resume = resolve
+        })
+        let rejectCommit!: (error: unknown) => void
+        const failed = new Promise<unknown>(resolve => {
+            rejectCommit = resolve
+        })
+        const session = new ActorSession(
+            parseHostSettings({
+                DURABLE_ACTORS_EXECUTOR_SOCKET: `${root}/executor.sock`,
+                DURABLE_ACTORS_ENTRYPOINT: await actorBundle()
+            }),
+            () => ({
+                ready: async () => ["SessionCounter"],
+                async handle(_command, _allowNext, commit) {
+                    try {
+                        if (failure === "disconnected_before_commit") await startCommit
+                        await commit()
+                        throw new Error("commit unexpectedly succeeded")
+                    } catch (error) {
+                        settled = true
+                        rejectCommit(error)
+                        return { type: "failed", code: "sqlite_capture_failed", message: String(error) }
+                    }
+                },
+                close() {},
+                activeActors: () => [],
+                onActiveActorsChange: () => () => {}
+            })
+        )
+        const starting = session.start()
+        const [socket] = (await connected) as [Socket]
+        t.after(() => socket.destroy())
+        const iterator = createInterface({ input: socket })[Symbol.asyncIterator]()
+        assert.deepEqual(await readMessage(iterator), { type: "attach", protocol: 24, actor_names: ["SessionCounter"] })
+        const send = (message: object) => socket.write(`${JSON.stringify(message)}\n`)
+        send({ type: "attached", protocol: 24 })
+        await starting
+        send({
+            type: "command",
+            message_id: 11,
+            command: { type: "invoke", request_id: "capture", actor: actorIdentity(), method: "increment", args: [] }
+        })
+        if (failure === "disconnected_before_commit") {
+            socket.end()
+            await session.waitUntilDisconnected()
+            resume()
+        } else {
+            assert.deepEqual(await readMessage(iterator), { type: "commit_sqlite", message_id: 11 })
+            assert.equal(settled, false)
+            if (failure === "disconnect") socket.end()
+            else
+                send({
+                    type: "sqlite_committed",
+                    message_id: 11,
+                    ...(failure === "capture" ? { error: "disk full" } : {})
+                })
+        }
+        assert.match(
+            String(await failed),
+            failure === "capture" ? /disk full/ : failure.startsWith("disconnect") ? /closed|disconnect/ : /omitted/
+        )
+        socket.end()
+        await session.waitUntilDisconnected()
+    })
 }

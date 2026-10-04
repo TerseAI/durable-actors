@@ -383,7 +383,7 @@ async fn write_history(
         storage::{SqliteCapture, SqliteState},
     };
     writer.start(&f.stream).await?;
-    let replication = Arc::new(Litestream::start().await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch(
@@ -579,7 +579,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
         storage::SnapshotRef,
     };
     let f = Fixture::new()?;
-    let replication = Arc::new(Litestream::start().await?);
+    let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
     let db = rusqlite::Connection::open(capture.path())?;
     db.execute_batch("INSERT INTO __terse_fields VALUES ('count','1'); CREATE TABLE entries(value INTEGER); INSERT INTO entries VALUES (1);")?;

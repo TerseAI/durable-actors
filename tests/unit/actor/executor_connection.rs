@@ -7,13 +7,13 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
     let listener = ActorExecutorListener::bind(&path).await?;
     let peer = tokio::spawn(async move {
         let mut socket = BufReader::new(tokio::net::UnixStream::connect(path).await?);
-        write_json_line(&mut socket, &json!({"type":"warm","protocol":23})).await?;
+        write_json_line(&mut socket, &json!({"type":"warm","protocol":24})).await?;
         let load = read_json_line(&mut socket).await?;
         assert_eq!(load["entrypoint"], "/customer/actors.mjs");
         assert_eq!(load["environment"]["CUSTOMER_KEY"], "value");
         write_json_line(
             &mut socket,
-            &json!({"type":"attach","protocol":23,"actor_names":["counter"]}),
+            &json!({"type":"attach","protocol":24,"actor_names":["counter"]}),
         )
         .await?;
         assert_eq!(read_json_line(&mut socket).await?["type"], "attached");
@@ -34,7 +34,13 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
             &HashMap::from([("CUSTOMER_KEY".into(), "value".into())]),
         )
         .await?;
-    connection.mark_ready(None, None).await?;
+    connection
+        .mark_ready(
+            None,
+            None,
+            Arc::new(crate::litestream::Litestream::default()),
+        )
+        .await?;
     connection
         .executor()
         .hydrate(
@@ -67,11 +73,17 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let mut peer = BufReader::new(UnixStream::connect(&socket).await?);
     write_json_line(
         &mut peer,
-        &json!({"type":"attach", "protocol":23, "actor_names":["Room"]}),
+        &json!({"type":"attach", "protocol":24, "actor_names":["Room"]}),
     )
     .await?;
     let connection = listener.accept().await?;
-    connection.mark_ready(None, None).await?;
+    connection
+        .mark_ready(
+            None,
+            None,
+            Arc::new(crate::litestream::Litestream::default()),
+        )
+        .await?;
     let executor = connection.executor();
     assert!(executor.resident_actors().is_none());
     let mut changes = executor
@@ -136,6 +148,7 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
                 requested,
                 release: release.clone(),
             })),
+            Arc::new(crate::litestream::Litestream::default()),
         )
         .await?;
     let peer = async {
@@ -310,14 +323,20 @@ async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> 
         let mut stream = BufReader::new(stream);
         write_json_line(
             &mut stream,
-            &json!({"type":"attach", "protocol":23, "actor_names":["counter"]}),
+            &json!({"type":"attach", "protocol":24, "actor_names":["counter"]}),
         )
         .await?;
         let _ = read_json_line(&mut stream).await?;
         std::future::pending::<Result<()>>().await
     });
     let connection = listener.accept().await?;
-    connection.mark_ready(None, None).await?;
+    connection
+        .mark_ready(
+            None,
+            None,
+            Arc::new(crate::litestream::Litestream::default()),
+        )
+        .await?;
     let executor = connection.executor();
     let shutdown = CancellationToken::new();
     let mut running = tokio::spawn(connection.run(shutdown.clone()));
@@ -356,7 +375,13 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
     let customer = tokio::spawn(run_incrementing_customer(socket.clone()));
     let connection = host.accept().await?;
     let executor = connection.executor();
-    connection.mark_ready(None, None).await?;
+    connection
+        .mark_ready(
+            None,
+            None,
+            Arc::new(crate::litestream::Litestream::default()),
+        )
+        .await?;
     assert!(executor.supports("counter"));
 
     let shutdown = CancellationToken::new();
@@ -489,12 +514,11 @@ async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_reque
 }
 
 #[tokio::test]
-async fn executor_receives_the_shared_database_and_replication_socket() -> Result<()> {
+async fn executor_receives_the_shared_database_path_for_host_managed_commits() -> Result<()> {
     let state = ActorState {
         sqlite: crate::actor::SqliteState {
             txid: 1,
             path: Some("/tmp/actor.sqlite".into()),
-            socket: Some("/tmp/litestream.sock".into()),
         },
     };
     let (host, customer) = UnixStream::pair()?;
@@ -557,11 +581,11 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     writer
-        .write_all(b"{\"type\":\"attach\",\"protocol\":23,\"actor_names\":[\"counter\"]}\n")
+        .write_all(b"{\"type\":\"attach\",\"protocol\":24,\"actor_names\":[\"counter\"]}\n")
         .await?;
     ensure!(
         read_json_line(&mut reader).await?
-            == json!({ "type": "attached", "protocol": 23, "supports_residency": true })
+            == json!({ "type": "attached", "protocol": 24, "supports_residency": true })
     );
 
     let invocation = read_json_line(&mut reader).await?;
@@ -634,4 +658,257 @@ where
         .await?;
     writer.write_all(b"\n").await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn commit_acknowledges_capture_for_the_invocations_registered_database() -> Result<()> {
+    use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
+    let replication = Arc::new(Litestream::default());
+    let capture = SqliteCapture::new(replication.clone()).await?;
+    let state = ActorState {
+        sqlite: capture.state(),
+    };
+    let database = rusqlite::Connection::open(capture.path())?;
+    database.execute_batch("CREATE TABLE entries(value); INSERT INTO entries VALUES(7)")?;
+    let (host, customer) = UnixStream::pair()?;
+    let (reader, writer) = host.into_split();
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
+    executor.mark_ready(None, None, replication.clone()).await?;
+    let peer = async {
+        let mut customer = BufReader::new(customer);
+        read_json_line(&mut customer).await?;
+        let invocation = read_json_line(&mut customer).await?;
+        let id = &invocation["message_id"];
+        write_json_line(
+            &mut customer,
+            &json!({"type":"commit_sqlite", "message_id":id, "path":"/not-authorized.sqlite"}),
+        )
+        .await?;
+        let committed = read_json_line(&mut customer).await?;
+        assert_eq!(committed["type"], "sqlite_committed");
+        assert_eq!(committed["message_id"], *id);
+        assert!(committed["txid"].as_u64().unwrap() > state.sqlite.txid);
+        write_json_line(&mut customer, &json!({"type":"reply", "message_id":id, "reply":{"type":"invoked","result":7,"sqlite":{"txid":committed["txid"]}}})).await?;
+        anyhow::Ok(())
+    };
+    let caller = async {
+        let result = executor
+            .invoke(
+                ActorMethodInvocation {
+                    request_id: "commit".into(),
+                    actor: ActorKey {
+                        project_id: "default".into(),
+                        actor_name: "counter".into(),
+                        actor_id: "one".into(),
+                    },
+                    method: "write".into(),
+                    args: vec![],
+                },
+                Some(&state),
+            )
+            .await?;
+        let ActorMethodOutcome::Completed { state, .. } = result else {
+            anyhow::bail!("unexpected outcome")
+        };
+        assert_eq!(replication.sync(&capture.path()).await?, state.sqlite.txid);
+        anyhow::Ok(())
+    };
+    let result = timeout(Duration::from_secs(3), async {
+        tokio::try_join!(peer, caller)
+    })
+    .await;
+    running.abort();
+    result??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_waits_without_blocking_executor_admission() -> Result<()> {
+    let capture = Arc::new(ControlledCapture::new(false));
+    let (executor, running, mut peer, caller) = commit_fixture(capture.clone()).await?;
+    let mut admission = executor.invocation_admission().unwrap();
+    write_json_line(&mut peer, &json!({"type":"commit_sqlite", "message_id":1})).await?;
+    timeout(Duration::from_secs(1), capture.started.notified()).await?;
+    write_json_line(
+        &mut peer,
+        &json!({"type":"ready_for_invocation", "message_id":1}),
+    )
+    .await?;
+    timeout(Duration::from_secs(1), admission.changed()).await??;
+    assert!(
+        timeout(Duration::from_millis(20), read_json_line(&mut peer))
+            .await
+            .is_err()
+    );
+    capture.release.add_permits(1);
+    assert_eq!(
+        read_json_line(&mut peer).await?,
+        json!({"type":"sqlite_committed", "message_id":1, "txid":2})
+    );
+    write_json_line(&mut peer, &commit_reply(2)).await?;
+    assert!(matches!(
+        caller.await??,
+        ActorMethodOutcome::Completed { .. }
+    ));
+    running.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_failure_is_acknowledged_and_cannot_be_reported_as_success() -> Result<()> {
+    for success in [false, true] {
+        let capture = Arc::new(ControlledCapture::new(true));
+        let (_executor, running, mut peer, caller) = commit_fixture(capture.clone()).await?;
+        write_json_line(&mut peer, &json!({"type":"commit_sqlite", "message_id":1})).await?;
+        capture.release.add_permits(1);
+        let reply = read_json_line(&mut peer).await?;
+        assert_eq!(reply["type"], "sqlite_committed");
+        assert_eq!(reply["message_id"], 1);
+        assert!(reply["error"].as_str().unwrap().contains("capture failed"));
+        assert!(reply.get("txid").is_none());
+        if success {
+            write_json_line(&mut peer, &commit_reply(2)).await?;
+            let error = timeout(Duration::from_secs(1), running)
+                .await??
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("success after SQLite capture failed")
+            );
+            assert!(caller.await?.is_err());
+        } else {
+            write_json_line(&mut peer, &json!({"type":"reply", "message_id":1, "reply":{"type":"failed", "code":"sqlite_capture_failed", "message":"capture failed"}})).await?;
+            assert!(matches!(caller.await??, ActorMethodOutcome::Failed(_)));
+            running.abort();
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_capture_rejects_unknown_duplicate_and_premature_messages() -> Result<()> {
+    for violation in ["unknown", "duplicate", "premature", "wrong_position"] {
+        let capture = Arc::new(ControlledCapture::new(false));
+        let (_executor, running, mut peer, caller) = commit_fixture(capture.clone()).await?;
+        if violation != "unknown" {
+            write_json_line(&mut peer, &json!({"type":"commit_sqlite", "message_id":1})).await?;
+            timeout(Duration::from_secs(1), capture.started.notified()).await?;
+        }
+        let (message, expected) = match violation {
+            "unknown" => (
+                json!({"type":"commit_sqlite", "message_id":99}),
+                "no active invocation",
+            ),
+            "duplicate" => (
+                json!({"type":"commit_sqlite", "message_id":1}),
+                "already requested",
+            ),
+            "premature" => (commit_reply(2), "before SQLite capture completed"),
+            _ => {
+                capture.release.add_permits(1);
+                assert_eq!(read_json_line(&mut peer).await?["txid"], 2);
+                (commit_reply(3), "differs from its captured SQLite position")
+            }
+        };
+        write_json_line(&mut peer, &message).await?;
+        let error = timeout(Duration::from_secs(1), running)
+            .await??
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{violation}: {error:#}"
+        );
+        assert!(caller.await?.is_err());
+    }
+    Ok(())
+}
+
+fn commit_reply(txid: u64) -> Value {
+    json!({"type":"reply", "message_id":1, "reply":{"type":"invoked", "result":7, "sqlite":{"txid":txid}}})
+}
+
+async fn commit_fixture(
+    capture: Arc<ControlledCapture>,
+) -> Result<(
+    Arc<JsActorExecutor>,
+    JoinHandle<Result<()>>,
+    BufReader<UnixStream>,
+    JoinHandle<Result<ActorMethodOutcome>>,
+)> {
+    let (host, customer) = UnixStream::pair()?;
+    let (reader, writer) = host.into_split();
+    let (executor, running) =
+        JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
+    executor.mark_ready(None, None, capture).await?;
+    let mut peer = BufReader::new(customer);
+    assert_eq!(read_json_line(&mut peer).await?["type"], "attached");
+    let caller = tokio::spawn({
+        let executor = executor.clone();
+        async move {
+            executor
+                .invoke(
+                    ActorMethodInvocation {
+                        request_id: "commit".into(),
+                        actor: ActorKey {
+                            project_id: "default".into(),
+                            actor_name: "counter".into(),
+                            actor_id: "one".into(),
+                        },
+                        method: "write".into(),
+                        args: vec![],
+                    },
+                    Some(&ActorState {
+                        sqlite: crate::actor::SqliteState {
+                            txid: 1,
+                            path: Some("/host/actor.sqlite".into()),
+                        },
+                    }),
+                )
+                .await
+        }
+    });
+    assert_eq!(read_json_line(&mut peer).await?["message_id"], 1);
+    Ok((executor, running, peer, caller))
+}
+
+struct ControlledCapture {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    fail: bool,
+}
+
+impl ControlledCapture {
+    fn new(fail: bool) -> Self {
+        Self {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            fail,
+        }
+    }
+}
+
+#[async_trait]
+impl crate::litestream::Replicator for ControlledCapture {
+    async fn register(&self, _: &Path, _: &Path) -> Result<()> {
+        anyhow::bail!("unexpected registration")
+    }
+    async fn sync(&self, path: &Path) -> Result<u64> {
+        assert_eq!(path, Path::new("/host/actor.sqlite"));
+        self.started.notify_one();
+        self.release.acquire().await?.forget();
+        ensure!(!self.fail, "capture failed");
+        Ok(2)
+    }
+    async fn unregister(&self, _: &Path) -> Result<()> {
+        anyhow::bail!("unexpected unregistration")
+    }
+}
+
+#[async_trait]
+impl crate::litestream::DatabaseRestore for ControlledCapture {
+    async fn restore(&self, _: &Path, _: &Path, _: u64) -> Result<()> {
+        anyhow::bail!("unexpected restore")
+    }
 }

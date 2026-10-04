@@ -13,8 +13,6 @@ pub struct SqliteState {
     pub txid: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub socket: Option<String>,
 }
 
 impl PartialEq for SqliteState {
@@ -26,11 +24,7 @@ impl PartialEq for SqliteState {
 impl SqliteState {
     #[cfg(test)]
     pub(crate) fn position(txid: u64) -> Self {
-        Self {
-            txid,
-            path: None,
-            socket: None,
-        }
+        Self { txid, path: None }
     }
 }
 
@@ -107,7 +101,6 @@ impl SqliteCapture {
         SqliteState {
             txid: self.txid,
             path: Some(self.path().to_string_lossy().into_owned()),
-            socket: Some(self.replication.socket().to_string_lossy().into_owned()),
         }
     }
 

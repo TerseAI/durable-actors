@@ -25,6 +25,12 @@ def main():
         "machine": platform.machine(),
         "baseline_sha256": hashlib.sha256(args.baseline.read_bytes()).hexdigest(),
         "candidate_sha256": hashlib.sha256(args.candidate.read_bytes()).hexdigest(),
+        "baseline_sdk_host_sha256": hashlib.sha256(
+            ((args.baseline_sdk or args.sdk) / "dist/host/actor-host.js").read_bytes()
+        ).hexdigest(),
+        "candidate_sdk_host_sha256": hashlib.sha256(
+            (args.sdk / "dist/host/actor-host.js").read_bytes()
+        ).hexdigest(),
         "runs": args.runs,
         "sizes": args.sizes,
         "sampler_interval_seconds": 0.005,
@@ -51,6 +57,10 @@ def arguments():
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--sdk", type=Path, required=True)
+    parser.add_argument(
+        "--baseline-sdk", type=Path,
+        help="SDK matching the baseline executor protocol; defaults to --sdk",
+    )
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--sizes", type=int, nargs="+", default=[0, 1048576])
     parser.add_argument("--output", type=Path, required=True)
@@ -58,7 +68,6 @@ def arguments():
 
 
 def trials(args):
-    sdk = args.sdk.resolve()
     for size in args.sizes:
         for trial in range(args.runs):
             variants = (
@@ -67,6 +76,10 @@ def trials(args):
                 else ["candidate", "baseline"]
             )
             for variant in variants:
+                sdk = (
+                    (args.baseline_sdk or args.sdk).resolve()
+                    if variant == "baseline" else args.sdk.resolve()
+                )
                 with tempfile.TemporaryDirectory(
                     prefix="terse-cold-write-"
                 ) as directory:
