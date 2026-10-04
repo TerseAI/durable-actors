@@ -16,7 +16,8 @@ export const timelineTicks = [0, 0.25, 0.5, 0.75, 1]
 export function useTimelineZoom(bounds: TimelineWindow) {
     const [window, setWindow] = useState<TimelineWindow | null>(null)
     const outside = window !== null && (window.end <= bounds.start || window.start >= bounds.end)
-    const range = window && !outside ? fitWindow(window, bounds) : bounds
+    const zoomed = window !== null && !outside
+    const range = zoomed ? window : bounds
     useEffect(() => {
         if (outside) setWindow(null)
     }, [outside])
@@ -24,12 +25,23 @@ export function useTimelineZoom(bounds: TimelineWindow) {
         const fitted = next && fitWindow(next, bounds)
         setWindow(fitted?.start === bounds.start && fitted.end === bounds.end ? null : fitted)
     }
-    return { range, setWindow: update }
+    return { range, zoomed, setWindow: update }
 }
 
-export function TimelineZoomControls({ bounds, range, count, onChange }: { bounds: TimelineWindow; range: TimelineWindow; count: number; onChange: (range: TimelineWindow | null) => void }) {
+export function TimelineZoomControls({
+    bounds,
+    range,
+    zoomed,
+    count,
+    onChange
+}: {
+    bounds: TimelineWindow
+    range: TimelineWindow
+    zoomed: boolean
+    count: number
+    onChange: (range: TimelineWindow | null) => void
+}) {
     const span = range.end - range.start
-    const full = range.start === bounds.start && range.end === bounds.end
     const zoom = (factor: number) => {
         const center = (range.start + range.end) / 2
         onChange({ start: center - (span * factor) / 2, end: center + (span * factor) / 2 })
@@ -41,7 +53,7 @@ export function TimelineZoomControls({ bounds, range, count, onChange }: { bound
                 <Button variant="outline" size="icon-sm" aria-label="Zoom in" title="Zoom in" disabled={span <= 1} onClick={() => zoom(0.5)}>
                     <ZoomIn aria-hidden="true" />
                 </Button>
-                <Button variant="outline" size="icon-sm" aria-label="Zoom out" title="Zoom out" disabled={full} onClick={() => zoom(2)}>
+                <Button variant="outline" size="icon-sm" aria-label="Zoom out" title="Zoom out" disabled={!zoomed} onClick={() => zoom(2)}>
                     <ZoomOut aria-hidden="true" />
                 </Button>
                 <Button variant="outline" size="icon-sm" aria-label="Pan earlier" title="Pan earlier" disabled={range.start <= bounds.start} onClick={() => pan(-1)}>
@@ -50,7 +62,7 @@ export function TimelineZoomControls({ bounds, range, count, onChange }: { bound
                 <Button variant="outline" size="icon-sm" aria-label="Pan later" title="Pan later" disabled={range.end >= bounds.end} onClick={() => pan(1)}>
                     <ChevronRight aria-hidden="true" />
                 </Button>
-                <Button variant="ghost" size="sm" aria-label="Reset zoom" disabled={full} onClick={() => onChange(null)}>
+                <Button variant="ghost" size="sm" aria-label="Reset zoom" disabled={!zoomed} onClick={() => onChange(null)}>
                     <RotateCcw aria-hidden="true" />
                     Reset
                 </Button>

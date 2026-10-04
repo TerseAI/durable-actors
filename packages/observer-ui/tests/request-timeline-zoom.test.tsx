@@ -79,6 +79,33 @@ test("zoom clips calls and queue wait to the window without changing reported du
     assert.equal(bar.querySelector(".request-waterfall-queue"), null)
 })
 
+test("retention changes preserve a zoomed window while any of it still overlaps loaded history", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    fireEvent.click(view.getByRole("button", { name: "Zoom in" }))
+    const bar = view.getByRole("button", { name: /Inspect load request/ })
+    for (const retained of [[trace, records[2]!], [trace], [trace, { ...records[2]!, startedAtMs: 5000 }]]) {
+        view.rerender(<RequestTimeline records={retained} onSelect={() => {}} />)
+        assert.equal(bar.style.left, "50%")
+        assert.equal(bar.style.width, "0.8%")
+        assert.equal(view.getByRole("status").textContent, "500 ms window · 1 call in view")
+        assert.equal(view.getByRole("button", { name: "Reset zoom" }).hasAttribute("disabled"), false)
+    }
+})
+
+for (const control of ["Reset zoom", "Zoom out"]) {
+    test(`${control} restores automatic fitting when retained history matches the selected window`, () => {
+        const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+        fireEvent.click(view.getByRole("button", { name: "Zoom in" }))
+        view.rerender(<RequestTimeline records={[{ ...records[0]!, startedAtMs: 1250 }, trace, { ...records[2]!, startedAtMs: 1746 }]} onSelect={() => {}} />)
+        const button = view.getByRole("button", { name: control })
+        assert.equal(button.hasAttribute("disabled"), false)
+        fireEvent.click(button)
+        view.rerender(<RequestTimeline records={records} onSelect={() => {}} />)
+        assert.equal(view.getByRole("button", { name: /Inspect load request/ }).style.width, "0.4%")
+        assert.equal(view.getByRole("button", { name: "Reset zoom" }).hasAttribute("disabled"), true)
+    })
+}
+
 test("dragging the axis in either direction zooms precisely and cancelled drags leave it unchanged", () => {
     const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
     const axis = view.getByRole("group", { name: "Select time range" })
