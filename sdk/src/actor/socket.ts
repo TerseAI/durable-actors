@@ -60,7 +60,7 @@ interface ActorConnection<Send = JsonValue, Receive = Send, State = JsonValue> {
     /** WebSocket state: 0 connecting, 1 open, 2 closing, 3 closed. */
     readonly readyState: number
     /** Sends JSON while open. Pass objects directly. */
-    send(data: Send): void
+    send(data: Send, options?: { requestId?: string }): void
     /** Reasons are limited to 123 UTF-8 bytes. */
     close(code?: number, reason?: string): void
     /** The `open` event normally fires before `connect()` resolves. */

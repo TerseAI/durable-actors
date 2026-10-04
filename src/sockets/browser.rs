@@ -76,9 +76,12 @@ pub(crate) async fn run(mut socket: WebSocket, state: SocketServerState, ticket:
         pending: VecDeque::new(),
         handler: None,
     };
-    session.start(ActorSocketEvent::Connect {
-        connection: session.connection.clone(),
-    });
+    session.start(
+        ActorSocketEvent::Connect {
+            connection: session.connection.clone(),
+        },
+        None,
+    );
     let closed = session
         .run(&mut socket)
         .await
@@ -92,7 +95,7 @@ struct Session {
     ticket: SocketTicket,
     connection: ActorSocketConnection,
     outbound: SocketReceiver,
-    pending: VecDeque<ActorSocketMessage>,
+    pending: VecDeque<ActorSocketRequest>,
     handler: Option<JoinHandle<bool>>,
 }
 
@@ -128,18 +131,17 @@ impl Session {
     ) -> Result<(), Closed> {
         match inbound {
             Some(Ok(Message::Text(text))) => {
+                let message = prepare_actor_socket_request(&text)?;
                 if let Some(response) = self
                     .state
                     .registry
-                    .auto_response(&self.ticket.actor, &text)
+                    .auto_response(&self.ticket.actor, &message.data)
                     .await
                 {
                     self.send_frame(socket, Message::Text(response.into()))
                         .await
                 } else {
-                    self.enqueue(ActorSocketMessage::Text {
-                        data: text.to_string(),
-                    })
+                    self.enqueue(message)
                 }
             }
             Some(Ok(Message::Ping(data))) => self.send_frame(socket, Message::Pong(data)).await,
@@ -159,7 +161,7 @@ impl Session {
         }
     }
 
-    fn enqueue(&mut self, message: ActorSocketMessage) -> Result<(), Closed> {
+    fn enqueue(&mut self, message: ActorSocketRequest) -> Result<(), Closed> {
         if self.handler.is_none() {
             self.start_message(message);
         } else {
@@ -168,18 +170,21 @@ impl Session {
         Ok(())
     }
 
-    fn start_message(&mut self, message: ActorSocketMessage) {
-        self.start(ActorSocketEvent::Message {
-            connection_id: self.connection.id.clone(),
-            message,
-        });
+    fn start_message(&mut self, request: ActorSocketRequest) {
+        self.start(
+            ActorSocketEvent::Message {
+                connection_id: self.connection.id.clone(),
+                message: ActorSocketMessage::Text { data: request.data },
+            },
+            request.request_id,
+        );
     }
 
-    fn start(&mut self, event: ActorSocketEvent) {
+    fn start(&mut self, event: ActorSocketEvent, request_id: Option<String>) {
         let state = self.state.clone();
         let ticket = self.ticket.clone();
         self.handler = Some(tokio::spawn(async move {
-            dispatch(&state, &ticket, event).await.is_ok()
+            dispatch(&state, &ticket, event, request_id).await.is_ok()
         }));
     }
 
@@ -250,7 +255,7 @@ impl Session {
         };
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
-            dispatch(&self.state, &self.ticket, event),
+            dispatch(&self.state, &self.ticket, event, None),
         )
         .await;
     }
@@ -296,12 +301,13 @@ async fn dispatch(
     state: &SocketServerState,
     ticket: &SocketTicket,
     event: ActorSocketEvent,
+    request_id: Option<String>,
 ) -> Result<()> {
     ensure!(!state.stop.is_cancelled(), "socket gateway stopping");
     state.dispatcher.ensure_authority()?;
     let (event, connections) = state.registry.prepare_event(&ticket.actor, event).await;
     let invocation = ActorSocketInvocation {
-        request_id: uuid::Uuid::new_v4().to_string(),
+        request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         actor: ticket.actor.clone(),
         event: event.clone(),
         connections,
@@ -322,6 +328,36 @@ async fn dispatch(
     state.registry.apply(&ticket.actor, effects).await;
     state.dispatcher.notify(ticket, &event);
     Ok(())
+}
+
+struct ActorSocketRequest {
+    request_id: Option<String>,
+    data: String,
+}
+
+fn prepare_actor_socket_request(data: &str) -> Result<ActorSocketRequest, Closed> {
+    let envelope: serde_json::Value =
+        serde_json::from_str(data).map_err(|_| Closed::new(4400, "invalid request envelope"))?;
+    let payload = envelope
+        .as_object()
+        .and_then(|object| object.get("payload"))
+        .ok_or_else(|| Closed::new(4400, "request envelope requires payload"))?;
+    let request_id = match envelope.get("requestId") {
+        None => None,
+        Some(serde_json::Value::String(id)) if !id.is_empty() && id.len() <= 255 => {
+            Some(id.clone())
+        }
+        _ => {
+            return Err(Closed::new(
+                4400,
+                "request ID must contain 1–255 UTF-8 bytes",
+            ));
+        }
+    };
+    Ok(ActorSocketRequest {
+        request_id,
+        data: payload.to_string(),
+    })
 }
 
 #[cfg(test)]
