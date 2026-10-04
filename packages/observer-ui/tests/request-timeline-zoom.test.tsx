@@ -30,6 +30,52 @@ const trace: RequestTrace = {
 }
 const records = [{ ...trace, sequence: 0, startedAtMs: 1000, operation: "early" }, trace, { ...trace, sequence: 2, startedAtMs: 1996, operation: "late" }]
 
+test("the zoom slider continuously scales the centered window and resets to all calls", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    const slider = view.getByRole("slider", { name: "Zoom" }) as HTMLInputElement
+    const bar = view.getByRole("button", { name: /Inspect load request/ })
+    assert.equal(slider.value, "0")
+    assert.equal(slider.getAttribute("aria-valuetext"), "1 s window")
+    fireEvent.change(slider, { target: { value: "50" } })
+    assert.ok(Math.abs(parseFloat(bar.style.width) - (4 / Math.sqrt(1000)) * 100) < 0.001)
+    assert.equal(bar.style.left, "50%")
+    assert.equal(view.getAllByRole("button", { name: /Inspect .* request/ }).length, 1)
+    fireEvent.change(slider, { target: { value: "100" } })
+    assert.equal(view.getByRole("status").textContent, "1 ms window · 1 call in view")
+    assert.equal(view.getByRole("button", { name: "Zoom in" }).hasAttribute("disabled"), true)
+    fireEvent.click(view.getByRole("button", { name: "Zoom out" }))
+    assert.ok(Number(slider.value) < 100)
+    fireEvent.change(slider, { target: { value: "0" } })
+    assert.equal(view.getAllByRole("button", { name: /Inspect .* request/ }).length, 3)
+    assert.equal(view.getByRole("button", { name: "Reset zoom" }).hasAttribute("disabled"), true)
+})
+
+test("slider zoom preserves timestamps across history updates and reset resumes fitting", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    const slider = view.getByRole("slider", { name: "Zoom" }) as HTMLInputElement
+    fireEvent.change(slider, { target: { value: "50" } })
+    const bar = view.getByRole("button", { name: /Inspect load request/ })
+    const width = bar.style.width
+    view.rerender(<RequestTimeline records={[...records, { ...trace, sequence: 3, startedAtMs: 5000 }]} onSelect={() => {}} />)
+    assert.equal(bar.style.width, width)
+    assert.equal(bar.style.left, "50%")
+    assert.ok(Number(slider.value) > 50)
+    view.rerender(<RequestTimeline records={[trace]} onSelect={() => {}} />)
+    assert.equal(bar.style.width, width)
+    fireEvent.click(view.getByRole("button", { name: "Reset zoom" }))
+    view.rerender(<RequestTimeline records={records} onSelect={() => {}} />)
+    assert.equal(bar.style.width, "0.4%")
+    assert.equal(slider.value, "0")
+})
+
+test("the zoom slider is disabled for a one millisecond history", () => {
+    const view = render(<RequestTimeline records={[{ ...trace, durationMs: 0 }]} onSelect={() => {}} />)
+    const slider = view.getByRole("slider", { name: "Zoom" }) as HTMLInputElement
+    assert.equal(slider.disabled, true)
+    assert.equal(slider.value, "0")
+    assert.equal(slider.getAttribute("aria-valuetext"), "1 ms window")
+})
+
 test("zoom enlarges short requests, keeps them selectable, pans and resets the full range", () => {
     let selected: RequestTrace | undefined
     const view = render(<RequestTimeline records={records} onSelect={record => (selected = record)} />)
