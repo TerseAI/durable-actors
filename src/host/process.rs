@@ -365,6 +365,11 @@ async fn prepare_actor_host(
     timings: &mut HostStartupTimings,
     warm: Option<super::spare::WarmHost>,
 ) -> Result<PreparedActorHost> {
+    let replication = warm
+        .as_ref()
+        .map(|warm| warm.replication.clone())
+        .unwrap_or_else(|| Arc::new(crate::litestream::Litestream::default()));
+    timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
     let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
@@ -446,7 +451,6 @@ async fn prepare_actor_host(
         storage.clone(),
         control_plane.clone(),
     ));
-    let replication = Arc::new(crate::litestream::Litestream::default());
     let host = Arc::new(
         ActorHost::new(
             endpoint,
@@ -554,6 +558,7 @@ struct HostStartupTimings {
     control_plane_ready_at_ms: Option<f64>,
     storage_ready_at_ms: Option<f64>,
     executor_ready_at_ms: Option<f64>,
+    replication_ready_at_ms: Option<f64>,
     javascript_spawned_at_ms: Option<f64>,
     lease_registered_at_ms: Option<f64>,
     executor_notified_at_ms: Option<f64>,
@@ -568,6 +573,7 @@ impl HostStartupTimings {
             control_plane_ready_at_ms: None,
             storage_ready_at_ms: None,
             executor_ready_at_ms: None,
+            replication_ready_at_ms: None,
             javascript_spawned_at_ms: None,
             lease_registered_at_ms: None,
             executor_notified_at_ms: None,
@@ -595,6 +601,7 @@ fn log_startup(
         control_plane_ready_at_ms = timings.control_plane_ready_at_ms,
         storage_ready_at_ms = timings.storage_ready_at_ms,
         executor_ready_at_ms = timings.executor_ready_at_ms,
+        replication_ready_at_ms = timings.replication_ready_at_ms,
         javascript_spawned_at_ms = timings.javascript_spawned_at_ms,
         lease_registered_at_ms = timings.lease_registered_at_ms,
         executor_notified_at_ms = timings.executor_notified_at_ms,
