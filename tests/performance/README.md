@@ -49,6 +49,52 @@ restore, and three for the embedded adapter.
 No failed or slow trials were dropped from that batch. Earlier harness smoke runs
 are excluded.
 
+## Early initialization comparison
+
+The embedded replicator is now created before spare warmup and reused on actor
+assignment. Cold hosts create it before authentication, storage, or executor
+setup. Its constructor only creates an empty database registry; there is no Go
+process to prewarm. Database capture and restore still require the assigned
+actor's ownership and saved state.
+
+This separate experiment compares the existing embedded runtime (`2f9e3775`)
+with early initialization (`09b05291`), using the same protocol-24 SDK and
+unchanged vendored library. Twenty alternating pairs per payload produced 160
+successful writes, including 80 verified restores. All values below are medians.
+
+| Actor / SQLite payload | Existing embedded write | Early initialization write | Existing peak RSS | Early initialization peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Fresh / tiny | 152.6 ms | 151.6 ms | 88.8 MiB | 89.0 MiB |
+| Restored / tiny | 175.0 ms | 173.5 ms | 89.7 MiB | 89.6 MiB |
+| Fresh / 1 MiB | 168.7 ms | 167.2 ms | 90.6 MiB | 90.0 MiB |
+| Restored / 1 MiB | 178.0 ms | 182.0 ms | 92.3 MiB | 92.0 MiB |
+
+There is no consistent latency improvement in this batch. Median differences
+range from -1.6 to +4.0 ms, with peak RSS differences below 0.7 MiB. Tail behavior
+also differs by payload: the paired mean latency difference is -11.1 ms for
+restored tiny writes and +8.6 ms for restored 1 MiB writes. Exploratory 95%
+bootstrap intervals are [-22.3, -2.2] and [2.3, 16.7] ms respectively; both fresh
+case intervals include zero. The data records 10,000 resamples with seed 155.
+These mixed results do not establish a general performance gain.
+
+This measures local cold hosts with the same limitations listed above. Spare
+reuse, restore-before-readiness, and ownership release after capture failure
+were validated by lifecycle tests; production spare latency was not measured.
+
+[Completed batch](macos-arm64-early-replication-2026-10-03.json) includes every
+write, fingerprints, and paired comparisons. An
+[earlier interrupted batch](macos-arm64-early-replication-interrupted-2026-10-03.json)
+is also retained: it completed 124 writes before one candidate fresh 1 MiB actor
+failed to start. About 220 MiB of disk space remained when investigated, but
+the discarded host stdout prevents a confirmed diagnosis. After removing the
+experiment's incremental build cache and adding stdout capture to the harness,
+the full rerun above passed. The interrupted batch is not pooled into the table;
+no trials were omitted from the completed batch.
+
+To repeat this comparison, use the same SDK for both binaries and `--runs 20`;
+omit `--baseline-sdk`. The Go baseline instructions below apply to the first
+experiment only.
+
 ## Reproduce
 
 Initialize the vendored source with `git submodule update --init --recursive`.

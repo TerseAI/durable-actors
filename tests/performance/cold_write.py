@@ -160,12 +160,12 @@ def measure(binary, sdk, project, size, restored):
             stderr=subprocess.PIPE,
             text=True,
         ) as client:
-            result = invoke(client, runtime.pid, project)
+            result = invoke(client, runtime.pid)
             assert result.pop("count") == (2 if restored else 1)
             return result
 
 
-def invoke(client, pid, project):
+def invoke(client, pid):
     assert client.stdout.readline().strip() == "prepared"
     sampler = Sampler(pid)
     sampler.start()
@@ -176,13 +176,15 @@ def invoke(client, pid, project):
     finally:
         sampler.stop()
     if client.returncode != 0:
-        raise RuntimeError(errors + (project / "runtime.log").read_text())
+        raise RuntimeError(errors)
     return dict(**json.loads(output), **sampler.result())
 
 
 @contextmanager
 def running(binary, sdk, project, env):
-    with (project / "runtime.log").open("w") as errors:
+    with (project / "runtime.log").open("w") as errors, (
+        project / "runtime.stdout.log"
+    ).open("w", buffering=1) as output:
         runtime = subprocess.Popen(
             [
                 str(binary),
@@ -203,25 +205,38 @@ def running(binary, sdk, project, env):
             text=True,
             start_new_session=True,
         )
+        lines = queue.Queue()
+        reader = threading.Thread(
+            target=read_runtime_output, args=(runtime.stdout, output, lines), daemon=True
+        )
+        reader.start()
         try:
-            yield runtime, ready(runtime)
-        finally:
-            stop(runtime, project)
+            try:
+                yield runtime, ready(lines)
+            finally:
+                try:
+                    stop(runtime)
+                finally:
+                    reader.join(timeout=5)
+                    runtime.stdout.close()
+        except Exception as error:
+            errors.flush()
+            output.flush()
+            raise RuntimeError(
+                f"{error}\n{(project / 'runtime.log').read_text()}"
+                f"\n{(project / 'runtime.stdout.log').read_text()}"
+            ) from error
 
 
-def stop(runtime, project):
+def stop(runtime):
     runtime.stdin.close()
     try:
         runtime.wait(timeout=10)
     except subprocess.TimeoutExpired:
         os.killpg(runtime.pid, signal.SIGTERM)
         runtime.wait(timeout=5)
-    runtime.stdout.close()
     if runtime.returncode != 0:
-        raise RuntimeError(
-            f"runtime exited with {runtime.returncode}: "
-            + (project / "runtime.log").read_text()
-        )
+        raise RuntimeError(f"runtime exited with {runtime.returncode}")
 
 
 def client_script(sdk):
@@ -240,15 +255,14 @@ process.exit(0);
     )
 
 
-def ready(runtime):
-    lines = queue.Queue()
+def read_runtime_output(source, output, lines):
+    for line in source:
+        output.write(line)
+        lines.put(line)
+    lines.put(None)
 
-    def drain():
-        for line in runtime.stdout:
-            lines.put(line)
-        lines.put(None)
 
-    threading.Thread(target=drain, daemon=True).start()
+def ready(lines):
     origin = None
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
