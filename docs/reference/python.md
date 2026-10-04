@@ -144,7 +144,7 @@ with Client(control_plane_url="http://127.0.0.1:7100", project_id="local") as cl
 
 ## Source references and broadcasts
 
-When actor source is available, call it directly without generation. Backend broadcasts send application messages without persisting them.
+When actor source is available, call it through `ActorClass.get(id)` without generation. References work from backends and other actors. Reference broadcasts send application messages without persisting them.
 
 ```python
 from src.actors import Chat, Message, Room
@@ -152,6 +152,16 @@ from src.actors import Chat, Message, Room
 print(Chat.get("lobby").append(Message(text="hello")))
 Room.get("lobby").broadcast(Message(text="announcement"))
 ```
+
+For example, an actor can call the `Chat` defined above:
+
+```python
+class Relay(Actor):
+    def forward(self, text: str) -> list[Message]:
+        return Chat.get("lobby").append(Message(text=text))
+```
+
+These calls use the normal remote client and its [connection settings](configuration.md#application-connection). Each actor commits its own state independently.
 
 ## Browser access
 

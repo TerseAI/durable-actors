@@ -52,7 +52,7 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     }
 
     /**
-     * Returns a backend reference. The first call starts the actor if needed.
+     * Returns a reference callable from backends or other actors. The first call starts the actor if needed.
      * @param actorId - 1–128 ASCII letters, digits, dots, underscores, or hyphens.
      */
     static get<TActorClass extends ActorClass>(
@@ -282,7 +282,7 @@ type ActorReference<Instance extends AnyActor> = {
             : never
     ]: Instance[Key]
 } & {
-    /** Opens a backend socket. Attach listeners immediately; acceptance may still be pending. */
+    /** Opens a socket from a backend or another actor. Attach listeners immediately; acceptance may still be pending. */
     connect(
         metadata: SocketMetadata<Instance>
     ): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, JsonObject>>

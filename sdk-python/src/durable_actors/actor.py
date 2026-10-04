@@ -50,6 +50,7 @@ class Actor(Generic[Metadata, Incoming, Outgoing, Tag]):
     def get(cls, actor_id: str, transport: ActorTransport | None = None) -> Self:
         """Return a typed synchronous reference without activating the actor locally.
 
+        References can be called from backends or other actors.
         RPC signatures match the source class. Fields and lifecycle hooks belong
         to the running actor; read state through RPCs or generated subscriptions.
         """

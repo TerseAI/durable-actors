@@ -11,6 +11,30 @@ pnpm docs:build
 
 Open `.artifacts/api/index.html` for actor, client, backend, proxy, and local runtime APIs.
 
+## Actor-to-actor calls
+
+Actors call other actors through `ActorClass.get(id)`, using a reference to the actor source class.
+
+```ts
+import { Actor, Persisted } from "durable-actors"
+
+export class Counter extends Actor {
+    @Persisted private count = 0
+
+    async increment(amount: number): Promise<number> {
+        return (this.count += amount)
+    }
+}
+
+export class Relay extends Actor {
+    async forward(): Promise<number> {
+        return Counter.get("target").increment(3)
+    }
+}
+```
+
+These calls use the normal remote client and its [connection settings](configuration.md#application-connection). Each actor commits its own state independently.
+
 ## SQLite
 
 Each actor has its own database through protected `this.db.exec<Row>(sql, ...bindings)`. Calls synchronously execute one statement and return rows. Bind values with `?` placeholders; supported values are strings, numbers, bigints, byte arrays, and `null`. Actor method results must satisfy the JSON result contract.
