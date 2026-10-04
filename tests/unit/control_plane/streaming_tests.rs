@@ -1,5 +1,6 @@
 use super::tests::test_issuer;
 use super::*;
+use crate::request_tracking::HostState;
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
     control_plane::{ActorTokenPurpose, ControlPlaneClient, admin::LocalAdminRegistry},
@@ -786,8 +787,10 @@ impl Stack {
                     args,
                 },
                 1,
+                HostState::Warm,
             )
-            .await?;
+            .await
+            .0?;
         match result {
             crate::actor::ActorExecutionResult::Completed { result, .. } => Ok(result),
             other => anyhow::bail!("actor call failed: {other:?}"),
