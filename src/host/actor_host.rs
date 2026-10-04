@@ -174,17 +174,7 @@ impl ActorHost {
         operation: ActorOperation,
         owner_epoch: u64,
     ) -> Result<ActorExecutionResult> {
-        self.submit_since(operation, owner_epoch, Instant::now())
-            .await
-    }
-
-    async fn submit_since(
-        &self,
-        operation: ActorOperation,
-        owner_epoch: u64,
-        started: Instant,
-    ) -> Result<ActorExecutionResult> {
-        self.submit_traced(operation, owner_epoch, started, HostState::Warm, 0.0)
+        self.submit_traced(operation, owner_epoch, Instant::now(), HostState::Warm, 0.0)
             .await
             .0
     }
