@@ -42,9 +42,11 @@ def test_socket_connection_validates_messages_and_separates_state():
         wire, TypeAdapter(Message), TypeAdapter(Message), TypeAdapter(State), TypeAdapter(State)
     ) as connection:
         connection.send(Message(text="sent"))
+        connection.send(Message(text="tracked"), request_id="caller-123")
         snapshot, message = list(connection)
         assert isinstance(snapshot, StateSnapshot)
         assert snapshot.state.count == 1
         assert message.text == "hello"
-    assert json.loads(wire.sent[0]) == {"text": "sent"}
+    assert json.loads(wire.sent[0]) == {"payload": {"text": "sent"}}
+    assert json.loads(wire.sent[1]) == {"requestId": "caller-123", "payload": {"text": "tracked"}}
     assert wire.closed
