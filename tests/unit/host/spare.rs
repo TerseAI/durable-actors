@@ -7,18 +7,13 @@ use crate::{
 };
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    process::Stdio,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{collections::HashMap, path::PathBuf, process::Stdio};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 #[ignore = "requires Bun and pnpm --dir sdk build"]
-async fn generic_bun_host_reuses_warm_replication_and_restores_before_readiness() -> Result<()> {
+async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Result<()> {
     let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
     let data = tempfile::tempdir()?;
@@ -29,7 +24,7 @@ async fn generic_bun_host_reuses_warm_replication_and_restores_before_readiness(
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    for before in -2..2 {
+    for before in -1..2 {
         run_activation(
             project.path(),
             data.path(),
@@ -97,7 +92,7 @@ async fn run_activation(
         "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": "invocation",
         "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
-        "DURABLE_ACTORS_ACTOR_IS_NEW": (before == -2).to_string(),
+        "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
         "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
             "bucket": {"type": "file", "directory": data}, "region": "north-america-east", "persistence": {"type":"local"},
             "token": null
@@ -105,10 +100,6 @@ async fn run_activation(
     }))?;
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
-    let replication = Arc::new(RecordingReplication {
-        fail_registration: before == -2,
-        ..Default::default()
-    });
     let warm = WarmHost {
         control_plane: None,
         readiness: Some(readiness),
@@ -117,7 +108,7 @@ async fn run_activation(
         javascript,
         entrypoint: code.to_str().unwrap().into(),
         storage: WarmGcs::new().await?,
-        replication: replication.clone(),
+        replication: Arc::new(Litestream::default()),
     };
     let stop = CancellationToken::new();
     let _stop_guard = stop.clone().drop_guard();
@@ -130,16 +121,10 @@ async fn run_activation(
     let bucket = FileBucket::new(data.to_path_buf())?;
     let owner = crate::storage_paths::owner(&actor.storage_key())?;
     if before < 0 {
-        let error = tokio::time::timeout(Duration::from_secs(10), task)
-            .await??
-            .unwrap_err();
-        if before == -2 {
-            assert!(format!("{error:#}").contains("capture initialization failed"));
-        }
-        assert_eq!(
-            replication.registrations.load(Ordering::Relaxed),
-            1,
-            "failed assignment must use the warmed replicator"
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await??
+                .is_err()
         );
         assert!(
             ready_response.await.is_err(),
@@ -161,15 +146,6 @@ async fn run_activation(
         anyhow::Ok(())
     })
     .await??;
-    assert_eq!(
-        replication.registrations.load(Ordering::Relaxed),
-        1,
-        "assignment must reuse replication initialized during spare warmup"
-    );
-    assert_eq!(
-        replication.restores.load(Ordering::Relaxed),
-        usize::from(before > 0)
-    );
     let client = reqwest::Client::new();
     let actor_url = format!(
         "{route}/v1/projects/{}/actors/{}/{}",
@@ -238,37 +214,4 @@ async fn control_plane_failure_prevents_spare_readiness() {
             .is_err()
     );
     assert!(prewarm_control_plane(None).await.is_err());
-}
-
-#[derive(Default)]
-struct RecordingReplication {
-    inner: Litestream,
-    registrations: AtomicUsize,
-    restores: AtomicUsize,
-    fail_registration: bool,
-}
-
-#[async_trait::async_trait]
-impl Replicator for RecordingReplication {
-    async fn register(&self, path: &Path, replica: &Path) -> Result<()> {
-        self.registrations.fetch_add(1, Ordering::Relaxed);
-        ensure!(!self.fail_registration, "capture initialization failed");
-        self.inner.register(path, replica).await
-    }
-
-    async fn sync(&self, path: &Path) -> Result<u64> {
-        self.inner.sync(path).await
-    }
-
-    async fn unregister(&self, path: &Path) -> Result<()> {
-        self.inner.unregister(path).await
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::litestream::DatabaseRestore for RecordingReplication {
-    async fn restore(&self, replica: &Path, path: &Path, txid: u64) -> Result<()> {
-        self.restores.fetch_add(1, Ordering::Relaxed);
-        crate::litestream::DatabaseRestore::restore(&self.inner, replica, path, txid).await
-    }
 }

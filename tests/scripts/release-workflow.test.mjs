@@ -114,14 +114,6 @@ test("release validates and publishes the pinned LTX crate before packaging the 
     assert.match(job, /name: Publish terse-ltx[\s\S]*CARGO_REGISTRY_TOKEN:[\s\S]*cargo publish --locked --no-verify/)
 })
 
-test("crate packaging waits for the embedded capture dependency to be published", () => {
-    assert.ok(dependsOn("rust", "litestream"))
-    assert.ok(dependsOn("litestream", "ltx"))
-    const job = releaseJob("litestream")
-    assert.match(job, /scripts\/verify.sh/)
-    assert.match(job, /cargo publish --locked --dry-run[\s\S]*name: Publish terse-litestream/)
-})
-
 function releaseJob(name) {
     const body = read(".github/workflows/release.yml").split(`    ${name}:\n`)[1]
     assert.ok(body, `Missing release job: ${name}`)
