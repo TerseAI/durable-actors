@@ -776,6 +776,7 @@ dependencies = [
  "tempfile",
  "terse-litestream",
  "terse-ltx",
+ "terse-substrate",
  "tokio",
  "tokio-postgres",
  "tokio-stream",
@@ -784,6 +785,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -3607,6 +3609,23 @@ source = "git+https://github.com/TerseAI/terse-ltx?rev=fdc27e08f09a532b8f0b8d729
 dependencies = [
  "crc",
  "lz4_flex",
+]
+
+[[package]]
+name = "terse-substrate"
+version = "0.2.0"
+source = "git+https://github.com/TerseAI/terse-substrate?rev=bceca5f9196fdb83223fca4c7a45a815e9595f3a#bceca5f9196fdb83223fca4c7a45a815e9595f3a"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http",
+ "prost",
+ "prost-types",
+ "protoc-bin-vendored",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

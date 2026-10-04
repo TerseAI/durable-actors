@@ -104,9 +104,6 @@ async fn projects_keep_independent_deployments_and_host_identities() -> Result<(
     assert_ne!(first.host_config_key(), second.host_config_key());
     registry.register_test_deployment(&first).await?;
     registry.register_test_deployment(&second).await?;
-    let mut deployments = registry.launch_specs().await?;
-    deployments.sort_by(|a, b| a.project_id.cmp(&b.project_id));
-    assert_eq!(deployments, vec![first.clone(), second.clone()]);
     assert_eq!(registry.launch_spec("team-a").await?, Some(first));
     assert_eq!(registry.launch_spec("team-b").await?, Some(second.clone()));
     registry.remove_deployment("team-a").await?;
@@ -133,9 +130,6 @@ async fn postgres_projects_keep_deployments_contracts_and_deletions_separate() -
         registry
             .register_deployment(&second, Some(&contract))
             .await?;
-        let mut deployments = registry.launch_specs().await?;
-        deployments.sort_by(|a, b| a.project_id.cmp(&b.project_id));
-        assert_eq!(deployments, vec![first.clone(), second.clone()]);
         assert_eq!(registry.launch_spec("team-a").await?, Some(first.clone()));
         assert_eq!(registry.launch_spec("team-b").await?, Some(second.clone()));
 

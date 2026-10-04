@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 include = ["/third_party/terse-litestream/LICENSE", "/third_party/terse-litestream/NOTICE", "/third_party/terse-ltx/**", "/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+terse-substrate = { version = "0.2.0", git = "https://github.com/TerseAI/terse-substrate", rev = "bceca5f9196fdb83223fca4c7a45a815e9595f3a" }
 terse-litestream = { version = "0.1.0", path = "third_party/terse-litestream" }
 terse-ltx = { version = "0.1.0", git = "https://github.com/TerseAI/terse-ltx", rev = "fdc27e08f09a532b8f0b8d72971de4b2772ef86b" }
 walkdir = "2"
@@ -30,10 +31,11 @@ prost = "0.14"
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tonic = { version = "0.14", features = ["tls-aws-lc", "tls-webpki-roots"] }
 tonic-prost = "0.14"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "stream"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }

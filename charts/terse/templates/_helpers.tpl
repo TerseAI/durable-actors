@@ -9,13 +9,8 @@
 {{- end -}}
 {{- define "terse.validate" -}}
 {{- if and .Values.gateway.enabled (eq (empty .Values.gateway.tlsSecret) (empty .Values.gateway.preSharedCert)) }}{{ fail "gateway requires exactly one of tlsSecret or preSharedCert" }}{{ end -}}
-{{- if eq .Values.sandboxNamespace .Release.Namespace }}{{ fail "sandboxNamespace must differ from the control-plane namespace" }}{{ end -}}
-{{- if not (hasKey .Values.zones .Values.region) }}{{ fail "region must have a configured placement zone" }}{{ end -}}
 {{- if lt (int .Values.replicaCount) 2 }}{{ fail "regional availability requires multiple control-plane replicas" }}{{ end -}}
-{{- range $region, $placements := .Values.zones -}}
-{{- if kindIs "string" $placements }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
-{{- if lt (len $placements) 2 }}{{ fail "regional availability requires multiple compute zones" }}{{ end -}}
-{{- end -}}
+{{- if eq .Values.substrate.namespace .Release.Namespace }}{{ fail "Substrate workers require a separate namespace" }}{{ end -}}
 {{- $zones := dict -}}{{- $buckets := dict -}}
 {{- if ne (len .Values.storage.rapid.buckets) 2 }}{{ fail "append logs require exactly two Rapid zones" }}{{ end -}}
 {{- range .Values.storage.rapid.buckets -}}

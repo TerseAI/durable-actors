@@ -10,74 +10,56 @@ use crate::litestream::{Litestream, Replicator};
 
 pub(super) struct WarmHost {
     pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
-    pub listener: TcpListener,
+    pub listener: super::server::HostServer,
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
     pub entrypoint: String,
     pub storage: WarmGcs,
-    pub control_plane: Option<WarmControlPlane>,
     pub replication: Arc<dyn Replicator>,
 }
 
-pub(super) struct WarmControlPlane {
-    pub url: String,
-    pub client: crate::control_plane::ControlPlaneClient,
-}
-
-pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+pub async fn serve_warm(shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
     super::protect_runtime_credentials()?;
-    let replication = Arc::new(Litestream::default());
     let socket = std::env::var("DURABLE_ACTORS_EXECUTOR_SOCKET")
         .unwrap_or_else(|_| "/tmp/durable-actors-executor.sock".into());
-    let token = std::env::var("DURABLE_ACTORS_SPARE_TOKEN").context("spare token missing")?;
-    ensure!(token.len() >= 32, "spare token is too short");
-    let control_bind =
-        std::env::var("DURABLE_ACTORS_SPARE_BIND").unwrap_or_else(|_| "0.0.0.0:7102".into());
-    let control = TcpListener::bind(control_bind).await?;
+    let authorization = assignment_authorization(|name| std::env::var(name).ok())?;
     let (send, receive) = tokio::sync::oneshot::channel();
-    let stop = tokio_util::sync::CancellationToken::new();
-    let _stop_guard = stop.clone().drop_guard();
-    let mut server = tokio::spawn(async move {
-        axum::serve(control, super::assignment::router(token, send))
-            .with_graceful_shutdown(stop.cancelled_owned())
-            .await
-    });
-    let ready = std::env::var("DURABLE_ACTORS_SPARE_READY_FILE")
-        .unwrap_or_else(|_| "/tmp/durable-actors-spare-ready".into());
-    let bind = std::env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:7101".into());
-    let listener = TcpListener::bind(bind).await?;
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let readiness = ready.clone();
+    let routes = super::assignment::router(authorization, send, "/customer".into()).route(
+        "/warmz",
+        axum::routing::get(move || {
+            let ready = readiness.load(std::sync::atomic::Ordering::Acquire);
+            async move {
+                if ready {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        }),
+    );
+    let bind = std::env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:80".into());
+    let mut listener = super::server::HostServer::new(TcpListener::bind(bind).await?, routes);
     let ipc = ActorExecutorListener::bind(&socket).await?;
     let mut javascript = spawn_executor_process(true, &socket, None)?;
-    let (warmed, control_plane) = tokio::join!(
-        async {
-            tokio::try_join!(
-                async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
-                async {
-                    let storage = WarmGcs::new().await?;
-                    storage.preconnect().await;
-                    anyhow::Ok(storage)
-                },
-            )
-        },
-        prewarm_control_plane(std::env::var("DURABLE_ACTORS_CONTROL_PLANE_URL").ok()),
-    );
-    let (mut executor, storage) = warmed?;
-    let control_plane = Some(control_plane?);
-    tokio::fs::write(&ready, b"ready\n").await?;
+    let (mut executor, storage) = tokio::try_join!(
+        async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
+        WarmGcs::new(),
+    )?;
+    ready.store(true, std::sync::atomic::Ordering::Release);
     tokio::pin!(shutdown);
     let assigned = tokio::select! {
         value = receive => value?,
-        result = &mut server => anyhow::bail!("spare assignment server stopped: {result:?}"),
+        result = listener.stopped() => anyhow::bail!("warm assignment server stopped: {result:?}"),
         status = javascript.wait() => anyhow::bail!("generic Bun executor exited: {}", status?),
         () = &mut shutdown => return Ok(()),
-        () = storage.keep_warm() => unreachable!("storage warmup stopped"),
     };
-    tokio::fs::remove_file(&ready).await?;
     let environment = assigned.environment;
     let config = ActorHostConfig::from_lookup(|name| environment.get(name).cloned())?;
     ensure!(
         config.actor.is_some(),
-        "spare assignment must name exactly one actor"
+        "runtime assignment must name exactly one actor"
     );
     let entrypoint = environment
         .get("DURABLE_ACTORS_ENTRYPOINT")
@@ -105,18 +87,32 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         javascript,
         entrypoint,
         storage,
-        control_plane,
-        replication,
+        replication: Arc::new(Litestream::default()),
     };
     serve_assigned_host(config, Some(warm), shutdown).await
 }
 
-async fn prewarm_control_plane(url: Option<String>) -> Result<WarmControlPlane> {
-    let url = url.context("spare control-plane URL required")?;
-    let client = crate::control_plane::ControlPlaneClient::prewarm(&url).await?;
-    Ok(WarmControlPlane { url, client })
+fn assignment_authorization(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<super::assignment::Authorization> {
+    let keys =
+        get("DURABLE_ACTORS_ASSIGNMENT_PUBLIC_KEYS").context("assignment public keys missing")?;
+    let path =
+        get("DURABLE_ACTORS_SANDBOX_IDENTITY_FILE").context("sandbox identity file missing")?;
+    Ok(super::assignment::Authorization::Signed(
+        crate::control_plane::assignment::AssignmentVerifier::new(
+            &keys,
+            &get("DURABLE_ACTORS_JWT_ISSUER").context("assignment issuer missing")?,
+            move || {
+                let uid = std::fs::read_to_string(&path)?;
+                let uid = uid.trim();
+                ensure!(!uid.is_empty(), "sandbox identity file is empty");
+                Ok(uid.to_owned())
+            },
+        )?,
+    ))
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/host/spare.rs"]
+#[path = "../../tests/unit/host/warm.rs"]
 mod tests;

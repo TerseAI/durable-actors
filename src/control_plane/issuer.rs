@@ -97,6 +97,16 @@ impl ActorJwtIssuer {
         Ok(String::from_utf8(self.jwks_json()?)?)
     }
 
+    pub(crate) fn issue_assignment(&self, pod_uid: &str) -> Result<String> {
+        ensure!(!pod_uid.is_empty(), "assignment pod UID missing");
+        let now = unix_millis()? / 1000;
+        self.sign(&serde_json::json!({
+            "iss": self.issuer, "aud": super::assignment::AUDIENCE,
+            "sub": pod_uid, "scope": "sandbox:assign",
+            "iat": now, "nbf": now, "exp": now + 120
+        }))
+    }
+
     pub(super) fn session_verifier(&self) -> Result<super::session::SessionVerifier> {
         super::session::SessionVerifier::new(
             &self.verifier_keys_json()?,
@@ -291,7 +301,7 @@ impl ActorJwtIssuer {
             exp: expires_at,
             actor: actor.clone(),
             invocation: Some(ActorInvocationCapability {
-                route: super::gateway::backend_origin(route)?.to_string(),
+                route: crate::sandbox::transport::host_route(route)?.0.to_string(),
                 actor: actor.clone(),
                 host_id: host_id.clone(),
                 owner_epoch,

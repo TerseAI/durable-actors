@@ -30,31 +30,6 @@
       "type": "string",
       "minLength": 1
     },
-    "sandboxNamespace": {
-      "type": "string",
-      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-    },
-    "zones": {
-      "type": "object",
-      "minProperties": 1,
-      "additionalProperties": {
-        "oneOf": [
-          {
-            "type": "string",
-            "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
-          },
-          {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
-            }
-          }
-        ]
-      }
-    },
     "storage": {
       "type": "object",
       "properties": {
@@ -132,35 +107,6 @@
         "googleServiceAccount"
       ]
     },
-    "capacityBuffer": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "replicas": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 2147483647
-        }
-      },
-      "required": [
-        "enabled",
-        "replicas"
-      ]
-    },
-    "networkPolicy": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "const": true
-        }
-      },
-      "required": [
-        "enabled"
-      ]
-    },
     "sockets": {
       "type": "object",
       "properties": {
@@ -188,6 +134,69 @@
         "dedicatedGateway",
         "replicaCount"
       ]
+    },
+    "substrate": {
+      "type": "object",
+      "required": [
+        "endpoint",
+        "router",
+        "atespace",
+        "snapshotLocation",
+        "worker",
+        "egressCidrs"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "snapshotLocation": {
+          "type": "string",
+          "pattern": "^gs://[^/]+/.*/$|^gs://[^/]+/$"
+        },
+        "atespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "worker": {
+          "type": "object",
+          "required": [
+            "replicas",
+            "cpu",
+            "memory",
+            "image"
+          ],
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cpu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            },
+            "image": {
+              "type": "string",
+              "pattern": "@sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "egressCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "codeSnapshots": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "required": [
@@ -195,11 +204,9 @@
     "replicaCount",
     "publicUrl",
     "region",
-    "sandboxNamespace",
-    "zones",
     "storage",
     "serviceAccount",
-    "networkPolicy"
+    "substrate"
   ],
   "$schema": "https://json-schema.org/draft-07/schema#"
 }

@@ -90,7 +90,7 @@ where
 
 pub(super) async fn serve_assigned_host(
     config: ActorHostConfig,
-    mut warm: Option<super::spare::WarmHost>,
+    mut warm: Option<super::warm::WarmHost>,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
     let readiness = warm.as_mut().and_then(|warm| warm.readiness.take());
@@ -164,13 +164,18 @@ pub(super) async fn serve_assigned_host(
     log_startup(&config, &timings, "ready", None);
     let stop = CancellationToken::new();
     let server_stop = stop.clone();
-    let routes = service;
-    let mut server = Box::pin(async move {
-        axum::serve(listener, routes)
-            .with_graceful_shutdown(async move { server_stop.cancelled().await })
-            .await
-            .context("serve actor host endpoints")
-    });
+    listener.install(
+        service
+            .route(
+                "/readyz",
+                axum::routing::post(|| async { axum::http::StatusCode::OK }),
+            )
+            .route(
+                "/warmz",
+                axum::routing::get(|| async { axum::http::StatusCode::OK }),
+            ),
+    )?;
+    let mut server = Box::pin(listener.serve(server_stop));
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
     let shutdown = async {
         tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
@@ -351,7 +356,7 @@ struct PreparedActorHost {
     credentials: DropGuard,
     sockets: Arc<super::sockets::HostSockets>,
     invocation_auth: ActorJwtVerifier,
-    listener: TcpListener,
+    listener: super::server::HostServer,
     route: String,
     executor_connection: ActorExecutorConnection,
     javascript: tokio::process::Child,
@@ -363,7 +368,7 @@ struct PreparedActorHost {
 async fn prepare_actor_host(
     config: &ActorHostConfig,
     timings: &mut HostStartupTimings,
-    warm: Option<super::spare::WarmHost>,
+    warm: Option<super::warm::WarmHost>,
 ) -> Result<PreparedActorHost> {
     let replication = warm
         .as_ref()
@@ -372,24 +377,16 @@ async fn prepare_actor_host(
     timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
-    let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
+    let (warm_listener, warm_executor, warm_storage) = match warm {
         Some(warm) => (
             Some(warm.listener),
             Some((warm.executor, warm.javascript, warm.entrypoint)),
             Some(warm.storage),
-            warm.control_plane,
         ),
-        None => (None, None, None, None),
+        None => (None, None, None),
     };
     let (control_plane, (listener, route, endpoint)) = tokio::try_join!(
-        async {
-            match warm_control_plane.filter(|warm| warm.url == config.control_plane_url) {
-                Some(warm) => warm.client.with_host_token(&config.host_token),
-                None => {
-                    ControlPlaneClient::connect(&config.control_plane_url, &config.host_token).await
-                }
-            }
-        },
+        ControlPlaneClient::connect(&config.control_plane_url, &config.host_token),
         bind_host_listener(config, warm_listener),
     )?;
     timings.control_plane_ready_at_ms = Some(timings.elapsed_ms());
@@ -501,13 +498,16 @@ async fn prepare_storage(
 
 async fn bind_host_listener(
     config: &ActorHostConfig,
-    listener: Option<TcpListener>,
-) -> Result<(TcpListener, String, HostEndpoint)> {
+    listener: Option<super::server::HostServer>,
+) -> Result<(super::server::HostServer, String, HostEndpoint)> {
     let listener = match listener {
         Some(listener) => listener,
-        None => TcpListener::bind(config.host_bind).await?,
+        None => super::server::HostServer::new(
+            TcpListener::bind(config.host_bind).await?,
+            axum::Router::new(),
+        ),
     };
-    let bound = listener.local_addr()?;
+    let bound = listener.address;
     let route = config
         .host_route
         .clone()
@@ -718,7 +718,6 @@ pub(super) fn spawn_executor_process(
             if generic { "1" } else { "0" },
         )
         .env("DURABLE_ACTORS_EXECUTOR_SOCKET", socket)
-        .env_remove("DURABLE_ACTORS_SPARE_TOKEN")
         .env_remove("DURABLE_ACTORS_RUNTIME_CONFIG")
         .env_remove("DURABLE_ACTORS_HOST_TOKEN")
         .env_remove("GOOGLE_APPLICATION_CREDENTIALS")

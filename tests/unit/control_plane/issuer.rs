@@ -5,6 +5,53 @@ use super::*;
 use crate::control_plane::{ActorJwtVerifier, ActorTokenPurpose};
 
 #[test]
+fn sandbox_assignment_tokens_are_bound_to_a_pod_and_expire() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let keys = issuer.verifier_keys_json()?;
+    let verifier =
+        super::super::assignment::AssignmentVerifier::new(&keys, &issuer.issuer, || {
+            Ok("pod-one".into())
+        })?;
+    assert!(
+        verifier
+            .verify(&issuer.issue_assignment("pod-one")?)
+            .is_ok()
+    );
+    assert!(
+        verifier
+            .verify(&issuer.issue_assignment("pod-two")?)
+            .is_err()
+    );
+    let now = unix_millis()? / 1000;
+    for claims in [
+        serde_json::json!({"iss":issuer.issuer,"aud":"durable-actors-sandbox-assign","sub":"pod-one","iat":now-300,"nbf":now-300,"exp":now-180,"scope":"sandbox:assign"}),
+        serde_json::json!({"iss":issuer.issuer,"aud":"durable-actors-invoke","sub":"pod-one","iat":now,"nbf":now,"exp":now+120,"scope":"sandbox:assign"}),
+        serde_json::json!({"iss":issuer.issuer,"aud":"durable-actors-sandbox-assign","sub":"pod-one","iat":now,"nbf":now,"exp":now+120,"scope":"actor:invoke"}),
+    ] {
+        assert!(verifier.verify(&issuer.sign(&claims)?).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn restored_sandbox_assignment_uses_the_current_pod_identity() -> Result<()> {
+    let issuer = socket_issuer()?;
+    let uid = std::sync::Arc::new(std::sync::Mutex::new(String::from("original")));
+    let current = uid.clone();
+    let verifier = super::super::assignment::AssignmentVerifier::new(
+        &issuer.verifier_keys_json()?,
+        &issuer.issuer,
+        move || Ok(current.lock().unwrap().clone()),
+    )?;
+    let original = issuer.issue_assignment("original")?;
+    verifier.verify(&original)?;
+    *uid.lock().unwrap() = "restored".into();
+    assert!(verifier.verify(&original).is_err());
+    verifier.verify(&issuer.issue_assignment("restored")?)?;
+    Ok(())
+}
+
+#[test]
 fn socket_tickets_bind_actor_metadata_with_short_admission() -> Result<()> {
     let issuer = socket_issuer()?;
     let now = 1_700_000_000_000;

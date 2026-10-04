@@ -274,15 +274,10 @@ impl SocketGateway {
             }
             let actor = &ticket.actor;
             let url = format!(
-                "{}/v1/projects/{}/actors/{}/{}/socket-events",
-                target.route.trim_end_matches('/'),
-                actor.project_id,
-                actor.actor_name,
-                actor.actor_id
+                "/v1/projects/{}/actors/{}/{}/socket-events",
+                actor.project_id, actor.actor_name, actor.actor_id
             );
-            let reply = self
-                .http
-                .post(url)
+            let reply = crate::sandbox::transport::host_request(&self.http, &target.route, &url)?
                 .bearer_auth(&target.token)
                 .json(&SocketEventRequest {
                     host_state,

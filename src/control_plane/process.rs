@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, future::Future, net::SocketAddr, sync::Arc, time::Duration};
+use std::{env, future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tracing::{info, warn};
@@ -9,7 +9,7 @@ use crate::{
     request_traces::{TraceStore, persistence::postgres::PostgresTracePersistence},
     sandbox::{
         HostSandboxRuntimeConfig,
-        gke::{GkeConfig, GkeSandboxProvider},
+        substrate::{SubstrateConfig, SubstrateProvider},
     },
 };
 
@@ -49,8 +49,8 @@ pub struct ControlPlaneStorageConfig {
 
 pub struct SandboxProviderConfig {
     pub runtime_image: String,
-    pub(super) pool: crate::sandbox::pool::PoolConfig,
-    pub(crate) gke: GkeConfig,
+    pub(crate) substrate: SubstrateConfig,
+    pub public_origin: String,
     pub runtime: HostSandboxRuntimeConfig,
 }
 
@@ -180,15 +180,13 @@ async fn control_plane_routes(
     .await?;
     let gateway = super::gateway::Gateway::new(
         &issuer,
-        config.sandbox_provider.gke.public_origin.clone(),
+        config.sandbox_provider.public_origin.clone(),
         socket_gateway,
     )?;
     let provisioner = sandbox_provisioner(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
-        database,
-        registry.clone(),
         stop,
     )
     .await?;
@@ -231,13 +229,17 @@ async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
-    database: PostgresDatabase,
-    registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
-    let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
-    pool.start(registry, stop);
+    let provider = Arc::new(
+        SubstrateProvider::new(
+            config.substrate,
+            issuer.clone(),
+            &config.runtime.control_plane_url,
+        )
+        .await?,
+    );
+    provider.start(stop);
     Ok(Arc::new(
         super::service::SandboxHostProvisioner::new(
             provider,
@@ -245,8 +247,7 @@ async fn sandbox_provisioner(
             issuer.clone(),
             Some(config.runtime_image),
         )
-        .with_runtime_access(access)
-        .with_pool(pool),
+        .with_runtime_access(access),
     ))
 }
 
@@ -323,12 +324,12 @@ impl ControlPlaneProcessConfig {
         };
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
-        let region = region.or_else(|| sandbox_provider.gke.zones.keys().next().cloned());
+        let region = region.or_else(|| sandbox_provider.substrate.regions.first().cloned());
         ensure!(
             region
                 .as_ref()
-                .is_some_and(|region| sandbox_provider.gke.zones.contains_key(region)),
-            "default region has no configured GKE zone"
+                .is_some_and(|region| sandbox_provider.substrate.regions.contains(region)),
+            "default region has no configured Substrate workers"
         );
         let socket_event_sink = socket_event_sink_config(&mut get)?;
         let gateway_route = validated_http_url(
@@ -389,7 +390,6 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let zones = compute_zones(&required(get, "DURABLE_ACTORS_GKE_ZONES")?)?;
     let public_origin = validated_http_url(
         &required(get, "DURABLE_ACTORS_PUBLIC_URL")?,
         "DURABLE_ACTORS_PUBLIC_URL",
@@ -408,37 +408,66 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_ACTORS_CONTROL_PLANE_URL")?,
         "DURABLE_ACTORS_CONTROL_PLANE_URL",
     )?;
-    let idle = pool_number(get, "DURABLE_ACTORS_SPARE_IDLE", 64, 0, u32::MAX)?;
-    let fleet_maximum = pool_number(get, "DURABLE_ACTORS_SPARE_FLEET_MAX", 256, 0, u32::MAX)?;
+    let regions: Vec<String> =
+        serde_json::from_str(&required(get, "DURABLE_ACTORS_SUBSTRATE_REGIONS")?)?;
     ensure!(
-        idle <= fleet_maximum,
-        "DURABLE_ACTORS_SPARE_IDLE must not exceed DURABLE_ACTORS_SPARE_FLEET_MAX"
+        !regions.is_empty(),
+        "at least one Substrate region is required"
     );
-    let regions = zones.keys().cloned().collect();
+    for region in &regions {
+        crate::placement::validate_region(region)?;
+    }
+    let atespace = required(get, "DURABLE_ACTORS_SUBSTRATE_ATESPACE")?;
+    ensure!(
+        terse_substrate::valid_resource_name(&atespace),
+        "invalid Substrate atespace"
+    );
+    let endpoint = validated_http_url(
+        &required(get, "DURABLE_ACTORS_SUBSTRATE_ENDPOINT")?,
+        "Substrate endpoint",
+    )?;
+    ensure!(
+        endpoint.starts_with("https://"),
+        "Substrate API requires TLS"
+    );
+    let router = validated_http_url(
+        &required(get, "DURABLE_ACTORS_SUBSTRATE_ROUTER")?,
+        "Substrate router",
+    )?;
+    super::gateway::backend_origin(&router)?;
+    let snapshot_location = required(get, "DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS")?;
+    ensure!(
+        snapshot_location.starts_with("gs://") && snapshot_location.ends_with('/'),
+        "Substrate snapshots require a GCS prefix ending in /"
+    );
     Ok(SandboxProviderConfig {
         runtime_image: {
             let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
-            crate::sandbox::gke::validate_image(&image)?;
+            crate::sandbox::substrate::validate_image(&image)?;
             image
         },
-        pool: crate::sandbox::pool::PoolConfig {
-            control_plane_url: Some(control_plane_url.clone()),
-            kind: crate::sandbox::SpareKind::Actor,
-            idle,
-            fleet_maximum,
-            max_starting: pool_number(get, "DURABLE_ACTORS_SPARE_MAX_STARTING", 32, 1, u32::MAX)?,
-            idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
+        public_origin,
+        substrate: SubstrateConfig {
+            code_snapshots: get("DURABLE_ACTORS_SUBSTRATE_CODE_SNAPSHOTS")
+                .unwrap_or_else(|| "true".into())
+                .parse()?,
+            endpoint,
+            router,
+            atespace,
             regions,
-            resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 1000, 100, 64000)?,
-                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 256, 128, 262144)?,
-            },
-        },
-        gke: GkeConfig {
-            namespace: get("DURABLE_ACTORS_GKE_NAMESPACE")
-                .unwrap_or_else(|| "terse-sandboxes".into()),
-            zones,
-            public_origin,
+            snapshot_location,
+            token_file: required(get, "DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE")?,
+            trust_bundle: required(get, "DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE")?,
+            worker_labels: serde_json::from_str(&required(
+                get,
+                "DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS",
+            )?)?,
+            sandbox_config: required(get, "DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG")?,
+            secrets_namespace: required(get, "DURABLE_ACTORS_SECRETS_NAMESPACE")?,
+            egress_cidrs: serde_json::from_str(&required(
+                get,
+                "DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS",
+            )?)?,
         },
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
@@ -447,72 +476,6 @@ fn sandbox_provider_config(
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
         },
     })
-}
-
-fn compute_zones(value: &str) -> Result<BTreeMap<String, Vec<String>>> {
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum Placement {
-        Zone(String),
-        Zones(Vec<String>),
-    }
-    let configured: BTreeMap<String, Placement> = serde_json::from_str(value)?;
-    let zones: BTreeMap<String, Vec<String>> = configured
-        .into_iter()
-        .map(|(region, placement)| {
-            (
-                region,
-                match placement {
-                    Placement::Zone(zone) => vec![zone],
-                    Placement::Zones(zones) => zones,
-                },
-            )
-        })
-        .collect();
-    ensure!(
-        !zones.is_empty(),
-        "at least one GKE placement zone is required"
-    );
-    for (region, placements) in &zones {
-        ensure!(
-            !placements.is_empty(),
-            "compute region requires at least one zone"
-        );
-        ensure!(
-            placements
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                == placements.len(),
-            "duplicate compute zones"
-        );
-        for zone in placements {
-            ensure!(
-                super::regions::storage_region(zone)? == region,
-                "GKE zone does not match canonical region {region}"
-            );
-        }
-    }
-    Ok(zones)
-}
-
-fn pool_number(
-    get: &mut impl FnMut(&str) -> Option<String>,
-    name: &str,
-    default: u32,
-    min: u32,
-    max: u32,
-) -> Result<u32> {
-    let value = get(name)
-        .map(|value| value.parse::<u32>())
-        .transpose()
-        .with_context(|| format!("invalid {name}"))?
-        .unwrap_or(default);
-    ensure!(
-        (min..=max).contains(&value),
-        "{name} must be between {min} and {max}"
-    );
-    Ok(value)
 }
 
 fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

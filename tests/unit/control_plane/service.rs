@@ -589,28 +589,10 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
         "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
     }))?;
-    let pool = crate::sandbox::pool::SparePool::new(
-        crate::postgres::PostgresDatabase::lazy("postgresql://localhost:1/unavailable")?,
-        provisioner.provider.clone(),
-        crate::sandbox::pool::PoolConfig {
-            control_plane_url: None,
-            kind: crate::sandbox::SpareKind::Actor,
-            idle: 0,
-            fleet_maximum: 64,
-            max_starting: 8,
-            idle_ttl_seconds: 600,
-            regions: vec!["north-america-east".into()],
-            resources: crate::sandbox::ResourceLimits {
-                cpu_millis: 4000,
-                memory_mib: 8192,
-            },
-        },
-    );
-    let provisioner = provisioner.with_pool(pool);
     for (actor_name, cpu_millis, memory_mib) in [
-        ("Counter", 2500, 8192),
-        ("Room", 4000, 4096),
-        ("Plain", 4000, 8192),
+        ("Counter", 2500, 256),
+        ("Room", 1000, 4096),
+        ("Plain", 1000, 256),
     ] {
         let actor = ActorKey {
             project_id: "default".into(),
@@ -1824,4 +1806,14 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         sockets,
     )?);
     Ok(service)
+}
+
+#[test]
+fn assigned_substrate_routes_preserve_the_sandbox_identity() -> Result<()> {
+    validate_host_route("http://atenet-router.ate-system.svc/substrate/staging/host-123")?;
+    assert!(
+        validate_host_route("http://atenet-router.ate-system.svc/substrate/staging/host/extra")
+            .is_err()
+    );
+    Ok(())
 }

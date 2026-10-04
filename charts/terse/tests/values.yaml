@@ -11,3 +11,6 @@ storage:
 
 serviceAccount:
   googleServiceAccount: test-control@test-project.iam.gserviceaccount.com
+
+substrate:
+  snapshotLocation: gs://test-substrate/runtime/
