@@ -264,7 +264,7 @@ impl HttpHost {
                 storage,
                 Arc::new(FakeStateTransport::default()),
                 sockets.clone(),
-                Arc::new(crate::litestream::Litestream::start("litestream".into()).await?),
+                replication().await,
             )
             .with_traces(trace_sender),
         );
