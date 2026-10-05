@@ -161,6 +161,21 @@ test("pinch respects the zoom limits without handing the gesture to browser zoom
     assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "1 s window")
 })
 
+for (const modifier of ["ctrlKey", "metaKey"]) {
+    test(`${modifier} with scrolling zooms around the cursor without also panning`, () => {
+        const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+        const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+        view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+        pinch(view, 0.5)
+        assert.equal(fireEvent.wheel(viewport, { [modifier]: true, deltaX: 100, deltaY: -100 * Math.log(2), clientX: 600, cancelable: true }), false)
+        assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "250 ms window")
+        assert.equal(view.getByRole("button", { name: /Inspect load request/ }).style.left, "50%")
+        assert.equal(fireEvent.wheel(viewport, { [modifier]: true, deltaY: 100 * Math.log(2), clientX: 600, cancelable: true }), false)
+        assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "500 ms window")
+        assert.equal(fireEvent.wheel(document.body, { [modifier]: true, deltaY: -100, cancelable: true }), true)
+    })
+}
+
 test("pinch accumulates rapid events and follows slider changes and live history", () => {
     const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
     const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")

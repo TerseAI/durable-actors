@@ -21,7 +21,7 @@ export function useTimelinePinch(viewport: RefObject<HTMLDivElement | null>, bou
             return true
         }
         const wheel = (event: WheelEvent) => {
-            if (!event.ctrlKey || !event.deltaY) return
+            if ((!event.ctrlKey && !event.metaKey) || !event.deltaY) return
             if (gestureScale.current !== null) {
                 event.preventDefault()
                 return
