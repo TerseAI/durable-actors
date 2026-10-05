@@ -6,7 +6,7 @@ Each write appends the same state record to persistent streams in two Rapid zone
 
 ## Prerequisites
 
-- GKE Standard with Workload Identity, Gateway API, and Agent Substrate installed. This chart targets Substrate `v0.2.0-gke.0`. Enable its certificate APIs before creating nodes; existing nodes may not support ClusterTrustBundle projection. Run control-plane Pods on ordinary nodes and workers on Substrate-compatible nodes.
+- GKE Standard with Workload Identity, Gateway API, and Agent Substrate installed. This chart targets Substrate `v0.2.0-gke.0`. Enable its certificate APIs before creating nodes; existing nodes may not support ClusterTrustBundle projection. Run the Terse and Substrate control services (including the Substrate database and certificate controller) on the control node pool. Keep workers and node agents on the autoscaled Substrate node pool; colocated control services can block node removal through their disruption budgets.
 - GKE 1.36.2-gke.2771000 or newer with Managed Service for Prometheus and the managed autoscaling metrics adapter. Enable node autoscaling on the Substrate node pool with a maximum large enough to schedule `substrate.worker.autoscaling.maxReplicas` worker Pods.
 - Standard authority, artifact, and archive buckets with uniform access and public access prevention. Keep the archive indefinitely; its location determines the permanent failure domain. Do not expire referenced actor history or code.
 - Two Rapid buckets in supported distinct zones, without automatic deletion of log objects. Buckets are shared infrastructure; actor data is isolated by credential prefixes.
