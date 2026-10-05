@@ -1,0 +1,20 @@
+{
+    "$schema": "https://registry.scalar.com/@scalar/schemas/config",
+    "scalar": "2.0.0",
+    "info": {
+        "title": "Durable Actors HTTP API"
+    },
+    "siteConfig": {
+        "subdomain": "durable-actors"
+    },
+    "navigation": {
+        "routes": {
+            "/": {
+                "type": "openapi",
+                "title": "HTTP API",
+                "filepath": "docs/reference/openapi.yaml",
+                "singlePage": true
+            }
+        }
+    }
+}
