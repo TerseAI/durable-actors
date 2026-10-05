@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react"
 import type { ReactNode } from "react"
 
-import { useTimelinePinch } from "./TimelinePinch.js"
+import { useTimelineWheelZoom } from "./TimelineWheelZoom.js"
 import type { TimelineWindow } from "./TimelineZoom.js"
 
 export function TimelineScroll({ bounds, range, onChange, children }: { bounds: TimelineWindow; range: TimelineWindow; onChange: (range: TimelineWindow) => void; children: ReactNode }) {
@@ -12,7 +12,7 @@ export function TimelineScroll({ bounds, range, onChange, children }: { bounds: 
     const end = Math.max(bounds.end, range.end)
     const span = range.end - range.start
     const travel = end - start - span
-    useTimelinePinch(viewport, bounds, range, onChange)
+    useTimelineWheelZoom(viewport, bounds, range, onChange)
 
     useLayoutEffect(() => {
         const element = scrollbar.current!

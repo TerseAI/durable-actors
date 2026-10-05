@@ -3,15 +3,17 @@ import type { RefObject } from "react"
 
 import type { TimelineWindow } from "./TimelineZoom.js"
 
-export function useTimelinePinch(viewport: RefObject<HTMLDivElement | null>, bounds: TimelineWindow, range: TimelineWindow, onChange: (range: TimelineWindow) => void) {
+export function useTimelineWheelZoom(viewport: RefObject<HTMLDivElement | null>, bounds: TimelineWindow, range: TimelineWindow, onChange: (range: TimelineWindow) => void) {
     const current = useRef(range)
-    const gestureScale = useRef<number | null>(null)
+    const held = useRef({ control: false, command: false })
     useLayoutEffect(() => {
         current.current = range
     }, [range])
 
     useEffect(() => {
         const element = viewport.current!
+        const document = element.ownerDocument
+        const window = document.defaultView!
         const axis = () => element.querySelector(".request-waterfall-axis > div")!.getBoundingClientRect()
         const zoom = (factor: number, clientX: number) => {
             const { left, width } = axis()
@@ -21,39 +23,28 @@ export function useTimelinePinch(viewport: RefObject<HTMLDivElement | null>, bou
             return true
         }
         const wheel = (event: WheelEvent) => {
-            if ((!event.ctrlKey && !event.metaKey) || !event.deltaY) return
-            if (gestureScale.current !== null) {
-                event.preventDefault()
-                return
-            }
+            // Track the keyboard separately: browsers also mark trackpad pinches as Ctrl+wheel.
+            if (!((event.ctrlKey && held.current.control) || (event.metaKey && held.current.command)) || !event.deltaY) return
             const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? axis().width : 1
             if (zoom(Math.exp(event.deltaY * unit * 0.01), event.clientX)) event.preventDefault()
         }
-        const begin = (event: Event) => {
-            if (!axis().width) return
-            gestureScale.current = 1
-            event.preventDefault()
+        const keys = (event: KeyboardEvent) => {
+            held.current = { control: event.ctrlKey, command: event.metaKey }
         }
-        const change = (event: Event) => {
-            const { scale, clientX } = event as Event & { scale: number; clientX: number }
-            if (gestureScale.current === null || !Number.isFinite(scale) || scale <= 0) return
-            if (zoom(gestureScale.current / scale, clientX)) event.preventDefault()
-            gestureScale.current = scale
-        }
-        const end = (event: Event) => {
-            if (gestureScale.current === null) return
-            gestureScale.current = null
-            event.preventDefault()
+        const clearKeys = () => {
+            held.current = { control: false, command: false }
         }
         element.addEventListener("wheel", wheel, { passive: false })
-        element.addEventListener("gesturestart", begin, { passive: false })
-        element.addEventListener("gesturechange", change, { passive: false })
-        element.addEventListener("gestureend", end, { passive: false })
+        window.addEventListener("keydown", keys, true)
+        window.addEventListener("keyup", keys, true)
+        window.addEventListener("blur", clearKeys)
+        document.addEventListener("visibilitychange", clearKeys)
         return () => {
             element.removeEventListener("wheel", wheel)
-            element.removeEventListener("gesturestart", begin)
-            element.removeEventListener("gesturechange", change)
-            element.removeEventListener("gestureend", end)
+            window.removeEventListener("keydown", keys, true)
+            window.removeEventListener("keyup", keys, true)
+            window.removeEventListener("blur", clearKeys)
+            document.removeEventListener("visibilitychange", clearKeys)
         }
     }, [viewport, bounds.start, bounds.end, onChange])
 }
