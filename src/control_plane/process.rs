@@ -238,17 +238,23 @@ async fn sandbox_provisioner(
             config.substrate,
             issuer.clone(),
             &config.runtime.control_plane_url,
-            Arc::new(super::bootstrap::RuntimeBootstrap::new(access, storage)),
+            Arc::new(super::bootstrap::RuntimeBootstrap::new(
+                access.clone(),
+                storage,
+            )),
         )
         .await?,
     );
     provider.start(stop);
-    Ok(Arc::new(super::service::SandboxHostProvisioner::new(
-        provider,
-        config.runtime,
-        issuer.clone(),
-        Some(config.runtime_image),
-    )))
+    Ok(Arc::new(
+        super::service::SandboxHostProvisioner::new(
+            provider,
+            config.runtime,
+            issuer.clone(),
+            Some(config.runtime_image),
+        )
+        .with_runtime_access(access),
+    ))
 }
 
 impl ControlPlaneProcessConfig {

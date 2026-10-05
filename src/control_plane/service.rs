@@ -940,12 +940,12 @@ impl SandboxHostProvisioner {
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
         let token = async {
             match &self.runtime_access {
-                Some(access) => Ok(Some(
+                Some(access) if !self.provider.bootstraps_storage() => Ok(Some(
                     access
                         .bootstrap(region, actor, spec.code_snapshot.as_deref())
                         .await?,
                 )),
-                None => anyhow::Ok(None),
+                _ => anyhow::Ok(None),
             }
         };
         request.runtime_config = token.await?;

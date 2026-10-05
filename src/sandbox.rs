@@ -126,6 +126,10 @@ impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    fn bootstraps_storage(&self) -> bool {
+        false
+    }
+
     async fn prepare_runtime(&self, request: &RuntimeTemplateRequest) -> Result<()>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())

@@ -302,6 +302,10 @@ impl SubstrateProvider {
 
 #[async_trait]
 impl SandboxProvider for SubstrateProvider {
+    fn bootstraps_storage(&self) -> bool {
+        true
+    }
+
     async fn prepare_runtime(&self, request: &RuntimeTemplateRequest) -> Result<()> {
         ensure!(
             self.config.regions.contains(&request.canonical_region),
