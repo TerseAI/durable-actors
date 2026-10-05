@@ -1,18 +1,29 @@
 # TypeScript guide
 
-This guide edits `examples/bank-typescript`. Use that project as a basis if you are following along.
+## Before you start
+
+Requires Node.js 22.19+, pnpm, and Bun 1.3.9+. From the repository root, install dependencies and build the CLI, then copy the example's environment file:
+
+```bash
+pnpm install
+pnpm --dir sdk build
+cd examples/bank-typescript
+cp .env.example .env
+```
+
+The `.env` file sets the actor server's port to 7111 and points the client at it.
 
 ## Defining an actor
 
-Each bank account is an actor. An actor has fields and methods. The @Persisted property decorator marks that a field should be saved after each successful method invocation.
+Each bank account is an actor. An actor has fields and methods. The `@Persisted` property decorator saves a field after each successful method call.
 
-For example, to track a bank balance, we create a `src/actors.ts` with the following actor definition:
+To track a bank balance, define `src/actors.ts`:
 
 ```typescript
 import { Actor, Persisted } from "durable-actors"
 
 export class BankAccount extends Actor {
-    @Persisted public balance = 0
+    @Persisted private balance = 0
 
     async getBalance(): Promise<number> {
         return this.balance
@@ -22,37 +33,35 @@ export class BankAccount extends Actor {
 
 ## Generating a client
 
-Start the local dev server:
+Start the local dev server from `examples/bank-typescript`. The first run downloads the runtime:
+
+```bash
+pnpm dev
+```
+
+Wait for `Ready`, then generate the client in a second terminal:
 
 ```bash
 cd examples/bank-typescript
-durable-actors dev
+pnpm generate
 ```
 
-And in a separate terminal generate the client:
-
-```bash
-cd examples/bank-typescript
-durable-actors generate
-```
-
-This will create a generated folder, which contains stubs that you can use to reference your actors. Each actor can then be called by `id`. Create a `client.ts` and paste in the following:
+This creates a `generated` folder with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.ts` that gets the `demo` account and calls a method:
 
 ```typescript
 import { actors } from "./generated/index.js"
 
-// reference by ID demo
 const account = actors.BankAccount.get("demo")
-
-// call method
 console.log(await account.getBalance())
 ```
 
-Actors get started on method invocation, continue in memory while performing operations and then scale back down after sitting idly.
+Run it with `pnpm client`, which runs `bun client.ts`. Bun loads `.env`, so the client connects to port 7111.
+
+An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 
 ## Ephemeral fields
 
-So next, we want to track how many operations occur during the time an actor wakes and spins back down. This is pretty easy with the `@Ephemeral` decorator. The state will only be stored while the actor is awake and get wiped when it goes idle again. In `src/actors.ts`, you can update the actors definition to see how this works:
+Next, count the deposits made since the actor last woke up. The `@Ephemeral` decorator keeps a field in memory only while the actor is awake. It resets when the actor shuts down.
 
 ```typescript
 import { Actor, Ephemeral, Persisted } from "durable-actors"
@@ -75,20 +84,20 @@ export class BankAccount extends Actor {
 }
 ```
 
-## Websocket messages
+## WebSocket messages
 
-durable-actors handles websocket messages for all connected clients. We have full type support for specifying socket metadata, incoming and outgoing messages sent via websocket. All payloads are JSON by default.
+Actors handle WebSocket connections directly. The three type parameters of `Actor` describe each connection. Payloads are JSON.
 
-- Metadata. For each connected websocket, attach client metadata used to identify the user. In our example, that's userId, passed when the client connects.
-- Incoming. The messages a client can send. In our example, { type: "ping" }. onMessage answers by sending the balance back to that socket.
-- Outgoing. The messages the actor can send. In our example, { type: "balance", balance }, which both socket.send and broadcast use.
+- **Metadata** identifies the client. In this example, it is the `userId` passed when the client connects.
+- **Incoming** messages are what a client can send. Here, `{ type: "ping" }`, which `onMessage` answers with the balance.
+- **Outgoing** messages are what the actor sends, through either `socket.send` or `broadcast`. Here, `{ type: "balance", balance }`.
 
-Additionally, we also support:
+The example also uses:
 
-- Tags. setTags sets the tags on one socket. In onConnect, we tag it "customer".
-- Auto-responses. A raw text ping gets pong back without waking the sandbox. We register that pair in onConnect. A JSON { type: "ping" } still wakes the actor, and onMessage runs.
-- Broadcasts. broadcast sends to every connected client. deposit limits that to sockets tagged "customer". onDisconnect uses except to skip the socket that just left.
-- Individual sends. socket.send sends to one socket. onConnect and onMessage use it to hand that client the current balance.
+- **Tags.** `setTags` labels one socket. `onConnect` tags each socket `"customer"`.
+- **Automatic responses.** The gateway answers a raw text `ping` with `pong` without waking the actor. `onConnect` registers the pair. A JSON `{ type: "ping" }` still runs `onMessage`.
+- **Broadcasts.** `broadcast` sends to every connected socket. `deposit` limits it to sockets tagged `"customer"`, and `onDisconnect` uses `except` to skip the socket that just left.
+- **Individual sends.** `socket.send` sends to one socket. `onConnect` and `onMessage` use it to send that client the current balance.
 
 ```typescript
 import { Actor, type ActorSocket, Ephemeral, Persisted } from "durable-actors"
@@ -96,6 +105,7 @@ import { Actor, type ActorSocket, Ephemeral, Persisted } from "durable-actors"
 export class BankAccount extends Actor<Metadata, Incoming, Outgoing> {
     @Persisted private balance = 0
     @Ephemeral private depositsSinceWake = 0
+
     async getBalance(): Promise<number> {
         return this.balance
     }
@@ -127,12 +137,12 @@ type Outgoing = { type: "balance"; balance: number }
 type Socket = ActorSocket<Metadata, Outgoing>
 ```
 
-## Using emittable
+## Emitting state
 
-`@Emittable` publishes public `@Persisted` field to every connected client.
+`@Emittable` publishes a public `@Persisted` field to every connected client, so `balance` becomes public:
 
-- When a client connects, it receives a state message with the current emittable fields. In our example, that is message.state.balance.
-- After a successful call changes the field, clients receive a state_update.
+- When a client connects, it receives a `state` message with the current emitted fields, here `message.state.balance`.
+- After a successful call changes the field, clients receive a `state_update` message with the changes.
 
 ```typescript
 import { Actor, type ActorSocket, Emittable, Ephemeral, Persisted } from "durable-actors"
@@ -140,6 +150,7 @@ import { Actor, type ActorSocket, Emittable, Ephemeral, Persisted } from "durabl
 export class BankAccount extends Actor<Metadata, Incoming, Outgoing> {
     @Persisted @Emittable balance = 0
     @Ephemeral private depositsSinceWake = 0
+
     async getBalance(): Promise<number> {
         return this.balance
     }
@@ -164,29 +175,33 @@ export class BankAccount extends Actor<Metadata, Incoming, Outgoing> {
         this.broadcast({ type: "balance", balance: this.balance }, { except: socket })
     }
 }
+
 type Metadata = { userId: string }
 type Incoming = { type: "ping" }
 type Outgoing = { type: "balance"; balance: number }
 type Socket = ActorSocket<Metadata, Outgoing>
 ```
 
-And a connecting client would see:
+To connect, your backend prepares a WebSocket grant for the actor, and the client opens its `websocketUrl`. A real backend checks the user's access before issuing a grant; the [chatroom example](../../examples/chat/README.md) shows a browser doing this.
 
 ```typescript
 import { actors } from "./generated/index.js"
 
-const account = actors.BankAccount.get("demo")
-const socket = await account.connect({ userId: "ada" })
+const { websocketUrl } = await actors.BankAccount.prepareWebsocket({ actorId: "demo", metadata: { userId: "ada" } })
+const socket = new WebSocket(websocketUrl)
 socket.addEventListener("message", event => {
-    if (event.data.type === "state") console.log(event.data.state.balance)
-    else if (event.data.type === "state_update") console.log(event.data.changes.balance)
-    else console.log(event.data)
+    const message = JSON.parse(event.data)
+    if (message.type === "state") console.log(message.state.balance)
+    else if (message.type === "state_update") console.log(message.changes.balance)
+    else console.log(message)
 })
 ```
 
-## Bringing in interleave
+## Interleaving calls
 
-Actors run one call at a time, and a call holds the actor until it finishes, including across an await. @Interleave lets other calls run while that method is waiting.
+An actor runs one call at a time, and a call holds the actor until it finishes, including across an `await`. `@Interleave` lets other calls run while that method awaits.
+
+Add a second actor for wire transfers to `src/actors.ts`:
 
 ```typescript
 import { Actor, Emittable, Interleave, Persisted } from "durable-actors"
@@ -199,6 +214,7 @@ const clearingNetwork = {
 
 export class Wire extends Actor {
     @Persisted @Emittable status = "requested"
+
     async getStatus(): Promise<string> {
         return this.status
     }
@@ -211,19 +227,20 @@ export class Wire extends Actor {
 }
 ```
 
-`getStatus` can run while submit waits on the clearing network.
+`getStatus` can run while `submit` waits on the clearing network.
 
-## Supporting SQLite
+Interleaving changes failure handling for the whole class. A failed call normally rolls back its field and SQLite changes. Once any method in a class uses `@Interleave`, no call in that class rolls back, because overlapping calls may already have used the changes.
 
-Each actor has an SQLite database available at `this.db`. `this.db.exec` executes one statement.
+## Using SQLite
 
-Writes commit automatically when the method call succeeds.
+Each actor has its own SQLite database at `this.db`. `this.db.exec(sql, ...bindings)` runs one statement and returns its rows. Here, `deposit` records each deposit in a ledger table:
 
 ```typescript
-import { Actor, Persisted } from "durable-actors"
+import { Actor, Emittable, Persisted } from "durable-actors"
 
 export class BankAccount extends Actor {
-    @Persisted private balance = 0
+    @Persisted @Emittable balance = 0
+
     async deposit(amount: number): Promise<number> {
         this.db.exec("CREATE TABLE IF NOT EXISTS ledger (amount INTEGER)")
         this.balance += amount
@@ -233,17 +250,24 @@ export class BankAccount extends Actor {
 }
 ```
 
+- SQL writes and `@Persisted` fields commit together when the method or socket hook succeeds.
+- Bind values with `?` placeholders. Values can be strings, numbers, bigints, byte arrays, or `null`.
+- `this.db` is available only while a method or socket hook runs, not in the constructor.
+- The runtime owns transactions and the database file, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ATTACH`, `DETACH`, and `VACUUM` are rejected.
+- The only allowed PRAGMAs are `table_info`, `table_xinfo`, `index_info`, `index_xinfo`, `index_list`, `foreign_key_list`, `foreign_key_check`, `integrity_check`, `quick_check`, and `user_version`.
+- Names beginning with `__terse_` or `_litestream_` are reserved.
+
 ## Configuring actor resources
 
-@Sandbox overrides the deployment defaults for this actor class.
-
-Supported configurations include cpu, memory, idle timeout and regional placements.
+`@Sandbox` overrides the deployment's default resources for one actor class:
 
 ```typescript
 import { Actor, Emittable, Persisted, Sandbox } from "durable-actors"
 
-@Sandbox({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000, regions: ["north-america-east"] })
+@Sandbox({ cpu: 0.5, memoryMiB: 256, idleTimeoutMs: 60_000 })
 export class BankAccount extends Actor {
     @Persisted @Emittable balance = 0
 }
 ```
+
+`cpu` accepts 0.1 to 64 cores, `memoryMiB` 128 to 262144, and `idleTimeoutMs` up to one day. `regions` restricts where new actors are placed. An existing actor keeps the region it was created in, so a `regions` list that excludes it makes that actor's calls fail with `conflict`.

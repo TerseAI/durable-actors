@@ -1,12 +1,24 @@
 # Python guide
 
-This guide edits `examples/bank-python`. Use that project as a basis if you are following along.
+## Before you start
+
+Actors and clients are Python; the shared Node CLI runs the dev server and generates clients. From the repository root, install dependencies and build the CLI, then set up the example:
+
+```bash
+pnpm install
+pnpm --dir sdk build
+cd examples/bank-python
+uv sync
+cp .env.example .env
+```
+
+The `.env` file sets the actor server's port to 7112 and points the client at it.
 
 ## Defining an actor
 
-Each bank account is an actor. An actor has fields and methods. persisted() marks that a field should be saved after each successful method invocation.
+Each bank account is an actor. An actor has fields and methods. `persisted()` saves a field after each successful method call.
 
-For example, to track a bank balance, we create a `src/actors.py` with the following actor definition:
+To track a bank balance, define `src/actors.py`:
 
 ```python
 from durable_actors import Actor, persisted
@@ -21,44 +33,35 @@ class BankAccount(Actor):
 
 ## Generating a client
 
-Install the project's virtual environment and start the local dev server:
+Start the local dev server from `examples/bank-python`. The first run downloads the runtime:
+
+```bash
+pnpm dev
+```
+
+Wait for `Ready`, then generate the client in a second terminal:
 
 ```bash
 cd examples/bank-python
-uv sync
-durable-actors dev
+pnpm generate
 ```
 
-And in a separate terminal generate the client:
-
-```bash
-cd examples/bank-python
-durable-actors generate
-```
-
-This will create a generated folder, which contains stubs that you can use to reference your actors. Each actor can then be called by `id`. We will discuss more on accessing actors but referencing an actor and then calling a method looks like:
+This creates a `generated` package with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.py` that gets the `demo` account and calls a method:
 
 ```python
 from generated import actors
 
-# reference by ID demo
 account = actors.BankAccount.get("demo")
-
-# call method
 print(account.get_balance())
 ```
 
-The example's `client.py` does this. Run it with the `.env` printed by `durable-actors dev` loaded:
+Run it with `pnpm client`, which runs `uv run --env-file .env client.py` so the client connects to port 7112.
 
-```bash
-uv run --env-file .env client.py
-```
+An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 
-Actors get started on method invocation, continue in memory while performing operations and then scale back down after sitting idly.
+## Ephemeral fields
 
-### Ephemeral fields
-
-So next, we want to track how many operations occur during the time an actor wakes and spins back down. This is pretty easy with `ephemeral()`. The state will only be stored while the actor is awake and get wiped when it goes idle again.
+Next, count the deposits made since the actor last woke up. `ephemeral()` keeps a field in memory only while the actor is awake. It resets when the actor shuts down.
 
 ```python
 from durable_actors import Actor, ephemeral, persisted
@@ -80,20 +83,20 @@ class BankAccount(Actor):
         return self._balance
 ```
 
-### Websocket messages
+## WebSocket messages
 
-durable-actors handles websocket messages for all connected clients. We have full type support for specifying socket metadata, incoming and outgoing messages sent via websocket. All payloads are JSON by default.
+Actors handle WebSocket connections directly. The three type parameters of `Actor` describe each connection. Payloads are JSON.
 
-- Metadata. For each connected websocket, attach client metadata used to identify the user. In our example, that's user_id, passed when the client connects.
-- Incoming. The messages a client can send. In our example, { type: "ping" }. on_message answers by sending the balance back to that socket.
-- Outgoing. The messages the actor can send. In our example, { type: "balance", balance }, which both socket.send and broadcast use.
+- **Metadata** identifies the client. In this example, it is the `user_id` passed when the client connects.
+- **Incoming** messages are what a client can send. Here, `{"type": "ping"}`, which `on_message` answers with the balance.
+- **Outgoing** messages are what the actor sends, through either `socket.send` or `broadcast`. Here, `{"type": "balance", "balance": ...}`.
 
-Additionally, we also support:
+The example also uses:
 
-- Tags. set_tags sets the tags on one socket. In on_connect, we tag it "customer".
-- Auto-responses. A raw text ping gets pong back without waking the sandbox. We register that pair in on_connect. A JSON { type: "ping" } still wakes the actor, and on_message runs.
-- Broadcasts. broadcast sends to every connected client. deposit limits that to sockets tagged "customer". on_disconnect uses except_ids to skip the socket that just left.
-- Individual sends. socket.send sends to one socket. on_connect and on_message use it to hand that client the current balance.
+- **Tags.** `set_tags` labels one socket. `on_connect` tags each socket `"customer"`.
+- **Automatic responses.** The gateway answers a raw text `ping` with `pong` without waking the actor. `on_connect` registers the pair. A JSON `{"type": "ping"}` still runs `on_message`.
+- **Broadcasts.** `broadcast` sends to every connected socket. `deposit` limits it to sockets tagged `"customer"`, and `on_disconnect` uses `except_ids` to skip the socket that just left.
+- **Individual sends.** `socket.send` sends to one socket. `on_connect` and `on_message` use it to send that client the current balance.
 
 ```python
 from typing import Literal
@@ -146,12 +149,12 @@ class BankAccount(Actor[Metadata, Incoming, Outgoing]):
         self.broadcast(Outgoing(type="balance", balance=self._balance), except_ids=(socket.id,))
 ```
 
-### Using emittable
+## Emitting state
 
-`emitted()` publishes a public `persisted()` field to every connected client.
+`emitted()` publishes a public `persisted()` field to every connected client, so `_balance` becomes `balance`:
 
-- When a client connects, it receives a state message with the current emittable fields. In our example, that is message.state.balance.
-- After a successful call changes the field, clients receive a state_update.
+- When a client connects, it receives a `StateSnapshot` with the current emitted fields, here `message.state.balance`.
+- After a successful call changes the field, clients receive a `StateUpdate` with the changes.
 
 ```python
 from typing import Literal
@@ -204,7 +207,7 @@ class BankAccount(Actor[Metadata, Incoming, Outgoing]):
         self.broadcast(Outgoing(type="balance", balance=self.balance), except_ids=(socket.id,))
 ```
 
-And a connecting client would see:
+A connecting client sees the snapshot, then updates as deposits land:
 
 ```python
 from durable_actors import StateSnapshot, StateUpdate
@@ -221,9 +224,11 @@ with account.connect(actors.BankAccount.Metadata(user_id="ada")) as socket:
             print(message)
 ```
 
-### Bringing in interleave
+## Interleaving calls
 
-Actors run one call at a time, and a call holds the actor until it finishes, including while it waits. @interleave lets other calls run while that method is waiting.
+An actor runs one call at a time by default. Python methods run in a worker thread, and an `@interleave` method does not hold the actor while it runs: other calls can start at any point during it, not only while it waits on I/O. Protect state that overlapping calls share, for example with a `threading.Lock` in an `ephemeral()` field.
+
+Add a second actor for wire transfers to `src/actors.py`:
 
 ```python
 from durable_actors import Actor, emitted, interleave, persisted
@@ -250,39 +255,46 @@ class Wire(Actor):
         return receipt
 ```
 
-`get_status` can run while submit waits on the clearing network.
+`get_status` can run while `submit` is still in progress.
 
-### Supporting SQLite
+Interleaving changes failure handling for the whole class. A failed call normally rolls back its field and SQLite changes. Once any method in a class uses `@interleave`, no call in that class rolls back, because overlapping calls may already have used the changes.
 
-Each actor has an SQLite database available at `self.db`. `self.db.exec` executes one statement.
+## Using SQLite
 
-Writes commit automatically when the method call succeeds.
+Each actor has its own SQLite database at `self.db`. `self.db.exec(sql, *bindings)` runs one statement and returns its rows as dictionaries. Here, `deposit` records each deposit in a ledger table:
 
 ```python
-from durable_actors import Actor, persisted
+from durable_actors import Actor, emitted, persisted
 
 
 class BankAccount(Actor):
-    _balance: int = persisted(0)
+    balance: int = emitted(persisted(0))
 
     def deposit(self, amount: int) -> int:
         self.db.exec("CREATE TABLE IF NOT EXISTS ledger (amount INTEGER)")
-        self._balance += amount
+        self.balance += amount
         self.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
-        return self._balance
+        return self.balance
 ```
+
+- SQL writes and `persisted()` fields commit together when the method or socket hook succeeds.
+- Bind values with `?` placeholders. Values can be `str`, `int`, `float`, `bytes`, or `None`.
+- `self.db` is available only while a method or socket hook runs.
+- The runtime owns transactions and the database file, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ATTACH`, `DETACH`, and `VACUUM` are rejected.
+- The only allowed PRAGMAs are `table_info`, `table_xinfo`, `index_info`, `index_xinfo`, `index_list`, `foreign_key_list`, `foreign_key_check`, `integrity_check`, `quick_check`, and `user_version`.
+- Names beginning with `__terse_` or `_litestream_` are reserved.
 
 ## Configuring actor resources
 
-@sandbox overrides the deployment defaults for this actor class.
-
-Supported configurations include cpu, memory, idle timeout and regional placements.
+`@sandbox` overrides the deployment's default resources for one actor class:
 
 ```python
 from durable_actors import Actor, emitted, persisted, sandbox
 
 
-@sandbox(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000, regions=["north-america-east"])
+@sandbox(cpu=0.5, memory_mib=256, idle_timeout_ms=60_000)
 class BankAccount(Actor):
     balance: int = emitted(persisted(0))
 ```
+
+`cpu` accepts 0.1 to 64 cores, `memory_mib` 128 to 262144, and `idle_timeout_ms` up to one day. `regions` restricts where new actors are placed. An existing actor keeps the region it was created in, so a `regions` list that excludes it makes that actor's calls fail with `conflict`.
