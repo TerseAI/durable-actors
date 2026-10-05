@@ -7,6 +7,7 @@ Each write appends the same state record to persistent streams in two Rapid zone
 ## Prerequisites
 
 - GKE Standard with Workload Identity, Gateway API, and Agent Substrate installed. This chart targets Substrate `v0.2.0-gke.0`. Enable its certificate APIs before creating nodes; existing nodes may not support ClusterTrustBundle projection. Run control-plane Pods on ordinary nodes and workers on Substrate-compatible nodes.
+- GKE 1.36.2-gke.2771000 or newer with Managed Service for Prometheus and the managed autoscaling metrics adapter. Enable node autoscaling on the Substrate node pool with a maximum large enough to schedule `substrate.worker.autoscaling.maxReplicas` worker Pods.
 - Standard authority, artifact, and archive buckets with uniform access and public access prevention. Keep the archive indefinitely; its location determines the permanent failure domain. Do not expire referenced actor history or code.
 - Two Rapid buckets in supported distinct zones, without automatic deletion of log objects. Buckets are shared infrastructure; actor data is isolated by credential prefixes.
 - PostgreSQL, preferably private Cloud SQL with regional HA. The database user needs migration privileges.
@@ -34,13 +35,18 @@ The application archives segments before deleting their Rapid copies. Do not con
 Copy `values.yaml` and supply the image digest, Google service account, bucket names, namespaces, and region:
 
 ```yaml
+cluster: {projectId: PROJECT, location: us-west4, name: actors}
 replicaCount: 2
 region: north-america-west
 substrate:
   atespace: terse
   snapshotLocation: gs://actor-snapshots/runtime/
   worker:
-    replicas: 1
+    autoscaling:
+      minReplicas: 1
+      maxReplicas: 3
+      targetAllocationPercent: 70
+      scaleDownStabilizationSeconds: 300
     cpu: "4"
     memory: 8Gi
 cloudSql:
@@ -101,4 +107,6 @@ This adds a `-sockets` Deployment, Service, disruption budget, and GKE backend/h
 
 The connection limit applies per actor at its socket-owning gateway, even with isolation disabled. PostgreSQL coordinates room ownership across replicas; ordinary control-plane pods are ineligible when dedicated gateways are enabled. See the [runtime limits](../../docs/reference/configuration.md#websockets). Scale socket replicas for aggregate connections and traffic; a busy individual actor still executes on one host. Changing the route or replacing gateway pods disconnects their existing sockets. Idle sandbox shutdown preserves connections, metadata, tags, and automatic responses at the gateway. The next application message activates a replacement sandbox.
 
-The chart defaults to two control-plane replicas and one 4-CPU, 8-GiB Substrate worker. Size and distribute workers across failure domains for the deployment. Keep the runtime image consistent across control-plane replicas.
+The chart defaults to two control-plane replicas and 1–3 workers of 4 CPU and 8 GiB each. HPA scales the WorkerPool using each worker’s largest reserved CPU, memory, or actor-slot fraction, targeting 70% allocation. The control plane exposes this metric on internal port 9091; GKE collects it and deduplicates the control-plane replicas. Missing or stale capacity data prevents metric-driven scaling. Scale-down waits five minutes and removes at most one worker per minute through Substrate’s graceful shutdown path. GKE node autoscaling adds machines when worker Pods cannot be scheduled and removes unneeded machines later.
+
+Set the worker minimum for expected bursts and distribute workers across failure domains. New nodes take time to start; this headroom does not queue activations when the pool is exhausted. An actor must fit within a single worker. Keep the runtime image consistent across control-plane replicas.

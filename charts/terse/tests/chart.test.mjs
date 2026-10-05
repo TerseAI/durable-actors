@@ -9,9 +9,9 @@ const chart = new URL("../", import.meta.url).pathname
 const helm = process.env.HELM ?? "helm"
 
 test("Substrate shares worker capacity and projects rotating API credentials", () => {
-    const result = render({ substrate: { worker: { replicas: 2, cpu: "4", memory: "8Gi" } } })
+    const result = render({ substrate: { worker: { autoscaling: { minReplicas: 2 }, cpu: "4", memory: "8Gi" } } })
     assert.equal(result.status, 0, result.stderr)
-    const pool = result.stdout.split("---").find(doc => doc.includes("kind: WorkerPool"))
+    const pool = result.stdout.split("---").find(doc => doc.includes("\nkind: WorkerPool\n"))
     assert.ok(pool)
     assert.match(pool, /replicas: 2/)
     assert.match(pool, /cpu: "4"/)

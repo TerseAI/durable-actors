@@ -8,6 +8,7 @@
 {{- printf "%s@sha256:%s" .Values.image.repository (required "image.digest must be the published runtime sha256 digest" .Values.image.digest) -}}
 {{- end -}}
 {{- define "terse.validate" -}}
+{{- if gt (int .Values.substrate.worker.autoscaling.minReplicas) (int .Values.substrate.worker.autoscaling.maxReplicas) }}{{ fail "worker autoscaling minReplicas must not exceed maxReplicas" }}{{ end -}}
 {{- if and .Values.gateway.enabled (eq (empty .Values.gateway.tlsSecret) (empty .Values.gateway.preSharedCert)) }}{{ fail "gateway requires exactly one of tlsSecret or preSharedCert" }}{{ end -}}
 {{- if lt (int .Values.replicaCount) 2 }}{{ fail "regional availability requires multiple control-plane replicas" }}{{ end -}}
 {{- if eq .Values.substrate.namespace .Release.Namespace }}{{ fail "Substrate workers require a separate namespace" }}{{ end -}}

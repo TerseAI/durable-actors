@@ -1,6 +1,10 @@
 image:
   repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
   digest: ""
+cluster:
+  projectId: ""
+  location: ""
+  name: ""
 replicaCount: 2
 publicUrl: https://actors.useterse.ai
 region: north-america-west
@@ -57,7 +61,11 @@ substrate:
   snapshotLocation: ""
   trustBundleName: servicedns.podcert.ate.dev:identity:primary-bundle
   worker:
-    replicas: 1
+    autoscaling:
+      minReplicas: 1
+      maxReplicas: 3
+      targetAllocationPercent: 70
+      scaleDownStabilizationSeconds: 300
     image: us-docker.pkg.dev/gke-substrate-release/substrate/ateom-gvisor:v0.2.0-gke.0@sha256:744175f4531187f08261176f1c395aaab4b57394acc9842d935c113f5559db8c
     cpu: "4"
     memory: 8Gi

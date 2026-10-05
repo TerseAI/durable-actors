@@ -48,6 +48,7 @@ pub struct ControlPlaneStorageConfig {
 }
 
 pub struct SandboxProviderConfig {
+    pub metrics_bind: SocketAddr,
     pub runtime_image: String,
     pub(crate) substrate: SubstrateConfig,
     pub public_origin: String,
@@ -245,6 +246,9 @@ async fn sandbox_provisioner(
         )
         .await?,
     );
+    provider
+        .start_metrics(config.metrics_bind, stop.clone())
+        .await?;
     provider.start(stop);
     Ok(Arc::new(
         super::service::SandboxHostProvisioner::new(
@@ -447,6 +451,10 @@ fn sandbox_provider_config(
         "Substrate snapshots require a GCS prefix ending in /"
     );
     Ok(SandboxProviderConfig {
+        metrics_bind: get("DURABLE_ACTORS_METRICS_BIND")
+            .unwrap_or_else(|| "127.0.0.1:9090".into())
+            .parse()
+            .context("DURABLE_ACTORS_METRICS_BIND must be a socket address")?,
         runtime_image: {
             let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
             crate::sandbox::substrate::validate_image(&image)?;

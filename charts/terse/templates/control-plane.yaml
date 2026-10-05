@@ -85,6 +85,8 @@ spec:
           ports:
             - name: http
               containerPort: 7100
+            - name: metrics
+              containerPort: 9091
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -121,6 +123,7 @@ spec:
             - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ $.Values.publicUrl | quote }}}
             - {name: DURABLE_ACTORS_REGION, value: {{ $.Values.region | quote }}}
             - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "terse.image" $ | quote }}}
+            - {name: DURABLE_ACTORS_METRICS_BIND, value: "0.0.0.0:9091"}
             - {name: DURABLE_ACTORS_SUBSTRATE_ENDPOINT, value: {{ $.Values.substrate.endpoint | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_ROUTER, value: {{ $.Values.substrate.router | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_ATESPACE, value: {{ $.Values.substrate.atespace | quote }}}

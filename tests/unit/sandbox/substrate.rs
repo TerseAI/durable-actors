@@ -125,6 +125,9 @@ impl code::CodeSource for TestCodeSource {
 }
 #[async_trait]
 impl SubstrateApi for Api {
+    async fn workers(&self) -> Result<Vec<proto::Worker>> {
+        Ok(Vec::new())
+    }
     async fn template(&self, mut template: proto::ActorTemplate) -> Result<proto::ActorTemplate> {
         self.0.lock().unwrap().push("template");
         template.metadata.as_mut().unwrap().uid =

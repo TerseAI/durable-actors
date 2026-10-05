@@ -156,6 +156,10 @@ impl SubstrateApi for GrpcApi {
         }
     }
 
+    async fn workers(&self) -> Result<Vec<Worker>> {
+        self.client.list_workers().await
+    }
+
     async fn actors(&self, atespace: &str) -> Result<Vec<Actor>> {
         self.client.list_actors(atespace).await
     }

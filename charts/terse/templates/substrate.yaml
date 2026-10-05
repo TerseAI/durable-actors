@@ -12,7 +12,8 @@ metadata:
     terse.ai/region: {{ .Values.region | quote }}
     {{- toYaml .Values.substrate.workerLabels | nindent 4 }}
 spec:
-  replicas: {{ .Values.substrate.worker.replicas }}
+  {{- $pool := lookup "ate.dev/v1alpha1" "WorkerPool" .Values.substrate.namespace .Values.substrate.workerPoolName }}
+  replicas: {{ if $pool }}{{ $pool.spec.replicas }}{{ else }}{{ .Values.substrate.worker.autoscaling.minReplicas }}{{ end }}
   workerImage: {{ .Values.substrate.worker.image | quote }}
   template:
     nodeSelector:

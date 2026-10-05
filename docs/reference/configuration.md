@@ -63,6 +63,7 @@ Actor resource limits come from `@Sandbox` (default 1 CPU and 256 MiB). Resource
 
 | Variable | Description |
 | --- | --- |
+| `DURABLE_ACTORS_METRICS_BIND` | Internal capacity metrics listener; defaults to `127.0.0.1:9090`. The Helm chart uses `0.0.0.0:9091` for GKE collection. |
 | `DURABLE_ACTORS_SUBSTRATE_ENDPOINT` | Private TLS gRPC API origin. |
 | `DURABLE_ACTORS_SUBSTRATE_ROUTER` | Private HTTP actor-router origin. |
 | `DURABLE_ACTORS_SUBSTRATE_ATESPACE` | Namespace for this runtime's Substrate actors and templates. |

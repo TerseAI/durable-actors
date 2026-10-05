@@ -13,7 +13,9 @@ categories = ["asynchronous", "network-programming"]
 include = ["/third_party/terse-litestream/LICENSE", "/third_party/terse-litestream/NOTICE", "/third_party/terse-ltx/**", "/src/**", "/tests/**", "/proto/**", "/migrations/**", "/docs/reference/openapi.yaml", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
-terse-substrate = { version = "0.2.0", git = "https://github.com/TerseAI/terse-substrate", rev = "bceca5f9196fdb83223fca4c7a45a815e9595f3a" }
+kube_quantity = "0.9"
+prometheus-client = "0.24"
+terse-substrate = { version = "0.2.0", git = "https://github.com/TerseAI/terse-substrate", rev = "4641a7a99c14052f3a26da53c93f633e7087f668" }
 terse-litestream = { version = "0.1.0", path = "third_party/terse-litestream" }
 terse-ltx = { version = "0.1.0", git = "https://github.com/TerseAI/terse-ltx", rev = "fdc27e08f09a532b8f0b8d72971de4b2772ef86b" }
 walkdir = "2"

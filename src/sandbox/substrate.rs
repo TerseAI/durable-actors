@@ -16,6 +16,7 @@ mod api;
 mod assignment;
 mod code;
 mod launch;
+mod metrics;
 pub(crate) use assignment::validate_image;
 mod template;
 use terse_substrate as proto;
@@ -422,6 +423,7 @@ trait SubstrateApi: Send + Sync {
     async fn egress(&self, actor: proto::ObjectRef, rules: Vec<proto::EgressRule>) -> Result<()>;
     async fn resume(&self, actor: proto::ObjectRef) -> Result<()>;
     async fn delete(&self, actor: proto::Actor, version: Option<i64>) -> Result<()>;
+    async fn workers(&self) -> Result<Vec<proto::Worker>>;
     async fn actors(&self, atespace: &str) -> Result<Vec<proto::Actor>>;
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>>;
 }
