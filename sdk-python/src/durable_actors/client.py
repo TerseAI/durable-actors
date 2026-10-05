@@ -334,6 +334,10 @@ class Client:
                 self._targets.pop(key, None)
                 if target is not None and isinstance(error, httpx.ConnectError) and refused(error):
                     reply = {"type": "not_executed", "reason": "upstream_not_reached"}
+                elif target is None and isinstance(error, httpx.ConnectError):
+                    raise ActorInvocationError(
+                        "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+                    ) from error
                 else:
                     raise ActorInvocationError(
                         "outcome_unknown",

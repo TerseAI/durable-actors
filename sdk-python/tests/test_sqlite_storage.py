@@ -97,3 +97,20 @@ async def test_fields_wait_for_a_competing_sqlite_writer(tmp_path):
         release.set()
         storage.close()
         writer.join()
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_transaction_control(tmp_path):
+    path = tmp_path / "actor.sqlite"
+    path.touch()
+
+    async def sync() -> int:
+        return 2
+
+    storage = SqliteStorage(sync)
+    storage.restore({"path": str(path), "txid": 1})
+    try:
+        with pytest.raises(ValueError, match="own SQLite transactions"):
+            storage.exec("BEGIN IMMEDIATE")
+    finally:
+        storage.close()

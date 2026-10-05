@@ -353,3 +353,72 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
         for release in releases:
             release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_path):
+    from durable_actors.runtime import ActorRuntime as Runtime
+    from durable_actors.sqlite import SqliteStorage
+
+    captured: list[object] = []
+
+    class Account(Actor):
+        _balance: int = persisted(0)
+
+        def deposit(self, amount: int) -> int:
+            self.db.exec("CREATE TABLE IF NOT EXISTS ledger (amount INTEGER)")
+            self._balance += amount
+            self.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
+            return self._balance
+
+        def fail(self, amount: int) -> None:
+            self._balance += amount
+            self.db.exec("INSERT INTO ledger (amount) VALUES (?)", amount)
+            raise ValueError("rollback both stores")
+
+        def balance(self) -> int:
+            return self._balance
+
+        def ledger(self) -> list[dict[str, int]]:
+            captured.append(self.db)
+            return self.db.exec("SELECT amount FROM ledger ORDER BY rowid")
+
+    path = tmp_path / "actor.sqlite"
+    path.touch()
+    commits = 1
+
+    async def sync() -> int:
+        nonlocal commits
+        commits += 1
+        return commits
+
+    runtime = Runtime(Account, Effects(), SqliteStorage(sync))
+    actor = {**ACTOR, "actor_name": "Account"}
+    state = {"path": str(path), "txid": 1}
+
+    def invoke(method: str, args: list[int] | None = None):
+        return {
+            "type": "invoke",
+            "request_id": method,
+            "actor": actor,
+            "method": method,
+            "args": args or [],
+            "sqlite": state,
+        }
+
+    assert (await runtime.handle(invoke("deposit", [5])))["result"] == 5
+    assert (await runtime.handle(invoke("deposit", [7])))["result"] == 12
+    assert (await runtime.handle(invoke("balance")))["result"] == 12
+    assert (await runtime.handle(invoke("ledger")))["result"] == [
+        {"amount": 5},
+        {"amount": 7},
+    ]
+    failure = await runtime.handle(invoke("fail", [3]))
+    assert failure["type"] == "failed"
+    assert failure["message"] == "rollback both stores"
+    assert (await runtime.handle(invoke("balance")))["result"] == 12
+    assert (await runtime.handle(invoke("ledger")))["result"] == [
+        {"amount": 5},
+        {"amount": 7},
+    ]
+    with pytest.raises(RuntimeError, match="outside its invocation"):
+        captured[0].exec("SELECT amount FROM ledger")  # type: ignore[attr-defined]

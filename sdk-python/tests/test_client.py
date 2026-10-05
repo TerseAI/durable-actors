@@ -47,6 +47,18 @@ def test_lost_response_is_not_replayed():
     assert len(calls) == 1
 
 
+def test_unreachable_server_fails_before_execution_and_names_its_origin():
+    def handle(request):
+        raise httpx.ConnectError("[Errno 61] Connection refused")
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with Client("http://control.test", project_id="test", http=http) as client:
+            with pytest.raises(ActorInvocationError) as failure:
+                client.invoke("Counter", "one", "increment", [])
+    assert failure.value.code == "unavailable"
+    assert "http://control.test" in str(failure.value)
+
+
 def test_default_client_shares_its_pool_and_closes_it_at_process_exit(tmp_path):
     closed = tmp_path / "closed"
     result = subprocess.run(
