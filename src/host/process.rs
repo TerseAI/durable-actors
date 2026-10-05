@@ -37,6 +37,7 @@ pub struct ActorHostConfig {
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
+    activation_handoff: Option<crate::bucket::ActivationHandoff>,
     ready_file: Option<PathBuf>,
     pub control_plane_url: String,
     pub host_token: String,
@@ -302,6 +303,9 @@ impl ActorHostConfig {
             owner_hint: get("DURABLE_ACTORS_OWNER_HINT")
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
+            activation_handoff: get("DURABLE_ACTORS_ACTIVATION_HANDOFF")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
             customer_environment: get("DURABLE_ACTORS_CUSTOMER_ENV")
                 .map(|value| serde_json::from_str(&value))
@@ -404,7 +408,8 @@ async fn prepare_actor_host(
             config.actor.clone(),
         )
         .await?
-        .with_activation(config.new_actor, config.owner_hint.clone()),
+        .with_activation(config.new_actor, config.owner_hint.clone())
+        .with_handoff(config.activation_handoff.clone()),
     );
     let started = timings.started_at;
     let storage_ready = async {

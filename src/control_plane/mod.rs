@@ -1,6 +1,7 @@
 pub(crate) mod admin;
 pub(crate) mod assignment;
 mod auth;
+mod bootstrap;
 mod client;
 mod contract_api;
 pub(crate) mod contracts;

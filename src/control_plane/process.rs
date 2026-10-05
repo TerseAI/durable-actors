@@ -187,6 +187,7 @@ async fn control_plane_routes(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
+        storage.clone(),
         stop,
     )
     .await?;
@@ -229,6 +230,7 @@ async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
+    storage: Arc<RuntimeStorageReader>,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(
@@ -236,19 +238,17 @@ async fn sandbox_provisioner(
             config.substrate,
             issuer.clone(),
             &config.runtime.control_plane_url,
+            Arc::new(super::bootstrap::RuntimeBootstrap::new(access, storage)),
         )
         .await?,
     );
     provider.start(stop);
-    Ok(Arc::new(
-        super::service::SandboxHostProvisioner::new(
-            provider,
-            config.runtime,
-            issuer.clone(),
-            Some(config.runtime_image),
-        )
-        .with_runtime_access(access),
-    ))
+    Ok(Arc::new(super::service::SandboxHostProvisioner::new(
+        provider,
+        config.runtime,
+        issuer.clone(),
+        Some(config.runtime_image),
+    )))
 }
 
 impl ControlPlaneProcessConfig {

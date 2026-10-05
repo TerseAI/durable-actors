@@ -52,14 +52,20 @@ fn template_sizes_share_capacity_without_sharing_customer_identity() -> Result<(
 #[tokio::test]
 async fn failed_assignment_deletes_the_allocated_actor() -> Result<()> {
     let api = Arc::new(Api::new(Vec::new()));
+    let bootstrap = Arc::new(TestBootstrap::new()?);
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: bootstrap.clone(),
         assignment: Arc::new(FailingAssignment),
         config: config(),
         issuer: issuer()?,
     };
     assert!(provider.ensure_host(&request()?).await.is_err());
+    assert!(
+        !bootstrap.released.load(std::sync::atomic::Ordering::SeqCst),
+        "an ambiguous assignment must retain its lease until expiry"
+    );
     assert_eq!(
         *api.0.lock().unwrap(),
         ["template", "create", "egress", "resume", "delete"]
@@ -73,6 +79,7 @@ struct Api(
     Mutex<HashMap<String, proto::Tag>>,
     Mutex<Vec<proto::Actor>>,
     bool,
+    Option<Arc<tokio::sync::Barrier>>,
 );
 impl Api {
     fn new(actors: Vec<proto::Actor>) -> Self {
@@ -82,6 +89,7 @@ impl Api {
             Mutex::new(HashMap::new()),
             Mutex::new(Vec::new()),
             false,
+            None,
         )
     }
 }
@@ -148,6 +156,9 @@ impl SubstrateApi for Api {
     }
     async fn resume(&self, _: proto::ObjectRef) -> Result<()> {
         self.0.lock().unwrap().push("resume");
+        if let Some(barrier) = &self.5 {
+            barrier.wait().await;
+        }
         Ok(())
     }
     async fn delete(&self, _: proto::Actor, _: Option<i64>) -> Result<()> {
@@ -214,6 +225,7 @@ async fn exited_runtime_releases_capacity_after_repeated_failed_probes() -> Resu
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
         config: config(),
         issuer: issuer()?,
@@ -357,6 +369,7 @@ async fn deployment_prepares_golden_snapshots_before_actors_are_created() -> Res
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
         config: config(),
         issuer: issuer()?,
@@ -391,6 +404,7 @@ async fn deployment_prepares_code_without_assigning_customer_runtime() -> Result
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
         config: SubstrateConfig {
             code_snapshots: true,
@@ -422,6 +436,7 @@ async fn code_snapshots_are_reused_and_changed_artifacts_get_new_snapshots() -> 
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
         config: SubstrateConfig {
             code_snapshots: true,
@@ -465,6 +480,7 @@ async fn failed_code_snapshot_releases_preparation_capacity() -> Result<()> {
     let provider = SubstrateProvider {
         api: api.clone(),
         code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
         config: SubstrateConfig {
             code_snapshots: true,
@@ -479,5 +495,242 @@ async fn failed_code_snapshot_releases_preparation_capacity() -> Result<()> {
             .is_err()
     );
     assert_eq!(api.0.lock().unwrap().last(), Some(&"delete"));
+    Ok(())
+}
+
+struct TestBootstrap {
+    _directory: tempfile::TempDir,
+    storage: crate::bucket::RuntimeStorage,
+    barrier: Option<Arc<tokio::sync::Barrier>>,
+    fail_credentials: bool,
+    released: std::sync::atomic::AtomicBool,
+}
+impl TestBootstrap {
+    fn new() -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        let storage = crate::bucket::RuntimeStorage::new(
+            Arc::new(crate::bucket::FileBucket::new(directory.path().into())?),
+            Arc::new(SystemClock),
+        )?;
+        Ok(Self {
+            _directory: directory,
+            storage,
+            barrier: None,
+            fail_credentials: false,
+            released: false.into(),
+        })
+    }
+}
+#[async_trait]
+impl HostBootstrap for TestBootstrap {
+    async fn credentials(&self, _: &EnsureHostRequest) -> Result<String> {
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
+        ensure!(!self.fail_credentials, "credentials failed");
+        Ok("{}".into())
+    }
+    async fn claim(
+        &self,
+        request: &EnsureHostRequest,
+        route: &str,
+    ) -> Result<crate::bucket::ActivationHandoff> {
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
+        self.storage
+            .prepare_activation(
+                request.actor.as_ref().unwrap(),
+                &crate::host_leases::HostLeaseRequest {
+                    id: request.host_id.clone(),
+                    session_id: request.session_id.clone(),
+                    route: route.into(),
+                    duration_ms: 30_000,
+                },
+                &request.canonical_region,
+                true,
+                None,
+            )
+            .await
+    }
+    async fn release(&self, request: &EnsureHostRequest) -> Result<()> {
+        self.released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.storage
+            .release_activation(
+                request.actor.as_ref().unwrap(),
+                &request.host_id,
+                &request.session_id,
+            )
+            .await
+    }
+}
+
+#[tokio::test]
+async fn credentials_ownership_and_restore_run_concurrently_before_assignment() -> Result<()> {
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let mut api = Api::new(Vec::new());
+    api.5 = Some(barrier.clone());
+    let api = Arc::new(api);
+    let bootstrap = Arc::new(TestBootstrap {
+        barrier: Some(barrier),
+        ..TestBootstrap::new()?
+    });
+    let provider = SubstrateProvider {
+        api: api.clone(),
+        code: Arc::new(TestCodeSource),
+        bootstrap: bootstrap.clone(),
+        assignment: Arc::new(ReadyAssignment),
+        config: config(),
+        issuer: issuer()?,
+    };
+    let handle =
+        tokio::time::timeout(Duration::from_secs(2), provider.ensure_host(&request()?)).await??;
+    assert_eq!(handle.owner_epoch, 1);
+    assert!(!bootstrap.released.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!api.0.lock().unwrap().contains(&"delete"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn credential_failure_waits_for_restore_and_releases_the_unassigned_claim() -> Result<()> {
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let mut api = Api::new(Vec::new());
+    api.5 = Some(barrier.clone());
+    let api = Arc::new(api);
+    let bootstrap = Arc::new(TestBootstrap {
+        barrier: Some(barrier),
+        fail_credentials: true,
+        ..TestBootstrap::new()?
+    });
+    let provider = SubstrateProvider {
+        api: api.clone(),
+        code: Arc::new(TestCodeSource),
+        bootstrap: bootstrap.clone(),
+        assignment: Arc::new(ReadyAssignment),
+        config: config(),
+        issuer: issuer()?,
+    };
+    let error = tokio::time::timeout(Duration::from_secs(2), provider.ensure_host(&request()?))
+        .await?
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("credentials failed"));
+    assert!(bootstrap.released.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(api.0.lock().unwrap().last(), Some(&"delete"));
+    Ok(())
+}
+
+struct ReadyAssignment;
+#[async_trait]
+impl HostAssignment for ReadyAssignment {
+    async fn alive(&self, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+    async fn prepare_code(
+        &self,
+        _: &str,
+        _: &str,
+        _: &crate::artifacts::ArtifactFile,
+        _: code::CodeStream,
+    ) -> Result<()> {
+        Ok(())
+    }
+    async fn assign(
+        &self,
+        route: &str,
+        _: &str,
+        env: HashMap<String, String>,
+    ) -> Result<ActorHostHandle> {
+        assert_eq!(env["DURABLE_ACTORS_RUNTIME_CONFIG"], "{}");
+        let handoff: serde_json::Value =
+            serde_json::from_str(&env["DURABLE_ACTORS_ACTIVATION_HANDOFF"])?;
+        Ok(ActorHostHandle {
+            host_id: HostId::new(env["DURABLE_ACTORS_HOST_ID"].clone()),
+            route: route.into(),
+            canonical_region: env["DURABLE_ACTORS_REGION"].clone(),
+            owner_epoch: handoff["record"]["epoch"].as_u64().unwrap(),
+            lease: Some(serde_json::from_value(handoff["record"]["lease"].clone())?),
+            provisioning: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_disconnected_caller_does_not_abandon_an_inflight_claim() -> Result<()> {
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+    let mut api = Api::new(Vec::new());
+    api.5 = Some(barrier.clone());
+    let api = Arc::new(api);
+    let bootstrap = Arc::new(TestBootstrap {
+        barrier: Some(barrier.clone()),
+        fail_credentials: true,
+        ..TestBootstrap::new()?
+    });
+    let provider = SubstrateProvider {
+        api: api.clone(),
+        code: Arc::new(TestCodeSource),
+        bootstrap: bootstrap.clone(),
+        assignment: Arc::new(ReadyAssignment),
+        config: config(),
+        issuer: issuer()?,
+    };
+    let request = request()?;
+    let caller = tokio::spawn(async move { provider.ensure_host(&request).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !api.0.lock().unwrap().contains(&"resume") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    caller.abort();
+    barrier.wait().await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !bootstrap.released.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(api.0.lock().unwrap().last(), Some(&"delete"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_published_claim_waits_for_the_sandbox_route_to_exist() -> Result<()> {
+    use axum::{Router, http::StatusCode, routing::post};
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = count.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let router = format!("http://{}", listener.local_addr()?);
+    let app = Router::new().route(
+        "/readyz",
+        post(move || {
+            let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if call == 0 {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::OK
+                }
+            }
+        }),
+    );
+    let _server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        axum::serve(listener, app).await
+    }));
+    let provider = SubstrateProvider {
+        api: Arc::new(Api::new(Vec::new())),
+        code: Arc::new(TestCodeSource),
+        bootstrap: Arc::new(TestBootstrap::new()?),
+        assignment: Arc::new(ReadyAssignment),
+        config: SubstrateConfig { router, ..config() },
+        issuer: issuer()?,
+    };
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        provider.wait_ready(&request()?.host_id),
+    )
+    .await??;
+    assert!(count.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     Ok(())
 }

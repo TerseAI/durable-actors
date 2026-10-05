@@ -15,6 +15,7 @@ use std::{
 mod api;
 mod assignment;
 mod code;
+mod launch;
 pub(crate) use assignment::validate_image;
 mod template;
 use terse_substrate as proto;
@@ -35,10 +36,12 @@ pub(crate) struct SubstrateConfig {
     pub egress_cidrs: Vec<String>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SubstrateProvider {
     api: Arc<dyn SubstrateApi>,
     code: Arc<dyn code::CodeSource>,
     assignment: Arc<dyn HostAssignment>,
+    bootstrap: Arc<dyn HostBootstrap>,
     config: SubstrateConfig,
     issuer: ActorJwtIssuer,
 }
@@ -48,6 +51,7 @@ impl SubstrateProvider {
         mut config: SubstrateConfig,
         issuer: ActorJwtIssuer,
         control_plane_url: &str,
+        bootstrap: Arc<dyn HostBootstrap>,
     ) -> Result<Self> {
         let control = reqwest::Url::parse(control_plane_url)?;
         for address in tokio::net::lookup_host((
@@ -72,6 +76,7 @@ impl SubstrateProvider {
             )),
             config,
             issuer,
+            bootstrap,
             assignment: Arc::new(HttpAssignment(
                 reqwest::Client::builder()
                     .timeout(Duration::from_secs(120))
@@ -217,12 +222,12 @@ impl SubstrateProvider {
         result
     }
 
-    async fn assign(
+    async fn restore(
         &self,
         request: &EnsureHostRequest,
         actor: &proto::Actor,
         timings: &mut ProvisioningTimings,
-    ) -> Result<ActorHostHandle> {
+    ) -> Result<HashMap<String, String>> {
         let meta = actor.metadata.as_ref().context("actor identity missing")?;
         let target = reference(&meta.atespace, &meta.name);
         let started = std::time::Instant::now();
@@ -244,9 +249,25 @@ impl SubstrateProvider {
         let started = std::time::Instant::now();
         self.api.resume(target).await?;
         timings.resume_ms = millis(started);
+        Ok(secrets)
+    }
+
+    async fn assign(
+        &self,
+        request: &EnsureHostRequest,
+        actor: &proto::Actor,
+        secrets: HashMap<String, String>,
+        handoff: &crate::bucket::ActivationHandoff,
+        timings: &mut ProvisioningTimings,
+    ) -> Result<ActorHostHandle> {
+        let meta = actor.metadata.as_ref().context("actor identity missing")?;
         let started = std::time::Instant::now();
         let route = self.route(&meta.name);
-        let env = assignment::environment(request, &route, secrets)?;
+        let mut env = assignment::environment(request, &route, secrets)?;
+        env.insert(
+            "DURABLE_ACTORS_ACTIVATION_HANDOFF".into(),
+            serde_json::to_string(handoff)?,
+        );
         let handle = self
             .assignment
             .assign(&route, &self.issuer.issue_assignment(&meta.uid)?, env)
@@ -320,9 +341,6 @@ impl SandboxProvider for SubstrateProvider {
                     if response.status().is_success() {
                         return Ok(());
                     }
-                    if response.status() == reqwest::StatusCode::NOT_FOUND {
-                        return Err(HostNotReady.into());
-                    }
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -337,43 +355,10 @@ impl SandboxProvider for SubstrateProvider {
             "Substrate region is not configured"
         );
         assignment::validate_image(&request.image_ref)?;
-        let started_at_ms = SystemClock.now_ms()?;
-        let mut timings = ProvisioningTimings::default();
-        let actor = self.allocate(request, &mut timings).await?;
-        let allocated = SystemClock.now_ms()?;
-        match self.assign(request, &actor, &mut timings).await {
-            Ok(mut handle) => {
-                let completed = SystemClock.now_ms()?;
-                tracing::info!(event = "substrate_provisioning", host_id = %request.host_id,
-                    code_snapshot = self.config.code_snapshots, total_ms = completed - started_at_ms,
-                    phases = %serde_json::to_string(&timings)?, "Substrate provisioning complete");
-                let meta = actor.metadata.context("actor identity missing")?;
-                handle.provisioning = Some(ActorHostProvisioning {
-                    provider: "substrate".into(),
-                    resource_id: format!("{}/{}/{}", meta.atespace, meta.name, meta.uid),
-                    reused: true,
-                    started_at_ms,
-                    completed_at_ms: completed,
-                    sandbox_scheduled_at_ms: Some(allocated),
-                    host_ready_observed_at_ms: Some(completed),
-                    input_parsed_at_ms: None,
-                    sdk_loaded_at_ms: None,
-                    resources_resolved_at_ms: None,
-                    route_read_at_ms: None,
-                    command_spawned_at_ms: None,
-                    request_written_at_ms: None,
-                    process_completed_at_ms: None,
-                    response_decoded_at_ms: None,
-                });
-                Ok(handle)
-            }
-            Err(error) => {
-                if let Err(cleanup) = self.api.delete(actor, None).await {
-                    tracing::warn!(%cleanup, "failed to delete unassigned Substrate actor");
-                }
-                Err(error)
-            }
-        }
+        let provider = self.clone();
+        let request = request.clone();
+        // Complete allocation or cleanup even if the requesting client disconnects.
+        tokio::spawn(async move { provider.launch(request).await }).await?
     }
 
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination> {
@@ -522,6 +507,9 @@ impl HostAssignment for HttpAssignment {
 
 #[derive(Default, serde::Serialize)]
 struct ProvisioningTimings {
+    credentials_ms: f64,
+    ownership_ms: f64,
+    ready_to_assign_ms: f64,
     template_ms: f64,
     code_tag_ms: f64,
     create_ms: f64,
@@ -538,3 +526,14 @@ fn millis(started: std::time::Instant) -> f64 {
 #[cfg(test)]
 #[path = "../../tests/unit/sandbox/substrate.rs"]
 mod tests;
+
+#[async_trait]
+pub(crate) trait HostBootstrap: Send + Sync {
+    async fn credentials(&self, request: &EnsureHostRequest) -> Result<String>;
+    async fn claim(
+        &self,
+        request: &EnsureHostRequest,
+        route: &str,
+    ) -> Result<crate::bucket::ActivationHandoff>;
+    async fn release(&self, request: &EnsureHostRequest) -> Result<()>;
+}

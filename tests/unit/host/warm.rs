@@ -133,6 +133,29 @@ async fn run_activation(
             "token": null
         }).to_string()
     }))?;
+    let control = crate::bucket::RuntimeStorage::new(
+        Arc::new(FileBucket::new(data.to_path_buf())?),
+        Arc::new(crate::clock::SystemClock),
+    )?;
+    let handoff = control
+        .prepare_activation(
+            actor,
+            &crate::host_leases::HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: session.clone(),
+                route: route.clone(),
+                duration_ms: 30_000,
+            },
+            "north-america-east",
+            before < 0,
+            None,
+        )
+        .await?;
+    let mut environment = environment;
+    environment.insert(
+        "DURABLE_ACTORS_ACTIVATION_HANDOFF".into(),
+        serde_json::to_string(&handoff)?,
+    );
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
     let warm = WarmHost {
