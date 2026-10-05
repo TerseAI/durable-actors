@@ -2,16 +2,12 @@
 
 ## Before you start
 
-Requires Node.js 22.19+, pnpm, and Bun 1.3.9+. From the repository root, install dependencies and build the CLI, then copy the example's environment file:
-
 ```bash
 pnpm install
 pnpm --dir sdk build
 cd examples/bank-typescript
 cp .env.example .env
 ```
-
-The `.env` file sets the actor server's port to 7111 and points the client at it.
 
 ## Defining an actor
 
@@ -269,5 +265,3 @@ export class BankAccount extends Actor {
     @Persisted @Emittable balance = 0
 }
 ```
-
-`cpu` accepts 0.1 to 64 cores, `memoryMiB` 128 to 262144, and `idleTimeoutMs` up to one day. `regions` restricts where new actors are placed. An existing actor keeps the region it was created in, so a `regions` list that excludes it makes that actor's calls fail with `conflict`.

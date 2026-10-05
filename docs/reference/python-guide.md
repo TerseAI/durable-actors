@@ -2,8 +2,6 @@
 
 ## Before you start
 
-Actors and clients are Python; the shared Node CLI runs the dev server and generates clients. From the repository root, install dependencies and build the CLI, then set up the example:
-
 ```bash
 pnpm install
 pnpm --dir sdk build
@@ -11,8 +9,6 @@ cd examples/bank-python
 uv sync
 cp .env.example .env
 ```
-
-The `.env` file sets the actor server's port to 7112 and points the client at it.
 
 ## Defining an actor
 
@@ -296,5 +292,3 @@ from durable_actors import Actor, emitted, persisted, sandbox
 class BankAccount(Actor):
     balance: int = emitted(persisted(0))
 ```
-
-`cpu` accepts 0.1 to 64 cores, `memory_mib` 128 to 262144, and `idle_timeout_ms` up to one day. `regions` restricts where new actors are placed. An existing actor keeps the region it was created in, so a `regions` list that excludes it makes that actor's calls fail with `conflict`.
