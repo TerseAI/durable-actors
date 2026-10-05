@@ -1,12 +1,15 @@
 import asyncio
+import gc
+import weakref
 from threading import Event
 
 import pytest
 from fixtures.effects import Effects
-from fixtures.sqlite import ActorRuntime, seed
+from fixtures.sqlite import ActorRuntime, HostStorage, seed
 from pydantic import BaseModel
 
 from durable_actors import Actor, ephemeral, interleave, persisted
+from durable_actors.runtime import ActorRuntime as Runtime
 
 
 class Value(BaseModel):
@@ -97,6 +100,17 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_replaced_and_evicted_instances_are_released():
+    runtime = ActorRuntime(Counter, Effects())
+    instances = []
+    for _ in range(3):
+        await runtime.handle(command("fail"))
+        instances.append(weakref.ref(runtime.instance))
+    await runtime.handle({"type": "evict", "actor": ACTOR})
+    gc.collect()
+    assert [instance() for instance in instances] == [None, None, None]
+
+
 async def test_residency_and_eviction_require_explicit_hydration():
     runtime = ActorRuntime(Counter, Effects())
     assert (await runtime.handle(command(resident_only=True)))["type"] == "state_required"
@@ -144,6 +158,50 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
     finally:
         resume.set()
         await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_completion_waits_for_an_interleaved_sql_statement_off_the_event_loop():
+    entered, persisting = asyncio.Event(), asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    class ContendedStorage(HostStorage):
+        def exec(self, sql, *bindings):
+            with self.lock:
+                loop.call_soon_threadsafe(entered.set)
+                if not release.wait(3):
+                    raise TimeoutError("the event loop stalled behind the database lock")
+                return super().exec(sql, *bindings)
+
+        def persist_fields(self, fields):
+            loop.call_soon_threadsafe(persisting.set)
+            super().persist_fields(fields)
+
+    class Ledger(Actor):
+        count: int = persisted(0)
+
+        @interleave
+        def record(self) -> None:
+            self.db.exec("CREATE TABLE IF NOT EXISTS entries (id INTEGER)")
+
+        def increment(self) -> int:
+            self.count += 1
+            return self.count
+
+    runtime = Runtime(Ledger, Effects(), ContendedStorage())
+    actor = {**ACTOR, "actor_name": "Ledger"}
+    tasks = [asyncio.create_task(runtime.handle(command("record", actor=actor)))]
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        tasks.append(asyncio.create_task(runtime.handle(command(actor=actor))))
+        await asyncio.wait_for(persisting.wait(), 1)
+        release.set()
+        replies = await asyncio.wait_for(asyncio.gather(*tasks), 5)
+        assert [reply["type"] for reply in replies] == ["invoked", "invoked"]
+        assert replies[1]["result"] == 1
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_socket_messages_are_typed_and_emit_persisted_changes():
@@ -356,7 +414,6 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
 
 
 async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_path):
-    from durable_actors.runtime import ActorRuntime as Runtime
     from durable_actors.sqlite import SqliteStorage
 
     captured: list[object] = []

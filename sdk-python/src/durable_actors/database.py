@@ -6,7 +6,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Protocol
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref
 
 SqliteValue = str | int | float | bytes | None
 
@@ -29,13 +29,14 @@ class ActorDatabase:
     """One actor's SQLite handle. Statements run only during its current invocation."""
 
     def __init__(self, actor: object, storage: SqlDatabase) -> None:
-        self._actor = actor
+        # WeakKeyDictionary values must not strongly reference their keys.
+        self._actor = ref(actor)
         self._storage = storage
 
     def exec(self, sql: str, *bindings: SqliteValue) -> list[dict[str, SqliteValue]]:
         """Execute one statement with positional bindings and return its rows."""
         admission = _admission.get()
-        if admission is None or admission.actor is not self._actor or not admission.active:
+        if admission is None or admission.actor is not self._actor() or not admission.active:
             raise RuntimeError("actor database is unavailable outside its invocation")
         return self._storage.exec(sql, *bindings)
 

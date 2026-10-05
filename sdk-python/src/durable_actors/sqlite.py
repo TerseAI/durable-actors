@@ -4,11 +4,13 @@ import json
 import re
 import sqlite3
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from threading import RLock
 from typing import Any, Protocol
 
 from .contract import Document
 from .database import SqliteValue
+from .threads import run_in_thread
 
 
 class SqliteCaptureError(RuntimeError):
@@ -36,17 +38,18 @@ class SqliteStorage:
         self.failure: SqliteCaptureError | None = None
 
     def restore(self, state: Document | None) -> None:
-        self.close()
-        if (
-            state is None
-            or not valid_txid(state.get("txid"))
-            or not isinstance(state.get("path"), str)
-            or not state["path"]
-        ):
-            raise ValueError("invalid actor SQLite recovery state")
-        self.seed = state
-        self.txid = state["txid"]
-        self.version = self.change_token()
+        with self.lock:
+            self.close()
+            if (
+                state is None
+                or not valid_txid(state.get("txid"))
+                or not isinstance(state.get("path"), str)
+                or not state["path"]
+            ):
+                raise ValueError("invalid actor SQLite recovery state")
+            self.seed = state
+            self.txid = state["txid"]
+            self.version = self.change_token()
 
     def fields(self) -> Document:
         with self.lock:
@@ -78,10 +81,7 @@ class SqliteStorage:
 
     async def snapshot(self) -> Document:
         try:
-            with self.lock:
-                database = self.open()
-                version = self.change_token()
-                database.commit()
+            version = await run_in_thread(self._commit_transaction)
             if version != self.version:
                 assert self.seed is not None
                 txid = await self.commit()
@@ -93,6 +93,13 @@ class SqliteStorage:
         except Exception as error:
             self.failure = SqliteCaptureError("failed to replicate actor SQLite commit")
             raise self.failure from error
+
+    def _commit_transaction(self) -> tuple[int, int, int]:
+        with self.lock:
+            database = self.open()
+            version = self.change_token()
+            database.commit()
+            return version
 
     def rollback(self) -> None:
         with self.lock:
@@ -114,14 +121,16 @@ class SqliteStorage:
         _validate_statement(sql)
         with self.lock:
             database = self.open()
-            _validate_single_statement(database, sql)
-            if not database.in_transaction:
+            began = not database.in_transaction
+            if began:
                 database.execute("BEGIN IMMEDIATE")
-            cursor = database.execute(sql, bindings)
-            if cursor.description is None:
-                return []
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+            try:
+                with closing(database.execute(sql, bindings)) as cursor:
+                    return _rows(cursor)
+            except BaseException:
+                if began:
+                    database.rollback()
+                raise
 
     def change_token(self) -> tuple[int, int, int]:
         database = self.open()
@@ -198,16 +207,23 @@ def _validate_statement(sql: str) -> None:
         raise ValueError("actor invocations own SQLite transactions and database files")
     if _PRAGMA.match(statement) and not _ALLOWED_PRAGMA.match(statement):
         raise ValueError("this SQLite pragma is managed by the actor runtime")
+    _validate_single_statement(sql)
 
 
-def _validate_single_statement(database: sqlite3.Connection, sql: str) -> None:
+def _validate_single_statement(sql: str) -> None:
     for token in _STATEMENT_TOKENS.finditer(sql):
-        if token.group(0) != ";" or not _statement_text(sql[token.end() :]):
-            continue
-        try:
-            database.execute("EXPLAIN " + sql[: token.end()])
-        except sqlite3.Error as error:
-            if "incomplete input" not in str(error):
-                raise
-            continue
-        raise ValueError("actor database exec accepts one SQL statement")
+        end = token.end()
+        # complete_statement treats semicolons inside trigger bodies as part of the statement.
+        if (
+            token.group(0) == ";"
+            and _statement_text(sql[end:])
+            and sqlite3.complete_statement(sql[:end])
+        ):
+            raise ValueError("actor database exec accepts one SQL statement")
+
+
+def _rows(cursor: sqlite3.Cursor) -> list[dict[str, SqliteValue]]:
+    if cursor.description is None:
+        return []
+    columns = [column[0] for column in cursor.description]
+    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
