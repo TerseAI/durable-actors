@@ -93,7 +93,7 @@ def test_control_plane_request_that_was_never_sent_is_unavailable(failure):
     error, calls = invoke_through("control.test", failure)
     assert isinstance(error, ActorInvocationError)
     assert error.code == "unavailable"
-    assert "http://control.test" in str(error)
+    assert str(error) == f"could not connect to http://control.test: {failure()}"
     assert calls == ["control.test"]
 
 
