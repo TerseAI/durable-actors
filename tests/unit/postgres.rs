@@ -154,11 +154,11 @@ async fn check_isolated_migrations(
     second: &tokio_postgres::Client,
 ) -> Result<()> {
     first
-        .execute("DELETE FROM refinery_schema_history WHERE version = 1", &[])
+        .execute("DELETE FROM refinery_schema_history WHERE version = 3", &[])
         .await?;
     let count: i64 = second
         .query_one(
-            "SELECT count(*) FROM refinery_schema_history WHERE version = 1",
+            "SELECT count(*) FROM refinery_schema_history WHERE version = 3",
             &[],
         )
         .await?

@@ -9,7 +9,7 @@ Each write appends the same state record to persistent streams in two Rapid zone
 - GKE Standard with Workload Identity, Gateway API, and Agent Substrate installed. This chart targets Substrate `v0.2.0-gke.0`. Enable its certificate APIs before creating nodes; existing nodes may not support ClusterTrustBundle projection. Run control-plane Pods on ordinary nodes and workers on Substrate-compatible nodes.
 - Standard authority, artifact, and archive buckets with uniform access and public access prevention. Keep the archive indefinitely; its location determines the permanent failure domain. Do not expire referenced actor history or code.
 - Two Rapid buckets in supported distinct zones, without automatic deletion of log objects. Buckets are shared infrastructure; actor data is isolated by credential prefixes.
-- PostgreSQL, preferably private Cloud SQL with regional HA. The database user must be able to create the initial schema.
+- PostgreSQL, preferably private Cloud SQL with regional HA. The database user needs migration privileges.
 - A Google service account with `roles/storage.objectUser` on the application buckets and `storage.buckets.get` on the Rapid and archive buckets. `roles/storage.legacyBucketReader` supplies the latter at bucket scope. Bind `<control-namespace>/<release>-terse` with `roles/iam.workloadIdentityUser`; customer sandboxes use downscoped credentials and cannot reach the metadata server.
 - A control-namespace Secret containing `postgres-url`, `api-key`, and `jwt-signing-key` (base64 Ed25519 PKCS#8).
 - A matching TLS Secret or Google-managed Compute Engine certificate. Set exactly one of `gateway.tlsSecret` and `gateway.preSharedCert`.
@@ -93,7 +93,7 @@ The snapshot bucket is separate from customer storage. Grant the Substrate `ate-
 kubectl --kubeconfig "$TERSE_STAGING_KUBECONFIG" get workerpools,pods -n terse-substrate
 ```
 
-The Rust API client and protocol bindings are maintained in [terse-substrate](https://github.com/TerseAI/terse-substrate), pinned by commit in `Cargo.toml`. This backend replaces the old spare registry and per-profile warm pools. The pre-launch initial schema contains only current runtime tables; initialize a fresh PostgreSQL database for this backend. Actor ownership and durable state remain in the GCS storage protocol.
+The Rust API client and protocol bindings are maintained in [terse-substrate](https://github.com/TerseAI/terse-substrate), pinned by commit in `Cargo.toml`. This backend replaces the old spare registry and per-profile warm pools. Migration V18 removes the old spare bookkeeping tables; existing actor ownership and durable state remain in the normal storage protocol. Deploy this upgrade only to the intended environment.
 
 ### WebSocket capacity
 
