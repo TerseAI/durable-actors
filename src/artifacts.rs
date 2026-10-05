@@ -8,7 +8,6 @@ use aws_lc_rs::digest::{Context as Digest, SHA256};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{Stream, TryStreamExt};
-use google_cloud_storage::client::Storage;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -49,36 +48,23 @@ impl ArtifactManifest {
         Ok(value)
     }
 
-    pub async fn install(&self, root: &Path, storage: &Storage) -> Result<()> {
+    pub async fn verify(&self, root: &Path) -> Result<()> {
         self.validate()?;
         let started = std::time::Instant::now();
-        let bucket = format!("projects/_/buckets/{}", self.bucket);
-        let cached = futures_util::future::try_join_all(self.files.iter().map(|file| async {
-            if cached_file_matches(root, file).await? {
-                return Ok(true);
-            }
-            let response = storage
-                .read_object(&bucket, &file.object)
-                .set_generation(file.generation)
-                .send()
-                .await?;
-            let chunks = futures_util::stream::try_unfold(response, |mut response| async {
-                match response.next().await {
-                    Some(chunk) => Ok(Some((chunk?, response))),
-                    None => anyhow::Ok(None),
-                }
-            });
-            install_file(root, file, chunks).await?;
-            anyhow::Ok(false)
+        futures_util::future::try_join_all(self.files.iter().map(|file| async {
+            ensure!(
+                cached_file_matches(root, file).await?,
+                "prepared artifact is missing or corrupt: {}",
+                file.path
+            );
+            Ok::<_, anyhow::Error>(())
         }))
         .await?;
-        let cached_files = cached.iter().filter(|hit| **hit).count();
         tracing::info!(
-            event = "actor_code_install",
-            cached_files,
-            downloaded_files = cached.len() - cached_files,
+            event = "actor_code_verified",
+            files = self.files.len(),
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-            "actor code installed"
+            "prepared actor code verified"
         );
         Ok(())
     }

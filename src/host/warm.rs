@@ -94,23 +94,21 @@ pub async fn serve_warm(shutdown: impl Future<Output = ()> + Send + 'static) -> 
 
 fn assignment_authorization(
     get: impl Fn(&str) -> Option<String>,
-) -> Result<super::assignment::Authorization> {
+) -> Result<crate::control_plane::assignment::AssignmentVerifier> {
     let keys =
         get("DURABLE_ACTORS_ASSIGNMENT_PUBLIC_KEYS").context("assignment public keys missing")?;
     let path =
         get("DURABLE_ACTORS_SANDBOX_IDENTITY_FILE").context("sandbox identity file missing")?;
-    Ok(super::assignment::Authorization::Signed(
-        crate::control_plane::assignment::AssignmentVerifier::new(
-            &keys,
-            &get("DURABLE_ACTORS_JWT_ISSUER").context("assignment issuer missing")?,
-            move || {
-                let uid = std::fs::read_to_string(&path)?;
-                let uid = uid.trim();
-                ensure!(!uid.is_empty(), "sandbox identity file is empty");
-                Ok(uid.to_owned())
-            },
-        )?,
-    ))
+    crate::control_plane::assignment::AssignmentVerifier::new(
+        &keys,
+        &get("DURABLE_ACTORS_JWT_ISSUER").context("assignment issuer missing")?,
+        move || {
+            let uid = std::fs::read_to_string(&path)?;
+            let uid = uid.trim();
+            ensure!(!uid.is_empty(), "sandbox identity file is empty");
+            Ok(uid.to_owned())
+        },
+    )
 }
 
 #[cfg(test)]

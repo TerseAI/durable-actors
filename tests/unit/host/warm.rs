@@ -28,11 +28,7 @@ fn snapshot_assignment_reads_the_current_identity_and_fails_closed() -> Result<(
             path.to_str().unwrap().into(),
         ),
     ]);
-    let super::super::assignment::Authorization::Signed(verifier) =
-        assignment_authorization(|key| env.get(key).cloned())?
-    else {
-        panic!("signed assignment required")
-    };
+    let verifier = assignment_authorization(|key| env.get(key).cloned())?;
     let restored = issuer.issue_assignment("restored")?;
     verifier.verify(&restored)?;
     assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());

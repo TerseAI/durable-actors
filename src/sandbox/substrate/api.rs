@@ -95,14 +95,12 @@ impl SubstrateApi for GrpcApi {
             Ok(_) => {}
             Err(error) if is_status(&error, Code::AlreadyExists) => {}
             Err(error) => {
-                if let Ok(failed) = self.client.get_tag(target.clone()).await {
-                    if failed.source_actor == source
-                        && !failed.status.as_ref().is_some_and(|s| s.snapshot.is_some())
-                    {
-                        if let Err(cleanup) = self.delete_tag(failed).await {
-                            tracing::warn!(%cleanup, "failed to collect incomplete code snapshot");
-                        }
-                    }
+                if let Ok(failed) = self.client.get_tag(target.clone()).await
+                    && failed.source_actor == source
+                    && failed.status.as_ref().is_none_or(|s| s.snapshot.is_none())
+                    && let Err(cleanup) = self.delete_tag(failed).await
+                {
+                    tracing::warn!(%cleanup, "failed to collect incomplete code snapshot");
                 }
                 return Err(error);
             }

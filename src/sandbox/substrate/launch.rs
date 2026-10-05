@@ -36,7 +36,7 @@ impl SubstrateProvider {
                 let (actor, _) = sandbox?;
                 let completed = SystemClock.now_ms()?;
                 tracing::info!(event = "substrate_provisioning", host_id = %request.host_id,
-                    code_snapshot = self.config.code_snapshots, total_ms = completed - started_at_ms,
+                    total_ms = completed - started_at_ms,
                     phases = %serde_json::to_string(&timings)?, "Substrate provisioning complete");
                 let meta = actor.metadata.context("actor identity missing")?;
                 handle.provisioning = Some(ActorHostProvisioning {
@@ -63,10 +63,10 @@ impl SubstrateProvider {
                     self.discard(actor).await;
                 }
                 // An ambiguous assignment may have started a writer; let its lease expire.
-                if !assignment_attempted {
-                    if let Err(cleanup) = self.bootstrap.release(&request).await {
-                        tracing::warn!(%cleanup, "failed to release unassigned activation");
-                    }
+                if !assignment_attempted
+                    && let Err(cleanup) = self.bootstrap.release(&request).await
+                {
+                    tracing::warn!(%cleanup, "failed to release unassigned activation");
                 }
                 Err(error)
             }

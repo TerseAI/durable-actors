@@ -173,7 +173,6 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
     let runtime = Arc::new(RuntimeStorage::new(bucket.clone(), Arc::new(SystemClock))?);
     let host = HostId::new("host.v3.revision.host");
     Ok(HostStorage {
-        objects: None,
         observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
         stop: CancellationToken::new(),
         runtime,

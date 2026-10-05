@@ -22,7 +22,6 @@ use terse_substrate as proto;
 
 #[derive(Clone)]
 pub(crate) struct SubstrateConfig {
-    pub code_snapshots: bool,
     pub endpoint: String,
     pub router: String,
     pub token_file: String,
@@ -187,22 +186,17 @@ impl SubstrateProvider {
             .metadata
             .as_ref()
             .context("template identity missing")?;
-        let tag = if self.config.code_snapshots {
-            let artifact = request
-                .code_snapshot
-                .as_deref()
-                .context("code artifact required")?;
-            let target = code::code_tag(&template, artifact)?;
-            let tag = self
-                .api
-                .tag(target.clone())
-                .await?
-                .context("deployment code snapshot has not been prepared")?;
-            proto::validate_tag(&tag, &metadata.uid)?;
-            target
-        } else {
-            proto::golden_tag(&template)?
-        };
+        let artifact = request
+            .code_snapshot
+            .as_deref()
+            .context("code artifact required")?;
+        let source_tag = code::code_tag(&template, artifact)?;
+        let tag = self
+            .api
+            .tag(source_tag.clone())
+            .await?
+            .context("deployment code snapshot has not been prepared")?;
+        proto::validate_tag(&tag, &metadata.uid)?;
         timings.code_tag_ms = millis(started);
         let started = std::time::Instant::now();
         let result = self
@@ -214,7 +208,7 @@ impl SubstrateProvider {
                     ..Default::default()
                 }),
                 actor_template: Some(reference(&metadata.atespace, &metadata.name)),
-                source_tag: Some(tag),
+                source_tag: Some(source_tag),
                 ..Default::default()
             })
             .await;
@@ -317,16 +311,14 @@ impl SandboxProvider for SubstrateProvider {
                 .api
                 .template(template::build(&self.config, request, resources)?)
                 .await?;
-            if self.config.code_snapshots {
-                self.prepare_code(
-                    &template,
-                    request
-                        .code_snapshot
-                        .as_deref()
-                        .context("code artifact required")?,
-                )
-                .await?;
-            }
+            self.prepare_code(
+                &template,
+                request
+                    .code_snapshot
+                    .as_deref()
+                    .context("code artifact required")?,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -341,10 +333,9 @@ impl SandboxProvider for SubstrateProvider {
                 if let Ok(response) = super::transport::host_request(&client, &route, "/readyz")?
                     .send()
                     .await
+                    && response.status().is_success()
                 {
-                    if response.status().is_success() {
-                        return Ok(());
-                    }
+                    return Ok(());
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }

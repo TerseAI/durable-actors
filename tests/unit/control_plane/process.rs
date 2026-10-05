@@ -156,7 +156,7 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn production_keeps_two_rapid_zones_with_substrate() -> Result<()> {
+fn production_configuration_uses_substrate_and_two_rapid_zones() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
@@ -165,6 +165,11 @@ fn production_keeps_two_rapid_zones_with_substrate() -> Result<()> {
         config.storage.persistence,
         crate::bucket::PersistenceConfig::Rapid { .. }
     ));
+    assert_eq!(config.sandbox_provider.substrate.atespace, "staging");
+    assert_eq!(
+        config.sandbox_provider.substrate.regions,
+        ["north-america-west"]
+    );
     Ok(())
 }
 
@@ -334,18 +339,5 @@ fn default_region_requires_configured_substrate_workers() -> Result<()> {
     assert!(parse(&values).is_err());
     values.remove("DURABLE_ACTORS_REGION");
     assert!(parse(&values).is_ok());
-    Ok(())
-}
-
-#[test]
-fn substrate_configuration_preserves_dynamic_actor_sizes() -> Result<()> {
-    let values = process_environment();
-    let config =
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))?;
-    assert_eq!(config.sandbox_provider.substrate.atespace, "staging");
-    assert_eq!(
-        config.sandbox_provider.substrate.regions,
-        ["north-america-west"]
-    );
     Ok(())
 }

@@ -51,7 +51,7 @@ fn template_sizes_share_capacity_without_sharing_customer_identity() -> Result<(
 
 #[tokio::test]
 async fn failed_assignment_deletes_the_allocated_actor() -> Result<()> {
-    let api = Arc::new(Api::new(Vec::new()));
+    let api = Arc::new(Api::prepared()?);
     let bootstrap = Arc::new(TestBootstrap::new()?);
     let provider = SubstrateProvider {
         api: api.clone(),
@@ -68,7 +68,7 @@ async fn failed_assignment_deletes_the_allocated_actor() -> Result<()> {
     );
     assert_eq!(
         *api.0.lock().unwrap(),
-        ["template", "create", "egress", "resume", "delete"]
+        ["template", "tag", "create", "egress", "resume", "delete"]
     );
     Ok(())
 }
@@ -82,6 +82,29 @@ struct Api(
     Option<Arc<tokio::sync::Barrier>>,
 );
 impl Api {
+    fn prepared() -> Result<Self> {
+        let api = Self::new(Vec::new());
+        let request = request()?;
+        let mut template =
+            template::build(&config(), &runtime_template(&request), &request.resources)?;
+        let meta = template.metadata.as_mut().unwrap();
+        meta.uid = format!("uid-{}", meta.name);
+        let uid = meta.uid.clone();
+        let target = code::code_tag(&template, request.code_snapshot.as_ref().unwrap())?;
+        api.2.lock().unwrap().insert(
+            target.name,
+            proto::Tag {
+                status: Some(proto::TagStatus {
+                    snapshot: Some(Default::default()),
+                    actor_template_uid: uid,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        Ok(api)
+    }
+
     fn new(actors: Vec<proto::Actor>) -> Self {
         Self(
             Mutex::new(Vec::new()),
@@ -277,7 +300,6 @@ async fn warm_probe_uses_the_actor_router_and_accepts_only_success() -> Result<(
 }
 fn config() -> SubstrateConfig {
     SubstrateConfig {
-        code_snapshots: false,
         endpoint: "https://api.ate-system.svc".into(),
         router: "http://router".into(),
         token_file: "/run/substrate/token".into(),
@@ -364,7 +386,7 @@ fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
 }
 
 #[tokio::test]
-async fn deployment_prepares_golden_snapshots_before_actors_are_created() -> Result<()> {
+async fn deployment_prepares_customer_code_for_every_resource_shape() -> Result<()> {
     let api = Arc::new(Api::new(Vec::new()));
     let provider = SubstrateProvider {
         api: api.clone(),
@@ -394,39 +416,10 @@ async fn deployment_prepares_golden_snapshots_before_actors_are_created() -> Res
             jwt_issuer: host.jwt_issuer,
         })
         .await?;
-    assert_eq!(*api.0.lock().unwrap(), ["template", "template"]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn deployment_prepares_code_without_assigning_customer_runtime() -> Result<()> {
-    let api = Arc::new(Api::new(Vec::new()));
-    let provider = SubstrateProvider {
-        api: api.clone(),
-        code: Arc::new(TestCodeSource),
-        bootstrap: Arc::new(TestBootstrap::new()?),
-        assignment: Arc::new(FailingAssignment),
-        config: SubstrateConfig {
-            code_snapshots: true,
-            ..config()
-        },
-        issuer: issuer()?,
-    };
-    provider
-        .prepare_runtime(&runtime_template(&request()?))
-        .await?;
-    assert_eq!(
-        *api.0.lock().unwrap(),
-        [
-            "template",
-            "tag",
-            "create",
-            "resume",
-            "suspend",
-            "create_tag",
-            "delete"
-        ]
-    );
+    let prepared = api.3.lock().unwrap();
+    assert_eq!(prepared.len(), 2);
+    assert_ne!(prepared[0].actor_template, prepared[1].actor_template);
+    assert_eq!(api.2.lock().unwrap().len(), 2);
     Ok(())
 }
 
@@ -438,10 +431,7 @@ async fn code_snapshots_are_reused_and_changed_artifacts_get_new_snapshots() -> 
         code: Arc::new(TestCodeSource),
         bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
-        config: SubstrateConfig {
-            code_snapshots: true,
-            ..config()
-        },
+        config: config(),
         issuer: issuer()?,
     };
     let mut host = request()?;
@@ -482,10 +472,7 @@ async fn failed_code_snapshot_releases_preparation_capacity() -> Result<()> {
         code: Arc::new(TestCodeSource),
         bootstrap: Arc::new(TestBootstrap::new()?),
         assignment: Arc::new(FailingAssignment),
-        config: SubstrateConfig {
-            code_snapshots: true,
-            ..config()
-        },
+        config: config(),
         issuer: issuer()?,
     };
     assert!(
@@ -569,7 +556,7 @@ impl HostBootstrap for TestBootstrap {
 #[tokio::test]
 async fn credentials_ownership_and_restore_run_concurrently_before_assignment() -> Result<()> {
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
-    let mut api = Api::new(Vec::new());
+    let mut api = Api::prepared()?;
     api.5 = Some(barrier.clone());
     let api = Arc::new(api);
     let bootstrap = Arc::new(TestBootstrap {
@@ -595,7 +582,7 @@ async fn credentials_ownership_and_restore_run_concurrently_before_assignment() 
 #[tokio::test]
 async fn credential_failure_waits_for_restore_and_releases_the_unassigned_claim() -> Result<()> {
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
-    let mut api = Api::new(Vec::new());
+    let mut api = Api::prepared()?;
     api.5 = Some(barrier.clone());
     let api = Arc::new(api);
     let bootstrap = Arc::new(TestBootstrap {
@@ -659,7 +646,7 @@ impl HostAssignment for ReadyAssignment {
 #[tokio::test]
 async fn a_disconnected_caller_does_not_abandon_an_inflight_claim() -> Result<()> {
     let barrier = Arc::new(tokio::sync::Barrier::new(4));
-    let mut api = Api::new(Vec::new());
+    let mut api = Api::prepared()?;
     api.5 = Some(barrier.clone());
     let api = Arc::new(api);
     let bootstrap = Arc::new(TestBootstrap {

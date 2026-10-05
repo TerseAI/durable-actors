@@ -25,7 +25,6 @@ pub(super) fn build(
         }),
         worker_selector: Some(Selector {
             match_labels: labels.into_iter().collect(),
-            ..Default::default()
         }),
         containers: vec![Container {
             name: "runtime".into(),

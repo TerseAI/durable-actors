@@ -122,8 +122,7 @@ impl HostProvisioner for FakeRetiringProvisioner {
 }
 
 #[tokio::test]
-async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
--> Result<()> {
+async fn gcs_routes_use_the_provisioned_hosts_epoch() -> Result<()> {
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
@@ -1806,16 +1805,6 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         sockets,
     )?);
     Ok(service)
-}
-
-#[test]
-fn assigned_substrate_routes_preserve_the_sandbox_identity() -> Result<()> {
-    validate_host_route("http://atenet-router.ate-system.svc/substrate/staging/host-123")?;
-    assert!(
-        validate_host_route("http://atenet-router.ate-system.svc/substrate/staging/host/extra")
-            .is_err()
-    );
-    Ok(())
 }
 
 #[tokio::test]

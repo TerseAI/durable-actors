@@ -454,9 +454,6 @@ fn sandbox_provider_config(
         },
         public_origin,
         substrate: SubstrateConfig {
-            code_snapshots: get("DURABLE_ACTORS_SUBSTRATE_CODE_SNAPSHOTS")
-                .unwrap_or_else(|| "true".into())
-                .parse()?,
             endpoint,
             router,
             atespace,

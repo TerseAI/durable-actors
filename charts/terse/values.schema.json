@@ -192,9 +192,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "codeSnapshots": {
-          "type": "boolean"
         }
       }
     }

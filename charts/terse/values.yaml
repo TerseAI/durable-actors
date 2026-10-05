@@ -47,7 +47,6 @@ gateway:
   preSharedCert: ""
   addressName: ""
 substrate:
-  codeSnapshots: true
   endpoint: https://api.ate-system.svc
   router: http://atenet-router.ate-system.svc
   atespace: terse

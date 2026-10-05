@@ -26,7 +26,6 @@ use crate::{
 
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
-    objects: Option<google_cloud_storage::client::Storage>,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
     host: HostId,
@@ -68,7 +67,7 @@ impl HostStorage {
         };
         let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
         if config.persistence.rapid_settings().is_some() {
-            let clients = clients.clone().context("Rapid persistence requires GCS")?;
+            let clients = clients.context("Rapid persistence requires GCS")?;
             let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
                 &config.persistence,
                 clients,
@@ -78,7 +77,6 @@ impl HostStorage {
             runtime = runtime.with_persistence(config.persistence, snapshots)?;
         }
         Ok(Self {
-            objects: clients.map(|clients| clients.storage),
             observer: client,
             stop,
             runtime: Arc::new(runtime),
@@ -94,20 +92,6 @@ impl HostStorage {
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
         })
-    }
-
-    pub(crate) async fn install_code(
-        &self,
-        artifact: &crate::artifacts::ArtifactManifest,
-    ) -> Result<()> {
-        artifact
-            .install(
-                std::path::Path::new("/customer"),
-                self.objects
-                    .as_ref()
-                    .context("GCS artifact client missing")?,
-            )
-            .await
     }
 
     pub(crate) fn with_activation(

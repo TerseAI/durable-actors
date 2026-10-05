@@ -97,12 +97,12 @@ impl ActorJwtIssuer {
         Ok(String::from_utf8(self.jwks_json()?)?)
     }
 
-    pub(crate) fn issue_assignment(&self, pod_uid: &str) -> Result<String> {
-        ensure!(!pod_uid.is_empty(), "assignment pod UID missing");
+    pub(crate) fn issue_assignment(&self, sandbox_uid: &str) -> Result<String> {
+        ensure!(!sandbox_uid.is_empty(), "assignment sandbox UID missing");
         let now = unix_millis()? / 1000;
         self.sign(&serde_json::json!({
             "iss": self.issuer, "aud": super::assignment::AUDIENCE,
-            "sub": pod_uid, "scope": "sandbox:assign",
+            "sub": sandbox_uid, "scope": "sandbox:assign",
             "iat": now, "nbf": now, "exp": now + 120
         }))
     }

@@ -37,7 +37,7 @@ Copy `values.yaml` and supply the image digest, Google service account, bucket n
 replicaCount: 2
 region: north-america-west
 substrate:
-  atespace: terse-staging
+  atespace: terse
   snapshotLocation: gs://actor-snapshots/runtime/
   worker:
     replicas: 1
@@ -75,25 +75,13 @@ Actor-scoped credentials cover only the ownership object, the actor's log and ar
 
 ## Capacity and deployment
 
-### Shared workers and prepared snapshots
+The chart creates a shared `WorkerPool`. Each actor's `@Sandbox` CPU and memory become Substrate resource limits. Size `substrate.worker` for concurrent actor reservations and snapshot preparation; worker replicas and nodes must have enough capacity for those reservations.
 
-The chart creates one `WorkerPool`. Its CPU and memory are shared capacity, not an actor profile. Each actor's `@Sandbox` CPU and memory become Substrate resource limits. A 4-CPU worker can therefore host different sizes concurrently, provided their combined reservations fit. Increase worker replicas or worker size for additional capacity; allow room for preparing golden snapshots too. Node autoscaling must also have quota and room for those Pods.
+Deployment registration prepares snapshots containing the runtime and customer code for each resource shape. Customer modules execute only after activation. Snapshot restoration runs alongside scoped credential issuance and ownership acquisition; `/assign` passes the ownership grant to the host, which verifies the restored code and remaining lease before becoming ready. Idle hosts shut down and release worker capacity.
 
-Deployment registration prepares an immutable `ActorTemplate` and its golden snapshot for every declared resource shape in the control plane's configured region. Template identity includes the pinned image, resource limits, verification keys, region, and snapshot configuration. Preparation boots the generic Rust/Bun/Litestream runtime and waits for `/warmz`. With `substrate.codeSnapshots: true` (the default), the control plane then clones a preparation sandbox, streams generation-pinned customer code from GCS to `/prepare-code`, and captures a separate snapshot tag before publishing the deployment. Tags are keyed by template UID and artifact manifest, so unchanged code reuses its prepared snapshot. Customer modules do not execute during preparation.
+The chart projects the Substrate API token and CA bundle into the control plane. Customer secrets require the label `terse.ai/customer-secret=true`. The separate snapshot bucket requires object access and bucket metadata access for the Substrate `ate-api-server` and `atelet` service-account principals. Follow the pinned Substrate installation instructions for API authentication and worker networking.
 
-Activation restores the prepared code snapshot while the control plane independently issues scoped storage credentials and acquires the actor's ownership lease. Once all three complete, `/assign` hands the granted ownership record to the host, which validates its identity and remaining lease before adopting it without a second ownership CAS. Failed preparation releases an unassigned claim; an ambiguous assignment keeps the claim until its lease expires. Assignment requires a short-lived signed capability bound to the current Substrate actor UID. The SystemInfo volume supplies that UID; verification rereads it after cloning. Prepared snapshots contain code bytes but no customer credentials, actor ownership, or durable state. After assignment, the host verifies the code hash locally and restores durable state through the existing GCS protocol. Set `substrate.codeSnapshots: false` to clone only the generic golden snapshot and download code after assignment; this provides a comparison baseline. Idle hosts shut down and release capacity. The provider probes `/warmz` every two seconds and deletes a sandbox after three failed probes, using UID/version preconditions. This releases reservations even when Substrate still reports an exited process as running. Probes do not reset actor idle time.
-
-Snapshot preparation moves first-time initialization into deployment. A fresh worker node still needs to prepare the OCI image in Substrate's own cache. Kubernetes image pre-pulling alone does not populate that cache. Measure fresh-node startup separately from restoration on a prepared worker.
-
-The chart projects a rotating Kubernetes service-account token and Substrate CA bundle into the control plane. Only the control plane accesses the private Substrate API. Customer sandboxes receive actor-scoped storage credentials and public verification keys. The default egress rules allow public IPv4 plus the private control-plane Service IP, excluding metadata and private network ranges. Customer Kubernetes secrets must have label `terse.ai/customer-secret=true`.
-
-The snapshot bucket is separate from customer storage. Grant the Substrate `ate-api-server` and `atelet` service-account principals bucket-scoped object access and bucket metadata access. Follow the pinned Substrate installation instructions for API authentication, certificates, and worker networking.
-
-```sh
-kubectl --kubeconfig "$TERSE_STAGING_KUBECONFIG" get workerpools,pods -n terse-substrate
-```
-
-The Rust API client and protocol bindings are maintained in [terse-substrate](https://github.com/TerseAI/terse-substrate), pinned by commit in `Cargo.toml`. This backend replaces the old spare registry and per-profile warm pools. Migration V18 removes the old spare bookkeeping tables; existing actor ownership and durable state remain in the normal storage protocol. Deploy this upgrade only to the intended environment.
+Migration V18 removes the retired spare tables; V1–V17 and existing actor state are preserved.
 
 ### WebSocket capacity
 
@@ -113,4 +101,4 @@ This adds a `-sockets` Deployment, Service, disruption budget, and GKE backend/h
 
 The connection limit applies per actor at its socket-owning gateway, even with isolation disabled. PostgreSQL coordinates room ownership across replicas; ordinary control-plane pods are ineligible when dedicated gateways are enabled. See the [runtime limits](../../docs/reference/configuration.md#websockets). Scale socket replicas for aggregate connections and traffic; a busy individual actor still executes on one host. Changing the route or replacing gateway pods disconnects their existing sockets. Idle sandbox shutdown preserves connections, metadata, tags, and automatic responses at the gateway. The next application message activates a replacement sandbox.
 
-The chart defaults to two control-plane replicas and one 4-CPU, 8-GiB Substrate worker. These are staging-oriented capacity defaults, not a production availability guarantee. Increase and distribute workers across failure domains before production use. Keep the runtime image consistent across control-plane replicas during deployment; old actor hosts retire through the normal ownership protocol.
+The chart defaults to two control-plane replicas and one 4-CPU, 8-GiB Substrate worker. Size and distribute workers across failure domains for the deployment. Keep the runtime image consistent across control-plane replicas.

@@ -9,10 +9,10 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
-use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, oneshot};
 
 use super::process::HostReadiness;
+use crate::control_plane::assignment::AssignmentVerifier;
 
 pub(super) struct Assignment {
     pub environment: HashMap<String, String>,
@@ -20,36 +20,13 @@ pub(super) struct Assignment {
 }
 
 struct AssignmentState {
-    authorization: Authorization,
+    authorization: AssignmentVerifier,
     code_root: PathBuf,
     pending: Mutex<Option<oneshot::Sender<Assignment>>>,
 }
 
-pub(super) enum Authorization {
-    Bearer(String),
-    Signed(crate::control_plane::assignment::AssignmentVerifier),
-}
-
-impl From<String> for Authorization {
-    fn from(token: String) -> Self {
-        Self::Bearer(format!("Bearer {token}"))
-    }
-}
-
-impl Authorization {
-    fn accepts(&self, supplied: &[u8]) -> bool {
-        match self {
-            Self::Bearer(expected) => bool::from(expected.as_bytes().ct_eq(supplied)),
-            Self::Signed(verifier) => std::str::from_utf8(supplied)
-                .ok()
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .is_some_and(|token| verifier.verify(token).is_ok()),
-        }
-    }
-}
-
 pub(super) fn router(
-    authorization: Authorization,
+    authorization: AssignmentVerifier,
     pending: oneshot::Sender<Assignment>,
     code_root: PathBuf,
 ) -> Router {
@@ -118,11 +95,15 @@ fn authorize(state: &AssignmentState, headers: &HeaderMap) -> Result<(), StatusC
     let supplied = headers
         .get("authorization")
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    if state.authorization.accepts(supplied.as_bytes()) {
-        Ok(())
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+    let token = supplied
+        .to_str()
+        .map_err(|_| StatusCode::UNAUTHORIZED)?
+        .strip_prefix("Bearer ")
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .authorization
+        .verify(token)
+        .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
 #[cfg(test)]

@@ -419,7 +419,7 @@ async fn prepare_actor_host(
     };
     let executor_ready = async {
         if let Some(artifact) = &config.artifact {
-            storage.install_code(artifact).await?;
+            artifact.verify(std::path::Path::new("/customer")).await?;
         }
         let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection = tokio::time::timeout(

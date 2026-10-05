@@ -9,14 +9,14 @@ pub(crate) const AUDIENCE: &str = "durable-actors-sandbox-assign";
 pub(crate) struct AssignmentVerifier {
     keys: HashMap<String, DecodingKey>,
     validation: Validation,
-    pod_uid: Box<dyn Fn() -> Result<String> + Send + Sync>,
+    sandbox_uid: Box<dyn Fn() -> Result<String> + Send + Sync>,
 }
 
 impl AssignmentVerifier {
     pub fn new(
         keys: &str,
         issuer: &str,
-        pod_uid: impl Fn() -> Result<String> + Send + Sync + 'static,
+        sandbox_uid: impl Fn() -> Result<String> + Send + Sync + 'static,
     ) -> Result<Self> {
         ensure!(!issuer.is_empty(), "assignment issuer missing");
         let mut validation = Validation::new(Algorithm::EdDSA);
@@ -28,7 +28,7 @@ impl AssignmentVerifier {
         Ok(Self {
             keys: super::auth::decode_public_keys(keys)?,
             validation,
-            pod_uid: Box::new(pod_uid),
+            sandbox_uid: Box::new(sandbox_uid),
         })
     }
 
@@ -38,8 +38,8 @@ impl AssignmentVerifier {
             .keys
             .get(header.kid.as_deref().context("assignment key ID missing")?)
             .context("unknown assignment key")?;
-        let uid = (self.pod_uid)()?;
-        ensure!(!uid.is_empty(), "assignment pod UID missing");
+        let uid = (self.sandbox_uid)()?;
+        ensure!(!uid.is_empty(), "assignment sandbox UID missing");
         let mut validation = self.validation.clone();
         validation.sub = Some(uid);
         let claims = decode::<Claims>(token, key, &validation)?.claims;

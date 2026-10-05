@@ -59,11 +59,10 @@ Use the [Helm chart](../../charts/terse/README.md) for GKE Agent Substrate. It r
 
 ### Capacity and placement
 
-Actor resource limits come from `@Sandbox` (default 1 CPU and 256 MiB). Resource shapes use the same WorkerPool; deployment registration prepares their golden snapshots before activation. Worker capacity must cover concurrent reservations and snapshot preparation. The chart exposes capacity through `substrate.worker`.
+Actor resource limits come from `@Sandbox` (default 1 CPU and 256 MiB). Resource shapes use the same WorkerPool; deployment registration prepares snapshots containing customer code before activation. Worker capacity must cover concurrent reservations and snapshot preparation. The chart exposes capacity through `substrate.worker`.
 
 | Variable | Description |
 | --- | --- |
-| `DURABLE_ACTORS_SUBSTRATE_CODE_SNAPSHOTS` | Prepare snapshots containing customer code during deployment (default `true`). Set `false` to load code from GCS after assignment. |
 | `DURABLE_ACTORS_SUBSTRATE_ENDPOINT` | Private TLS gRPC API origin. |
 | `DURABLE_ACTORS_SUBSTRATE_ROUTER` | Private HTTP actor-router origin. |
 | `DURABLE_ACTORS_SUBSTRATE_ATESPACE` | Namespace for this runtime's Substrate actors and templates. |
@@ -100,6 +99,8 @@ export class CustomerAgent extends Actor {}
 
 | Option          | Description                                                                     | Default when omitted                                                |
 | --------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `cpu`           | CPU request and cap in cores; 0.1–64 in increments of 0.001.                | 1 CPU. |
+| `memoryMiB`     | Memory request and cap; integer from 128–262144 MiB.                        | 256 MiB. |
 | `regions`       | Nonempty list of unique allowed compute regions. Order is not a preference. | Existing placement and server defaults.                             |
 | `idleTimeoutMs` | Inactivity before eviction; integer from 1–86400000 ms.                     | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS`; normally 10000 (10 seconds). |
 

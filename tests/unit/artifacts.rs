@@ -11,57 +11,21 @@ fn artifact(path: &str, bytes: &[u8]) -> ArtifactFile {
 }
 
 #[tokio::test]
-async fn restored_code_is_reused_only_when_its_digest_matches_the_assignment() -> Result<()> {
-    use axum::{Router, routing::get};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    let reads = Arc::new(AtomicUsize::new(0));
-    let observed = reads.clone();
-    let routes = Router::new().route(
-        "/storage/v1/b/code-bucket/o/{*key}",
-        get(move || {
-            let observed = observed.clone();
-            async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                (
-                    [
-                        ("x-goog-generation", "123"),
-                        ("content-type", "application/octet-stream"),
-                    ],
-                    "new code",
-                )
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let storage = Storage::builder()
-        .with_endpoint(format!("http://{}", listener.local_addr()?))
-        .with_credentials(google_cloud_auth::credentials::anonymous::Builder::new().build())
-        .build()
-        .await?;
-    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+async fn activation_requires_prepared_code_matching_the_assignment() -> Result<()> {
     let root = tempfile::tempdir()?;
     let manifest = ArtifactManifest {
         bucket: "code-bucket".into(),
         files: vec![artifact("actors.mjs", b"new code")],
     };
+    assert!(manifest.verify(root.path()).await.is_err());
     tokio::fs::write(root.path().join("actors.mjs"), b"new code").await?;
-    manifest.install(root.path(), &storage).await?;
-    assert_eq!(
-        reads.load(Ordering::SeqCst),
-        0,
-        "matching snapshot code must not be downloaded"
-    );
+    manifest.verify(root.path()).await?;
     tokio::fs::write(root.path().join("actors.mjs"), b"older deployment").await?;
-    manifest.install(root.path(), &storage).await?;
-    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert!(manifest.verify(root.path()).await.is_err());
     assert_eq!(
         tokio::fs::read(root.path().join("actors.mjs")).await?,
-        b"new code"
+        b"older deployment"
     );
-    server.abort();
     Ok(())
 }
 
