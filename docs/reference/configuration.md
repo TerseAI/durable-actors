@@ -21,13 +21,13 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Local development
 
-| Variable                    | Default                     | Description                                                                                                           |
-| --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_ACTORS_PROJECT`    | `.`                         | Actor project directory.                                                                                              |
-| `DURABLE_ACTORS_ENTRYPOINT` | `src/actors.ts`             | Actor source file, relative to the project.                                                                           |
-| `DURABLE_ACTORS_PORT`       | `7100`                      | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
-| `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors` | Persistent local state directory.                                                                                     |
-| `DURABLE_ACTORS_STORAGE`    | `local`                     | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
+| Variable                    | Default                            | Description                                                                                                           |
+| --------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `DURABLE_ACTORS_PROJECT`    | `.`                                | Actor project directory.                                                                                              |
+| `DURABLE_ACTORS_ENTRYPOINT` | `src/actors.ts` or `src/actors.py` | Actor source file, relative to the project. TypeScript wins when both exist.                                          |
+| `DURABLE_ACTORS_PORT`       | `7100`                             | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
+| `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors`        | Persistent local state directory.                                                                                     |
+| `DURABLE_ACTORS_STORAGE`    | `local`                            | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
 
 ## WebSockets
 
