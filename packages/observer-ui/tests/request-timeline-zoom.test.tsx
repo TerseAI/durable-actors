@@ -7,7 +7,7 @@ import type { RequestTrace } from "../src/client.js"
 
 import "./dom.js"
 
-const { cleanup, fireEvent, render, within } = await import("@testing-library/react")
+const { act, cleanup, fireEvent, render, within } = await import("@testing-library/react")
 const { RequestTimeline } = await import("../src/RequestTimeline.js")
 afterEach(cleanup)
 
@@ -96,7 +96,7 @@ test("scrolling the timeline pans to either end and keeps calls selectable", () 
     assert.equal(view.getAllByRole("button", { name: /Inspect .* request/ }).length, 3)
 })
 
-test("horizontal and Shift-wheel scrolling pan the window without consuming vertical scroll or pinch zoom", () => {
+test("horizontal and Shift-wheel scrolling pan the window without consuming vertical scroll", () => {
     const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
     const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
     const axis = view.getByRole("group", { name: "Select time range" })
@@ -113,6 +113,102 @@ test("horizontal and Shift-wheel scrolling pan the window without consuming vert
     assert.equal(fireEvent.wheel(viewport, { deltaX: -500, cancelable: true }), true)
     assert.equal(fireEvent.wheel(viewport, { deltaX: 1, deltaMode: 2, cancelable: true }), false)
     assert.ok(view.getByRole("button", { name: /Inspect late request/ }))
+})
+
+test("trackpad pinch zooms around the cursor, synchronizes the slider, and keeps calls selectable", () => {
+    let selected: RequestTrace | undefined
+    const anchored = { ...trace, startedAtMs: 1250 }
+    const view = render(<RequestTimeline records={[records[0]!, anchored, records[2]!]} onSelect={record => (selected = record)} />)
+    const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+    view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+    const bar = view.getByRole("button", { name: /Inspect load request/ })
+    const slider = view.getByRole("slider", { name: "Zoom" }) as HTMLInputElement
+    assert.equal(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -100 * Math.log(2), clientX: 350, cancelable: true }), false)
+    assert.equal(bar.style.left, "25%")
+    assert.equal(bar.style.width, "0.8%")
+    assert.equal(slider.getAttribute("aria-valuetext"), "500 ms window")
+    assert.ok(Number(slider.value) > 0)
+    fireEvent.click(bar)
+    assert.equal(selected, anchored)
+    assert.equal(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: 100 * Math.log(2), clientX: 350, cancelable: true }), false)
+    assert.equal(slider.value, "0")
+    assert.equal(view.getByRole("button", { name: "Reset zoom" }).hasAttribute("disabled"), true)
+})
+
+test("pinch respects the zoom limits without handing the gesture to browser zoom", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+    view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+    for (let i = 0; i < 2; i++) {
+        assert.equal(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -10000, clientX: 600, cancelable: true }), false)
+        assert.equal(view.getByRole("status").textContent, "1 ms window · 1 call in view")
+    }
+    for (let i = 0; i < 2; i++) {
+        assert.equal(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: 10000, clientX: 600, cancelable: true }), false)
+        assert.equal(view.getByRole("status").textContent, "1 s window · 3 calls in view")
+    }
+    assert.equal(fireEvent.wheel(document.body, { ctrlKey: true, deltaY: -100, cancelable: true }), true)
+    assert.equal(fireEvent.wheel(viewport, { deltaY: -100, cancelable: true }), true)
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "1 s window")
+})
+
+test("pinch accumulates rapid events and follows slider changes and live history", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+    view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+    act(() => {
+        for (let i = 0; i < 2; i++) fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -100 * Math.log(2), clientX: 600, cancelable: true })
+    })
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "250 ms window")
+    view.rerender(<RequestTimeline records={[...records, { ...trace, sequence: 3, startedAtMs: 5000 }]} onSelect={() => {}} />)
+    fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -100 * Math.log(2), clientX: 600, cancelable: true })
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "125 ms window")
+    assert.equal(view.getByRole("button", { name: /Inspect load request/ }).style.left, "50%")
+    fireEvent.change(view.getByRole("slider", { name: "Zoom" }), { target: { value: "100" } })
+    fireEvent.wheel(viewport, { ctrlKey: true, deltaY: 100 * Math.log(2), clientX: 600, cancelable: true })
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "2 ms window")
+    fireEvent.click(view.getByRole("button", { name: "Reset zoom" }))
+    assert.equal(view.getAllByRole("button", { name: /Inspect .* request/ }).length, 4)
+})
+
+for (const [deltaMode, unit] of [
+    [0, 1],
+    [1, 16],
+    [2, 1000]
+]) {
+    test(`pinch normalizes wheel delta mode ${deltaMode} and clamps the cursor to the time axis`, () => {
+        const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+        const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+        view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+        fireEvent.wheel(viewport, { ctrlKey: true, deltaMode, deltaY: (-100 * Math.log(2)) / unit!, clientX: 0, cancelable: true })
+        assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "500 ms window")
+        assert.equal(view.getByRole("button", { name: /Inspect early request/ }).style.left, "0%")
+    })
+}
+
+test("WebKit gestures zoom cumulatively and do not double-count accompanying wheel events", () => {
+    const view = render(<RequestTimeline records={records} onSelect={() => {}} />)
+    const viewport = view.getByLabelText("Invocation timeline, scroll for more calls")
+    view.getByRole("group", { name: "Select time range" }).getBoundingClientRect = () => ({ left: 100, width: 1000 }) as DOMRect
+    const gesture = (type: string, scale: number) => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.assign(event, { scale, clientX: 600 })
+        return fireEvent(viewport, event)
+    }
+    assert.equal(gesture("gesturestart", 1), false)
+    assert.equal(gesture("gesturechange", 2), false)
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "500 ms window")
+    assert.equal(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: -100, clientX: 600, cancelable: true }), false)
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "500 ms window")
+    gesture("gesturechange", 4)
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "250 ms window")
+    assert.equal(gesture("gestureend", 4), false)
+    gesture("gesturestart", 1)
+    gesture("gesturechange", 0.5)
+    gesture("gestureend", 0.5)
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "500 ms window")
+    fireEvent.wheel(viewport, { ctrlKey: true, deltaY: 100 * Math.log(2), clientX: 600, cancelable: true })
+    assert.equal(view.getByRole("slider", { name: "Zoom" }).getAttribute("aria-valuetext"), "1 s window")
 })
 
 test("scroll position follows zoom and live history without moving the chosen timestamps", () => {

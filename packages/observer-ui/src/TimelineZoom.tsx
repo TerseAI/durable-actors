@@ -90,7 +90,7 @@ export function TimelineZoomControls({
             <span role="status">
                 {duration(span)} window · {count.toLocaleString()} {count === 1 ? "call" : "calls"} in view
             </span>
-            <span>Scroll horizontally to pan · Drag across the time axis to zoom</span>
+            <span>Pinch to zoom · Scroll horizontally to pan · Drag across the time axis to zoom</span>
         </div>
     )
 }
