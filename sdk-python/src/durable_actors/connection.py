@@ -98,9 +98,11 @@ class Connection(Generic[Send, Receive, State, Patch]):
         wire = connect(grant.websocket_url, max_size=None)
         return cls(wire, incoming, outgoing, state, patch)
 
-    def send(self, message: Send) -> None:
+    def send(self, message: Send, *, request_id: str | None = None) -> None:
         """Validate and send one application message as JSON text."""
-        data = encode(self._incoming, message)
+        data = {"payload": encode(self._incoming, message)}
+        if request_id is not None:
+            data["requestId"] = request_id
         self._wire.send(json.dumps(data, separators=(",", ":"), allow_nan=False))
 
     def receive(

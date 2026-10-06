@@ -29,8 +29,8 @@ class SocketConnection implements ActorConnection {
         return this.socket.readyState
     }
 
-    send(data: ActorSocketMessage): void {
-        this.socket.send(JSON.stringify(incomingMessage(data, this.schemas)))
+    send(data: ActorSocketMessage, options: { requestId?: string } = {}): void {
+        this.socket.send(JSON.stringify({ requestId: options.requestId, payload: incomingMessage(data, this.schemas) }))
     }
 
     close(code?: number, reason?: string): void {

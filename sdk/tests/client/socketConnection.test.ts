@@ -24,7 +24,7 @@ test(
                     assert.equal(binary, false)
                     const value: unknown = JSON.parse(data.toString())
                     received.push(value)
-                    socket.send(JSON.stringify(value))
+                    socket.send(JSON.stringify((value as { payload: unknown }).payload))
                 })
             },
             {},

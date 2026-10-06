@@ -105,7 +105,7 @@ async fn joining_broadcasts_and_close_handshakes_reach_the_actor() -> Result<()>
             }
             match mode {
                 "client" => socket.send(ClientMessage::Close(Some(ClientClose { code: code.into(), reason: reason.into() }))).await?,
-                "actor" => socket.send(ClientMessage::Text("close".into())).await?,
+                "actor" => socket.send(ClientMessage::Text(r#"{"payload":"close"}"#.into())).await?,
                 _ => {},
             }
             if clean {

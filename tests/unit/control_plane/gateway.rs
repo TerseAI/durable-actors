@@ -120,7 +120,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
                 }
                 if matches!(&request.invocation.event, ActorSocketEvent::Message {
                     message: ActorSocketMessage::Text { data }, ..
-                } if data == "uncertain")
+                } if data == r#""uncertain""#)
                 {
                     uncertain_executions.fetch_add(1, Ordering::SeqCst);
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -349,7 +349,9 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         provisioner.unavailable.store(2, Ordering::SeqCst);
         provisioner.ready.add_permits(5);
         for socket in &mut sockets {
-            socket.send(UpstreamMessage::Text("message".into())).await?;
+            socket
+                .send(UpstreamMessage::Text(r#"{"payload":"message"}"#.into()))
+                .await?;
             assert_eq!(
                 socket.next().await.transpose()?,
                 Some(UpstreamMessage::Text("2".into()))
@@ -362,7 +364,7 @@ async fn gateways_keep_connections_and_metadata_when_the_actor_host_changes() ->
         );
         assert_eq!(provisioner.unavailable.load(Ordering::SeqCst), 0);
         sockets[0]
-            .send(UpstreamMessage::Text("uncertain".into()))
+            .send(UpstreamMessage::Text(r#"{"payload":"uncertain"}"#.into()))
             .await?;
         assert!(matches!(
             sockets[0].next().await.transpose()?,

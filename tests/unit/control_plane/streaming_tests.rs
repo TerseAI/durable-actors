@@ -106,7 +106,7 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
         serde_json::json!({"count":0})
     );
     socket
-        .send(Message::Text(r#"{"type":"start"}"#.into()))
+        .send(Message::Text(r#"{"payload":{"type":"start"}}"#.into()))
         .await?;
     assert_eq!(
         receive(&mut socket).await?,
@@ -191,7 +191,7 @@ async fn signed_socket_expires_while_idle_or_running_a_handler_and_rejects_inval
         assert_eq!(receive(&mut socket).await?["type"], "state");
         if active {
             socket
-                .send(Message::Text(r#"{"type":"start"}"#.into()))
+                .send(Message::Text(r#"{"payload":{"type":"start"}}"#.into()))
                 .await?;
             assert_eq!(
                 receive(&mut socket).await?,
@@ -226,7 +226,7 @@ async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order(
         tokio_tungstenite::connect_async(grant["websocketUrl"].as_str().unwrap()).await?;
     receive(&mut socket).await?;
     socket
-        .send(Message::Text(r#"{"type":"start"}"#.into()))
+        .send(Message::Text(r#"{"payload":{"type":"start"}}"#.into()))
         .await?;
     assert_eq!(
         receive(&mut socket).await?,
@@ -235,7 +235,7 @@ async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order(
     for _ in 0..64 {
         socket
             .send(Message::Text(
-                serde_json::json!({"type":"start", "padding":"x".repeat(80 * 1024)})
+                serde_json::json!({"payload":{"type":"start", "padding":"x".repeat(80 * 1024)}})
                     .to_string()
                     .into(),
             ))
@@ -293,7 +293,7 @@ await writeFile(directory + '/release', '');
 const socket = new WebSocket(grant.websocketUrl);
 const messages = [];
 await new Promise((resolve, reject) => {{
-    socket.onopen = () => socket.send(JSON.stringify({{type:'start'}}));
+    socket.onopen = () => socket.send(JSON.stringify({{payload:{{type:'start'}}}}));
     socket.onerror = reject;
     socket.onmessage = event => {{
         messages.push(JSON.parse(event.data));
@@ -470,7 +470,9 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     );
     first
         .send(Message::Text(
-            serde_json::json!({"type": "start"}).to_string().into(),
+            serde_json::json!({"payload":{"type": "start"}})
+                .to_string()
+                .into(),
         ))
         .await?;
     assert_eq!(receive(&mut first).await?["delta"], "first");
