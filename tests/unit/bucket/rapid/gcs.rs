@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 #[tokio::test]
-async fn rapid_uploads_bound_chunks_and_only_succeed_after_flush() -> Result<()> {
+async fn rapid_uploads_hand_whole_records_to_the_sdk_and_only_succeed_after_flush() -> Result<()> {
     let bytes = Bytes::from(
         (0..5 * 1024 * 1024 + 17)
             .map(|n| (n % 251) as u8)
@@ -29,13 +29,8 @@ async fn rapid_uploads_bound_chunks_and_only_succeed_after_flush() -> Result<()>
         }
         assert_eq!(flushes.load(Ordering::SeqCst), u64::from(!fail_append));
         let chunks = chunks.lock().unwrap();
-        assert!(chunks.iter().all(|chunk| chunk.len() <= 256 * 1024));
-        let received = chunks.concat();
-        assert_eq!(received, bytes[..received.len()]);
-        assert_eq!(
-            received.len(),
-            if fail_append { 256 * 1024 } else { bytes.len() }
-        );
+        assert_eq!(chunks.len(), usize::from(!fail_append));
+        assert!(chunks.iter().all(|chunk| *chunk == bytes));
     }
     Ok(())
 }
@@ -51,11 +46,10 @@ struct UploadStub {
 
 impl google_cloud_storage::stub::AppendableObjectWriter for UploadStub {
     async fn append(&mut self, chunk: Bytes) -> google_cloud_storage::Result<()> {
-        let mut chunks = self.chunks.lock().unwrap();
-        if self.fail_append && !chunks.is_empty() {
+        if self.fail_append {
             return Err(google_cloud_storage::Error::io("injected append failure"));
         }
-        chunks.push(chunk);
+        self.chunks.lock().unwrap().push(chunk);
         Ok(())
     }
 

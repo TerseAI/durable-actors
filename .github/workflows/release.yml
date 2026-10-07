@@ -82,6 +82,7 @@ jobs:
                   ref: ${{ needs.preflight.outputs.ltx-revision }}
                   persist-credentials: false
 
+            # Validates terse-ltx at its own rust-version.
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
 
@@ -139,6 +140,7 @@ jobs:
               with:
                   submodules: recursive
                   ref: ${{ github.sha }}
+            # Validates terse-litestream at its own rust-version.
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
             - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -193,7 +195,7 @@ jobs:
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
-              run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt && rustup default 1.89.0
+              run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt && rustup default 1.91.0
 
             - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
               with:
@@ -578,7 +580,7 @@ jobs:
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
-              run: rustup toolchain install 1.89.0 --profile minimal && rustup default 1.89.0
+              run: rustup toolchain install 1.91.0 --profile minimal && rustup default 1.91.0
 
             - name: Publish to crates.io
               env:
