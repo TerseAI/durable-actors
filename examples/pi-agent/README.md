@@ -16,4 +16,4 @@ pnpm dev
 
 Set `OPENAI_API_KEY` in `.env` before starting the server (restart it after changing the key). Wait for `Ready` on port `7103`, then follow the CLI instructions in another terminal.
 
-`pnpm check` checks the actor types. `pnpm test` checks the Pi prompt and error handling with a fake model stream, then starts a temporary server, generates the sibling CLI's client, and verifies prompt validation without an API key. Tests make no paid model calls. To test with a locally built runtime, set `DURABLE_ACTORS_BINARY` to the absolute path of `target/release/durable-actors`.
+`pnpm check` checks the actor types.
