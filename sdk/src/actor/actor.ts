@@ -49,7 +49,7 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     }
 
     /** Actor-local SQLite, available from construction. Changes commit after a successful invocation. */
-    protected get db(): ActorDatabase {
+    get db(): ActorDatabase {
         return actorDatabase(this)
     }
 

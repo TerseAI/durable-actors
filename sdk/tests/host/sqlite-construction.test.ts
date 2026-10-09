@@ -11,7 +11,7 @@ import { assertReply } from "../fixtures/reply.js"
 
 test("constructors and field initializers can use restored SQLite and retain a handle for methods", async t => {
     class ConstructionSqlite extends Actor {
-        private database = this.db
+        private database = adapterDatabase(this)
         private existingTables = this.db.exec("SELECT name FROM sqlite_schema WHERE name = 'entries'").length
 
         protected constructor() {
@@ -52,6 +52,10 @@ test("constructors and field initializers can use restored SQLite and retain a h
         result: { existingTables: 1, rows: [{ value: "saved" }] }
     })
 })
+
+function adapterDatabase(actor: Actor): ActorDatabase {
+    return actor.db
+}
 
 test("a throwing constructor rolls back its SQLite writes before retrying", async t => {
     let attempts = 0
