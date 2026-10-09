@@ -227,7 +227,10 @@ struct RegionalProvider {
 
 #[async_trait::async_trait]
 impl SandboxProvider for RegionalProvider {
-    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(
+        &self,
+        _: &[crate::sandbox::SpareHandle],
+    ) -> Result<Vec<crate::sandbox::StoppedSpare>> {
         Ok(Vec::new())
     }
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle> {

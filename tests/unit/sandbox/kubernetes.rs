@@ -126,10 +126,26 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
 }
 
 #[tokio::test]
-async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Result<()> {
+async fn stopped_spares_report_missing_and_completed_pods_with_their_finish_times() -> Result<()> {
     use axum::{Json, Router, routing::get};
-    let items: Vec<_> = [("live", "Running"), ("pending", "Pending"), ("unknown", "Unknown"), ("done", "Succeeded"), ("crashed", "Failed"), ("replaced", "Running")]
-        .into_iter().map(|(name, phase)| json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"sandboxes","uid":format!("{name}-uid")},"status":{"phase":phase}})).collect();
+    let finished_at = "2026-10-09T19:00:00.250Z";
+    let items: Vec<_> = [
+        ("live", "Running"),
+        ("pending", "Pending"),
+        ("unknown", "Unknown"),
+        ("done", "Succeeded"),
+        ("crashed", "Failed"),
+        ("replaced", "Running"),
+    ]
+    .into_iter()
+    .map(|(name, phase)| {
+        pod(
+            name,
+            phase,
+            matches!(phase, "Succeeded" | "Failed").then_some(finished_at),
+        )
+    })
+    .collect();
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let fail_request = fail.clone();
     let routes = Router::new().route("/api/v1/namespaces/sandboxes/pods", get(move || {
@@ -171,17 +187,81 @@ async fn stopped_spares_identifies_missing_and_completed_pod_identities() -> Res
     })
     .collect();
     let stopped = cluster.stopped_spares(&spares).await?;
+    let finished_at_ms =
+        k8s_openapi::chrono::DateTime::parse_from_rfc3339(finished_at)?.timestamp_millis();
     assert_eq!(
         stopped,
         spares[3..]
             .iter()
-            .map(|s| s.resource_id.clone())
+            .zip([Some(finished_at_ms), Some(finished_at_ms), None, None])
+            .map(|(spare, stopped_at_ms)| StoppedSpare {
+                resource_id: spare.resource_id.clone(),
+                stopped_at_ms,
+            })
             .collect::<Vec<_>>()
     );
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(cluster.stopped_spares(&spares).await.is_err());
     server.abort();
     Ok(())
+}
+
+#[tokio::test]
+async fn completed_pods_are_kept_long_enough_to_record_when_they_stopped() -> Result<()> {
+    use axum::{
+        Json, Router,
+        extract::{Path, Query},
+        routing::{delete, get},
+    };
+    let items = vec![
+        pod("recent", "Succeeded", Some("2026-10-09T19:08:00Z")),
+        pod("expired", "Succeeded", Some("2026-10-09T19:00:00Z")),
+        pod("unrecorded", "Failed", None),
+    ];
+    let deleted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = deleted.clone();
+    let routes = Router::new()
+        .route(
+            "/api/v1/namespaces/sandboxes/pods",
+            get(move |Query(query): Query<HashMap<String, String>>| async move {
+                let phase = query["fieldSelector"].trim_start_matches("status.phase=");
+                let items: Vec<_> = items
+                    .into_iter()
+                    .filter(|pod| pod["status"]["phase"] == phase)
+                    .collect();
+                Json(json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"10"},"items":items}))
+            }),
+        )
+        .route(
+            "/api/v1/namespaces/sandboxes/pods/{name}",
+            delete(move |Path(name): Path<String>| async move {
+                recorded.lock().unwrap().push(name);
+                Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let config = kube::Config::new(format!("http://{}", listener.local_addr()?).parse()?);
+    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+    let now = k8s_openapi::chrono::DateTime::parse_from_rfc3339("2026-10-09T19:10:00Z")?;
+    let result = reap_completed(
+        &Api::namespaced(Client::try_from(config)?, "sandboxes"),
+        now.timestamp_millis(),
+    )
+    .await;
+    server.abort();
+    result?;
+    let mut deleted = deleted.lock().unwrap().clone();
+    deleted.sort();
+    assert_eq!(deleted, ["expired", "unrecorded"]);
+    Ok(())
+}
+
+fn pod(name: &str, phase: &str, finished_at: Option<&str>) -> serde_json::Value {
+    let mut pod = json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"sandboxes","uid":format!("{name}-uid"),"labels":{"app.kubernetes.io/managed-by":"terse"}},"status":{"phase":phase}});
+    if let Some(finished_at) = finished_at {
+        pod["status"]["containerStatuses"] = json!([{"name":"runtime","image":"runtime","imageID":"","ready":false,"restartCount":0,"state":{"terminated":{"exitCode":0,"finishedAt":finished_at}}}]);
+    }
+    pod
 }
 
 #[test]

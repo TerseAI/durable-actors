@@ -40,6 +40,12 @@ pub struct SpareHandle {
     pub canonical_region: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoppedSpare {
+    pub resource_id: String,
+    pub stopped_at_ms: Option<i64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpareKind {
@@ -167,7 +173,7 @@ pub trait SandboxProvider: Send + Sync {
     async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
         anyhow::bail!("provider does not support generic spares")
     }
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>>;
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;

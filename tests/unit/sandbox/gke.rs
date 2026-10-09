@@ -6,7 +6,10 @@ struct Cluster {
 }
 #[async_trait]
 impl SandboxCluster for Cluster {
-    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(
+        &self,
+        _: &[crate::sandbox::SpareHandle],
+    ) -> Result<Vec<crate::sandbox::StoppedSpare>> {
         Ok(Vec::new())
     }
     async fn create_spare(&self, _: &CreateSpareRequest) -> Result<SpareHandle> {

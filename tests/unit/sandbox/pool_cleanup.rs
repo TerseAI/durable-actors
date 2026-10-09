@@ -1,6 +1,8 @@
 use super::*;
 use crate::{postgres::testing::with_postgres, sandbox::*};
 
+const DONE_STOPPED_AT_MS: i64 = 1_791_574_800_250;
+
 struct Provider {
     fail: std::sync::atomic::AtomicBool,
     pause: std::sync::Mutex<
@@ -13,7 +15,7 @@ struct Provider {
 
 #[async_trait::async_trait]
 impl SandboxProvider for Provider {
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
         anyhow::ensure!(
             !self.fail.load(std::sync::atomic::Ordering::SeqCst),
             "API unavailable"
@@ -25,8 +27,17 @@ impl SandboxProvider for Provider {
         }
         Ok(spares
             .iter()
-            .filter(|spare| spare.name == "do-actor-done" || spare.name == "do-actor-evicted")
-            .map(|spare| spare.resource_id.clone())
+            .filter_map(|spare| {
+                let stopped_at_ms = match spare.name.as_str() {
+                    "do-actor-done" => Some(DONE_STOPPED_AT_MS),
+                    "do-actor-evicted" => None,
+                    _ => return None,
+                };
+                Some(StoppedSpare {
+                    resource_id: spare.resource_id.clone(),
+                    stopped_at_ms,
+                })
+            })
             .collect())
     }
     async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
@@ -167,16 +178,74 @@ async fn intentional_host_retirement_enqueues_a_stop_event() -> Result<()> {
         )
         .await?;
 
+        let retiring_from_ms = now_ms()?;
         assert_eq!(
             pool.retire_config("revision").await?,
             vec![spare.resource_id]
         );
+        let retired_by_ms = now_ms()?;
         let events = crate::usage::UsageOutbox::new(pool.store.0.clone())
             .pending()
             .await?;
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].event_type, crate::usage::UsageEventType::Stopped);
         assert_eq!(events[1].assignment.session_id, "retired");
+        assert!((retiring_from_ms..=retired_by_ms).contains(&events[1].observed_at_ms));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn stop_events_use_the_runtime_termination_time_when_it_is_still_recorded() -> Result<()> {
+    with_postgres(async |fixture| {
+        let provider = Arc::new(Provider {
+            fail: false.into(),
+            pause: None.into(),
+        });
+        let pool = SparePool::new(
+            PostgresDatabase::connect(&fixture.url).await?,
+            provider,
+            PoolConfig {
+                control_plane_url: None,
+                kind: SpareKind::Actor,
+                idle: 0,
+                fleet_maximum: 0,
+                max_starting: 1,
+                idle_ttl_seconds: 600,
+                regions: vec![],
+                resources: ResourceLimits::default(),
+            },
+            true,
+        );
+        for name in ["done", "evicted"] {
+            pool.reserve_host(name, name, "revision").await?;
+            let spare = SpareHandle {
+                name: format!("do-actor-{name}"),
+                resource_id: format!("sandboxes/do-actor-{name}/{name}-uid"),
+                route: "http://host:7101".into(),
+                canonical_region: "region".into(),
+                control_route: "http://host:7102".into(),
+                control_token: "token".into(),
+            };
+            pool.remember(name, "revision", &spare, &usage_assignment(name, &spare))
+                .await?;
+        }
+
+        let detecting_from_ms = now_ms()?;
+        pool.forget_stopped().await?;
+        let detected_by_ms = now_ms()?;
+        let stops: std::collections::HashMap<_, _> =
+            crate::usage::UsageOutbox::new(pool.store.0.clone())
+                .pending()
+                .await?
+                .into_iter()
+                .filter(|event| event.event_type == crate::usage::UsageEventType::Stopped)
+                .map(|event| (event.assignment.session_id, event.observed_at_ms))
+                .collect();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops["done"], DONE_STOPPED_AT_MS);
+        assert!((detecting_from_ms..=detected_by_ms).contains(&stops["evicted"]));
         Ok(())
     })
     .await
@@ -266,6 +335,10 @@ async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Resu
         assert!(pool.store.claim("warm", "another", "revision").await?.is_none());
         Ok(())
     }).await
+}
+
+fn now_ms() -> Result<i64> {
+    Ok(crate::clock::Clock::now_ms(&crate::clock::SystemClock)?.try_into()?)
 }
 
 fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAssignment {

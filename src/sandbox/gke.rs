@@ -72,7 +72,7 @@ impl SandboxProvider for GkeSandboxProvider {
         self.cluster.retire_spare(request).await
     }
 
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
         self.cluster.stopped_spares(spares).await
     }
 
@@ -231,7 +231,7 @@ fn now_ms() -> Result<u64> {
 
 #[async_trait]
 trait SandboxCluster: Send + Sync {
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>>;
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>>;

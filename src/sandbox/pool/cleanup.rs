@@ -17,13 +17,21 @@ impl SparePool {
         )
         .await
         .context("sandbox inspection timed out")??;
+        let stopped_at: std::collections::HashMap<_, _> = stopped
+            .into_iter()
+            .map(|spare| (spare.resource_id, spare.stopped_at_ms))
+            .collect();
+        let resource_ids: Vec<_> = stopped_at.keys().collect();
         let mut connection = self.store.0.connection().await?;
         let transaction = connection.transaction().await?;
         let rows = transaction.query(
-            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2) RETURNING usage_assignment",
-            &[&self.config.kind.as_str(), &stopped],
+            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2) RETURNING usage_assignment, handle::json->>'resourceId'",
+            &[&self.config.kind.as_str(), &resource_ids],
         ).await?;
-        super::enqueue_stops(&transaction, &rows).await?;
+        super::enqueue_stops(&transaction, &rows, |row| {
+            stopped_at.get(&row.get::<_, String>(1)).copied().flatten()
+        })
+        .await?;
         transaction.commit().await?;
         Ok(())
     }

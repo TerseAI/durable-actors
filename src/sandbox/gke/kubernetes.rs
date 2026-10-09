@@ -10,6 +10,9 @@ use serde_json::json;
 
 use super::*;
 
+// Pool cleanup stamps usage stop events with the runtime container's finishedAt, which is lost once the Pod is deleted.
+const COMPLETED_POD_RETENTION_MS: i64 = 5 * 60_000;
+
 #[derive(Clone, Debug)]
 pub(crate) struct GkeConfig {
     pub namespace: String,
@@ -30,7 +33,8 @@ impl Kubernetes {
         let cleanup = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                if let Err(error) = reap_completed(&cleanup_pods).await {
+                let reaped = async { reap_completed(&cleanup_pods, now_ms()? as i64).await };
+                if let Err(error) = reaped.await {
                     tracing::warn!(%error, "completed pod cleanup failed");
                 }
             }
@@ -137,7 +141,7 @@ impl SandboxCluster for Kubernetes {
         delete_pod(&self.pods, name, uid).await
     }
 
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>> {
+    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
         let pods: HashMap<_, _> = self
             .pods
             .list(&ListParams::default())
@@ -153,16 +157,14 @@ impl SandboxCluster for Kubernetes {
                 namespace == self.config.namespace && name == spare.name,
                 "sandbox resource identity mismatch"
             );
-            let live = pods.get(name).is_some_and(|pod| {
-                pod.uid().as_deref() == Some(uid)
-                    && !pod
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.phase.as_deref())
-                        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
-            });
-            if !live {
-                stopped.push(spare.resource_id.clone());
+            let pod = pods
+                .get(name)
+                .filter(|pod| pod.uid().as_deref() == Some(uid));
+            if pod.is_none_or(is_terminal) {
+                stopped.push(StoppedSpare {
+                    resource_id: spare.resource_id.clone(),
+                    stopped_at_ms: pod.and_then(finished_at_ms),
+                });
             }
         }
         Ok(stopped)
@@ -196,12 +198,17 @@ impl SandboxCluster for Kubernetes {
     }
 }
 
-async fn reap_completed(pods: &Api<Pod>) -> Result<()> {
+async fn reap_completed(pods: &Api<Pod>, now_ms: i64) -> Result<()> {
     for phase in ["Failed", "Succeeded"] {
         let params = ListParams::default()
             .labels("app.kubernetes.io/managed-by=terse")
             .fields(&format!("status.phase={phase}"));
         for pod in pods.list(&params).await? {
+            if finished_at_ms(&pod)
+                .is_some_and(|finished| now_ms - finished < COMPLETED_POD_RETENTION_MS)
+            {
+                continue;
+            }
             delete_pod(
                 pods,
                 &pod.name_any(),
@@ -251,12 +258,29 @@ fn base_pod(
 }
 
 fn terminal_or_ready(pod: &Pod) -> bool {
-    is_ready(pod)
-        || pod
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.as_deref())
-            .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+    is_ready(pod) || is_terminal(pod)
+}
+fn is_terminal(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
+}
+fn finished_at_ms(pod: &Pod) -> Option<i64> {
+    let finished_at = pod
+        .status
+        .as_ref()?
+        .container_statuses
+        .as_ref()?
+        .iter()
+        .find(|status| status.name == "runtime")?
+        .state
+        .as_ref()?
+        .terminated
+        .as_ref()?
+        .finished_at
+        .as_ref()?;
+    Some(finished_at.0.timestamp_millis())
 }
 fn is_ready(pod: &Pod) -> bool {
     pod.status

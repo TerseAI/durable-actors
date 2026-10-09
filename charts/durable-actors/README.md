@@ -58,9 +58,14 @@ usage:
   pubsubTopic: projects/my-project/topics/sandbox-usage
 ```
 
-The controller's Google service account must have permission to publish to the topic. Start and stop events are persisted in a PostgreSQL outbox and retried until Pub/Sub confirms the batch. Delivery is at least once and events can arrive out of order; consumers must deduplicate the stable `id`.
+The controller's Google service account must have permission to publish to the topic. Every sandbox session produces one `sandbox.started` and one `sandbox.stopped` event, identified by `sandbox_usage_v1:<sessionId>:started` or `:stopped`. Events are persisted in a PostgreSQL outbox and retried until Pub/Sub confirms the batch. Delivery is at least once and events can arrive out of order; consumers must deduplicate by `id`.
 
-Each event includes `type`, `observedAtMs`, `projectId`, optional `billingAccountId`, `sessionId`, `resourceId`, `region`, `cpuMillis`, and `memoryMib`. CPU and memory are the resources reserved for the sandbox. `observedAtMs` is when the control plane observed the lifecycle transition.
+Each event includes `type`, `observedAtMs`, `projectId`, optional `billingAccountId`, `sessionId`, `resourceId`, `region`, `cpuMillis`, and `memoryMib`. CPU and memory are the resources reserved for the sandbox. A session's usage is the interval between its two `observedAtMs` values:
+
+- For `sandbox.started`, it is when the sandbox was assigned to the session and became ready. Time spent as an unassigned warm spare is excluded.
+- For `sandbox.stopped`, it is when the sandbox's runtime container terminated, as recorded by Kubernetes. If the control plane retired the sandbox, or Kubernetes no longer has the record, it is when the control plane detected the stop.
+
+Stop events are usually published within a minute of the sandbox stopping. Measure usage with `observedAtMs`, not arrival time.
 
 ## Advanced settings
 

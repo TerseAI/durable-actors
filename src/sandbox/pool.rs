@@ -339,7 +339,7 @@ impl SparePool {
                 &[&handle.name],
             )
             .await?;
-        enqueue_stops(&transaction, &rows).await?;
+        enqueue_stops(&transaction, &rows, |_| None).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -353,6 +353,7 @@ impl SparePool {
 async fn enqueue_stops(
     transaction: &tokio_postgres::Transaction<'_>,
     rows: &[tokio_postgres::Row],
+    stopped_at_ms: impl Fn(&tokio_postgres::Row) -> Option<i64>,
 ) -> Result<()> {
     let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64;
     for row in rows {
@@ -363,7 +364,7 @@ async fn enqueue_stops(
             transaction,
             &serde_json::from_value(value)?,
             crate::usage::UsageEventType::Stopped,
-            now,
+            stopped_at_ms(row).unwrap_or(now),
         )
         .await?;
     }
