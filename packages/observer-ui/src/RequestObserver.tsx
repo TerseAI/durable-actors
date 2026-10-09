@@ -168,7 +168,7 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
                                 <TableHead scope="col">Instance</TableHead>
                                 <TableHead scope="col">Transport</TableHead>
                                 <TableHead scope="col">Outcome</TableHead>
-                                <TableHead scope="col">Total</TableHead>
+                                <TableHead scope="col">Host duration</TableHead>
                                 <TableHead scope="col">Queue wait</TableHead>
                                 <TableHead scope="col">
                                     <span className="la:sr-only">Details</span>
@@ -262,7 +262,8 @@ function RequestObserver({ client, actor, timeRange, onTimeRangeChange, focus }:
             </div>
             {!query && !!shown?.evicted && <p className="la-request-note">{shown.evicted.toLocaleString()} older records have left this history window.</p>}
             <p className="la-request-note">
-                Total includes queue wait, actor processing, and persistence. Queue wait includes the WebSocket message queue. Timings exclude the caller’s network round trip.
+                Routing &amp; startup includes host discovery, startup, and routing retries. Host duration includes queue wait, actor processing, and persistence. Queue wait includes the WebSocket
+                message queue. Timings exclude the caller’s network round trip.
             </p>
             <Drawer
                 direction="right"
@@ -365,7 +366,8 @@ function RequestDetails({ record, timing }: { record: RequestTrace; timing?: { o
         Transport: record.kind === "method" ? "Method" : "WebSocket",
         Outcome: record.outcome,
         "Host state": { cold: "Cold", warm: "Warm" }[record.hostState],
-        Total: duration(record.durationMs),
+        "Routing & startup": duration(record.routingMs),
+        "Host duration": duration(record.durationMs),
         "Queue wait": record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs),
         ...(timing ? { "Start offset in view": duration(timing.offsetMs), "Gap from preceding calls": gapLabel(timing.gapMs) } : {}),
         Host: record.hostId,

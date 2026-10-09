@@ -30,6 +30,7 @@ const page: RequestTracePage = {
             operation: "post",
             connectionId: null,
             startedAtMs: 1000,
+            routingMs: 628,
             durationMs: 25,
             queueWaitMs: 10,
             hostState: "warm",
@@ -42,6 +43,34 @@ test("request traces require a cold or warm hostState", () => {
     for (const hostState of ["cold", "warm"]) assert.equal(isTrace({ ...page.records[0], hostState }), true)
     for (const hostState of [undefined, null, true, false, "unknown"]) assert.equal(isTrace({ ...page.records[0], hostState }), false)
 })
+
+test("request traces require finite nonnegative routing time independent of host duration", () => {
+    for (const routingMs of [0, 628]) assert.equal(isTrace({ ...page.records[0], routingMs }), true)
+    for (const routingMs of [undefined, null, -1, Infinity, NaN, "628"]) assert.equal(isTrace({ ...page.records[0], routingMs }), false)
+})
+
+for (const hostState of ["cold", "warm"] as const) {
+    test(`request details distinguish routing and startup from host duration for ${hostState} requests`, async () => {
+        const view = render(
+            <RequestObserver
+                client={{
+                    watchRequests: async (receive, signal) => {
+                        receive({ ...page, records: [{ ...page.records[0]!, hostState }] })
+                        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+                    }
+                }}
+            />
+        )
+        fireEvent.click(view.getByRole("button", { name: "Table" }))
+        fireEvent.click(await view.findByRole("button", { name: "Inspect post request" }))
+        const dialog = await view.findByRole("dialog", { name: "Request details" })
+        const fields = Object.fromEntries(Array.from(dialog.querySelectorAll("dt"), label => [label.textContent, label.nextElementSibling?.textContent]))
+        assert.equal(fields["Routing & startup"], "628 ms")
+        assert.equal(fields["Host duration"], "25 ms")
+        assert.equal(fields["Queue wait"], "10 ms")
+        assert.equal(fields["Host state"], hostState === "cold" ? "Cold" : "Warm")
+    })
+}
 
 test("request traces require an explicit valid project ID", () => {
     for (const projectId of [undefined, "", "bad/project"]) assert.equal(isTrace({ ...page.records[0], projectId }), false)

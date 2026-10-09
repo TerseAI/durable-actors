@@ -25,6 +25,7 @@ const trace: RequestTrace = {
     startedAtMs: 1500,
     durationMs: 4,
     queueWaitMs: 1,
+    routingMs: 0,
     hostState: "warm",
     outcome: "completed"
 }

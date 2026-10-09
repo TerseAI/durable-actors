@@ -528,13 +528,19 @@ impl RuntimeStorage {
 #[async_trait]
 impl ActorInventoryReader for RuntimeStorageReader {
     async fn actor_inventory(&self, project_id: &str) -> Result<ActorInventorySnapshot> {
+        use futures_util::{StreamExt, TryStreamExt};
+
         let mut actors = std::collections::BTreeMap::new();
         let prefix = format!("{}owners/", crate::storage_paths::ROOT);
-        for key in self.authority.list(&prefix).await? {
-            if !crate::storage_paths::owner_in_project(&key, project_id) {
-                continue;
-            }
-            let Some(object) = self.authority.get(&key).await? else {
+        let keys = self.authority.list(&prefix).await?;
+        let mut reads = futures_util::stream::iter(
+            keys.into_iter()
+                .filter(|key| crate::storage_paths::owner_in_project(key, project_id)),
+        )
+        .map(|key| async move { self.authority.get(&key).await })
+        .buffer_unordered(32);
+        while let Some(object) = reads.try_next().await? {
+            let Some(object) = object else {
                 continue;
             };
             let record: Ownership = serde_json::from_slice(&object.bytes)?;

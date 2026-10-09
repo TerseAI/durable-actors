@@ -204,6 +204,7 @@ export interface RequestTrace {
     operation: string
     connectionId: string | null
     startedAtMs: number
+    routingMs: number
     durationMs: number
     queueWaitMs: number | null
     hostState: "cold" | "warm"
@@ -272,6 +273,8 @@ export function isTrace(value: unknown): value is RequestTrace {
         ["completed", "failed", "rejected", "rerouted", "interrupted"].includes(trace.outcome) &&
         (trace.connectionId === null || typeof trace.connectionId === "string") &&
         ["cold", "warm"].includes(trace.hostState) &&
+        Number.isFinite(trace.routingMs) &&
+        trace.routingMs >= 0 &&
         Number.isFinite(trace.durationMs) &&
         trace.durationMs >= 0 &&
         (trace.queueWaitMs === null || (Number.isFinite(trace.queueWaitMs) && trace.queueWaitMs >= 0 && trace.queueWaitMs <= trace.durationMs))

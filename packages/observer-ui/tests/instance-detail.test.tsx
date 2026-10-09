@@ -32,6 +32,7 @@ const page: RequestTracePage = {
             startedAtMs: 1000,
             durationMs: 40,
             queueWaitMs: 10,
+            routingMs: 0,
             hostState: "warm",
             outcome: "completed"
         }

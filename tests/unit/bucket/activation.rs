@@ -129,6 +129,7 @@ struct CountedBucket {
     writes: AtomicU64,
     lists: AtomicU64,
     lose_reply: AtomicBool,
+    delay_read: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
     delay_write: Mutex<Option<(Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>>,
 }
 
@@ -153,6 +154,11 @@ impl Bucket for CountedBucket {
 
     async fn get(&self, key: &str) -> Result<Option<super::super::BucketObject>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        let delayed = self.delay_read.lock().unwrap().clone();
+        if let Some((entered, resume)) = delayed {
+            entered.add_permits(1);
+            resume.acquire().await?.forget();
+        }
         self.inner.get(key).await
     }
     async fn compare_and_swap(
@@ -198,6 +204,7 @@ impl Fixture {
             writes: AtomicU64::new(0),
             lists: AtomicU64::new(0),
             lose_reply: AtomicBool::new(false),
+            delay_read: Mutex::new(None),
             delay_write: Mutex::new(None),
         });
         let clock = Arc::new(TestClock(AtomicU64::new(1000)));
@@ -515,6 +522,75 @@ async fn delayed_renewal_cannot_overwrite_a_completed_takeover() -> Result<()> {
             .owner,
         request("next").id
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inventory_overlaps_ownership_reads_with_bounded_fanout() -> Result<()> {
+    let f = Fixture::new()?;
+    for index in (0..66).rev() {
+        let actor = ActorKey {
+            actor_name: if index % 2 == 0 { "Counter" } else { "Account" }.into(),
+            actor_id: format!("{index:03}"),
+            ..f.actor.clone()
+        };
+        let lease = request("first");
+        f.runtime
+            .register_activation(&actor, &lease, "us-east", true, None)
+            .await?;
+        match index % 3 {
+            0 => {
+                f.runtime
+                    .renew_activation(
+                        &actor,
+                        &lease,
+                        ActivationInventory {
+                            resident: Some(true),
+                            waiting: Some(vec![]),
+                        },
+                    )
+                    .await?;
+            }
+            1 => {
+                f.runtime
+                    .release_activation(&actor, &lease.id, &lease.session_id)
+                    .await?
+            }
+            _ => {}
+        }
+    }
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    *f.bucket.delay_read.lock().unwrap() = Some((entered.clone(), resume.clone()));
+    f.bucket.reads.store(0, Ordering::SeqCst);
+    let release_reads = async {
+        entered.acquire_many(2).await.unwrap().forget();
+        assert!((2..=32).contains(&f.bucket.reads.load(Ordering::SeqCst)));
+        resume.add_permits(66);
+    };
+    let (inventory, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            f.runtime.actor_inventory(&f.actor.project_id),
+            release_reads
+        )
+    })
+    .await
+    .context("inventory must start multiple reads before the first finishes")?;
+    let inventory = inventory?;
+    assert!(inventory.connections_complete);
+    assert_eq!(inventory.actors.len(), 2);
+    for (actor, name) in inventory.actors.iter().zip(["Account", "Counter"]) {
+        assert_eq!(actor.actor_name, name);
+        assert_eq!((actor.live, actor.dormant, actor.unknown), (11, 11, 11));
+        assert_eq!(actor.instances.len(), 33);
+        assert!(
+            actor
+                .instances
+                .windows(2)
+                .all(|pair| pair[0].actor_id < pair[1].actor_id)
+        );
+    }
+    assert_eq!(f.bucket.reads.load(Ordering::SeqCst), 66);
     Ok(())
 }
 

@@ -142,7 +142,7 @@ function TimelineCall({
                 data-state={selected ? "selected" : undefined}
                 aria-label={`Inspect ${record.operation} request on ${record.actorName} / ${record.actorId}, ${record.outcome}, ${duration(record.durationMs)}, starts +${duration(offsetMs)}, ${gapLabel(gapMs)}`}
                 aria-haspopup="dialog"
-                title={`${record.actorName} / ${record.actorId}\n${record.operation} · ${record.outcome}\nStart: ${new Date(record.startedAtMs).toLocaleString()} (+${duration(offsetMs)})\nTotal: ${duration(record.durationMs)}\nQueue wait: ${record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs)}\n${gapLabel(gapMs)}${gapMs === null ? "" : " relative to preceding calls on this instance"}`}
+                title={`${record.actorName} / ${record.actorId}\n${record.operation} · ${record.outcome}\nStart: ${new Date(record.startedAtMs).toLocaleString()} (+${duration(offsetMs)})\nRouting & startup: ${duration(record.routingMs)}\nHost duration: ${duration(record.durationMs)}\nQueue wait: ${record.queueWaitMs === null ? "Did not begin processing" : duration(record.queueWaitMs)}\n${gapLabel(gapMs)}${gapMs === null ? "" : " relative to preceding calls on this instance"}`}
                 onClick={event => onSelect(record, event.currentTarget)}
             >
                 {queue > 0 && <span className="request-waterfall-queue" style={{ width: `${(queue / (end - start)) * 100}%` }} />}
