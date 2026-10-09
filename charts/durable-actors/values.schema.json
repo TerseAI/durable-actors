@@ -198,6 +198,34 @@
       "required": [
         "dnsCidrs"
       ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pubsubTopic": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "tokenSecret": {
+          "type": "string"
+        },
+        "tokenKey": {
+          "type": "string"
+        },
+        "authorizationUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pubsubTopic",
+        "url",
+        "tokenSecret",
+        "tokenKey",
+        "authorizationUrl"
+      ]
     }
   },
   "required": [

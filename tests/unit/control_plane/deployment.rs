@@ -38,6 +38,7 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     let client = reqwest::Client::new();
     let bundle =
         crate::artifacts::ArtifactManifest::decode(&crate::sandbox::testing::code_artifact(1))?;
+    let billing_account_id = "559a5a54-2389-4062-8919-d9212bb36291";
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/tests/fixtures/public-contract.json"
     ))?;
@@ -45,11 +46,15 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     client
         .put(&url)
         .bearer_auth("api-key")
-        .json(&serde_json::json!({"bundle":bundle,"contract":document}))
+        .json(&serde_json::json!({"bundle":bundle,"contract":document,"billingAccountId":billing_account_id}))
         .send()
         .await?
         .error_for_status()?;
     let active = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(
+        active.billing_account_id.as_deref(),
+        Some(billing_account_id)
+    );
     assert_eq!(active.image_ref, "im-runtime");
     assert_eq!(active.actor_entrypoint.as_deref(), Some("actors.mjs"));
     assert_eq!(active.code_snapshot, Some(bundle.encode()?));
@@ -63,6 +68,7 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
         .json()
         .await?;
     assert_eq!(current["bundle"], serde_json::to_value(bundle)?);
+    assert_eq!(current["billingAccountId"], billing_account_id);
     current["secretRefs"] = serde_json::json!(["rotated"]);
     client
         .put(&url)
@@ -72,6 +78,7 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
         .await?
         .error_for_status()?;
     let rotated = admin.current_deployment("default").await?.unwrap();
+    assert_eq!(rotated.billing_account_id, active.billing_account_id);
     assert_eq!(rotated.code_snapshot, active.code_snapshot);
     assert_eq!(rotated.sandboxes, active.sandboxes);
     assert_ne!(rotated.host_config_key(), active.host_config_key());
@@ -299,6 +306,7 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        billing_account_id: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

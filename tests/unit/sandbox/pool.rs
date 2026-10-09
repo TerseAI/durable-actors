@@ -20,6 +20,7 @@ fn pool(database: PostgresDatabase) -> Arc<SparePool> {
         database,
         Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
         config(1),
+        false,
     )
 }
 
@@ -60,11 +61,26 @@ async fn only_live_claims_can_become_routable() -> Result<()> {
                 .await
                 .is_err()
         );
-        pool.remember("host", "revision", &spare).await?;
+        pool.remember(
+            "host",
+            "revision",
+            &spare,
+            &usage_assignment("host", &spare),
+        )
+        .await?;
         pool.wait_ready("host").await?;
         assert_eq!(pool.host("host").await?, Some(spare.clone()));
         pool.failed("host").await?;
-        assert!(pool.remember("host", "revision", &spare).await.is_err());
+        assert!(
+            pool.remember(
+                "host",
+                "revision",
+                &spare,
+                &usage_assignment("host", &spare)
+            )
+            .await
+            .is_err()
+        );
         assert!(pool.wait_ready("host").await.is_err());
         assert!(pool.host("host").await?.is_none());
         Ok(())
@@ -82,7 +98,7 @@ async fn expired_claims_and_outdated_runtime_spares_cannot_be_reused() -> Result
            let spare = SpareHandle {
 control_route: String::new(),
 control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-expired".into(), route: "https://spare.test".into(), canonical_region: "region".into() };
-           assert!(pool.remember("host", "revision", &spare).await.is_err());
+           assert!(pool.remember("host", "revision", &spare, &usage_assignment("host", &spare)).await.is_err());
            let old = reserve(&pool.store, "old-runtime", 1).await?.unwrap();
            pool.store.publish("old-runtime", &SpareHandle { name: old.clone(), ..spare.clone() }, 600).await?;
            let current = reserve(&pool.store, "current-runtime", 1).await?.unwrap();
@@ -186,6 +202,7 @@ async fn reconciliation_keeps_spares_for_every_project_runtime() -> Result<()> {
         for (project, image) in [("team-a", "im-a"), ("team-b", "im-b")] {
             registry
                 .register_test_deployment(&HostLaunchSpec {
+                    billing_account_id: None,
                     sandboxes: Default::default(),
                     project_id: project.into(),
                     source: None,
@@ -255,3 +272,102 @@ pub(super) async fn reserve(store: &PoolStore, key: &str, target: u32) -> Result
 
 #[path = "pool_replenishment.rs"]
 mod replenishment;
+
+fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAssignment {
+    crate::usage::UsageAssignment {
+        billing_account_id: None,
+        project_id: "project".into(),
+        session_id: session.into(),
+        resource_id: spare.resource_id.clone(),
+        region: spare.canonical_region.clone(),
+        cpu_millis: 250,
+        memory_mib: 256,
+    }
+}
+
+#[tokio::test]
+async fn unmetered_assignments_do_not_enter_usage_journal() -> Result<()> {
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let pool = pool(database.clone());
+        pool.reserve_host("unmetered", "host", "revision").await?;
+        let spare = SpareHandle {
+            name: "do-actor-unmetered".into(),
+            resource_id: "namespace/pod/uid".into(),
+            route: "https://spare.test".into(),
+            canonical_region: "region".into(),
+            control_route: String::new(),
+            control_token: String::new(),
+        };
+        pool.remember(
+            "host",
+            "revision",
+            &spare,
+            &usage_assignment("unmetered", &spare),
+        )
+        .await?;
+        assert!(pool.host("host").await?.is_some());
+        let journal = crate::usage::UsageJournal::new(database.clone());
+        assert!(journal.active().await?.is_empty());
+        assert!(journal.pending().await?.is_empty());
+        let metered = SparePool::new(database, pool.provider.clone(), config(1), true);
+        metered
+            .reserve_host("metered", "paid-host", "revision")
+            .await?;
+        let spare = SpareHandle {
+            name: "do-actor-metered".into(),
+            ..spare
+        };
+        let assignment = usage_assignment("metered", &spare);
+        metered
+            .remember("paid-host", "revision", &spare, &assignment)
+            .await?;
+        assert_eq!(journal.active().await?, vec![assignment]);
+        assert!(metered.host("host").await?.is_some());
+        assert!(journal.pending().await?.is_empty());
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn metered_assignment_failure_cannot_make_a_sandbox_routable() -> Result<()> {
+    with_postgres(async |fixture| {
+        let database = PostgresDatabase::connect(&fixture.url).await?;
+        let pool = SparePool::new(
+            database.clone(),
+            Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
+            config(1),
+            true,
+        );
+        pool.reserve_host("metered", "host", "revision").await?;
+        let spare = SpareHandle {
+            name: "do-actor-metered".into(),
+            resource_id: "namespace/pod/uid".into(),
+            route: "https://spare.test".into(),
+            canonical_region: "region".into(),
+            control_route: String::new(),
+            control_token: String::new(),
+        };
+        let mut assignment = usage_assignment("metered", &spare);
+        assignment.cpu_millis = 0;
+        assert!(
+            pool.remember("host", "revision", &spare, &assignment)
+                .await
+                .is_err()
+        );
+        assert!(pool.host("host").await?.is_none());
+        assert!(
+            crate::usage::UsageJournal::new(database)
+                .active()
+                .await?
+                .is_empty()
+        );
+        assignment.cpu_millis = 1_000;
+        pool.remember("host", "revision", &spare, &assignment)
+            .await?;
+        assert!(pool.host("host").await?.is_some());
+        Ok(())
+    })
+    .await
+}

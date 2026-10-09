@@ -376,6 +376,33 @@ fn default_region_requires_a_configured_compute_zone() -> Result<()> {
 }
 
 #[test]
+fn pubsub_requires_no_static_token_and_admission_can_be_configured_separately() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    values.insert(
+        "DURABLE_ACTORS_USAGE_PUBSUB_TOPIC",
+        "projects/project/topics/usage",
+    );
+    let config = parse(&values)?;
+    assert_eq!(
+        config.usage_pubsub_topic.as_deref(),
+        Some("projects/project/topics/usage")
+    );
+    values.insert(
+        "DURABLE_ACTORS_USAGE_AUTHORIZATION_URL",
+        "https://billing.example/authorize/",
+    );
+    assert!(parse(&values).is_err());
+    values.insert("DURABLE_ACTORS_USAGE_TOKEN", "producer-token");
+    assert!(parse(&values)?.usage_authorization.is_some());
+    values.insert("DURABLE_ACTORS_USAGE_URL", "https://billing.example/usage");
+    assert!(parse(&values).is_err());
+    Ok(())
+}
+
+#[test]
 fn standard_gcs_starts_with_one_bucket_and_no_rapid_configuration() -> Result<()> {
     let mut values = process_environment();
     values.remove("DURABLE_ACTORS_PERSISTENCE");

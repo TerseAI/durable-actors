@@ -99,7 +99,7 @@ async fn concurrent_connections_migrate_fresh_and_existing_schemas_once() -> Res
         .map(|m| m.version())
         .max()
         .unwrap();
-    for version in [0, latest] {
+    for version in [0, 17, latest] {
         with_postgres_schema(async |database| check_concurrent_migrations(database, version).await)
             .await?;
     }

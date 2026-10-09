@@ -81,3 +81,24 @@ for (const [name, overrides] of [
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
+
+test("publishes compute usage with Google credentials and a separate admission token", () => {
+    const output = manifests({ usage: { pubsubTopic: "projects/billing/topics/usage", authorizationUrl: "https://billing.example/authorize", tokenSecret: "usage-token", tokenKey: "bearer" } })
+    assert.match(output, /name: DURABLE_ACTORS_USAGE_PUBSUB_TOPIC, value: "projects\/billing\/topics\/usage"/)
+    assert.match(output, /name: DURABLE_ACTORS_USAGE_AUTHORIZATION_URL, value: "https:\/\/billing.example\/authorize"/)
+    assert.match(output, /DURABLE_ACTORS_USAGE_TOKEN/)
+    assert.match(output, /name: "usage-token", key: "bearer"/)
+})
+
+test("configures an authenticated HTTP usage receiver", () => {
+    const output = manifests({ usage: { url: "https://billing.example/usage", tokenSecret: "usage-token" } })
+    assert.match(output, /name: DURABLE_ACTORS_USAGE_URL, value: "https:\/\/billing.example\/usage"/)
+    assert.match(output, /name: "usage-token", key: "token"/)
+})
+
+for (const [name, usage] of [
+    ["two usage destinations", { pubsubTopic: "projects/billing/topics/usage", url: "https://billing.example/usage", tokenSecret: "usage-token" }],
+    ["HTTP usage without credentials", { url: "https://billing.example/usage" }],
+    ["admission without metering", { authorizationUrl: "https://billing.example/authorize", tokenSecret: "usage-token" }],
+    ["admission without credentials", { pubsubTopic: "projects/billing/topics/usage", authorizationUrl: "https://billing.example/authorize" }]
+]) test(`rejects ${name}`, () => assert.notEqual(render({ usage }).status, 0))

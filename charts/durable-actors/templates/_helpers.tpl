@@ -8,6 +8,9 @@
 {{- printf "%s@sha256:%s" .Values.image.repository (required "image.digest is required for source builds; published charts include it" .Values.image.digest) -}}
 {{- end -}}
 {{- define "actors.validate" -}}
+{{- if and .Values.usage.pubsubTopic .Values.usage.url }}{{ fail "configure one usage destination: HTTP or Pub/Sub" }}{{ end -}}
+{{- if and .Values.usage.authorizationUrl (not (or .Values.usage.pubsubTopic .Values.usage.url)) }}{{ fail "usage admission requires metering" }}{{ end -}}
+{{- if and (or .Values.usage.url .Values.usage.authorizationUrl) (or (empty .Values.usage.tokenSecret) (empty .Values.usage.tokenKey)) }}{{ fail "HTTP usage and admission require tokenSecret and tokenKey" }}{{ end -}}
 {{- if eq (include "actors.sandboxNamespace" .) .Release.Namespace }}{{ fail "sandbox namespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if .Values.ingress.enabled -}}
 {{- if or (empty .Values.ingress.className) (empty .Values.ingress.tlsSecret) }}{{ fail "ingress requires className and tlsSecret" }}{{ end -}}

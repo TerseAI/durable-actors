@@ -558,6 +558,7 @@ impl Stack {
             actor_id: "counter-1".into(),
         };
         let spec = HostLaunchSpec {
+            billing_account_id: None,
             sandboxes: Default::default(),
             source: None,
             code_snapshot: None,
