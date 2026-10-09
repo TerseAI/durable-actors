@@ -33,7 +33,3 @@ networkPolicy:
 
 usage:
   pubsubTopic: ""
-  url: ""
-  tokenSecret: ""
-  tokenKey: token
-  authorizationUrl: ""

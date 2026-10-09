@@ -17,10 +17,14 @@ impl SparePool {
         )
         .await
         .context("sandbox inspection timed out")??;
-        self.store.0.execute(
-            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2)",
+        let mut connection = self.store.0.connection().await?;
+        let transaction = connection.transaction().await?;
+        let rows = transaction.query(
+            "DELETE FROM durable_actors_spares WHERE status IN ('ready', 'active') AND kind = $1 AND handle::json->>'resourceId' = ANY($2) RETURNING usage_assignment",
             &[&self.config.kind.as_str(), &stopped],
         ).await?;
+        super::enqueue_stops(&transaction, &rows).await?;
+        transaction.commit().await?;
         Ok(())
     }
 }

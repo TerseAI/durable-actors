@@ -35,9 +35,7 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
-    pub usage_sink: Option<(String, String)>,
     pub usage_pubsub_topic: Option<String>,
-    pub usage_authorization: Option<(String, String)>,
     pub region: Option<String>,
 }
 
@@ -123,31 +121,14 @@ async fn control_plane_routes(
         config.jwt_max_lifetime,
     )?;
     let database = PostgresDatabase::lazy(&config.storage.postgres_url)?;
-    let usage_authorizer = config
-        .usage_authorization
-        .as_ref()
-        .map(|(url, token)| crate::usage::worker::HttpUsageAuthorizer::new(url, token.clone()))
-        .transpose()?
-        .map(|authorizer| Arc::new(authorizer) as Arc<dyn crate::usage::UsageAuthorizer>);
-    let mut usage_sink = config
-        .usage_sink
-        .map(|(url, token)| crate::usage::worker::HttpUsageSink::new(&url, token))
-        .transpose()?
-        .map(|sink| Arc::new(sink) as Arc<dyn crate::usage::UsageSink>);
+    let track_usage = config.usage_pubsub_topic.is_some();
     if let Some(topic) = &config.usage_pubsub_topic {
-        usage_sink = Some(Arc::new(crate::usage::PubSubUsageSink::new(
-            topic,
-            gcp_auth::provider().await?,
-        )?));
-    }
-    let track_usage = usage_sink.is_some();
-    if track_usage {
-        crate::usage::worker::UsageWorker::new(
-            crate::usage::UsageJournal::new(database.clone()),
-            Arc::new(crate::usage::worker::KubernetesUsageObserver(
-                kube::Client::try_default().await?,
-            )),
-            usage_sink,
+        crate::usage::worker::UsageRelay::new(
+            crate::usage::UsageOutbox::new(database.clone()),
+            Arc::new(crate::usage::PubSubUsageSink::new(
+                topic,
+                gcp_auth::provider().await?,
+            )?),
         )
         .start(stop.clone());
     }
@@ -215,7 +196,6 @@ async fn control_plane_routes(
         database,
         registry.clone(),
         stop,
-        usage_authorizer,
         track_usage,
     )
     .await?;
@@ -278,7 +258,6 @@ async fn sandbox_provisioner(
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
-    usage_authorizer: Option<Arc<dyn crate::usage::UsageAuthorizer>>,
     track_usage: bool,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
@@ -293,7 +272,6 @@ async fn sandbox_provisioner(
             Some(config.runtime_image),
         )
         .with_runtime_access(access)
-        .with_usage_authorizer(usage_authorizer)
         .with_pool(pool),
     ))
 }
@@ -365,25 +343,7 @@ impl ControlPlaneProcessConfig {
             "default region has no configured GKE zone"
         );
         let socket_event_sink = socket_event_sink_config(&mut get)?;
-        let usage_sink = get("DURABLE_ACTORS_USAGE_URL")
-            .map(|url| {
-                Ok::<_, anyhow::Error>((url, required(&mut get, "DURABLE_ACTORS_USAGE_TOKEN")?))
-            })
-            .transpose()?;
         let usage_pubsub_topic = get("DURABLE_ACTORS_USAGE_PUBSUB_TOPIC");
-        ensure!(
-            usage_sink.is_none() || usage_pubsub_topic.is_none(),
-            "configure one usage destination: HTTP or Pub/Sub"
-        );
-        let usage_authorization = get("DURABLE_ACTORS_USAGE_AUTHORIZATION_URL")
-            .map(|url| {
-                Ok::<_, anyhow::Error>((url, required(&mut get, "DURABLE_ACTORS_USAGE_TOKEN")?))
-            })
-            .transpose()?;
-        ensure!(
-            usage_authorization.is_none() || usage_sink.is_some() || usage_pubsub_topic.is_some(),
-            "usage admission requires metering"
-        );
         let gateway_route = validated_http_url(
             &required(&mut get, "DURABLE_ACTORS_GATEWAY_ROUTE")?,
             "DURABLE_ACTORS_GATEWAY_ROUTE",
@@ -407,9 +367,7 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
-            usage_sink,
             usage_pubsub_topic,
-            usage_authorization,
             region,
         })
     }

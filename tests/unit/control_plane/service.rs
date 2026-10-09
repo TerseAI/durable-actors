@@ -1742,46 +1742,6 @@ async fn regional_discovery_allows_omitted_home_region() -> Result<()> {
 #[path = "invoke.rs"]
 mod invoke;
 
-#[tokio::test]
-async fn exhausted_compute_balance_denies_new_sandboxes_before_provider_effects() -> Result<()> {
-    struct Denied;
-    #[async_trait]
-    impl crate::usage::UsageAuthorizer for Denied {
-        async fn authorize(&self, project: &str, _account_id: Option<&str>) -> Result<bool> {
-            assert_eq!(project, "default");
-            Ok(false)
-        }
-    }
-    let provisioner = SandboxHostProvisioner::new(
-        Arc::new(crate::sandbox::testing::UnusedSandboxProvider),
-        HostSandboxRuntimeConfig {
-            control_plane_url: "http://control".into(),
-            jwt_issuer: "issuer".into(),
-            invocation_jwt_audience: "invocation".into(),
-            host_idle_timeout_ms: 10_000,
-        },
-        test_issuer()?,
-        None,
-    )
-    .with_usage_authorizer(Some(Arc::new(Denied)));
-    let spec: HostLaunchSpec = serde_json::from_value(
-        serde_json::json!({"projectId":"default","imageRef":"image","workingDirectory":"/app","secretRefs":[]}),
-    )?;
-    let actor: ActorKey = serde_json::from_value(
-        serde_json::json!({"project_id":"default","actor_name":"Counter","actor_id":"test"}),
-    )?;
-    let result = provisioner
-        .ensure_actor_host(&spec, "canada", &actor, true, None)
-        .await;
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("compute balance exhausted")
-    );
-    Ok(())
-}
-
 fn local_document(digest: &str) -> serde_json::Value {
     serde_json::json!({"workingDirectory": format!("/project/{digest}"), "actorEntrypoint":"src/actors.ts"})
 }

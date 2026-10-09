@@ -85,7 +85,6 @@ For Kubernetes deployment changes:
 
 ```sh
 helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
-node --test charts/durable-actors/tests/chart.test.mjs
 ```
 
 For Python SDK changes, build the runtime and run from `sdk-python`:

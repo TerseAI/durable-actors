@@ -806,7 +806,6 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
-    usage_authorizer: Option<Arc<dyn crate::usage::UsageAuthorizer>>,
     runtime_image: Option<String>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
@@ -816,14 +815,6 @@ pub(crate) struct SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
-    pub(crate) fn with_usage_authorizer(
-        mut self,
-        authorizer: Option<Arc<dyn crate::usage::UsageAuthorizer>>,
-    ) -> Self {
-        self.usage_authorizer = authorizer;
-        self
-    }
-
     pub(crate) fn with_pool(mut self, pool: Arc<crate::sandbox::pool::SparePool>) -> Self {
         self.pool = Some(pool);
         self
@@ -844,7 +835,6 @@ impl SandboxHostProvisioner {
     ) -> Self {
         Self {
             runtime_image,
-            usage_authorizer: None,
             pool: None,
             runtime_access: None,
             provider,
@@ -934,14 +924,6 @@ impl SandboxHostProvisioner {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
-        if let Some(authorizer) = &self.usage_authorizer {
-            ensure!(
-                authorizer
-                    .authorize(&spec.project_id, spec.billing_account_id.as_deref())
-                    .await?,
-                "sandbox compute balance exhausted"
-            );
-        }
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;

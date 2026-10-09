@@ -29,6 +29,9 @@ impl SandboxProvider for Provider {
             .map(|spare| spare.resource_id.clone())
             .collect())
     }
+    async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
+        Ok(())
+    }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("unexpected assignment")
     }
@@ -58,7 +61,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 regions: vec![],
                 resources: ResourceLimits::default(),
             },
-            false,
+            true,
         );
         for name in ["done", "live"] {
             pool.reserve_host(name, name, "revision").await?;
@@ -106,6 +109,74 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
                 .get::<_, i64>(0),
             2
         );
+        let events = crate::usage::UsageOutbox::new(pool.store.0.clone())
+            .pending()
+            .await?;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == crate::usage::UsageEventType::Started)
+                .count(),
+            2
+        );
+        let stopped = events
+            .iter()
+            .find(|event| event.event_type == crate::usage::UsageEventType::Stopped)
+            .unwrap();
+        assert_eq!(stopped.assignment.session_id, "done");
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn intentional_host_retirement_enqueues_a_stop_event() -> Result<()> {
+    with_postgres(async |fixture| {
+        let pool = SparePool::new(
+            PostgresDatabase::connect(&fixture.url).await?,
+            Arc::new(Provider {
+                fail: false.into(),
+                pause: None.into(),
+            }),
+            PoolConfig {
+                control_plane_url: None,
+                kind: SpareKind::Actor,
+                idle: 0,
+                fleet_maximum: 0,
+                max_starting: 1,
+                idle_ttl_seconds: 600,
+                regions: vec![],
+                resources: ResourceLimits::default(),
+            },
+            true,
+        );
+        pool.reserve_host("retired", "host", "revision").await?;
+        let spare = SpareHandle {
+            name: "do-actor-retired".into(),
+            resource_id: "sandboxes/do-actor-retired/uid".into(),
+            route: "http://host:7101".into(),
+            canonical_region: "region".into(),
+            control_route: "http://host:7102".into(),
+            control_token: "token".into(),
+        };
+        pool.remember(
+            "host",
+            "revision",
+            &spare,
+            &usage_assignment("retired", &spare),
+        )
+        .await?;
+
+        assert_eq!(
+            pool.retire_config("revision").await?,
+            vec![spare.resource_id]
+        );
+        let events = crate::usage::UsageOutbox::new(pool.store.0.clone())
+            .pending()
+            .await?;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event_type, crate::usage::UsageEventType::Stopped);
+        assert_eq!(events[1].assignment.session_id, "retired");
         Ok(())
     })
     .await

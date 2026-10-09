@@ -286,7 +286,7 @@ fn usage_assignment(session: &str, spare: &SpareHandle) -> crate::usage::UsageAs
 }
 
 #[tokio::test]
-async fn unmetered_assignments_do_not_enter_usage_journal() -> Result<()> {
+async fn unmetered_assignments_do_not_enter_usage_outbox() -> Result<()> {
     with_postgres(async |fixture| {
         let database = PostgresDatabase::connect(&fixture.url).await?;
         let pool = pool(database.clone());
@@ -307,9 +307,8 @@ async fn unmetered_assignments_do_not_enter_usage_journal() -> Result<()> {
         )
         .await?;
         assert!(pool.host("host").await?.is_some());
-        let journal = crate::usage::UsageJournal::new(database.clone());
-        assert!(journal.active().await?.is_empty());
-        assert!(journal.pending().await?.is_empty());
+        let outbox = crate::usage::UsageOutbox::new(database.clone());
+        assert!(outbox.pending().await?.is_empty());
         let metered = SparePool::new(database, pool.provider.clone(), config(1), true);
         metered
             .reserve_host("metered", "paid-host", "revision")
@@ -322,9 +321,11 @@ async fn unmetered_assignments_do_not_enter_usage_journal() -> Result<()> {
         metered
             .remember("paid-host", "revision", &spare, &assignment)
             .await?;
-        assert_eq!(journal.active().await?, vec![assignment]);
+        let events = outbox.pending().await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].assignment, assignment);
+        assert_eq!(events[0].event_type, crate::usage::UsageEventType::Started);
         assert!(metered.host("host").await?.is_some());
-        assert!(journal.pending().await?.is_empty());
         Ok(())
     })
     .await
@@ -358,8 +359,8 @@ async fn metered_assignment_failure_cannot_make_a_sandbox_routable() -> Result<(
         );
         assert!(pool.host("host").await?.is_none());
         assert!(
-            crate::usage::UsageJournal::new(database)
-                .active()
+            crate::usage::UsageOutbox::new(database.clone())
+                .pending()
                 .await?
                 .is_empty()
         );

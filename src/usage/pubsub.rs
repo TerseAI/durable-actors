@@ -1,4 +1,4 @@
-use super::{UsageInterval, UsageSink};
+use super::{UsageEvent, UsageSink};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -6,14 +6,14 @@ use gcp_auth::TokenProvider;
 use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 
-pub struct PubSubUsageSink {
+pub(crate) struct PubSubUsageSink {
     client: reqwest::Client,
     url: reqwest::Url,
     credentials: Arc<dyn TokenProvider>,
 }
 
 impl PubSubUsageSink {
-    pub fn new(topic: &str, credentials: Arc<dyn TokenProvider>) -> Result<Self> {
+    pub(crate) fn new(topic: &str, credentials: Arc<dyn TokenProvider>) -> Result<Self> {
         let parts: Vec<_> = topic.split('/').collect();
         ensure!(
             parts.len() == 4 && parts[0] == "projects" && parts[2] == "topics",
@@ -43,7 +43,7 @@ impl PubSubUsageSink {
 
 #[async_trait]
 impl UsageSink for PubSubUsageSink {
-    async fn deliver(&self, events: &[UsageInterval]) -> Result<()> {
+    async fn deliver(&self, events: &[UsageEvent]) -> Result<()> {
         let messages = events
             .iter()
             .map(|event| {

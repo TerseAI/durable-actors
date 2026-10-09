@@ -376,7 +376,7 @@ fn default_region_requires_a_configured_compute_zone() -> Result<()> {
 }
 
 #[test]
-fn pubsub_requires_no_static_token_and_admission_can_be_configured_separately() -> Result<()> {
+fn configures_usage_pubsub_without_static_credentials() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
@@ -390,15 +390,6 @@ fn pubsub_requires_no_static_token_and_admission_can_be_configured_separately() 
         config.usage_pubsub_topic.as_deref(),
         Some("projects/project/topics/usage")
     );
-    values.insert(
-        "DURABLE_ACTORS_USAGE_AUTHORIZATION_URL",
-        "https://billing.example/authorize/",
-    );
-    assert!(parse(&values).is_err());
-    values.insert("DURABLE_ACTORS_USAGE_TOKEN", "producer-token");
-    assert!(parse(&values)?.usage_authorization.is_some());
-    values.insert("DURABLE_ACTORS_USAGE_URL", "https://billing.example/usage");
-    assert!(parse(&values).is_err());
     Ok(())
 }
 

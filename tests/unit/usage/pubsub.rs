@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage::UsageEventType;
 use axum::{
     Json, Router,
     http::{HeaderMap, StatusCode},
@@ -25,11 +26,11 @@ impl gcp_auth::TokenProvider for Credentials {
 
 #[tokio::test]
 async fn publishes_encoded_usage_and_requires_confirmation_for_every_message() -> Result<()> {
-    let event = UsageInterval {
-        id: "sandbox_usage_v1:s:1000:2000".into(),
+    let event = UsageEvent {
+        id: "sandbox_usage_v1:session:started".into(),
         assignment: crate::usage::tests::fixture(),
-        start_ms: 1000,
-        end_ms: 2000,
+        event_type: UsageEventType::Started,
+        observed_at_ms: 1_000,
     };
     let expected = serde_json::to_value(&event)?;
     let app = Router::new()

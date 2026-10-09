@@ -105,16 +105,21 @@ impl SparePool {
     ) -> Result<()> {
         let mut connection = self.store.0.connection().await?;
         let transaction = connection.transaction().await?;
+        let usage_assignment = self
+            .track_usage
+            .then(|| serde_json::to_value(assignment))
+            .transpose()?;
         let updated = transaction.execute(
-            "UPDATE durable_actors_spares SET status = 'active', handle = $2 \
+            "UPDATE durable_actors_spares SET status = 'active', handle = $2, usage_assignment = $5 \
              WHERE name = $1 AND host_id = $3 AND host_config_key = $4 AND status = 'claimed' AND expires_at > clock_timestamp()",
-            &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key],
+            &[&spare.name, &serde_json::to_string(spare)?, &host, &config_key, &usage_assignment],
         ).await?;
         ensure!(updated == 1, "actor sandbox claim expired or was retired");
         if self.track_usage {
-            crate::usage::UsageJournal::start_in(
+            crate::usage::UsageOutbox::enqueue_in(
                 &transaction,
                 assignment,
+                crate::usage::UsageEventType::Started,
                 crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64,
             )
             .await?;
@@ -326,13 +331,16 @@ impl SparePool {
         tokio::time::timeout(Duration::from_secs(30), self.provider.retire_spare(&handle))
             .await
             .context("spare retirement timed out")??;
-        self.store
-            .0
-            .execute(
-                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
+        let mut connection = self.store.0.connection().await?;
+        let transaction = connection.transaction().await?;
+        let rows = transaction
+            .query(
+                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring' RETURNING usage_assignment",
                 &[&handle.name],
             )
             .await?;
+        enqueue_stops(&transaction, &rows).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -340,6 +348,26 @@ impl SparePool {
         serde_json::to_string(&(self.config.kind, image, region, &self.config.resources))
             .expect("serializable pool key")
     }
+}
+
+async fn enqueue_stops(
+    transaction: &tokio_postgres::Transaction<'_>,
+    rows: &[tokio_postgres::Row],
+) -> Result<()> {
+    let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64;
+    for row in rows {
+        let Some(value) = row.get::<_, Option<serde_json::Value>>(0) else {
+            continue;
+        };
+        crate::usage::UsageOutbox::enqueue_in(
+            transaction,
+            &serde_json::from_value(value)?,
+            crate::usage::UsageEventType::Stopped,
+            now,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 struct Build {

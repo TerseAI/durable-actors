@@ -14,85 +14,31 @@ pub(super) fn fixture() -> UsageAssignment {
 }
 
 #[tokio::test]
-async fn recovery_splits_long_intervals_into_bounded_events() -> Result<()> {
+async fn lifecycle_events_are_durable_idempotent_and_acknowledged_independently() -> Result<()> {
     with_postgres(async |db| {
-        let journal = UsageJournal::new(PostgresDatabase::connect(&db.url).await?);
+        let database = PostgresDatabase::connect(&db.url).await?;
+        let outbox = UsageOutbox::new(database.clone());
         let assignment = fixture();
-        journal.start(&assignment, 1_000).await?;
-        journal
-            .observe(&assignment.session_id, Observation::Running, 7_202_000)
-            .await?;
-        let pending = journal.pending().await?;
-        assert_eq!(pending.len(), 100);
-        assert_eq!(
-            pending
-                .iter()
-                .map(|event| event.end_ms - event.start_ms)
-                .sum::<i64>(),
-            999_000
-        );
-        assert!(
-            pending
-                .iter()
-                .all(|event| event.end_ms - event.start_ms <= 10_000)
-        );
-        let mut previous_end = 1_000;
-        loop {
-            let batch = journal.pending().await?;
-            if batch.is_empty() {
-                break;
-            }
-            for event in &batch {
-                assert_eq!(event.start_ms, previous_end);
-                previous_end = event.end_ms;
-            }
-            journal.ack(&batch).await?;
-        }
-        assert_eq!(previous_end, 7_200_000);
-        journal
-            .observe(
-                &assignment.session_id,
-                Observation::Stopped(None),
-                8_000_000,
-            )
-            .await?;
-        assert!(journal.active().await?.is_empty());
-        let tail = journal.pending().await?;
-        assert_eq!((tail[0].start_ms, tail[0].end_ms), (7_200_000, 7_202_000));
-        Ok(())
-    })
-    .await
-}
+        let mut connection = database.connection().await?;
+        let transaction = connection.transaction().await?;
+        UsageOutbox::enqueue_in(&transaction, &assignment, UsageEventType::Started, 1_000).await?;
+        UsageOutbox::enqueue_in(&transaction, &assignment, UsageEventType::Started, 1_000).await?;
+        UsageOutbox::enqueue_in(&transaction, &assignment, UsageEventType::Stopped, 9_000).await?;
+        transaction.commit().await?;
 
-#[tokio::test]
-async fn concurrent_publishers_and_stale_acknowledgments_preserve_the_final_tail() -> Result<()> {
-    with_postgres(async |db| {
-        let journal = UsageJournal::new(PostgresDatabase::connect(&db.url).await?);
-        let assignment = fixture();
-        journal.start(&assignment, 1_234).await?;
-        journal
-            .observe(&assignment.session_id, Observation::Running, 35_678)
-            .await?;
-        let first = journal.pending().await?;
-        journal
-            .observe(
-                &assignment.session_id,
-                Observation::Stopped(Some(38_901)),
-                99_999,
-            )
-            .await?;
-        assert!(journal.active().await?.is_empty());
-        let second = journal.pending().await?;
-        assert_eq!(first, second[..first.len()]);
-        let (a, b) = tokio::join!(journal.ack(&first), journal.ack(&second));
-        a?;
-        b?;
-        journal.ack(&first).await?;
-        assert!(journal.pending().await?.is_empty());
-        assert_eq!(second.last().unwrap().end_ms, 38_901);
-        let mut changed = assignment.clone();
-        changed.billing_account_id = Some("different-account".into());
-        assert!(journal.start(&changed, 1_234).await.is_err());
+        let pending = outbox.pending().await?;
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].id, "sandbox_usage_v1:session:started");
+        assert_eq!(pending[0].event_type, UsageEventType::Started);
+        assert_eq!(pending[0].observed_at_ms, 1_000);
+        assert_eq!(pending[1].id, "sandbox_usage_v1:session:stopped");
+        assert_eq!(pending[1].event_type, UsageEventType::Stopped);
+        assert_eq!(pending[1].observed_at_ms, 9_000);
+
+        outbox.ack(std::slice::from_ref(&pending[0])).await?;
+        assert_eq!(outbox.pending().await?, pending[1..]);
+        outbox.ack(&pending[1..]).await?;
+        assert!(outbox.pending().await?.is_empty());
         Ok(())
     })
     .await

@@ -49,6 +49,19 @@ storage:
 
 Both copies must durably flush before a Rapid write is acknowledged. Mode and bucket identities are fixed for existing actor ownership records; choose Rapid before creating actors in that installation. An existing installation needs a planned data migration, not a values-only mode change.
 
+## Usage events
+
+Set `usage.pubsubTopic` to publish sandbox lifecycle events:
+
+```yaml
+usage:
+  pubsubTopic: projects/my-project/topics/sandbox-usage
+```
+
+The controller's Google service account must have permission to publish to the topic. Start and stop events are persisted in a PostgreSQL outbox and retried until Pub/Sub confirms the batch. Delivery is at least once and events can arrive out of order; consumers must deduplicate the stable `id`.
+
+Each event includes `type`, `observedAtMs`, `projectId`, optional `billingAccountId`, `sessionId`, `resourceId`, `region`, `cpuMillis`, and `memoryMib`. CPU and memory are the resources reserved for the sandbox. `observedAtMs` is when the control plane observed the lifecycle transition.
+
 ## Advanced settings
 
 `credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.
