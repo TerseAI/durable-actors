@@ -2,7 +2,7 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
-import { actorDatabase } from "./database.js"
+import { actorDatabase, bindConstructingActorDatabase } from "./database.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 import type { ActorSchema } from "./schema.js"
@@ -44,9 +44,11 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /** @internal */
     declare readonly [actorTypes]: { metadata: Metadata; incoming: Incoming; outgoing: Outgoing; tag: Tag }
 
-    protected constructor() {}
+    protected constructor() {
+        bindConstructingActorDatabase(this)
+    }
 
-    /** Actor-local SQLite. Changes commit with persisted fields after a successful invocation. */
+    /** Actor-local SQLite, available from construction. Changes commit after a successful invocation. */
     protected get db(): ActorDatabase {
         return actorDatabase(this)
     }

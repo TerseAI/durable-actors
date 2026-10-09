@@ -95,6 +95,7 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
 
     close(): void {
         try {
+            if (this.connection?.isTransaction) this.connection.exec("ROLLBACK")
             this.connection?.close()
         } finally {
             this.connection = undefined

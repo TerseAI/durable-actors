@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
-import { bindActorDatabase, runWithActorDatabase } from "../actor/database.js"
+import { constructWithActorDatabase, runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
 import { Persistence } from "../actor/schema.js"
@@ -253,9 +253,11 @@ class ActorRuntime {
     }
 
     private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
-        const instance = Reflect.construct(this.definition.actorClass, []) as AnyActor
+        const instance = constructWithActorDatabase(
+            this.database,
+            () => Reflect.construct(this.definition.actorClass, []) as AnyActor
+        )
         bindActorIdentity(instance, identity.actor_id)
-        bindActorDatabase(instance, this.database)
         validateActorState(instance, this.definition.state)
         if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
         if (this.interleaved) this.lastCompletedState = snapshotActorState(instance, this.definition.state)

@@ -250,7 +250,8 @@ export class BankAccount extends Actor {
 
 - SQL writes and `@Persisted` fields commit together when the method or socket hook succeeds.
 - Bind values with `?` placeholders. Values can be strings, numbers, bigints, byte arrays, or `null`.
-- `this.db` is available only while a method or socket hook runs, not in the constructor.
+- `this.db` is available in constructors and field initializers, as well as methods and socket hooks. SQLite is restored before construction; `@Persisted` fields are hydrated afterward.
+- Keep constructor SQL synchronous and repeatable (for example, `CREATE TABLE IF NOT EXISTS`): constructors run again when actors are restored. Constructor writes commit with the next successful method or socket hook; a throwing constructor rolls them back.
 - The runtime owns transactions and the database file, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ATTACH`, `DETACH`, and `VACUUM` are rejected.
 - The only allowed PRAGMAs are `table_info`, `table_xinfo`, `index_info`, `index_xinfo`, `index_list`, `foreign_key_list`, `foreign_key_check`, `integrity_check`, `quick_check`, and `user_version`.
 - Names beginning with `__terse_` or `_litestream_` are reserved.
