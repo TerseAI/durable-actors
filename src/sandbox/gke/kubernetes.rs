@@ -3,14 +3,16 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::{
     Api, Client, ResourceExt,
-    api::{DeleteParams, ListParams, PostParams, Preconditions},
+    api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions},
     runtime::wait::await_condition,
 };
 use serde_json::json;
 
 use super::*;
 
-// Pool cleanup stamps usage stop events with the runtime container's finishedAt, which is lost once the Pod is deleted.
+// Keeps a metered Pod, and its runtime container's finishedAt, until pool cleanup records the usage stop.
+const USAGE_FINALIZER: &str = "terse.ai/sandbox-usage";
+// Releases completed Pods whose stop pool cleanup never recorded.
 const COMPLETED_POD_RETENTION_MS: i64 = 5 * 60_000;
 
 #[derive(Clone, Debug)]
@@ -24,10 +26,11 @@ pub(super) struct Kubernetes {
     pods: Api<Pod>,
     secrets: Api<Secret>,
     config: GkeConfig,
+    track_usage: bool,
     _cleanup: tokio_util::task::AbortOnDropHandle<()>,
 }
 impl Kubernetes {
-    pub fn new(client: Client, config: GkeConfig) -> Self {
+    pub fn new(client: Client, config: GkeConfig, track_usage: bool) -> Self {
         let pods = Api::namespaced(client.clone(), &config.namespace);
         let cleanup_pods = pods.clone();
         let cleanup = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
@@ -43,6 +46,7 @@ impl Kubernetes {
             pods,
             secrets: Api::namespaced(client, &config.namespace),
             config,
+            track_usage,
             _cleanup: cleanup,
         }
     }
@@ -77,6 +81,15 @@ impl Kubernetes {
             .map(Vec::as_slice)
             .with_context(|| format!("no GKE zone configured for {region}"))
     }
+
+    fn identity<'a>(&self, spare: &'a SpareHandle) -> Result<(&'a str, &'a str)> {
+        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
+        ensure!(
+            namespace == self.config.namespace && name == spare.name,
+            "sandbox resource identity mismatch"
+        );
+        Ok((name, uid))
+    }
 }
 
 #[async_trait]
@@ -87,7 +100,12 @@ impl SandboxCluster for Kubernetes {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let pod = spare_pod(request, self.zones(&request.canonical_region)?, &token)?;
+        let pod = spare_pod(
+            request,
+            self.zones(&request.canonical_region)?,
+            &token,
+            self.track_usage,
+        )?;
         let ready = self.start(pod).await?;
         let ip: std::net::IpAddr = ready
             .status
@@ -126,18 +144,19 @@ impl SandboxCluster for Kubernetes {
                     .is_some_and(|owner| owner == "terse"),
                 "refusing to retire an unmanaged pod"
             );
-            return delete_pod(
+            return discard_pod(
                 &self.pods,
                 &spare.name,
                 &pod.uid().context("pod UID missing")?,
             )
             .await;
         }
-        let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
-        ensure!(
-            namespace == self.config.namespace && name == spare.name,
-            "sandbox resource identity mismatch"
-        );
+        let (name, uid) = self.identity(spare)?;
+        discard_pod(&self.pods, name, uid).await
+    }
+
+    async fn stop_spare(&self, spare: &SpareHandle) -> Result<()> {
+        let (name, uid) = self.identity(spare)?;
         delete_pod(&self.pods, name, uid).await
     }
 
@@ -152,15 +171,11 @@ impl SandboxCluster for Kubernetes {
             .collect();
         let mut stopped = Vec::new();
         for spare in spares {
-            let (namespace, name, uid) = resource_identity(&spare.resource_id)?;
-            ensure!(
-                namespace == self.config.namespace && name == spare.name,
-                "sandbox resource identity mismatch"
-            );
+            let (name, uid) = self.identity(spare)?;
             let pod = pods
                 .get(name)
                 .filter(|pod| pod.uid().as_deref() == Some(uid));
-            if pod.is_none_or(is_terminal) {
+            if pod.is_none_or(has_exited) {
                 stopped.push(StoppedSpare {
                     resource_id: spare.resource_id.clone(),
                     stopped_at_ms: pod.and_then(finished_at_ms),
@@ -209,7 +224,7 @@ async fn reap_completed(pods: &Api<Pod>, now_ms: i64) -> Result<()> {
             {
                 continue;
             }
-            delete_pod(
+            discard_pod(
                 pods,
                 &pod.name_any(),
                 &pod.uid().context("pod UID missing")?,
@@ -220,10 +235,18 @@ async fn reap_completed(pods: &Api<Pod>, now_ms: i64) -> Result<()> {
     Ok(())
 }
 
-fn spare_pod(request: &CreateSpareRequest, zones: &[String], token: &str) -> Result<Pod> {
+fn spare_pod(
+    request: &CreateSpareRequest,
+    zones: &[String],
+    token: &str,
+    track_usage: bool,
+) -> Result<Pod> {
     let mut pod = base_pod(&request.name, &request.image_ref, zones, &request.resources);
     pod["metadata"]["annotations"] =
         json!({"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"});
+    if track_usage {
+        pod["metadata"]["finalizers"] = json!([USAGE_FINALIZER]);
+    }
     pod["spec"]["containers"][0]["env"] = json!([
         {"name":"DURABLE_ACTORS_PROCESS_ROLE", "value":"spare"},
         {"name":"DURABLE_ACTORS_SPARE_TOKEN", "value":token},
@@ -266,6 +289,9 @@ fn is_terminal(pod: &Pod) -> bool {
         .and_then(|status| status.phase.as_deref())
         .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"))
 }
+fn has_exited(pod: &Pod) -> bool {
+    is_terminal(pod) || finished_at_ms(pod).is_some()
+}
 fn finished_at_ms(pod: &Pod) -> Option<i64> {
     let finished_at = pod
         .status
@@ -303,6 +329,25 @@ fn resource_identity(resource: &str) -> Result<(&str, &str, &str)> {
     );
     Ok((namespace, name, uid))
 }
+async fn discard_pod(pods: &Api<Pod>, name: &str, uid: &str) -> Result<()> {
+    release_pod(pods, name, uid).await?;
+    delete_pod(pods, name, uid).await
+}
+async fn release_pod(pods: &Api<Pod>, name: &str, uid: &str) -> Result<()> {
+    let patch = serde_json::from_value(json!([
+        {"op":"test","path":"/metadata/uid","value":uid},
+        {"op":"add","path":"/metadata/finalizers","value":[]}
+    ]))?;
+    match pods
+        .patch(name, &PatchParams::default(), &Patch::Json::<()>(patch))
+        .await
+    {
+        Ok(_) => Ok(()),
+        // 422 means the UID test failed: the name now belongs to a replacement Pod.
+        Err(kube::Error::Api(error)) if matches!(error.code, 404 | 422) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 async fn delete_pod(pods: &Api<Pod>, name: &str, uid: &str) -> Result<()> {
     let params = DeleteParams {
         preconditions: Some(Preconditions {
@@ -337,7 +382,7 @@ impl Drop for PodCleanup {
         if let Some((name, uid)) = self.identity.take() {
             let pods = self.pods.clone();
             tokio::spawn(async move {
-                if let Err(error) = delete_pod(&pods, &name, &uid).await {
+                if let Err(error) = discard_pod(&pods, &name, &uid).await {
                     tracing::warn!(%error, %name, "sandbox cleanup failed");
                 }
             });

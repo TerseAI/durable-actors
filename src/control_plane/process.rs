@@ -260,7 +260,7 @@ async fn sandbox_provisioner(
     stop: tokio_util::sync::CancellationToken,
     track_usage: bool,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
-    let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
+    let provider = Arc::new(GkeSandboxProvider::new(config.gke, track_usage).await?);
     let pool =
         crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool, track_usage);
     pool.start(registry, stop);

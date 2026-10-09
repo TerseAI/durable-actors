@@ -21,6 +21,7 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
             "us-west4-c".into(),
         ],
         "test-token",
+        false,
     )?;
     assert_eq!(
         pod.metadata
@@ -80,18 +81,47 @@ fn customer_pod_enforces_isolation_and_allows_node_scale_down() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn only_metered_pods_hold_the_usage_finalizer() -> Result<()> {
+    let request = CreateSpareRequest {
+        control_plane_url: Some("http://control:7100".into()),
+        kind: SpareKind::Actor,
+        name: "warm-one".into(),
+        image_ref: "runtime@sha256:abc".into(),
+        canonical_region: "north-america-west".into(),
+        resources: ResourceLimits::default(),
+    };
+    let zones = ["us-west4-a".to_string()];
+    assert_eq!(
+        spare_pod(&request, &zones, "token", true)?
+            .metadata
+            .finalizers,
+        Some(vec![USAGE_FINALIZER.to_string()])
+    );
+    assert_eq!(
+        spare_pod(&request, &zones, "token", false)?
+            .metadata
+            .finalizers,
+        None
+    );
+    Ok(())
+}
+
 #[tokio::test]
-async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -> Result<()> {
-    use axum::{Json, Router, routing::get};
-    let deleted = Arc::new(std::sync::Mutex::new(None));
-    let recorded = deleted.clone();
-    let pod = json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"reserved-pod","namespace":"sandboxes","uid":"created-uid","labels":{"app.kubernetes.io/managed-by":"terse"}}});
+async fn stopping_keeps_the_termination_record_and_retirement_releases_it() -> Result<()> {
+    use axum::{Json, Router, body::Bytes, extract::Path, http::Method, routing::any};
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = calls.clone();
     let routes = Router::new().route(
-        "/api/v1/namespaces/sandboxes/pods/reserved-pod",
-        get(move || async move { Json(pod) }).delete(
-            move |Json(body): Json<serde_json::Value>| async move {
-                *recorded.lock().unwrap() = Some(body);
-                Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+        "/api/v1/namespaces/sandboxes/pods/{name}",
+        any(
+            move |method: Method, Path(name): Path<String>, body: Bytes| async move {
+                let body = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((method.to_string(), name, body));
+                Json(pod("metered", "Running", None))
             },
         ),
     );
@@ -105,6 +135,73 @@ async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -
             zones: BTreeMap::new(),
             public_origin: "https://actors.example.com".into(),
         },
+        true,
+    );
+    let spare = SpareHandle {
+        name: "metered".into(),
+        resource_id: "sandboxes/metered/metered-uid".into(),
+        route: String::new(),
+        canonical_region: String::new(),
+        control_route: String::new(),
+        control_token: String::new(),
+    };
+    let stopped = cluster.stop_spare(&spare).await;
+    let stop_calls = std::mem::take(&mut *calls.lock().unwrap());
+    let retired = cluster.retire_spare(&spare).await;
+    let retire_calls = std::mem::take(&mut *calls.lock().unwrap());
+    server.abort();
+    stopped?;
+    retired?;
+    assert_eq!(stop_calls.len(), 1);
+    assert_eq!(
+        (stop_calls[0].0.as_str(), stop_calls[0].1.as_str()),
+        ("DELETE", "metered")
+    );
+    assert_eq!(stop_calls[0].2["preconditions"]["uid"], "metered-uid");
+    assert_eq!(
+        retire_calls
+            .iter()
+            .map(|(method, name, _)| (method.as_str(), name.as_str()))
+            .collect::<Vec<_>>(),
+        [("PATCH", "metered"), ("DELETE", "metered")]
+    );
+    assert_eq!(
+        retire_calls[0].2,
+        json!([
+            {"op":"test","path":"/metadata/uid","value":"metered-uid"},
+            {"op":"add","path":"/metadata/finalizers","value":[]}
+        ])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_recovers_a_lost_create_reply_and_uses_a_uid_precondition() -> Result<()> {
+    use axum::{Json, Router, routing::get};
+    let deleted = Arc::new(std::sync::Mutex::new(None));
+    let recorded = deleted.clone();
+    let pod = json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"reserved-pod","namespace":"sandboxes","uid":"created-uid","labels":{"app.kubernetes.io/managed-by":"terse"}}});
+    let patched = pod.clone();
+    let routes = Router::new().route(
+        "/api/v1/namespaces/sandboxes/pods/reserved-pod",
+        get(move || async move { Json(pod) })
+            .patch(move || async move { Json(patched) })
+            .delete(move |Json(body): Json<serde_json::Value>| async move {
+                *recorded.lock().unwrap() = Some(body);
+                Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+            }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let config = kube::Config::new(format!("http://{}", listener.local_addr()?).parse()?);
+    let server = tokio::spawn(async move { axum::serve(listener, routes).await });
+    let cluster = Kubernetes::new(
+        Client::try_from(config)?,
+        GkeConfig {
+            namespace: "sandboxes".into(),
+            zones: BTreeMap::new(),
+            public_origin: "https://actors.example.com".into(),
+        },
+        false,
     );
     let result = cluster
         .retire_spare(&SpareHandle {
@@ -130,21 +227,16 @@ async fn stopped_spares_report_missing_and_completed_pods_with_their_finish_time
     use axum::{Json, Router, routing::get};
     let finished_at = "2026-10-09T19:00:00.250Z";
     let items: Vec<_> = [
-        ("live", "Running"),
-        ("pending", "Pending"),
-        ("unknown", "Unknown"),
-        ("done", "Succeeded"),
-        ("crashed", "Failed"),
-        ("replaced", "Running"),
+        ("live", "Running", false),
+        ("pending", "Pending", false),
+        ("unknown", "Unknown", false),
+        ("done", "Succeeded", true),
+        ("crashed", "Failed", true),
+        ("exited", "Running", true),
+        ("replaced", "Running", false),
     ]
     .into_iter()
-    .map(|(name, phase)| {
-        pod(
-            name,
-            phase,
-            matches!(phase, "Succeeded" | "Failed").then_some(finished_at),
-        )
-    })
+    .map(|(name, phase, exited)| pod(name, phase, exited.then_some(finished_at)))
     .collect();
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let fail_request = fail.clone();
@@ -169,9 +261,10 @@ async fn stopped_spares_report_missing_and_completed_pods_with_their_finish_time
             zones: BTreeMap::new(),
             public_origin: "https://actors.example.com".into(),
         },
+        false,
     );
     let spares: Vec<_> = [
-        "live", "pending", "unknown", "done", "crashed", "missing", "replaced",
+        "live", "pending", "unknown", "done", "crashed", "exited", "missing", "replaced",
     ]
     .into_iter()
     .map(|name| SpareHandle {
@@ -193,7 +286,13 @@ async fn stopped_spares_report_missing_and_completed_pods_with_their_finish_time
         stopped,
         spares[3..]
             .iter()
-            .zip([Some(finished_at_ms), Some(finished_at_ms), None, None])
+            .zip([
+                Some(finished_at_ms),
+                Some(finished_at_ms),
+                Some(finished_at_ms),
+                None,
+                None,
+            ])
             .map(|(spare, stopped_at_ms)| StoppedSpare {
                 resource_id: spare.resource_id.clone(),
                 stopped_at_ms,
@@ -207,10 +306,12 @@ async fn stopped_spares_report_missing_and_completed_pods_with_their_finish_time
 }
 
 #[tokio::test]
-async fn completed_pods_are_kept_long_enough_to_record_when_they_stopped() -> Result<()> {
+async fn orphaned_completed_pods_are_released_once_their_stop_could_have_been_recorded()
+-> Result<()> {
     use axum::{
         Json, Router,
         extract::{Path, Query},
+        http::Method,
         routing::{delete, get},
     };
     let items = vec![
@@ -218,8 +319,9 @@ async fn completed_pods_are_kept_long_enough_to_record_when_they_stopped() -> Re
         pod("expired", "Succeeded", Some("2026-10-09T19:00:00Z")),
         pod("unrecorded", "Failed", None),
     ];
-    let deleted = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let recorded = deleted.clone();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = calls.clone();
+    let patched = calls.clone();
     let routes = Router::new()
         .route(
             "/api/v1/namespaces/sandboxes/pods",
@@ -234,10 +336,17 @@ async fn completed_pods_are_kept_long_enough_to_record_when_they_stopped() -> Re
         )
         .route(
             "/api/v1/namespaces/sandboxes/pods/{name}",
-            delete(move |Path(name): Path<String>| async move {
-                recorded.lock().unwrap().push(name);
+            delete(move |method: Method, Path(name): Path<String>| async move {
+                recorded.lock().unwrap().push((method.to_string(), name));
                 Json(json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
-            }),
+            })
+            .patch(
+                move |method: Method, Path(name): Path<String>| async move {
+                    let pod = pod(&name, "Succeeded", None);
+                    patched.lock().unwrap().push((method.to_string(), name));
+                    Json(pod)
+                },
+            ),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let config = kube::Config::new(format!("http://{}", listener.local_addr()?).parse()?);
@@ -250,9 +359,19 @@ async fn completed_pods_are_kept_long_enough_to_record_when_they_stopped() -> Re
     .await;
     server.abort();
     result?;
-    let mut deleted = deleted.lock().unwrap().clone();
-    deleted.sort();
-    assert_eq!(deleted, ["expired", "unrecorded"]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|(method, name)| (method.as_str(), name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("PATCH", "unrecorded"),
+            ("DELETE", "unrecorded"),
+            ("PATCH", "expired"),
+            ("DELETE", "expired"),
+        ]
+    );
     Ok(())
 }
 

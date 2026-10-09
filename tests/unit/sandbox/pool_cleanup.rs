@@ -2,7 +2,9 @@ use super::*;
 use crate::{postgres::testing::with_postgres, sandbox::*};
 
 const DONE_STOPPED_AT_MS: i64 = 1_791_574_800_250;
+const RETIRED_STOPPED_AT_MS: i64 = 1_791_574_830_500;
 
+#[derive(Default)]
 struct Provider {
     fail: std::sync::atomic::AtomicBool,
     pause: std::sync::Mutex<
@@ -11,6 +13,8 @@ struct Provider {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    stopping: std::sync::Mutex<Vec<String>>,
+    released: std::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -25,12 +29,16 @@ impl SandboxProvider for Provider {
             let _ = observed.send(());
             resume.await?;
         }
+        let stopping = self.stopping.lock().unwrap().clone();
         Ok(spares
             .iter()
             .filter_map(|spare| {
                 let stopped_at_ms = match spare.name.as_str() {
                     "do-actor-done" => Some(DONE_STOPPED_AT_MS),
                     "do-actor-evicted" => None,
+                    name if stopping.iter().any(|stopped| stopped == name) => {
+                        Some(RETIRED_STOPPED_AT_MS)
+                    }
                     _ => return None,
                 };
                 Some(StoppedSpare {
@@ -40,7 +48,12 @@ impl SandboxProvider for Provider {
             })
             .collect())
     }
-    async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
+    async fn stop_spare(&self, spare: &SpareHandle) -> Result<()> {
+        self.stopping.lock().unwrap().push(spare.name.clone());
+        Ok(())
+    }
+    async fn retire_spare(&self, spare: &SpareHandle) -> Result<()> {
+        self.released.lock().unwrap().push(spare.name.clone());
         Ok(())
     }
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
@@ -57,7 +70,7 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
     with_postgres(async |fixture| {
         let provider = Arc::new(Provider {
             fail: true.into(),
-            pause: None.into(),
+            ..Default::default()
         });
         let pool = SparePool::new(
             PostgresDatabase::connect(&fixture.url).await?,
@@ -141,14 +154,12 @@ async fn completed_hosts_are_removed_but_live_hosts_and_uncertain_observations_a
 }
 
 #[tokio::test]
-async fn intentional_host_retirement_enqueues_a_stop_event() -> Result<()> {
+async fn retired_hosts_record_their_stop_when_the_container_exits() -> Result<()> {
     with_postgres(async |fixture| {
+        let provider = Arc::new(Provider::default());
         let pool = SparePool::new(
             PostgresDatabase::connect(&fixture.url).await?,
-            Arc::new(Provider {
-                fail: false.into(),
-                pause: None.into(),
-            }),
+            provider.clone(),
             PoolConfig {
                 control_plane_url: None,
                 kind: SpareKind::Actor,
@@ -178,19 +189,22 @@ async fn intentional_host_retirement_enqueues_a_stop_event() -> Result<()> {
         )
         .await?;
 
-        let retiring_from_ms = now_ms()?;
         assert_eq!(
             pool.retire_config("revision").await?,
             vec![spare.resource_id]
         );
-        let retired_by_ms = now_ms()?;
-        let events = crate::usage::UsageOutbox::new(pool.store.0.clone())
-            .pending()
-            .await?;
+        let outbox = crate::usage::UsageOutbox::new(pool.store.0.clone());
+        assert_eq!(outbox.pending().await?.len(), 1);
+        assert_eq!(*provider.stopping.lock().unwrap(), ["do-actor-retired"]);
+        assert!(provider.released.lock().unwrap().is_empty());
+
+        pool.forget_stopped().await?;
+        let events = outbox.pending().await?;
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].event_type, crate::usage::UsageEventType::Stopped);
         assert_eq!(events[1].assignment.session_id, "retired");
-        assert!((retiring_from_ms..=retired_by_ms).contains(&events[1].observed_at_ms));
+        assert_eq!(events[1].observed_at_ms, RETIRED_STOPPED_AT_MS);
+        assert_eq!(*provider.released.lock().unwrap(), ["do-actor-retired"]);
         Ok(())
     })
     .await
@@ -199,13 +213,10 @@ async fn intentional_host_retirement_enqueues_a_stop_event() -> Result<()> {
 #[tokio::test]
 async fn stop_events_use_the_runtime_termination_time_when_it_is_still_recorded() -> Result<()> {
     with_postgres(async |fixture| {
-        let provider = Arc::new(Provider {
-            fail: false.into(),
-            pause: None.into(),
-        });
+        let provider = Arc::new(Provider::default());
         let pool = SparePool::new(
             PostgresDatabase::connect(&fixture.url).await?,
-            provider,
+            provider.clone(),
             PoolConfig {
                 control_plane_url: None,
                 kind: SpareKind::Actor,
@@ -246,6 +257,9 @@ async fn stop_events_use_the_runtime_termination_time_when_it_is_still_recorded(
         assert_eq!(stops.len(), 2);
         assert_eq!(stops["done"], DONE_STOPPED_AT_MS);
         assert!((detecting_from_ms..=detected_by_ms).contains(&stops["evicted"]));
+        let mut released = provider.released.lock().unwrap().clone();
+        released.sort();
+        assert_eq!(released, ["do-actor-done", "do-actor-evicted"]);
         Ok(())
     })
     .await
@@ -257,12 +271,12 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
         let (observed, captured) = tokio::sync::oneshot::channel();
         let (resume, paused) = tokio::sync::oneshot::channel();
         let provider = Arc::new(Provider {
-            fail: false.into(),
             pause: Some((observed, paused)).into(),
+            ..Default::default()
         });
         let pool = SparePool::new(
             PostgresDatabase::connect(&fixture.url).await?,
-            provider,
+            provider.clone(),
             PoolConfig {
                 control_plane_url: None,
                 kind: SpareKind::Actor,
@@ -306,6 +320,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
         let _ = resume.send(());
         cleanup.await?;
         assert_eq!(pool.host("new").await?, Some(spare));
+        assert!(provider.released.lock().unwrap().is_empty());
         Ok(())
     })
     .await
@@ -314,7 +329,7 @@ async fn stale_cleanup_observation_cannot_remove_a_replacement_identity() -> Res
 #[tokio::test]
 async fn reconciliation_excludes_evicted_spares_from_subsequent_claims() -> Result<()> {
     with_postgres(async |fixture| {
-        let provider = Arc::new(Provider { fail: false.into(), pause: None.into() });
+        let provider = Arc::new(Provider::default());
         let pool = SparePool::new(PostgresDatabase::connect(&fixture.url).await?, provider, PoolConfig {
             control_plane_url: None, kind: SpareKind::Actor, idle: 2, fleet_maximum: 4,
             max_starting: 2, idle_ttl_seconds: 600, regions: vec![], resources: ResourceLimits::default(),

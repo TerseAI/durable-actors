@@ -104,10 +104,10 @@ control_token: String::new(), name: "do-actor-expired".into(), resource_id: "sb-
            let current = reserve(&pool.store, "current-runtime", 1).await?.unwrap();
            pool.store.retire_unwanted(&["current-runtime".into()], true).await?;
            let retiring = pool.store.retiring().await?;
-           assert!(retiring.iter().any(|s| s.name == old));
-           assert!(retiring.iter().any(|s| s.name == abandoned));
-           assert!(retiring.iter().any(|s| s.name == spare.name));
-           assert!(!retiring.iter().any(|s| s.name == current));
+           assert!(retiring.iter().any(|(s, _)| s.name == old));
+           assert!(retiring.iter().any(|(s, _)| s.name == abandoned));
+           assert!(retiring.iter().any(|(s, _)| s.name == spare.name));
+           assert!(!retiring.iter().any(|(s, _)| s.name == current));
            Ok(())
        }).await
 }

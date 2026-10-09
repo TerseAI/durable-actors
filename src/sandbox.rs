@@ -173,6 +173,9 @@ pub trait SandboxProvider: Send + Sync {
     async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
         anyhow::bail!("provider does not support generic spares")
     }
+    async fn stop_spare(&self, _request: &SpareHandle) -> Result<()> {
+        anyhow::bail!("provider does not support generic spares")
+    }
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>>;
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;

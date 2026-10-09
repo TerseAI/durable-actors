@@ -14,10 +14,11 @@ pub(crate) struct GkeSandboxProvider {
 }
 
 impl GkeSandboxProvider {
-    pub async fn new(config: GkeConfig) -> Result<Self> {
+    pub async fn new(config: GkeConfig, track_usage: bool) -> Result<Self> {
         let cluster = Arc::new(kubernetes::Kubernetes::new(
             kube::Client::try_default().await?,
             config.clone(),
+            track_usage,
         ));
         Ok(Self {
             cluster,
@@ -70,6 +71,10 @@ impl SandboxProvider for GkeSandboxProvider {
 
     async fn retire_spare(&self, request: &SpareHandle) -> Result<()> {
         self.cluster.retire_spare(request).await
+    }
+
+    async fn stop_spare(&self, request: &SpareHandle) -> Result<()> {
+        self.cluster.stop_spare(request).await
     }
 
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>> {
@@ -234,6 +239,7 @@ trait SandboxCluster: Send + Sync {
     async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<StoppedSpare>>;
     async fn create_spare(&self, request: &CreateSpareRequest) -> Result<SpareHandle>;
     async fn retire_spare(&self, spare: &SpareHandle) -> Result<()>;
+    async fn stop_spare(&self, spare: &SpareHandle) -> Result<()>;
     async fn secrets(&self, names: &[String]) -> Result<HashMap<String, String>>;
 }
 

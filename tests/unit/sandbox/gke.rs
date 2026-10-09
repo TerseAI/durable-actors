@@ -19,6 +19,9 @@ impl SandboxCluster for Cluster {
     async fn retire_spare(&self, _: &SpareHandle) -> Result<()> {
         Ok(())
     }
+    async fn stop_spare(&self, _: &SpareHandle) -> Result<()> {
+        Ok(())
+    }
     async fn secrets(&self, _: &[String]) -> Result<HashMap<String, String>> {
         Ok(HashMap::from([(
             "CUSTOMER_SECRET".into(),

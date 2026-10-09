@@ -63,9 +63,16 @@ The controller's Google service account must have permission to publish to the t
 Each event includes `type`, `observedAtMs`, `projectId`, optional `billingAccountId`, `sessionId`, `resourceId`, `region`, `cpuMillis`, and `memoryMib`. CPU and memory are the resources reserved for the sandbox. A session's usage is the interval between its two `observedAtMs` values:
 
 - For `sandbox.started`, it is when the sandbox was assigned to the session and became ready. Time spent as an unassigned warm spare is excluded.
-- For `sandbox.stopped`, it is when the sandbox's runtime container terminated, as recorded by Kubernetes. If the control plane retired the sandbox, or Kubernetes no longer has the record, it is when the control plane detected the stop.
+- For `sandbox.stopped`, it is when the sandbox's runtime container terminated, as recorded by Kubernetes. This includes sandboxes the control plane shuts down because their deployment was replaced or deleted. If Kubernetes never recorded the termination, for example because the sandbox's node disappeared, it is when the control plane detected the stop.
 
 Stop events are usually published within a minute of the sandbox stopping. Measure usage with `observedAtMs`, not arrival time.
+
+While usage events are enabled, sandbox Pods carry the `terse.ai/sandbox-usage` finalizer, which keeps a deleted Pod's termination time until the controller records it. If you uninstall the chart, clear the finalizer so the sandbox namespace can finish deleting. The sandbox namespace is `sandboxNamespace`, or `<release-namespace>-<release-name>` by default:
+
+```sh
+kubectl -n SANDBOX_NAMESPACE get pods -l app.kubernetes.io/managed-by=terse -o name \
+  | xargs kubectl -n SANDBOX_NAMESPACE patch --type=merge -p '{"metadata":{"finalizers":null}}'
+```
 
 ## Advanced settings
 

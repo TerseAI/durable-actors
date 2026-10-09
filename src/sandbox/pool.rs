@@ -141,7 +141,7 @@ impl SparePool {
 
     pub async fn retire_config(&self, config_key: &str) -> Result<Vec<String>> {
         let client = self.store.0.connection().await?;
-        let rows = client.query("UPDATE durable_actors_spares SET status = 'retiring' WHERE host_config_key = $1 RETURNING handle", &[&config_key]).await?;
+        let rows = client.query("UPDATE durable_actors_spares SET status = 'retiring' WHERE host_config_key = $1 AND status != 'stopping' RETURNING handle", &[&config_key]).await?;
         let mut ids = Vec::new();
         for row in rows {
             if let Some(handle) = row.get::<_, Option<String>>(0) {
@@ -317,7 +317,7 @@ impl SparePool {
     async fn cleanup(&self) -> Result<()> {
         use futures_util::StreamExt;
         let results = futures_util::stream::iter(self.store.retiring().await?)
-            .map(|handle| self.retire(handle))
+            .map(|(handle, metered)| self.retire(handle, metered))
             .buffer_unordered(8)
             .collect::<Vec<_>>()
             .await;
@@ -327,20 +327,34 @@ impl SparePool {
         Ok(())
     }
 
-    async fn retire(&self, handle: SpareHandle) -> Result<()> {
+    async fn retire(&self, handle: SpareHandle, metered: bool) -> Result<()> {
+        if metered {
+            return self.stop(handle).await;
+        }
         tokio::time::timeout(Duration::from_secs(30), self.provider.retire_spare(&handle))
             .await
             .context("spare retirement timed out")??;
-        let mut connection = self.store.0.connection().await?;
-        let transaction = connection.transaction().await?;
-        let rows = transaction
-            .query(
-                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring' RETURNING usage_assignment",
+        self.store
+            .0
+            .execute(
+                "DELETE FROM durable_actors_spares WHERE name = $1 AND status = 'retiring'",
                 &[&handle.name],
             )
             .await?;
-        enqueue_stops(&transaction, &rows, |_| None).await?;
-        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn stop(&self, handle: SpareHandle) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), self.provider.stop_spare(&handle))
+            .await
+            .context("spare stop timed out")??;
+        self.store
+            .0
+            .execute(
+                "UPDATE durable_actors_spares SET status = 'stopping' WHERE name = $1 AND status = 'retiring'",
+                &[&handle.name],
+            )
+            .await?;
         Ok(())
     }
 
@@ -348,27 +362,6 @@ impl SparePool {
         serde_json::to_string(&(self.config.kind, image, region, &self.config.resources))
             .expect("serializable pool key")
     }
-}
-
-async fn enqueue_stops(
-    transaction: &tokio_postgres::Transaction<'_>,
-    rows: &[tokio_postgres::Row],
-    stopped_at_ms: impl Fn(&tokio_postgres::Row) -> Option<i64>,
-) -> Result<()> {
-    let now = crate::clock::Clock::now_ms(&crate::clock::SystemClock)? as i64;
-    for row in rows {
-        let Some(value) = row.get::<_, Option<serde_json::Value>>(0) else {
-            continue;
-        };
-        crate::usage::UsageOutbox::enqueue_in(
-            transaction,
-            &serde_json::from_value(value)?,
-            crate::usage::UsageEventType::Stopped,
-            stopped_at_ms(row).unwrap_or(now),
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 struct Build {
@@ -416,7 +409,7 @@ impl PoolStore {
     async fn retire_unwanted(&self, keys: &[String], enabled: bool) -> Result<()> {
         // Active hosts retire through their ownership lease and explicit shutdown.
         self.0.execute(
-            "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND status != 'active') \
+            "UPDATE durable_actors_spares SET status = 'retiring' WHERE kind = $3 AND ((expires_at <= clock_timestamp() AND status NOT IN ('active', 'stopping')) \
              OR (status = 'ready' AND (NOT (pool_key = ANY($1)) OR NOT $2)))",
             &[&keys, &enabled, &self.1.as_str()],
         ).await?;
@@ -424,16 +417,16 @@ impl PoolStore {
         Ok(())
     }
 
-    async fn retiring(&self) -> Result<Vec<SpareHandle>> {
+    async fn retiring(&self) -> Result<Vec<(SpareHandle, bool)>> {
         let client = self.0.connection().await?;
         client
             .query(
-                "SELECT name, handle FROM durable_actors_spares WHERE status = 'retiring' AND kind = $1",
+                "SELECT name, handle, usage_assignment IS NOT NULL AS metered FROM durable_actors_spares WHERE status = 'retiring' AND kind = $1",
                 &[&self.1.as_str()],
             )
             .await?
             .into_iter()
-            .map(|row| decode_handle(&row))
+            .map(|row| Ok((decode_handle(&row)?, row.get("metered"))))
             .collect()
     }
 }
