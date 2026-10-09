@@ -10,7 +10,8 @@ use crate::litestream::{Litestream, Replicator};
 
 pub(super) struct WarmHost {
     pub readiness: Option<tokio::sync::oneshot::Sender<super::process::HostReadiness>>,
-    pub listener: TcpListener,
+    pub listener: super::server::HostServer,
+    pub prepared_code: bool,
     pub executor: WarmExecutor,
     pub javascript: tokio::process::Child,
     pub entrypoint: String,
@@ -100,7 +101,8 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
     }
     let warm = WarmHost {
         readiness: Some(assigned.ready),
-        listener,
+        listener: super::server::HostServer::bound(listener),
+        prepared_code: false,
         executor,
         javascript,
         entrypoint,

@@ -11,6 +11,25 @@ fn artifact(path: &str, bytes: &[u8]) -> ArtifactFile {
 }
 
 #[tokio::test]
+async fn activation_requires_prepared_code_matching_the_assignment() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let manifest = ArtifactManifest {
+        bucket: "code-bucket".into(),
+        files: vec![artifact("actors.mjs", b"new code")],
+    };
+    assert!(manifest.verify(root.path()).await.is_err());
+    tokio::fs::write(root.path().join("actors.mjs"), b"new code").await?;
+    manifest.verify(root.path()).await?;
+    tokio::fs::write(root.path().join("actors.mjs"), b"older deployment").await?;
+    assert!(manifest.verify(root.path()).await.is_err());
+    assert_eq!(
+        tokio::fs::read(root.path().join("actors.mjs")).await?,
+        b"older deployment"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn streamed_code_is_published_only_after_its_digest_matches() -> Result<()> {
     let root = tempfile::tempdir()?;
     tokio::fs::write(root.path().join("actors.mjs"), b"old").await?;

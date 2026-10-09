@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures_util::{Stream, TryStreamExt};
 use google_cloud_storage::client::Storage;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +47,27 @@ impl ArtifactManifest {
         )?;
         value.validate()?;
         Ok(value)
+    }
+
+    pub async fn verify(&self, root: &Path) -> Result<()> {
+        self.validate()?;
+        let started = std::time::Instant::now();
+        futures_util::future::try_join_all(self.files.iter().map(|file| async {
+            ensure!(
+                cached_file_matches(root, file).await?,
+                "prepared artifact is missing or corrupt: {}",
+                file.path
+            );
+            Ok::<_, anyhow::Error>(())
+        }))
+        .await?;
+        tracing::info!(
+            event = "actor_code_verified",
+            files = self.files.len(),
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "prepared actor code verified"
+        );
+        Ok(())
     }
 
     pub async fn install(&self, root: &Path, storage: &Storage) -> Result<()> {
@@ -101,7 +122,28 @@ impl ArtifactManifest {
     }
 }
 
-async fn install_file(
+async fn cached_file_matches(root: &Path, artifact: &ArtifactFile) -> Result<bool> {
+    let path = root.join(&artifact.path);
+    match tokio::fs::symlink_metadata(&path).await {
+        Ok(metadata) if !metadata.is_file() => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut digest = Digest::new(&SHA256);
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let size = file.read(&mut buffer).await?;
+        if size == 0 {
+            break;
+        }
+        digest.update(&buffer[..size]);
+    }
+    Ok(URL_SAFE_NO_PAD.encode(digest.finish().as_ref()) == artifact.sha256)
+}
+
+pub(crate) async fn install_file(
     root: &Path,
     artifact: &ArtifactFile,
     chunks: impl Stream<Item = Result<Bytes>>,

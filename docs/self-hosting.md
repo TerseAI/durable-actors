@@ -155,3 +155,37 @@ kubectl -n actors-actors get events --sort-by=.lastTimestamp
 - WebSocket disconnects: check ingress upgrade support and connection timeouts.
 
 See the [chart values](../charts/durable-actors/values.yaml) for resource limits and optional settings.
+
+
+## Optional hybrid runtime
+
+A single GKE cluster can run both providers using separate node pools and namespaces. Keep the existing COS Sandbox nodes for default actor pods. Install the compatible Substrate control plane, actor router, `WorkerPool` CRD, `gvisor-default` configuration, and token/trust-bundle support. Provide separate Substrate-capable nodes matching `substrate.worker.nodeSelector` and tolerations. Enable GKE node autoscaling for both actor node pools.
+
+The chart's Substrate HPA also requires Managed Service for Prometheus (`PodMonitoring`) and GKE's `AutoscalingMetric` controller/CRD. Grant the Substrate identities the API and GCS snapshot access required by the installed Substrate distribution. The ordinary application buckets and controller identity remain configured as above. The projected API token audience is `api.ate-system.svc`.
+
+Add these values to the same installation:
+
+```yaml
+runtimeMode: hybrid
+cluster:
+  projectId: my-google-project
+  location: us-west4
+  name: my-cluster
+substrate:
+  regions: [north-america-west]
+  atespace: my-actors
+  namespace: my-actors-substrate
+  snapshotLocation: gs://my-substrate-snapshots/actors/
+  worker:
+    cpu: "4"
+    memory: 8Gi
+    autoscaling:
+      minReplicas: 1
+      maxReplicas: 3
+```
+
+This chart manages one Substrate worker region per installation. Select the canonical region corresponding to `placement.zone`. Set unique worker labels and namespaces for independent installations; keep the Substrate namespace separate from both controller and fixed sandbox namespaces. Size workers for the largest requested actor, plus worker overhead, and set node-pool limits/quotas for the intended maximum. More workers cannot make an oversized actor fit.
+
+After rendering and installing the chart, verify worker readiness and HPA `ScalingActive`, then register a new bundle containing both a default actor and a custom-compute actor. Confirm both can write, reconnect sockets, and recover state. Registration prepares custom snapshots before replacing a deployment. Existing deployments retain their recorded runtime/defaults until a new bundle or changed compute contract is registered. For the complete routing and scaling behavior, see [runtime configuration](reference/configuration.md#hybrid-runtime).
+
+Open-source installations can stay in `gke` mode; the bundle/contract API and client deployment command are the same. Hybrid snapshot preparation runs in the control plane and requires no separate client image-building command.

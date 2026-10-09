@@ -37,6 +37,7 @@ pub struct ActorHostConfig {
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
+    activation_handoff: Option<crate::bucket::ActivationHandoff>,
     ready_file: Option<PathBuf>,
     pub control_plane_url: String,
     pub host_token: String,
@@ -164,13 +165,18 @@ pub(super) async fn serve_assigned_host(
     log_startup(&config, &timings, "ready", None);
     let stop = CancellationToken::new();
     let server_stop = stop.clone();
-    let routes = service;
-    let mut server = Box::pin(async move {
-        axum::serve(listener, routes)
-            .with_graceful_shutdown(async move { server_stop.cancelled().await })
-            .await
-            .context("serve actor host endpoints")
-    });
+    listener.install(
+        service
+            .route(
+                "/readyz",
+                axum::routing::post(|| async { axum::http::StatusCode::OK }),
+            )
+            .route(
+                "/warmz",
+                axum::routing::get(|| async { axum::http::StatusCode::OK }),
+            ),
+    )?;
+    let mut server = Box::pin(listener.serve(server_stop));
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
     let shutdown = async {
         tokio::select! { () = shutdown => {}, () = storage.stop.cancelled() => {} }
@@ -297,6 +303,9 @@ impl ActorHostConfig {
             owner_hint: get("DURABLE_ACTORS_OWNER_HINT")
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
+            activation_handoff: get("DURABLE_ACTORS_ACTIVATION_HANDOFF")
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             ready_file: get("DURABLE_ACTORS_HOST_READY_FILE").map(PathBuf::from),
             customer_environment: get("DURABLE_ACTORS_CUSTOMER_ENV")
                 .map(|value| serde_json::from_str(&value))
@@ -351,7 +360,7 @@ struct PreparedActorHost {
     credentials: DropGuard,
     sockets: Arc<super::sockets::HostSockets>,
     invocation_auth: ActorJwtVerifier,
-    listener: TcpListener,
+    listener: super::server::HostServer,
     route: String,
     executor_connection: ActorExecutorConnection,
     javascript: tokio::process::Child,
@@ -372,6 +381,7 @@ async fn prepare_actor_host(
     timings.replication_ready_at_ms = Some(timings.elapsed_ms());
     let invocation_auth = invocation_auth(config)?;
     timings.authentication_ready_at_ms = Some(timings.elapsed_ms());
+    let prepared_code = warm.as_ref().is_some_and(|warm| warm.prepared_code);
     let (warm_listener, warm_executor, warm_storage, warm_control_plane) = match warm {
         Some(warm) => (
             Some(warm.listener),
@@ -407,7 +417,8 @@ async fn prepare_actor_host(
             config.actor.clone(),
         )
         .await?
-        .with_activation(config.new_actor, config.owner_hint.clone()),
+        .with_activation(config.new_actor, config.owner_hint.clone())
+        .with_handoff(config.activation_handoff.clone()),
     );
     let started = timings.started_at;
     let storage_ready = async {
@@ -417,7 +428,11 @@ async fn prepare_actor_host(
     };
     let executor_ready = async {
         if let Some(artifact) = &config.artifact {
-            storage.install_code(artifact).await?;
+            if prepared_code {
+                artifact.verify(std::path::Path::new("/customer")).await?;
+            } else {
+                storage.install_code(artifact).await?;
+            }
         }
         let result = if let Some((executor, javascript, entrypoint)) = warm_executor {
             let connection = tokio::time::timeout(
@@ -501,13 +516,13 @@ async fn prepare_storage(
 
 async fn bind_host_listener(
     config: &ActorHostConfig,
-    listener: Option<TcpListener>,
-) -> Result<(TcpListener, String, HostEndpoint)> {
+    listener: Option<super::server::HostServer>,
+) -> Result<(super::server::HostServer, String, HostEndpoint)> {
     let listener = match listener {
         Some(listener) => listener,
-        None => TcpListener::bind(config.host_bind).await?,
+        None => super::server::HostServer::bound(TcpListener::bind(config.host_bind).await?),
     };
-    let bound = listener.local_addr()?;
+    let bound = listener.address;
     let route = config
         .host_route
         .clone()

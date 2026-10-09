@@ -80,6 +80,7 @@ async fn postgres_registration_replaces_the_single_deployment_atomically() -> Re
 
 fn spec(image: &str) -> HostLaunchSpec {
     HostLaunchSpec {
+        runtime: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,
@@ -199,4 +200,42 @@ async fn deployment_updates_serialize_across_instances_and_recover_when_the_lock
         assert!(second.launch_spec(&project).await?.is_none());
         Ok(())
     }).await
+}
+
+#[tokio::test]
+async fn postgres_runtime_plans_survive_reconnection_and_invalidate_host_configuration()
+-> Result<()> {
+    use crate::sandbox::{ResourceLimits, routing::RuntimePlan};
+    crate::postgres::testing::with_postgres(async |fixture| {
+        let registry =
+            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        let mut deployment = spec("image-1");
+        deployment.sandboxes = serde_json::from_value(serde_json::json!({"Counter":{"cpu":2}}))?;
+        deployment.runtime = Some(RuntimePlan::resolve(
+            ResourceLimits::default(),
+            &deployment.sandboxes,
+            true,
+        ));
+        assert!(registry.register_test_deployment(&deployment).await?);
+        let restored =
+            PostgresAdminRegistry::from_database(PostgresDatabase::connect(&fixture.url).await?);
+        assert_eq!(
+            restored.launch_spec("default").await?,
+            Some(deployment.clone())
+        );
+        assert_eq!(restored.launch_specs().await?, vec![deployment.clone()]);
+        assert!(!restored.register_test_deployment(&deployment).await?);
+        let original_key = deployment.host_config_key();
+        deployment
+            .runtime
+            .as_mut()
+            .unwrap()
+            .default_resources
+            .memory_mib = 256;
+        assert_ne!(deployment.host_config_key(), original_key);
+        assert!(restored.register_test_deployment(&deployment).await?);
+        assert_eq!(registry.launch_spec("default").await?, Some(deployment));
+        Ok(())
+    })
+    .await
 }

@@ -198,6 +198,128 @@
       "required": [
         "dnsCidrs"
       ]
+    },
+    "runtimeMode": {
+      "type": "string",
+      "enum": [
+        "gke",
+        "hybrid"
+      ]
+    },
+    "substrate": {
+      "type": "object",
+      "required": [
+        "endpoint",
+        "router",
+        "atespace",
+        "snapshotLocation",
+        "worker",
+        "egressCidrs"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "snapshotLocation": {
+          "type": "string"
+        },
+        "atespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "worker": {
+          "type": "object",
+          "required": [
+            "cpu",
+            "memory",
+            "image",
+            "autoscaling"
+          ],
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            },
+            "image": {
+              "type": "string",
+              "pattern": "@sha256:[a-f0-9]{64}$"
+            },
+            "autoscaling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "minReplicas",
+                "maxReplicas",
+                "targetAllocationPercent",
+                "scaleDownStabilizationSeconds"
+              ],
+              "properties": {
+                "minReplicas": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxReplicas": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "targetAllocationPercent": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 90
+                },
+                "scaleDownStabilizationSeconds": {
+                  "type": "integer",
+                  "minimum": 120,
+                  "maximum": 3600
+                }
+              }
+            }
+          }
+        },
+        "egressCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "regions": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "location",
+        "name"
+      ],
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9-]*)?$"
+        },
+        "location": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9-]*)?$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9-]*)?$"
+        }
+      }
     }
   },
   "required": [

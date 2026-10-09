@@ -277,6 +277,7 @@ async fn register_deployment(
         .transpose()
         .map_err(ApiError::bad_request)?;
     let spec = HostLaunchSpec {
+        runtime: None,
         sandboxes: Default::default(),
         project_id: project_id(path)?,
         source,

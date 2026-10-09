@@ -36,6 +36,7 @@ pub(crate) struct HostStorage {
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
     activation: Mutex<Option<ActorActivation>>,
+    handoff: Mutex<Option<crate::bucket::ActivationHandoff>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
     renewal: tokio::sync::Mutex<()>,
@@ -88,6 +89,7 @@ impl HostStorage {
             new_actor: false,
             owner_hint: None,
             activation: Mutex::new(None),
+            handoff: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
@@ -115,6 +117,14 @@ impl HostStorage {
     ) -> Self {
         self.new_actor = new_actor;
         self.owner_hint = owner_hint;
+        self
+    }
+
+    pub(crate) fn with_handoff(
+        mut self,
+        handoff: Option<crate::bucket::ActivationHandoff>,
+    ) -> Self {
+        self.handoff = Mutex::new(handoff);
         self
     }
 
@@ -357,17 +367,39 @@ impl HostLeaseRegistry for HostStorage {
             }),
         };
         let first = self.lease.lock().unwrap().is_none();
-        let lease = if first {
-            let loaded = self
-                .runtime
-                .register_activation(
-                    actor,
-                    request,
-                    &self.region,
-                    self.new_actor,
-                    self.owner_hint.as_ref(),
+        let handoff = if first {
+            self.handoff.lock().unwrap().take()
+        } else {
+            None
+        };
+        let duration_ms = handoff
+            .as_ref()
+            .map(|handoff| {
+                Ok::<_, anyhow::Error>(
+                    handoff
+                        .expires_at_ms()
+                        .saturating_sub(SystemClock.now_ms()?)
+                        .min(request.duration_ms),
                 )
-                .await?;
+            })
+            .transpose()?
+            .unwrap_or(request.duration_ms);
+        let lease = if first {
+            let loaded = if let Some(handoff) = handoff {
+                self.runtime
+                    .adopt_activation(actor, request, &self.region, handoff)
+                    .await?
+            } else {
+                self.runtime
+                    .register_activation(
+                        actor,
+                        request,
+                        &self.region,
+                        self.new_actor,
+                        self.owner_hint.as_ref(),
+                    )
+                    .await?
+            };
             let lease = loaded.placement.lease;
             *self.activation.lock().unwrap() = Some(ActorActivation {
                 owner_epoch: loaded.placement.owner_epoch,
@@ -382,7 +414,7 @@ impl HostLeaseRegistry for HostStorage {
         };
         self.fence.lock().unwrap().confirm(
             started,
-            Duration::from_millis(request.duration_ms),
+            Duration::from_millis(duration_ms),
             Instant::now(),
         )?;
         self.lease.lock().unwrap().replace(lease.clone());

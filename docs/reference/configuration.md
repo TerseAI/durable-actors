@@ -45,8 +45,8 @@ Configuration uses environment variables. Precedence is to use exported variable
 | `DURABLE_ACTORS_SPARE_FLEET_MAX`      | `256`   | Maximum unassigned spares across pools. Active actors do not count against this budget.                                                                                                                                                                                                     |
 | `DURABLE_ACTORS_SPARE_MAX_STARTING`   | `32`    | Maximum simultaneous spare starts across control-plane replicas.                                                                                                                                                                                                                            |
 | `DURABLE_ACTORS_SPARE_TTL_SECONDS`    | `600`   | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                                                                                                  |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`      | `500`   | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                                                                                            |
-| `DURABLE_ACTORS_HOST_MEMORY_MIB`      | `256`   | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                                                                                               |
+| `DURABLE_ACTORS_HOST_CPU_MILLIS`      | `250`   | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                                                                                            |
+| `DURABLE_ACTORS_HOST_MEMORY_MIB`      | `128`   | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                                                                                               |
 | `DURABLE_ACTORS_REGION`               | Unset   | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                                                                                              |
 | `DURABLE_ACTORS_HOME_REGION`          | Unset   | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                                                                                            |
 
@@ -90,3 +90,35 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |
 
 Standard mode rejects Rapid bucket and archive settings. Storage mode and bucket identities are fixed for existing actor ownership records; changing them requires a planned data migration. See [Rapid configuration](../self-hosting.md#speed-up-writes-with-gcs-rapid) for bucket creation, IAM, and chart values.
+
+
+## Hybrid runtime
+
+`DURABLE_ACTORS_RUNTIME_MODE` defaults to `gke`. In `hybrid` mode, actors whose resolved CPU and memory match the deployment's defaults use fixed GKE pods; other shapes use Substrate snapshots. Explicit `@Compute({cpu: 0.25, memoryMiB: 128})`, omitted compute, and changes to idle timeout alone all use the default pool. CPU is measured in Kubernetes vCPUs. Both requests and hard limits default to 250 millicores and 128 MiB.
+
+[Modal defaults](https://modal.com/docs/guide/resources) are 0.125 physical CPU cores and 128 MiB. On the intended GKE nodes with two hardware threads per core, this corresponds to 0.25 vCPU. The conversion depends on the node architecture. Our hard limits disable bursting; benchmark cold starts and peak memory at the smaller allocation.
+
+Runtime choice and resolved defaults are stored with deployment metadata in PostgreSQL. A new bundle or changed compute contract resolves them again. Redeploying the same bundle and compute contract, including secret rotation, keeps them stable. Switching the server mode alone does not migrate existing deployments. Keep both providers configured while deployments still reference them.
+
+The client uploads the same immutable compiled bundle and contract in either mode. During registration, GKE actors retain the existing assignment-time code installation. Substrate actors prepare a snapshot containing the verified bundle for each distinct region/resource shape before publishing the deployment. A preparation failure leaves the current deployment and hosts intact. Customer secrets and actor ownership are assigned after restore, outside the reusable snapshot.
+
+Hybrid mode additionally requires:
+
+| Variable | Description |
+| --- | --- |
+| `DURABLE_ACTORS_SUBSTRATE_ENDPOINT` | HTTPS Substrate API origin. |
+| `DURABLE_ACTORS_SUBSTRATE_ROUTER` | Private HTTP(S) actor router origin. |
+| `DURABLE_ACTORS_SUBSTRATE_ATESPACE` | Substrate resource namespace, unique to this installation. |
+| `DURABLE_ACTORS_SUBSTRATE_REGIONS` | JSON array of supported canonical regions. |
+| `DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS` | JSON object selecting this installation's workers; the runtime adds `terse.ai/region` to template selectors. |
+| `DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG` | Installed gVisor sandbox configuration name. |
+| `DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS` | GCS snapshot prefix, ending in `/`. |
+| `DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE` | Projected service-account token for the Substrate API. |
+| `DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE` | PEM trust bundle for the Substrate API. |
+| `DURABLE_ACTORS_SECRETS_NAMESPACE` | Existing GKE sandbox namespace containing customer secrets. |
+| `DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS` | JSON array of allowed destination CIDRs; the control-plane IPv4 address is added at startup. |
+| `DURABLE_ACTORS_METRICS_BIND` | Substrate capacity metrics listener; defaults to `127.0.0.1:9090`, charts use `0.0.0.0:9091`. |
+
+The fixed pod pool reconciles every second toward `SPARE_IDLE`, subject to fleet and simultaneous-start budgets. Claimed/active hosts leave that idle budget. A compatible idle pod is assigned first; a miss requests a new pod immediately. The idle target does not increase with demand. Kubernetes schedules pending pods and GKE adds nodes within configured autoscaling limits and quotas.
+
+Substrate schedules restored actors inside long-lived workers. Its metric sums each worker's largest reserved CPU, memory, or actor-slot fraction. The charts use an HPA target of 70%, equivalent to a desired count of approximately `ceil(total_worker_demand / 0.7)`, bounded by worker minimum/maximum and HPA rate limits. Scale-up can double workers per minute; scale-down removes at most one per minute after a 300-second stabilization window. GKE node scaling then supplies capacity for pending worker pods. This responds to reserved capacity, not observed CPU usage. Individual actor shapes must fit a worker, and insufficient capacity can still delay or fail activation while workers/nodes start.

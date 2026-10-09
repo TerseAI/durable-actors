@@ -1,4 +1,6 @@
+mod runtime;
 use crate::request_tracking::HostState;
+use crate::sandbox::routing::RuntimeBackend;
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, ensure};
@@ -147,15 +149,27 @@ impl ControlPlaneService {
         source.validate()?;
         let mut update = admin.lock_deployment(&source.project_id).await?;
         let previous = admin.current_deployment(&source.project_id).await?;
+        let mut source = source.clone();
+        source.sandboxes = if let Some(contract) = supplied_contract {
+            contract.sandboxes()?
+        } else if source.code_snapshot.is_some() {
+            let previous = previous
+                .as_ref()
+                .filter(|old| old.code_snapshot == source.code_snapshot)
+                .context("a new bundle requires its actor contract")?;
+            previous.sandboxes.clone()
+        } else {
+            source.sandboxes.clone()
+        };
         let local_build = match &self.local_builds {
-            Some(builds) => Some(builds.prepare(source).await?),
+            Some(builds) => Some(builds.prepare(&source).await?),
             None => None,
         };
         let (mut prepared, mut compiled_contract) = match &local_build {
             Some(build) => (build.spec.clone(), Some(build.contract.clone())),
             None => {
                 self.provisioner
-                    .prepare_deployment(source, previous.as_ref(), self.default_region())
+                    .prepare_deployment(&source, previous.as_ref(), self.default_region())
                     .await?
             }
         };
@@ -810,6 +824,7 @@ pub(crate) struct SandboxHostProvisioner {
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
+    substrate: Option<Arc<dyn crate::sandbox::PreparedSandboxProvider>>,
     runtime: HostSandboxRuntimeConfig,
     issuer: ActorJwtIssuer,
 }
@@ -838,6 +853,7 @@ impl SandboxHostProvisioner {
             pool: None,
             runtime_access: None,
             provider,
+            substrate: None,
             runtime,
             issuer,
         }
@@ -853,8 +869,8 @@ impl HostProvisioner for SandboxHostProvisioner {
     async fn prepare_deployment(
         &self,
         source: &HostLaunchSpec,
-        _previous: Option<&HostLaunchSpec>,
-        _region: &str,
+        previous: Option<&HostLaunchSpec>,
+        region: &str,
     ) -> Result<(
         HostLaunchSpec,
         Option<super::contracts::PublicActorContract>,
@@ -874,13 +890,18 @@ impl HostProvisioner for SandboxHostProvisioner {
             .clone()
             .context("hosted deployments require a runtime image")?;
         prepared.validate()?;
+        self.prepare_runtime_deployment(&mut prepared, previous, region)
+            .await?;
         Ok((prepared, None))
     }
     async fn wait_ready(&self, host: &HostId) -> Result<()> {
-        match &self.pool {
-            Some(pool) => pool.wait_ready(host.as_str()).await,
-            None => self.provider.wait_ready(host).await,
+        let backend = RuntimeBackend::for_host(host);
+        if backend == RuntimeBackend::Gke {
+            if let Some(pool) = &self.pool {
+                return pool.wait_ready(host.as_str()).await;
+            }
         }
+        self.provider_for(backend)?.wait_ready(host).await
     }
 
     async fn ensure_actor_host(
@@ -900,18 +921,37 @@ impl HostProvisioner for SandboxHostProvisioner {
         spec: &HostLaunchSpec,
         regions: &[String],
     ) -> Result<HostTermination> {
-        if let Some(pool) = &self.pool {
-            return Ok(HostTermination {
+        let substrate = spec
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.uses_substrate())
+            .map(|_| self.provider_for(RuntimeBackend::Substrate))
+            .transpose()?;
+        let mut terminated = match &self.pool {
+            Some(pool) => HostTermination {
                 provider: "gke".into(),
                 resource_ids: pool.retire_config(&spec.host_config_key()).await?,
-            });
+            },
+            None => {
+                self.provider
+                    .terminate_hosts(&TerminateHostsRequest {
+                        host_config_key: spec.host_config_key(),
+                        canonical_regions: regions.to_vec(),
+                    })
+                    .await?
+            }
+        };
+        if let Some(substrate) = substrate {
+            let hosts = substrate
+                .terminate_hosts(&TerminateHostsRequest {
+                    host_config_key: spec.host_config_key(),
+                    canonical_regions: regions.to_vec(),
+                })
+                .await?;
+            terminated.provider = "hybrid".into();
+            terminated.resource_ids.extend(hosts.resource_ids);
         }
-        self.provider
-            .terminate_hosts(&TerminateHostsRequest {
-                host_config_key: spec.host_config_key(),
-                canonical_regions: regions.to_vec(),
-            })
-            .await
+        Ok(terminated)
     }
 }
 
@@ -924,22 +964,29 @@ impl SandboxHostProvisioner {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
     ) -> Result<(HostLease, u64)> {
+        let backend = self.backend(spec, &actor.actor_name);
+        let provider = self.provider_for(backend)?;
+        let pool = if backend == RuntimeBackend::Gke {
+            self.pool.as_ref()
+        } else {
+            None
+        };
         let started_at = Instant::now();
         let mut request = self.request(spec, region, actor)?;
         request.actor_is_new = new_actor;
         request.owner_hint = owner_hint.map(serde_json::to_string).transpose()?;
         let token = async {
             match &self.runtime_access {
-                Some(access) => Ok(Some(
+                Some(access) if backend == RuntimeBackend::Gke => Ok(Some(
                     access
                         .bootstrap(region, actor, spec.code_snapshot.as_deref())
                         .await?,
                 )),
-                None => anyhow::Ok(None),
+                _ => anyhow::Ok(None),
             }
         };
         let spare = async {
-            match &self.pool {
+            match pool {
                 Some(pool) => {
                     pool.claim(spec, region, request.host_id.as_str(), &request.resources)
                         .await
@@ -949,7 +996,7 @@ impl SandboxHostProvisioner {
         };
         let (runtime_config, spare) = tokio::join!(token, spare);
         request.spare = spare?;
-        if let Some(pool) = &self.pool {
+        if let Some(pool) = pool {
             if request.spare.is_none() {
                 pool.reserve_host(
                     &request.session_id,
@@ -962,16 +1009,16 @@ impl SandboxHostProvisioner {
         request.runtime_config = match runtime_config {
             Ok(config) => config,
             Err(error) => {
-                if let Some(pool) = &self.pool {
+                if let Some(pool) = pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
                 return Err(error);
             }
         };
-        let handle = match self.provider.ensure_host(&request).await {
+        let handle = match provider.ensure_host(&request).await {
             Ok(handle) => handle,
             Err(error) => {
-                if let Some(pool) = &self.pool {
+                if let Some(pool) = pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
                 warn!(
@@ -995,14 +1042,14 @@ impl SandboxHostProvisioner {
                 owner_epoch > 0,
                 "host readiness returned no ownership epoch"
             );
-            if self.pool.is_some() {
+            if pool.is_some() {
                 ensure!(
                     handle.host_id == request.host_id,
                     "provider returned a different host identity"
                 );
             }
             let lease = ready_lease(&handle, &request)?;
-            if let Some(pool) = &self.pool {
+            if let Some(pool) = pool {
                 let provisioning = provisioning
                     .as_ref()
                     .context("provider did not identify the assigned sandbox")?;
@@ -1030,7 +1077,7 @@ impl SandboxHostProvisioner {
         let lease = match ready {
             Ok(lease) => lease,
             Err(error) => {
-                if let Some(pool) = &self.pool {
+                if let Some(pool) = pool {
                     let _ = pool.failed(request.host_id.as_str()).await;
                 }
                 return Err(error);
@@ -1078,13 +1125,13 @@ impl SandboxHostProvisioner {
             .cloned()
             .unwrap_or_default();
         options.validate()?;
-        let defaults = self
-            .pool
+        let defaults = spec
+            .runtime
             .as_ref()
-            .map(|pool| pool.config.resources.clone())
-            .unwrap_or_default();
+            .map(|runtime| runtime.default_resources.clone())
+            .unwrap_or_else(|| self.default_resources());
         let config_key = spec.host_config_key();
-        let host_id = HostId::new(format!("host.v3.{}.{}", config_key, uuid::Uuid::new_v4()));
+        let host_id = self.backend(spec, &actor.actor_name).host_id(&config_key);
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
@@ -1167,19 +1214,7 @@ fn host_matches_config(host: &HostId, config_key: &str) -> bool {
 }
 
 fn validate_host_route(route: &str) -> Result<()> {
-    let route = reqwest::Url::parse(route)?;
-    ensure!(
-        matches!(route.scheme(), "http" | "https") && route.host_str().is_some(),
-        "host route must be an HTTP origin"
-    );
-    ensure!(
-        route.username().is_empty() && route.password().is_none(),
-        "host route must not contain credentials"
-    );
-    ensure!(
-        route.path() == "/" && route.query().is_none() && route.fragment().is_none(),
-        "host route must not contain a path, query, or fragment"
-    );
+    crate::sandbox::transport::host_route(route)?;
     Ok(())
 }
 

@@ -81,3 +81,32 @@ for (const [name, overrides] of [
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
+
+test("uses Modal-equivalent default reservations as hard pod limits", () => {
+    const output = manifests()
+    assert.match(output, /DURABLE_ACTORS_HOST_CPU_MILLIS, value: "250"/)
+    assert.match(output, /DURABLE_ACTORS_HOST_MEMORY_MIB, value: "128"/)
+    assert.match(output, /DURABLE_ACTORS_RUNTIME_MODE, value: "gke"/)
+})
+
+test("hybrid mode configures both providers with the same secret namespace", () => {
+    const output = manifests({ runtimeMode: "hybrid", substrate: {
+        regions: ["north-america-west"], snapshotLocation: "gs://snapshots/actors/"
+    }, cluster: { projectId: "test-project", location: "us-west4", name: "test-cluster" } })
+    assert.match(output, /DURABLE_ACTORS_RUNTIME_MODE, value: "hybrid"/)
+    assert.match(output, /DURABLE_ACTORS_SECRETS_NAMESPACE, value: "actors-actors"/)
+    assert.match(output, /DURABLE_ACTORS_GKE_NAMESPACE, value: "actors-actors"/)
+    assert.match(output, /kind: WorkerPool/)
+    assert.match(output, /kind: HorizontalPodAutoscaler/)
+})
+
+test("hybrid mode requires a snapshot destination", () => {
+    assert.notEqual(render({ runtimeMode: "hybrid" }).status, 0)
+})
+
+
+test("hybrid workers require a namespace outside the fixed sandbox policy", () => {
+    const result = render({ runtimeMode: "hybrid", substrate: { namespace: "actors-actors", regions: ["north-america-west"], snapshotLocation: "gs://snapshots/actors/" },
+        cluster: { projectId: "test-project", location: "us-west4", name: "test-cluster" } })
+    assert.notEqual(result.status, 0)
+})

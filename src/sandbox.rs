@@ -8,8 +8,20 @@ pub(crate) mod gke;
 mod local;
 mod local_store;
 pub(crate) mod pool;
+pub(crate) mod routing;
+pub(crate) mod substrate;
+pub(crate) mod transport;
 
 pub(crate) use local::LocalSandboxProvider;
+
+pub struct RuntimeTemplateRequest {
+    pub code_snapshot: Option<String>,
+    pub image_ref: String,
+    pub canonical_region: String,
+    pub resources: Vec<ResourceLimits>,
+    pub jwt_public_keys: String,
+    pub jwt_issuer: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +33,8 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            cpu_millis: 1000,
-            memory_mib: 256,
+            cpu_millis: 250,
+            memory_mib: 128,
         }
     }
 }
@@ -184,3 +196,8 @@ pub struct HostSandboxRuntimeConfig {
 #[cfg(test)]
 #[path = "../tests/support/sandbox.rs"]
 pub(crate) mod testing;
+
+#[async_trait]
+pub(crate) trait PreparedSandboxProvider: SandboxProvider {
+    async fn prepare_runtime(&self, request: &RuntimeTemplateRequest) -> Result<()>;
+}

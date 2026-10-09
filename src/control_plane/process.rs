@@ -48,6 +48,8 @@ pub struct ControlPlaneStorageConfig {
 }
 
 pub struct SandboxProviderConfig {
+    pub(crate) substrate: Option<crate::sandbox::substrate::SubstrateConfig>,
+    pub(crate) metrics_bind: SocketAddr,
     pub runtime_image: String,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
@@ -181,6 +183,7 @@ async fn control_plane_routes(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
+        storage.clone(),
         database,
         registry.clone(),
         stop,
@@ -242,23 +245,46 @@ async fn sandbox_provisioner(
     config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     access: Arc<crate::bucket::access::RuntimeAccess>,
+    storage: Arc<RuntimeStorageReader>,
     database: PostgresDatabase,
     registry: Arc<dyn super::admin::AdminRegistry>,
     stop: tokio_util::sync::CancellationToken,
 ) -> Result<Arc<dyn super::service::HostProvisioner>> {
     let provider = Arc::new(GkeSandboxProvider::new(config.gke).await?);
     let pool = crate::sandbox::pool::SparePool::new(database, provider.clone(), config.pool);
-    pool.start(registry, stop);
-    Ok(Arc::new(
-        super::service::SandboxHostProvisioner::new(
-            provider,
-            config.runtime,
-            issuer.clone(),
-            Some(config.runtime_image),
-        )
-        .with_runtime_access(access)
-        .with_pool(pool),
-    ))
+    pool.start(registry, stop.clone());
+    let substrate = match config.substrate {
+        Some(substrate) => {
+            let provider = Arc::new(
+                crate::sandbox::substrate::SubstrateProvider::new(
+                    substrate,
+                    issuer.clone(),
+                    &config.runtime.control_plane_url,
+                    Arc::new(super::bootstrap::RuntimeBootstrap::new(
+                        access.clone(),
+                        storage,
+                    )),
+                )
+                .await?,
+            );
+            provider.start(stop.clone());
+            provider.start_metrics(config.metrics_bind, stop).await?;
+            Some(provider)
+        }
+        None => None,
+    };
+    let provisioner = super::service::SandboxHostProvisioner::new(
+        provider,
+        config.runtime,
+        issuer.clone(),
+        Some(config.runtime_image),
+    )
+    .with_runtime_access(access)
+    .with_pool(pool);
+    Ok(Arc::new(match substrate {
+        Some(substrate) => provisioner.with_substrate(substrate),
+        None => provisioner,
+    }))
 }
 
 impl ControlPlaneProcessConfig {
@@ -463,6 +489,11 @@ fn sandbox_provider_config(
     );
     let regions = zones.keys().cloned().collect();
     Ok(SandboxProviderConfig {
+        substrate: substrate_config(get)?,
+        metrics_bind: get("DURABLE_ACTORS_METRICS_BIND")
+            .unwrap_or_else(|| "127.0.0.1:9090".into())
+            .parse()
+            .context("DURABLE_ACTORS_METRICS_BIND must be a socket address")?,
         runtime_image: {
             let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
             crate::sandbox::gke::validate_image(&image)?;
@@ -477,8 +508,8 @@ fn sandbox_provider_config(
             idle_ttl_seconds: pool_number(get, "DURABLE_ACTORS_SPARE_TTL_SECONDS", 600, 30, 3600)?,
             regions,
             resources: crate::sandbox::ResourceLimits {
-                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 1000, 100, 64000)?,
-                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 256, 128, 262144)?,
+                cpu_millis: pool_number(get, "DURABLE_ACTORS_HOST_CPU_MILLIS", 250, 100, 64000)?,
+                memory_mib: pool_number(get, "DURABLE_ACTORS_HOST_MEMORY_MIB", 128, 128, 262144)?,
             },
         },
         gke: GkeConfig {
@@ -577,6 +608,70 @@ fn pool_number(
         "{name} must be between {min} and {max}"
     );
     Ok(value)
+}
+
+fn substrate_config(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<Option<crate::sandbox::substrate::SubstrateConfig>> {
+    match get("DURABLE_ACTORS_RUNTIME_MODE")
+        .as_deref()
+        .unwrap_or("gke")
+    {
+        "gke" => return Ok(None),
+        "hybrid" => {}
+        _ => anyhow::bail!("DURABLE_ACTORS_RUNTIME_MODE must be gke or hybrid"),
+    }
+    let regions: Vec<String> =
+        serde_json::from_str(&required(get, "DURABLE_ACTORS_SUBSTRATE_REGIONS")?)?;
+    ensure!(
+        !regions.is_empty(),
+        "at least one Substrate region is required"
+    );
+    for region in &regions {
+        crate::placement::validate_region(region)?;
+    }
+    let atespace = required(get, "DURABLE_ACTORS_SUBSTRATE_ATESPACE")?;
+    ensure!(
+        terse_substrate::valid_resource_name(&atespace),
+        "invalid Substrate atespace"
+    );
+    let endpoint = validated_http_url(
+        &required(get, "DURABLE_ACTORS_SUBSTRATE_ENDPOINT")?,
+        "Substrate endpoint",
+    )?;
+    ensure!(
+        endpoint.starts_with("https://"),
+        "Substrate API requires TLS"
+    );
+    let router = validated_http_url(
+        &required(get, "DURABLE_ACTORS_SUBSTRATE_ROUTER")?,
+        "Substrate router",
+    )?;
+    super::gateway::backend_origin(&router)?;
+    let snapshot_location = required(get, "DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS")?;
+    ensure!(
+        snapshot_location.starts_with("gs://") && snapshot_location.ends_with('/'),
+        "Substrate snapshots require a GCS prefix ending in /"
+    );
+    Ok(Some(crate::sandbox::substrate::SubstrateConfig {
+        endpoint,
+        router,
+        atespace,
+        regions,
+        snapshot_location,
+        token_file: required(get, "DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE")?,
+        trust_bundle: required(get, "DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE")?,
+        worker_labels: serde_json::from_str(&required(
+            get,
+            "DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS",
+        )?)?,
+        sandbox_config: required(get, "DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG")?,
+        secrets_namespace: required(get, "DURABLE_ACTORS_SECRETS_NAMESPACE")?,
+        egress_cidrs: serde_json::from_str(&required(
+            get,
+            "DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS",
+        )?)?,
+    }))
 }
 
 fn required(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {

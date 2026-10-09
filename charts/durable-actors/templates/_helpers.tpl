@@ -8,6 +8,14 @@
 {{- printf "%s@sha256:%s" .Values.image.repository (required "image.digest is required for source builds; published charts include it" .Values.image.digest) -}}
 {{- end -}}
 {{- define "actors.validate" -}}
+{{- if eq .Values.runtimeMode "hybrid" -}}
+{{- if not (regexMatch "^gs://[^/]+/" .Values.substrate.snapshotLocation) }}{{ fail "hybrid mode requires substrate.snapshotLocation, a GCS prefix ending in /" }}{{ end -}}
+{{- if not (hasSuffix "/" .Values.substrate.snapshotLocation) }}{{ fail "substrate.snapshotLocation must end in /" }}{{ end -}}
+{{- if or (empty .Values.cluster.projectId) (empty .Values.cluster.location) (empty .Values.cluster.name) }}{{ fail "hybrid autoscaling requires cluster.projectId, cluster.location, and cluster.name" }}{{ end -}}
+{{- if gt (int .Values.substrate.worker.autoscaling.minReplicas) (int .Values.substrate.worker.autoscaling.maxReplicas) }}{{ fail "worker autoscaling minReplicas must not exceed maxReplicas" }}{{ end -}}
+{{- if or (eq .Values.substrate.namespace .Release.Namespace) (eq .Values.substrate.namespace (include "actors.sandboxNamespace" .)) }}{{ fail "Substrate workers require a separate namespace" }}{{ end -}}
+{{- if ne (len .Values.substrate.regions) 1 }}{{ fail "hybrid mode requires one substrate.regions entry for this installation" }}{{ end -}}
+{{- end -}}
 {{- if eq (include "actors.sandboxNamespace" .) .Release.Namespace }}{{ fail "sandbox namespace must differ from the control-plane namespace" }}{{ end -}}
 {{- if .Values.ingress.enabled -}}
 {{- if or (empty .Values.ingress.className) (empty .Values.ingress.tlsSecret) }}{{ fail "ingress requires className and tlsSecret" }}{{ end -}}

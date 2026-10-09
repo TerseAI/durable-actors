@@ -6,6 +6,26 @@ use crate::{
 };
 use std::sync::Mutex;
 
+#[path = "hybrid.rs"]
+mod hybrid;
+
+#[tokio::test]
+async fn deployment_pins_resolved_compute_defaults() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    service
+        .deploy_source(&admin, &source(), Some(&contract))
+        .await?;
+    let deployed = serde_json::to_value(admin.current_deployment("default").await?.unwrap())?;
+    assert_eq!(
+        deployed["runtime"]["defaultResources"],
+        serde_json::json!({
+            "cpuMillis": 250, "memoryMib": 128
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn openapi_is_available_without_credentials_or_a_deployment() -> Result<()> {
     let (service, admin, _) = fixture()?;
@@ -256,6 +276,13 @@ fn fixture() -> Result<(ControlPlaneService, AdminService, Arc<Provider>)> {
 fn fixture_with_idle_timeout(
     host_idle_timeout_ms: u64,
 ) -> Result<(ControlPlaneService, AdminService, Arc<Provider>)> {
+    fixture_with_substrate(host_idle_timeout_ms, None)
+}
+
+fn fixture_with_substrate(
+    host_idle_timeout_ms: u64,
+    substrate: Option<Arc<dyn crate::sandbox::PreparedSandboxProvider>>,
+) -> Result<(ControlPlaneService, AdminService, Arc<Provider>)> {
     let issuer = super::tests::test_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -267,26 +294,28 @@ fn fixture_with_idle_timeout(
     let registry = Arc::new(LocalAdminRegistry::default());
     let admin = AdminService::new(Some("api-key".into()), registry.clone(), issuer.clone())?;
     let provider = Arc::new(Provider::default());
-    let provisioner = Arc::new(
-        SandboxHostProvisioner::new(
-            provider.clone(),
-            HostSandboxRuntimeConfig {
-                control_plane_url: "http://control".into(),
-                jwt_issuer: "issuer".into(),
-                invocation_jwt_audience: "invocation".into(),
-                host_idle_timeout_ms,
-            },
-            issuer.clone(),
-            Some("im-runtime".into()),
-        )
-        .with_runtime_access(Arc::new(crate::bucket::access::RuntimeAccess::new(
-            crate::bucket::access::BucketLocation::Gcs {
-                bucket: "owner-bucket".into(),
-                artifact_bucket: "test-artifacts".into(),
-            },
-            crate::bucket::PersistenceConfig::Local,
-        )?)),
-    );
+    let provisioner = SandboxHostProvisioner::new(
+        provider.clone(),
+        HostSandboxRuntimeConfig {
+            control_plane_url: "http://control".into(),
+            jwt_issuer: "issuer".into(),
+            invocation_jwt_audience: "invocation".into(),
+            host_idle_timeout_ms,
+        },
+        issuer.clone(),
+        Some("im-runtime".into()),
+    )
+    .with_runtime_access(Arc::new(crate::bucket::access::RuntimeAccess::new(
+        crate::bucket::access::BucketLocation::Gcs {
+            bucket: "owner-bucket".into(),
+            artifact_bucket: "test-artifacts".into(),
+        },
+        crate::bucket::PersistenceConfig::Local,
+    )?));
+    let provisioner = Arc::new(match substrate {
+        Some(provider) => provisioner.with_substrate(provider),
+        None => provisioner,
+    });
     let service = ControlPlaneService::new(
         Arc::new(LocalObjectPlacementStore::default()),
         auth,
@@ -299,6 +328,7 @@ fn fixture_with_idle_timeout(
 
 fn source() -> HostLaunchSpec {
     HostLaunchSpec {
+        runtime: None,
         sandboxes: Default::default(),
         project_id: "default".into(),
         source: None,

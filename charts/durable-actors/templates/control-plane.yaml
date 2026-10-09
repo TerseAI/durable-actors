@@ -43,6 +43,9 @@ spec:
         - name: control-plane
           image: {{ include "actors.image" . | quote }}
           ports:
+            {{- if eq .Values.runtimeMode "hybrid" }}
+            - {name: metrics, containerPort: 9091}
+            {{- end }}
             - {name: http, containerPort: 7100}
           securityContext:
             allowPrivilegeEscalation: false
@@ -51,6 +54,9 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if eq .Values.runtimeMode "hybrid" }}
+            - {name: substrate-auth, mountPath: /run/substrate, readOnly: true}
+            {{- end }}
             - {name: tmp, mountPath: /tmp}
           startupProbe:
             httpGet: {path: /healthz, port: http}
@@ -64,6 +70,21 @@ spec:
             periodSeconds: 10
           env:
             - {name: DURABLE_ACTORS_PROCESS_ROLE, value: control_plane}
+            - {name: DURABLE_ACTORS_RUNTIME_MODE, value: {{ .Values.runtimeMode | quote }}}
+            {{- if eq .Values.runtimeMode "hybrid" }}
+            - {name: DURABLE_ACTORS_METRICS_BIND, value: "0.0.0.0:9091"}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ENDPOINT, value: {{ .Values.substrate.endpoint | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ROUTER, value: {{ .Values.substrate.router | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ATESPACE, value: {{ .Values.substrate.atespace | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_REGIONS, value: {{ .Values.substrate.regions | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS, value: {{ .Values.substrate.workerLabels | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG, value: {{ .Values.substrate.sandboxConfig | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS, value: {{ .Values.substrate.snapshotLocation | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS, value: {{ .Values.substrate.egressCidrs | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE, value: /run/substrate/token}
+            - {name: DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE, value: /run/substrate/trust-bundle.pem}
+            - {name: DURABLE_ACTORS_SECRETS_NAMESPACE, value: {{ include "actors.sandboxNamespace" . | quote }}}
+            {{- end }}
             - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
             - name: DURABLE_ACTORS_GATEWAY_IP
               valueFrom:
@@ -96,6 +117,18 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
       volumes:
+        {{- if eq .Values.runtimeMode "hybrid" }}
+        - name: substrate-auth
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+              - clusterTrustBundle:
+                  name: {{ .Values.substrate.trustBundleName | quote }}
+                  path: trust-bundle.pem
+        {{- end }}
         - name: tmp
           emptyDir: {}
 ---

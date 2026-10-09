@@ -19,6 +19,112 @@ impl RuntimeStorage {
         new_actor: bool,
         owner_hint: Option<&OwnershipHint>,
     ) -> Result<LoadedActor> {
+        let (record, snapshot) = self
+            .claim_activation(actor, request, region, new_actor, owner_hint)
+            .await?;
+        self.snapshots.start(&record.stream()?).await?;
+        Ok(self.remember(record, snapshot))
+    }
+
+    pub(crate) async fn adopt_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        handoff: ActivationHandoff,
+    ) -> Result<LoadedActor> {
+        actor.validate()?;
+        request.validate_duration()?;
+        let record = handoff.record;
+        ensure!(
+            record.actor == *actor
+                && record.region == region
+                && record.lease.id == request.id
+                && record.lease.session_id == request.session_id
+                && record.lease.route == request.route
+                && record.epoch > 0
+                && !record.sealed
+                && record.persistence.same_backend(&self.persistence),
+            "activation handoff identity mismatch"
+        );
+        ensure!(
+            record.lease.expires_at_ms > self.clock.now_ms()?,
+            "activation handoff expired"
+        );
+        let snapshot = self.load_latest(&record, None).await?;
+        self.snapshots.start(&record.stream()?).await?;
+        ensure!(
+            record.lease.expires_at_ms > self.clock.now_ms()?,
+            "activation handoff expired"
+        );
+        Ok(self.remember(record, snapshot))
+    }
+
+    pub async fn renew_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        inventory: ActivationInventory,
+    ) -> Result<HostLease> {
+        let (generation, mut record) = self
+            .load(&actor.storage_key())
+            .await?
+            .context("actor ownership missing")?;
+        ensure!(
+            record.actor == *actor
+                && record.lease.id == request.id
+                && record.lease.session_id == request.session_id,
+            "actor ownership changed"
+        );
+        let current = &record.lease;
+        ensure!(
+            current.expires_at_ms > self.clock.now_ms()?,
+            "expired activation cannot renew"
+        );
+        ensure!(
+            current.route == request.route,
+            "activation route cannot change"
+        );
+        let lease = self.new_lease(request)?;
+        record.lease = lease.clone();
+        record.inventory = inventory;
+        self.save_activation(&mut record, Some(generation)).await?;
+        if let Some(owned) = self
+            .owned
+            .lock()
+            .unwrap()
+            .get_mut(actor.storage_key().as_str())
+        {
+            ensure!(owned.epoch == record.epoch, "local ownership epoch changed");
+            owned.lease = lease.clone();
+        }
+        Ok(lease)
+    }
+}
+
+impl RuntimeStorageReader {
+    pub(crate) async fn prepare_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
+    ) -> Result<ActivationHandoff> {
+        let (record, _) = self
+            .claim_activation(actor, request, region, new_actor, owner_hint)
+            .await?;
+        Ok(ActivationHandoff { record })
+    }
+
+    async fn claim_activation(
+        &self,
+        actor: &ActorKey,
+        request: &HostLeaseRequest,
+        region: &str,
+        new_actor: bool,
+        owner_hint: Option<&OwnershipHint>,
+    ) -> Result<(Ownership, Option<LoadedSnapshot>)> {
         actor.validate()?;
         crate::placement::validate_region(region)?;
         request.validate_duration()?;
@@ -78,9 +184,6 @@ impl RuntimeStorage {
                 continue;
             }
             let ownership_cas_ms = write_started.elapsed().as_secs_f64() * 1_000.0;
-            let stream_started = Instant::now();
-            self.snapshots.start(&record.stream()?).await?;
-            let stream_open_ms = stream_started.elapsed().as_secs_f64() * 1_000.0;
             tracing::info!(
                 event = "actor_activation_storage",
                 project_id = %actor.project_id,
@@ -91,56 +194,14 @@ impl RuntimeStorage {
                 new_actor,
                 ownership_read_ms,
                 ownership_cas_ms,
-                stream_open_ms,
                 session_recovery_ms = recovery.session_ms,
                 snapshot_load_ms = recovery.snapshot_ms,
                 ownership_write_ms = write_started.elapsed().as_secs_f64() * 1_000.0,
                 duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
             );
-            return Ok(self.remember(record, recovery.snapshot));
+            return Ok((record, recovery.snapshot));
         }
         anyhow::bail!("actor activation changed concurrently")
-    }
-
-    pub async fn renew_activation(
-        &self,
-        actor: &ActorKey,
-        request: &HostLeaseRequest,
-        inventory: ActivationInventory,
-    ) -> Result<HostLease> {
-        let (generation, mut record) = self
-            .load(&actor.storage_key())
-            .await?
-            .context("actor ownership missing")?;
-        ensure!(
-            record.actor == *actor
-                && record.lease.id == request.id
-                && record.lease.session_id == request.session_id,
-            "actor ownership changed"
-        );
-        let current = &record.lease;
-        ensure!(
-            current.expires_at_ms > self.clock.now_ms()?,
-            "expired activation cannot renew"
-        );
-        ensure!(
-            current.route == request.route,
-            "activation route cannot change"
-        );
-        let lease = self.new_lease(request)?;
-        record.lease = lease.clone();
-        record.inventory = inventory;
-        self.save_activation(&mut record, Some(generation)).await?;
-        if let Some(owned) = self
-            .owned
-            .lock()
-            .unwrap()
-            .get_mut(actor.storage_key().as_str())
-        {
-            ensure!(owned.epoch == record.epoch, "local ownership epoch changed");
-            owned.lease = lease.clone();
-        }
-        Ok(lease)
     }
 
     pub async fn release_activation(

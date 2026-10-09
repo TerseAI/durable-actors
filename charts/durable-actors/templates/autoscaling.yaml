@@ -1,0 +1,63 @@
+{{- if eq .Values.runtimeMode "hybrid" }}
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "actors.name" . }}-capacity
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "actors.name" . }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      timeout: 5s
+---
+{{- $metric := printf "terse_substrate_worker_demand{project_id=%q,location=%q,cluster=%q,namespace=%q,pool_namespace=%q,pool=%q}" .Values.cluster.projectId .Values.cluster.location .Values.cluster.name .Release.Namespace .Values.substrate.namespace .Values.substrate.workerPoolName }}
+apiVersion: autoscaling.gke.io/v1beta1
+kind: AutoscalingMetric
+metadata:
+  name: {{ .Values.substrate.workerPoolName }}-capacity
+  namespace: {{ .Values.substrate.namespace }}
+spec:
+  metrics:
+    - promql:
+        name: reserved-capacity
+        type: External
+        query: {{ printf "max(%s and (time() - timestamp(%s) < 120)) * 1000" $metric $metric | quote }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Values.substrate.workerPoolName }}
+  namespace: {{ .Values.substrate.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: ate.dev/v1alpha1
+    kind: WorkerPool
+    name: {{ .Values.substrate.workerPoolName }}
+  minReplicas: {{ .Values.substrate.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.substrate.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ printf "autoscaling.gke.io|%s-capacity|reserved-capacity" .Values.substrate.workerPoolName | quote }}
+        target:
+          type: AverageValue
+          averageValue: {{ mulf .Values.substrate.worker.autoscaling.targetAllocationPercent 10 | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.substrate.worker.autoscaling.scaleDownStabilizationSeconds }}
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+{{- end }}

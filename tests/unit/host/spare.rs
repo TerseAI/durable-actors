@@ -103,7 +103,8 @@ async fn run_activation(
     let warm = WarmHost {
         control_plane: None,
         readiness: Some(readiness),
-        listener,
+        listener: super::super::server::HostServer::bound(listener),
+        prepared_code: false,
         executor,
         javascript,
         entrypoint: code.to_str().unwrap().into(),

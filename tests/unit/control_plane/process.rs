@@ -7,6 +7,30 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
+fn hybrid_mode_requires_explicit_substrate_configuration() {
+    let mut values = process_environment();
+    values.insert("DURABLE_ACTORS_RUNTIME_MODE", "hybrid");
+    assert!(
+        ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn unknown_runtime_modes_are_rejected() {
+    let mut values = process_environment();
+    values.insert("DURABLE_ACTORS_RUNTIME_MODE", "unknown");
+    assert!(
+        ControlPlaneProcessConfig::from_lookup(|name| {
+            values.get(name).map(|value| (*value).into())
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn configures_gateway_connection_limit() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
@@ -51,7 +75,7 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
     let resources = &config.sandbox_provider.pool.resources;
-    assert_eq!((resources.cpu_millis, resources.memory_mib), (1000, 256));
+    assert_eq!((resources.cpu_millis, resources.memory_mib), (250, 128));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));

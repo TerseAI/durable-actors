@@ -58,6 +58,7 @@ COPY --from=sdk-builder /build/packages/observer-ui /opt/durable-actors/packages
 COPY --from=sdk-builder /build/sdk/dist /opt/durable-actors/sdk/dist
 COPY sdk/package.json /opt/durable-actors/sdk/package.json
 RUN mkdir -p /customer /node_modules \
+    && chown 10000:10000 /customer \
     && ln -s /opt/durable-actors/sdk /node_modules/durable-actors
 RUN useradd --uid 10000 --create-home --home-dir /home/runtime runtime
 USER 10000:10000

@@ -26,7 +26,7 @@ Published chart packages include the matching immutable runtime digest. For sour
 
 - One controller handles API requests and WebSockets.
 - Actor pods start on demand: `actors.warm: 0`.
-- Each actor requests and is limited to 500 millicores and 256 MiB unless its deployment overrides resources.
+- Each actor requests and is limited to 250 millicores and 128 MiB unless its deployment overrides resources.
 - The controller requests 250 millicores and 512 MiB, with a 1 GiB memory limit. Measure and adjust `resources` for your workload.
 - The sandbox namespace defaults to `<release-namespace>-<release-name>`; use one unique sandbox namespace per installation.
 - gVisor, separate sandbox credentials, RBAC, and sandbox NetworkPolicy are included.
@@ -54,3 +54,8 @@ Both copies must durably flush before a Rapid write is acknowledged. Mode and bu
 `credentialsSecret` defaults to `actors-credentials`; it must contain `postgres-url`, `api-key`, and `jwt-signing-key`. `nodeSelector` places controllers on ordinary nodes. `networkPolicy.dnsCidrs` permits specific host-networked or link-local DNS endpoints, for example a NodeLocal DNS `/32`. Add only the address your cluster uses.
 
 See [values.yaml](values.yaml) for the full values reference and [values.schema.json](values.schema.json) for validation. No database, bucket, ingress controller, DNS record, or certificate is provisioned by this chart.
+
+
+## Optional hybrid runtime
+
+The default `runtimeMode: gke` works without Substrate and runs all compute sizes as GKE pods. To use fixed pods only for default compute and snapshots for custom sizes, follow the [hybrid setup](../../docs/self-hosting.md#optional-hybrid-runtime). The chart keeps both providers, sandbox secrets, and the existing spare pool. Hybrid mode adds a separate WorkerPool, its HPA, and capacity metrics; it does not create the Substrate control plane or node pools.

@@ -1,0 +1,32 @@
+{{- if eq .Values.runtimeMode "hybrid" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.substrate.namespace }}
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: {{ .Values.substrate.workerPoolName }}
+  namespace: {{ .Values.substrate.namespace }}
+  labels:
+    terse.ai/region: {{ first .Values.substrate.regions | quote }}
+    {{- toYaml .Values.substrate.workerLabels | nindent 4 }}
+spec:
+  {{- $pool := lookup "ate.dev/v1alpha1" "WorkerPool" .Values.substrate.namespace .Values.substrate.workerPoolName }}
+  replicas: {{ if $pool }}{{ $pool.spec.replicas }}{{ else }}{{ .Values.substrate.worker.autoscaling.minReplicas }}{{ end }}
+  workerImage: {{ .Values.substrate.worker.image | quote }}
+  template:
+    nodeSelector:
+      {{- toYaml .Values.substrate.worker.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml .Values.substrate.worker.tolerations | nindent 6 }}
+    resources:
+      requests:
+        cpu: {{ .Values.substrate.worker.cpu | quote }}
+        memory: {{ .Values.substrate.worker.memory | quote }}
+      limits:
+        cpu: {{ .Values.substrate.worker.cpu | quote }}
+        memory: {{ .Values.substrate.worker.memory | quote }}
+
+{{- end }}
