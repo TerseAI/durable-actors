@@ -1,0 +1,19 @@
+{
+    "name": "durable-actors-example-pi-agent",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "durable-actors dev",
+        "check": "tsc --noEmit",
+        "test": "bun test tests/chat.test.ts && node --test tests/*.test.mjs"
+    },
+    "dependencies": {
+        "@earendil-works/pi-agent-core": "1.0.3",
+        "@earendil-works/pi-ai": "1.0.3",
+        "durable-actors": "workspace:^"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "~5.9.3"
+    }
+}
