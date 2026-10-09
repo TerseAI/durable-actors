@@ -11,7 +11,7 @@ pnpm generate
 pnpm start prompt "Explain Durable Actors in two sentences"
 ```
 
-The CLI prints the completed model response. Each prompt starts a fresh conversation.
+The CLI prints the completed model response. Prompts share the `demo` actor’s saved chat history.
 
 `pnpm generate` fetches the running server's contract and writes the client to `generated/`. Regenerate after changing the actor API. Generated files are ignored by Git.
 
