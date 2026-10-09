@@ -10,6 +10,10 @@ Each example includes an app and a local actor runtime:
 
 Follow the example's README to install dependencies, copy `.env.example` to `.env`, and start its two processes. AI chat also requires an OpenAI API key.
 
+## Pi agent and CLI
+
+[Pi agent](pi-agent/README.md) runs a basic Pi prompt inside an actor. The separate [CLI](cli/README.md) calls it through a client generated from the running server. Model calls require an OpenAI API key.
+
 ## Guide examples
 
 The [TypeScript](../docs/reference/typescript-guide.md) and [Python](../docs/reference/python-guide.md) guides build these projects step by step. Each contains the guide's finished code and runs from a repository checkout.

@@ -11,18 +11,37 @@ interface ActorDatabase {
 
 const databases = new WeakMap<object, ActorDatabase>()
 const invocation = new AsyncLocalStorage<{ actor: object; active: boolean }>()
+const construction = new AsyncLocalStorage<{ database: ActorDatabase; actor?: object; active: boolean }>()
 
 function actorDatabase(actor: object): ActorDatabase {
     const database = databases.get(actor)
-    if (database === undefined) throw new ActorDefinitionError("actor database is unavailable during construction")
+    if (database === undefined)
+        throw new ActorDefinitionError("actor database is unavailable outside the actor runtime")
     return database
+}
+
+function constructWithActorDatabase<T>(database: ActorDatabase, construct: () => T): T {
+    const context = { database, active: true }
+    try {
+        return construction.run(context, construct)
+    } finally {
+        context.active = false
+    }
+}
+
+function bindConstructingActorDatabase(actor: object): void {
+    const context = construction.getStore()
+    if (!context?.active || context.actor !== undefined) return
+    context.actor = actor
+    bindActorDatabase(actor, context.database)
 }
 
 function bindActorDatabase(actor: object, database: ActorDatabase): void {
     databases.set(actor, {
         exec<Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] {
             const context = invocation.getStore()
-            if (context?.actor !== actor || !context.active)
+            const creating = construction.getStore()
+            if (!(context?.actor === actor && context.active) && !(creating?.actor === actor && creating.active))
                 throw new ActorDefinitionError("actor database is unavailable outside its invocation")
             return database.exec<Row>(sql, ...bindings)
         }
@@ -38,5 +57,5 @@ async function runWithActorDatabase<T>(actor: object, operation: () => Promise<T
     }
 }
 
-export { actorDatabase, bindActorDatabase, runWithActorDatabase }
+export { actorDatabase, bindConstructingActorDatabase, constructWithActorDatabase, runWithActorDatabase }
 export type { ActorDatabase, SqliteValue }
