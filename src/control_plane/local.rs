@@ -60,6 +60,9 @@ pub struct DevOptions {
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
     pub sdk_host: Option<PathBuf>,
+    /// Reload actor sources when they change. SDK dev commands enable this by default.
+    #[arg(long)]
+    pub watch: bool,
 }
 
 pub(super) fn resolve_entrypoint(project: &Path, configured: Option<&str>) -> Result<String> {
@@ -126,7 +129,11 @@ pub async fn serve_local(
         )
         .await?,
     );
-    let routes = local_routes(
+    let watcher = options
+        .watch
+        .then(|| super::local_watch::Sources::new(&project, &directory))
+        .transpose()?;
+    let (routes, reload) = local_routes(
         &options,
         &project,
         &origin,
@@ -154,7 +161,24 @@ pub async fn serve_local(
             )
         );
     }
-    server.run_until(shutdown, ready).await
+    server
+        .run_until(shutdown, ready, async move {
+            if let Some(watcher) = watcher {
+                watcher
+                    .watch(|| async {
+                        reload
+                            .service
+                            .deploy_source(&reload.admin, &reload.spec, None)
+                            .await?;
+                        anstream::println!("Updated local actors.");
+                        Ok(())
+                    })
+                    .await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        })
+        .await
 }
 
 struct LocalServer {
@@ -187,11 +211,13 @@ impl LocalServer {
         mut self,
         shutdown: impl Future<Output = ()>,
         ready: Result<()>,
+        reload: impl Future<Output = ()>,
     ) -> Result<()> {
         let result = match ready {
             Ok(()) => {
                 tokio::select! {
                     _ = shutdown => Ok(()),
+                    _ = reload => Err(anyhow::anyhow!("actor source watcher stopped")),
                     result = &mut self.server => result.context("local server task failed").and_then(|result| result.context("local server failed")),
                 }
             }
@@ -294,7 +320,7 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     directory: &Path,
-) -> Result<tonic::service::Routes> {
+) -> Result<(tonic::service::Routes, LocalReload)> {
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -367,9 +393,23 @@ async fn local_routes(
         service.changes.clone(),
     )
     .with_traces(service.traces.clone());
+    let reload = LocalReload {
+        service: service.clone(),
+        admin: admin.clone(),
+        spec,
+    };
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::local_router(inspector, admin));
-    Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
+    Ok((
+        tonic::service::Routes::from(public).add_service(service.into_internal_service()),
+        reload,
+    ))
+}
+
+struct LocalReload {
+    service: ControlPlaneService,
+    admin: AdminService,
+    spec: HostLaunchSpec,
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

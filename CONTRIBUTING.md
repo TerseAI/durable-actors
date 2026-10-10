@@ -101,14 +101,30 @@ bun test --timeout 60000 charts/durable-actors/tests/chart.test.mjs
 For Python SDK changes, build the runtime and run from `sdk-python`:
 
 ```sh
-uv sync --locked --all-extras
-uv run ruff check src tests
-uv run ruff format --check src tests
-uv run mypy src/durable_actors
-uv run pyright
-DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run pytest -q
+uv sync --locked --all-extras --no-install-package durable-actors-runtime
+uv run --no-sync ruff check src tests
+uv run --no-sync ruff format --check src tests
+uv run --no-sync mypy src/durable_actors
+uv run --no-sync pyright
+DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run --no-sync pytest -q
 uv build --no-sources
 ```
+
+The `native-build.yml` workflow builds `durable-actors-runtime` wheels with Maturin for Linux/macOS on x64/ARM64. It builds the observer UI once per wheel, includes the prebuilt assets and third-party license notices, then installs both wheels in a clean environment. CLI acceptance tests clear PATH to verify initialization, development, reloads, persistence, code generation, and the observer without Bun or Node. The release publishes runtime wheels before the SDK; configure the new runtime project's trusted publisher before its first release.
+
+To build and test the native Python package locally, from the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run --bun --cwd packages/observer-ui build
+mkdir -p python-runtime/durable_actors_runtime/observer
+cp -R packages/observer-ui/dist/standalone/. python-runtime/durable_actors_runtime/observer/
+uvx --from 'maturin>=1.15,<2' maturin build --release --out dist
+uv pip install --python sdk-python/.venv/bin/python dist/durable_actors_runtime-*.whl
+sdk-python/.venv/bin/python -m pytest sdk-python/tests/test_cli.py -q
+```
+
+Building the UI from source requires Bun; installing and running the published Python packages requires only Python/uv. SDK clients and production actor images do not install `[cli]` or its observer dependencies.
 
 Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip without it. To run the shared CLI's Python tests from the repository root after building the SDK:
 
@@ -116,7 +132,7 @@ Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip withou
 bun run --bun --cwd sdk tsc -p tsconfig.test.json
 DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" bun test --timeout 60000 ./sdk/.test-dist/tests/cli/python.test.js
 ```
-The release workflow requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for package `durable-actors`: owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`.
+The release workflow requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for both `durable-actors` and `durable-actors-runtime`: owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`.
 
 For SDK packaging or documentation changes, run the relevant checks:
 

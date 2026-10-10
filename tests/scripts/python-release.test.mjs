@@ -13,11 +13,13 @@ test("release version changes keep Python packages and native binaries aligned",
         cargoToml: read("Cargo.toml"),
         npmPackage: read("sdk/package.json"),
         observerPackage: read("packages/observer-ui/package.json"),
+        pythonRuntime: read("pyproject.toml"),
         pythonPackage: read("sdk-python/pyproject.toml"),
         pythonLock: read("sdk-python/uv.lock"),
         helmChart: read("charts/durable-actors/Chart.yaml")
     }
     const stamped = stampReleaseVersion(manifests, "9.8.7")
+    assert.match(stamped.pythonRuntime, /^version = "9.8.7"$/m)
     assert.match(stamped.pythonPackage, /^version = "9.8.7"$/m)
     assert.match(stamped.pythonLock, /name = "durable-actors"\nversion = "9.8.7"/)
     const workspaces = Bun.JSONC.parse(stamped.bunLock).workspaces

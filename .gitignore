@@ -21,3 +21,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 sdk-python/dist/
+/python-runtime/durable_actors_runtime/observer/
+/dist/
+/dist-python-runtime/
+/dist-python-sdk/

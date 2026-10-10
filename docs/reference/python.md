@@ -117,21 +117,21 @@ The pair survives actor hibernation while the gateway owns the room. Gateway rep
 
 ## CLI and configuration
 
-The shared CLI runs on Bun 1.4.2+, uses the project's Python `.venv`, and runs strict mypy on actor definitions and generated clients. `bunx` runs the published CLI and downloads the native runtime automatically. Keep the CLI, Python SDK, and native runtime versions aligned.
+The Python CLI uses its own Python interpreter for actor builds and execution. It runs strict mypy before publishing actor code or generating clients. The `[cli]` extra pins the native runtime wheel to the SDK version; uv manages its installation and lockfile.
 
 ```sh
-uv add 'durable-actors[codegen]'
-bunx durable-actors dev
+uv add --dev 'durable-actors[cli]'
+uv run durable-actors dev
 ```
 
 Generate in another terminal, from the running server or a trusted source file:
 
 ```sh
-bunx durable-actors generate --language python
-bunx durable-actors generate src/actors.py --out-dir generated
+uv run durable-actors generate
+uv run durable-actors generate src/actors.py --out-dir generated
 ```
 
-Clients default to project `local` at `http://127.0.0.1:7100`; explicit `Client` options override environment settings. See [configuration](configuration.md) for server settings, and use `DURABLE_ACTORS_PYTHON` to select another interpreter.
+Clients default to project `local` at `http://127.0.0.1:7100`; explicit `Client` options override environment settings. See [configuration](configuration.md) for server settings, and run the CLI in the Python environment containing your actor dependencies.
 
 ```python
 from durable_actors import Client

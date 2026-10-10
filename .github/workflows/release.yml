@@ -608,9 +608,26 @@ jobs:
                       exit 1
                   fi
 
+    python-runtime:
+        name: Publish Python native runtime wheels
+        needs: [preflight, native, python-ci, image, native-publish]
+        runs-on: ubuntu-latest
+        environment: pypi
+        permissions:
+            id-token: write
+        steps:
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  pattern: python-runtime-*
+                  merge-multiple: true
+                  path: dist
+            - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+              with:
+                  skip-existing: true
+
     python:
         name: Publish Python SDK
-        needs: [preflight, python-ci, image, native-publish]
+        needs: [preflight, python-ci, image, native-publish, python-runtime]
         runs-on: ubuntu-latest
         environment: pypi
         permissions:

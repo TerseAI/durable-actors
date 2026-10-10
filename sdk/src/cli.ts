@@ -41,6 +41,10 @@ try {
 }
 
 async function initializeProject(directory: string, options: { template: string }): Promise<void> {
+    if (options.template === "python")
+        throw new Error(
+            "Create Python projects with: uvx --from 'durable-actors[cli]' durable-actors init " + directory
+        )
     const destination = path.resolve(directory)
     await mkdir(destination).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "EEXIST") throw new Error(`${destination} already exists. Choose a new directory.`)
@@ -75,16 +79,6 @@ async function nameProject(destination: string): Promise<void> {
 }
 
 function projectInstructions(destination: string, template: string): string {
-    if (template === "python")
-        return `Created Python actors in ${destination}.
-
-From that directory, run:
-  uv sync
-  bunx durable-actors dev
-
-Bun runs the shared CLI; actor code and clients run in Python.
-Edit src/actors.py. The CLI checks types before starting and reloading.
-Generate typed Python clients with: bunx durable-actors generate`
     if (template === "actor") return actorProjectInstructions(destination)
 
     return `Created ${template} app in ${destination}.

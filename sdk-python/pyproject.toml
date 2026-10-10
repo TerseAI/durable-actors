@@ -9,7 +9,11 @@ description = "Typed Python durable actors and generated clients"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["pydantic>=2.12,<3", "typing-extensions>=4.12,<5", "httpx>=0.28,<1", "websockets>=15,<17", "jsonschema>=4.23,<5", "packaging>=24,<27"]
+# Pydantic 2.14 requires experimental mypy TypeForm support for generated clients.
+dependencies = ["pydantic>=2.12,<2.14", "typing-extensions>=4.12,<5", "httpx>=0.28,<1", "websockets>=15,<17", "jsonschema>=4.23,<5", "packaging>=24,<27"]
+
+[project.scripts]
+durable-actors = "durable_actors.cli:main"
 
 [project.urls]
 Repository = "https://github.com/TerseAI/durable-actors"
@@ -17,6 +21,13 @@ Documentation = "https://github.com/TerseAI/durable-actors/blob/main/docs/refere
 
 [project.optional-dependencies]
 codegen = ["datamodel-code-generator>=0.83,<0.84", "mypy>=1.15,<2", "pip>=25,<27"]
+
+cli = ["durable-actors[codegen]==0.7.16", "durable-actors-runtime==0.7.16", "python-dotenv>=1,<2", "starlette>=0.47,<2", "uvicorn>=0.35,<1", "anyio>=4,<5"]
+
+# The native wheel is built from this checkout during repository development.
+# Published package metadata does not contain uv source overrides.
+[tool.uv.sources]
+durable-actors-runtime = { path = ".." }
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "mypy>=1.15,<2", "pyright>=1.1.400,<2", "ruff>=0.11,<1", "types-jsonschema", "datamodel-code-generator>=0.83,<0.84", "build>=1,<2", "pip>=25,<27"]

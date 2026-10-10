@@ -2,18 +2,16 @@
 
 ## Before you start
 
-Install Python 3.11+, uv, and Bun 1.4.2+. The Python SDK is installed from PyPI. Bun runs the shared `durable-actors` CLI, which starts the actor server and generates clients; actor code and clients run in Python.
+Install Python 3.11+ and uv. The CLI installs its matching native runtime through a platform wheel for Linux or macOS, on x64 or ARM64.
 
 Create a new project in any directory:
 
 ```bash
-uv init my-bank
+uvx --from 'durable-actors[cli]' durable-actors init my-bank
 cd my-bank
-uv add 'durable-actors[codegen]'
-mkdir src
 ```
 
-The commands below use published packages and download the native runtime automatically. No repository checkout or SDK build is needed.
+The generated project keeps the SDK in production dependencies and CLI tools in its development dependency group. `uv run` installs both; no repository checkout or Rust compiler is needed.
 
 ## Defining an actor
 
@@ -37,13 +35,13 @@ class BankAccount(Actor):
 Start the local dev server from `my-bank`. The first run downloads the runtime:
 
 ```bash
-bunx durable-actors dev
+uv run durable-actors dev
 ```
 
 Wait for `Ready`, then generate the client in a second terminal opened in the same `my-bank` directory:
 
 ```bash
-bunx durable-actors generate
+uv run durable-actors generate
 ```
 
 This creates a `generated` package with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.py` that gets the `demo` account and calls a method:

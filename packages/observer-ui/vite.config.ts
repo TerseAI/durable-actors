@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => ({
               }
             : {
                   outDir: "dist/standalone",
+                  license: { fileName: "THIRD-PARTY-LICENSES.md" },
                   emptyOutDir: true,
                   rolldownOptions: { output: { entryFileNames: "app.js", assetFileNames: "app.[ext]" } }
               }

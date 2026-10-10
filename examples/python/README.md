@@ -6,7 +6,7 @@ Persistent messages, typed RPCs, and live state updates.
 
 ## Run
 
-Install Python 3.11+, uv, and Bun 1.4.2+. Bun runs the shared CLI; actor code and clients run in Python.
+Install Python 3.11+ and uv.
 
 Get the example and install its Python dependencies:
 
@@ -14,15 +14,15 @@ Get the example and install its Python dependencies:
 git clone --depth 1 https://github.com/TerseAI/durable-actors.git
 cd durable-actors/examples/python
 uv sync --no-sources
-bunx durable-actors dev
+uv run --no-sources durable-actors dev
 ```
 
-The CLI downloads the native runtime automatically. To write your own actor in a new project, follow the [quickstart](../../sdk-python/README.md#quickstart).
+uv installs the matching native runtime wheel. To write your own actor in a new project, follow the [quickstart](../../sdk-python/README.md#quickstart).
 
 In a second terminal, from the same `durable-actors/examples/python` directory:
 
 ```sh
-bunx durable-actors generate
+uv run --no-sources durable-actors generate
 uv run --no-sources client.py
 uv run --no-sources watch.py
 ```

@@ -34,20 +34,20 @@ jobs:
               run: cargo build --locked
             - name: Install Python dependencies
               working-directory: sdk-python
-              run: uv sync --locked --all-extras
+              run: uv sync --locked --all-extras --no-install-package durable-actors-runtime
             - name: Check source and generated client types
               working-directory: sdk-python
               run: |
-                  uv run --locked ruff check src tests
-                  uv run --locked ruff format --check src tests
-                  uv run --locked mypy src/durable_actors
-                  uv run --locked pyright
+                  uv run --no-sync ruff check src tests
+                  uv run --no-sync ruff format --check src tests
+                  uv run --no-sync mypy src/durable_actors
+                  uv run --no-sync pyright
             - name: Test Python actors against the Rust runtime
               working-directory: sdk-python
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
-              run: uv run --locked pytest -q
-            - name: Build shared CLI and test Python workflows
+              run: uv run --no-sync pytest -q
+            - name: Check Bun CLI compatibility with Python projects
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
                   DURABLE_ACTORS_TEST_PYTHON: ${{ github.workspace }}/sdk-python/.venv/bin/python

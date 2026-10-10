@@ -1,6 +1,8 @@
 # CLI
 
-`durable-actors` runs durable TypeScript and Python actors locally or in the cloud.
+`durable-actors` runs durable actors locally or in the cloud. TypeScript projects use the Bun CLI (`bunx durable-actors`); Python projects install `durable-actors[cli]` and use `uv run durable-actors`. Python tooling requires no JavaScript runtime.
+
+Both CLIs expose `init`, `dev`, `generate`, `observe`, and `start`. The flags below describe the Bun CLI; Python `init` always creates a Python project and Python `generate` always emits Python clients.
 
 ```sh
 durable-actors [options] [command]
@@ -35,11 +37,11 @@ durable-actors init <directory> [--template <name>]
 
 | Flag                | Default | Description                                                            |
 | ------------------- | ------- | ---------------------------------------------------------------------- |
-| `--template <name>` | `actor` | Project template: `actor`, `chat`, `ai-chat`, `documents`, or `python` |
+| `--template <name>` | `actor` | Project template: `actor`, `chat`, `ai-chat`, or `documents` |
 
 ```sh
 durable-actors init my-project
-durable-actors init my-project --template python
+uvx --from 'durable-actors[cli]' durable-actors init my-project
 ```
 
 ## durable-actors dev
@@ -63,7 +65,7 @@ Optional `.env` overrides:
 | `DURABLE_ACTORS_ENTRYPOINT` | Auto-detected | Actor source file, relative to the project; discovers `actors.ts` or `actors.py` in `src/` or the project root |
 | `DURABLE_ACTORS_PYTHON`     | Project `.venv`                    | Python interpreter                         |
 
-Python projects start from `durable-actors init my-project --template python`.
+Python projects use the interpreter running the CLI. The `DURABLE_ACTORS_PYTHON` override applies to the Bun CLI and native runtime.
 
 ```sh
 durable-actors dev

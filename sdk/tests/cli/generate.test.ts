@@ -69,7 +69,7 @@ test("generate defaults to the server using .env settings and exported environme
         envFile,
         `DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`
     )
-    const fileEnv: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development" }
+    const fileEnv: NodeJS.ProcessEnv = { ...process.env }
     for (const key of ["DURABLE_ACTORS_PROJECT_ID", "DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_SECRET"])
         delete fileEnv[key]
     const localEnv = {
@@ -149,6 +149,14 @@ test("generate loads .env.local before .env and preserves exported environment o
         "/v1/projects/default/deployment/contract",
         "/v1/projects/exported/deployment/contract"
     ])
+
+    // Bun intentionally ignores .env.local in test mode; .env still applies.
+    await writeFile(
+        path.join(directory, ".env"),
+        `DURABLE_ACTORS_PROJECT_ID=test\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`
+    )
+    await run(process.execPath, [cli, "generate"], { cwd: directory, env: { ...fileEnv, NODE_ENV: "test" } })
+    assert.equal(requests.at(-1), "/v1/projects/test/deployment/contract")
 })
 
 test("a separate consumer generates identical clients from the deployed contract without local actor source", async t => {

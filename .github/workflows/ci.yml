@@ -156,5 +156,4 @@ jobs:
                   if-no-files-found: error
 
     native:
-        if: github.event_name == 'push'
         uses: ./.github/workflows/native-build.yml

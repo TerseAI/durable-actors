@@ -55,6 +55,7 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     let directory = tempfile::tempdir_in(&cwd)?;
     let relative = directory.path().strip_prefix(&cwd)?;
     let options = DevOptions {
+        watch: false,
         project_id: "default".into(),
         api_key: Some("test-key".into()),
         project: cwd.clone(),

@@ -24,15 +24,13 @@ class Counter(Actor):
         return self.count
 `
 
-test("init python creates a project using the shared CLI", async t => {
+test("init python points to the Python CLI", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actors-python-init-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
-    const result = await run(process.execPath, [cli, "init", "counter", "--template", "python"], { cwd: directory })
-    const project = path.join(directory, "counter")
-    assert.match(await readFile(path.join(project, "pyproject.toml"), "utf8"), /durable-actors\[codegen\]/u)
-    assert.match(await readFile(path.join(project, "src/actors.py"), "utf8"), /class Counter/u)
-    assert.match(result.stdout, /From that directory, run:\n  uv sync\n  bunx durable-actors dev/u)
-    assert.match(result.stdout, /durable-actors dev/u)
+    await assert.rejects(
+        run(process.execPath, [cli, "init", "counter", "--template", "python"], { cwd: directory }),
+        /uvx --from 'durable-actors\[cli\]'/u
+    )
 })
 
 test(

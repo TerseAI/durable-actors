@@ -5,13 +5,10 @@ import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
 import { projectIdSchema } from "../actor/identity.js"
-import { configuredSettings } from "../client/clientSettings.js"
 import { projectSdkModule } from "../projectSdk.js"
 import { fetchRuntimeExecutablePath } from "../runtimeInstaller.js"
 
-import { type ActorSourceWatcher, watchActorSources } from "./actor-source-watcher.js"
-import { ControlPlaneClient } from "./control-plane.js"
-import { checkPython, pythonExecutable } from "./python.js"
+import { pythonExecutable } from "./python.js"
 import { runtimeConnection, runtimeEnvironment, startRustRuntime } from "./rust-runtime.js"
 
 interface DevOptions {
@@ -46,7 +43,7 @@ No configuration is required. Optional overrides in .env:
   DURABLE_ACTORS_PROJECT     project directory (default: current directory)
   DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: discover actors.ts or actors.py in src/ or the project root)
 
-Python projects: durable-actors init my-project --template python
+Python projects: uvx --from 'durable-actors[cli]' durable-actors init my-project
 DURABLE_ACTORS_PYTHON selects an interpreter; otherwise dev uses the project .venv.
 
 Create a project with: durable-actors init my-project`
@@ -137,7 +134,6 @@ async function developmentPathStats(candidate: string) {
 
 async function runDevRuntime(options: DevOptions, project: string): Promise<number> {
     const python = options.entrypoint.endsWith(".py") ? await pythonExecutable(project) : undefined
-    if (python) await checkPython(project, [options.entrypoint], python)
     const executable = await fetchRuntimeExecutablePath()
     const runtime = startRustRuntime(
         executable,
@@ -146,52 +142,14 @@ async function runDevRuntime(options: DevOptions, project: string): Promise<numb
         true,
         true
     )
-    const connection = runtimeConnection(runtime.readiness!, runtime.exited)
-    const settings = connection.then(value =>
-        configuredSettings(
-            z
-                .object({
-                    projectId: z.string(),
-                    controlPlaneUrl: z.string(),
-                    apiKey: z
-                        .string()
-                        .nullish()
-                        .transform(value => value ?? undefined)
-                })
-                .parse(value)
-        )
-    )
-    const client = settings.then(settings => new ControlPlaneClient(settings, fetch))
-    void client.catch(() => {})
-    let watcher: ActorSourceWatcher | undefined
     try {
-        if (options.watch) {
-            watcher = await watchActorSources({ projectDirectory: project, dataDirectory: options.dataDir }, async () =>
-                publishLocalCode(options, project, await client)
-            )
-        }
-        await client
+        await runtimeConnection(runtime.readiness!, runtime.exited)
         return await runtime.exited
     } catch (error) {
         runtime.child.kill("SIGTERM")
         await runtime.exited.catch(() => {})
         throw error
-    } finally {
-        await watcher?.close()
     }
-}
-
-async function publishLocalCode(
-    options: DevOptions,
-    project: string,
-    client: Pick<ControlPlaneClient, "registerDeployment">
-): Promise<void> {
-    if (options.entrypoint.endsWith(".py")) await checkPython(project, [options.entrypoint])
-    await client.registerDeployment({
-        localSource: { workingDirectory: project, actorEntrypoint: options.entrypoint },
-        secretRefs: []
-    })
-    console.log("Updated local actors.")
 }
 
 function devArguments(options: DevOptions): string[] {
@@ -210,6 +168,7 @@ function devArguments(options: DevOptions): string[] {
         "--sdk-host",
         fileURLToPath(new URL("../host.js", import.meta.url))
     ]
+    if (options.watch) args.push("--watch")
     if (options.apiKey) args.push("--api-key", options.apiKey)
     if (options.dataDir) args.push("--data-dir", options.dataDir)
     return args
