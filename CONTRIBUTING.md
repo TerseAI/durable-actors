@@ -28,6 +28,8 @@ Repository builds set the pinned Google SDK’s Rapid append opt-in in `.cargo/c
 
 The SDK build includes the observer UI and actor template. A full native bundle can be built with `bun run --bun build`.
 
+Cargo fetches the Rust `terse-litestream` and `terse-ltx` crates at the revisions pinned in `Cargo.toml` and `Cargo.lock`. No submodule checkout is needed. `third_party/` contains their license notices for distribution in native bundles and runtime images.
+
 ## Find your way around
 
 | Directory               | Contents                                            |
@@ -48,6 +50,15 @@ Keep changes focused and follow the [engineering conventions](AGENTS.md). For be
 Update documentation and examples when changing a public API, configuration, or CLI behavior.
 
 ## Run checks
+
+SQLite test fixtures use the upstream Go Litestream CLI to create and restore compatible backups. Install Go 1.27.1 and the pinned test tool, then add Go's binary directory to your PATH:
+
+```sh
+go install github.com/benbjohnson/litestream/cmd/litestream@v0.5.17
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+The production runtime embeds the Rust crate and does not need this Go executable.
 
 From the repository root:
 

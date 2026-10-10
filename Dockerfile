@@ -6,7 +6,6 @@ COPY .cargo ./.cargo
 COPY migrations ./migrations
 COPY proto ./proto
 COPY src ./src
-COPY third_party/terse-litestream ./third_party/terse-litestream
 COPY docs/reference/openapi.yaml ./docs/reference/openapi.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

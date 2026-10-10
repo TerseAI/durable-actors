@@ -22,8 +22,10 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         outputs:
             version: ${{ steps.version.outputs.version }}
-            ltx-revision: ${{ steps.ltx.outputs.revision }}
-            ltx-version: ${{ steps.ltx.outputs.version }}
+            ltx-revision: ${{ steps.dependencies.outputs.ltx-revision }}
+            ltx-version: ${{ steps.dependencies.outputs.ltx-version }}
+            litestream-revision: ${{ steps.dependencies.outputs.litestream-revision }}
+            litestream-version: ${{ steps.dependencies.outputs.litestream-version }}
         steps:
             - uses: oven-sh/setup-bun@v2
               with:
@@ -56,20 +58,22 @@ jobs:
             - name: Assert every manifest matches the tag
               run: bun scripts/release.mjs verify "${{ steps.version.outputs.version }}"
 
-            - name: Read the pinned LTX dependency
-              id: ltx
+            - name: Read the pinned Rust dependencies
+              id: dependencies
               run: |
                   python3 - <<'PYTHON'
                   import os, re, tomllib
                   from pathlib import Path
 
-                  dependency = tomllib.loads(Path("Cargo.toml").read_text())["dependencies"]["terse-ltx"]
-                  assert dependency["git"] == "https://github.com/TerseAI/terse-ltx"
-                  assert re.fullmatch(r"[0-9a-f]{40}", dependency["rev"])
-                  assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", dependency["version"])
+                  dependencies = tomllib.loads(Path("Cargo.toml").read_text())["dependencies"]
                   with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                      print(f"revision={dependency['rev']}", file=output)
-                      print(f"version={dependency['version']}", file=output)
+                      for name in ("ltx", "litestream"):
+                          dependency = dependencies[f"terse-{name}"]
+                          assert dependency["git"] == f"https://github.com/TerseAI/terse-{name}"
+                          assert re.fullmatch(r"[0-9a-f]{40}", dependency["rev"])
+                          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", dependency["version"])
+                          print(f"{name}-revision={dependency['rev']}", file=output)
+                          print(f"{name}-version={dependency['version']}", file=output)
                   PYTHON
 
     ltx:
@@ -135,14 +139,13 @@ jobs:
         needs: [preflight, ltx]
         runs-on: blacksmith-4vcpu-ubuntu-2404
         timeout-minutes: 20
-        defaults:
-            run:
-                working-directory: third_party/terse-litestream
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Checkout the pinned Litestream source
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
-                  ref: ${{ github.sha }}
+                  repository: TerseAI/terse-litestream
+                  ref: ${{ needs.preflight.outputs.litestream-revision }}
+                  persist-credentials: false
             # Validates terse-litestream at its own rust-version.
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
@@ -151,20 +154,30 @@ jobs:
                   go-version: "1.27.1"
                   cache: false
             - name: Validate capture and upstream compatibility
+              env:
+                  LITESTREAM_VERSION: ${{ needs.preflight.outputs.litestream-version }}
               run: |
+                  python3 - <<'PYTHON'
+                  import os, tomllib
+                  from pathlib import Path
+
+                  package = tomllib.loads(Path("Cargo.toml").read_text())["package"]
+                  assert package["name"] == "terse-litestream"
+                  assert package["version"] == os.environ["LITESTREAM_VERSION"]
+                  PYTHON
                   scripts/verify.sh
                   cargo publish --locked --dry-run
             - name: Publish terse-litestream
               env:
                   CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+                  LITESTREAM_VERSION: ${{ needs.preflight.outputs.litestream-version }}
               run: |
-                  version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
                   status=$(curl -sS \
                     --user-agent "durable-actors-release/1.0 (+https://github.com/TerseAI/durable-actors)" \
                     -o /dev/null -w "%{http_code}" \
-                    "https://crates.io/api/v1/crates/terse-litestream/$version")
+                    "https://crates.io/api/v1/crates/terse-litestream/$LITESTREAM_VERSION")
                   if [ "$status" = "200" ]; then
-                      echo "terse-litestream@$version already published"
+                      echo "terse-litestream@$LITESTREAM_VERSION already published"
                   elif [ "$status" = "404" ]; then
                       cargo publish --locked --no-verify
                   else
@@ -197,7 +210,6 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
@@ -208,10 +220,7 @@ jobs:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
-            - name: Install pinned Litestream
-              run: |
-                  bun scripts/litestream.mjs "$RUNNER_TEMP/litestream"
-                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
+            - uses: ./.github/actions/setup-test-litestream
             - name: Check formatting
               run: cargo fmt --all -- --check
 
@@ -245,10 +254,7 @@ jobs:
             - name: Install dependencies
               run: bun install --frozen-lockfile
 
-            - name: Install pinned Litestream
-              run: |
-                  bun scripts/litestream.mjs "$RUNNER_TEMP/litestream"
-                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
+            - uses: ./.github/actions/setup-test-litestream
             - name: Check formatting
               run: bun run --bun --cwd sdk format:check
 
@@ -339,7 +345,6 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Set up Blacksmith Docker builder
@@ -555,7 +560,6 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain

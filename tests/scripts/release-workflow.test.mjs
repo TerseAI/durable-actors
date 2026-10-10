@@ -103,7 +103,7 @@ test("crate publication reuses successful verification and does not wait for npm
 
 test("release validates and publishes the pinned LTX crate before packaging the runtime", () => {
     assert.ok(dependsOn("rust", "ltx"))
-    assert.match(releaseJob("preflight"), /tomllib[\s\S]*dependencies[\s\S]*terse-ltx/)
+    assert.match(releaseJob("preflight"), /tomllib[\s\S]*dependencies[\s\S]*"ltx"/)
     const job = releaseJob("ltx")
     assert.match(job, /repository: TerseAI\/terse-ltx/)
     assert.match(job, /ref: \$\{\{ needs\.preflight\.outputs\.ltx-revision \}\}/)
