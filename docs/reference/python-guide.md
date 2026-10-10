@@ -2,13 +2,18 @@
 
 ## Before you start
 
+Install Python 3.11+, uv, and Bun 1.4.2+. The Python SDK is installed from PyPI. Bun runs the shared `durable-actors` CLI, which starts the actor server and generates clients; actor code and clients run in Python.
+
+Create a new project in any directory:
+
 ```bash
-bun install
-bun run --bun --cwd sdk build
-cd examples/bank-python
-uv sync
-cp .env.example .env
+uv init my-bank
+cd my-bank
+uv add 'durable-actors[codegen]'
+mkdir src
 ```
+
+The commands below use published packages and download the native runtime automatically. No repository checkout or SDK build is needed.
 
 ## Defining an actor
 
@@ -29,17 +34,16 @@ class BankAccount(Actor):
 
 ## Generating a client
 
-Start the local dev server from `examples/bank-python`. The first run downloads the runtime:
+Start the local dev server from `my-bank`. The first run downloads the runtime:
 
 ```bash
-bun run --bun dev
+bunx durable-actors dev
 ```
 
-Wait for `Ready`, then generate the client in a second terminal:
+Wait for `Ready`, then generate the client in a second terminal opened in the same `my-bank` directory:
 
 ```bash
-cd examples/bank-python
-bun run --bun generate
+bunx durable-actors generate
 ```
 
 This creates a `generated` package with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.py` that gets the `demo` account and calls a method:
@@ -51,7 +55,13 @@ account = actors.BankAccount.get("demo")
 print(account.get_balance())
 ```
 
-Run it with `bun run --bun client`, which runs `uv run --env-file .env client.py` so the client connects to port 7112.
+Run the client with Python:
+
+```bash
+uv run client.py
+```
+
+It prints `0`. The server and client both use `http://127.0.0.1:7100` by default.
 
 An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 

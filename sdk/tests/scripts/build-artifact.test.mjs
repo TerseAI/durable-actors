@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile, spawn } from "node:child_process"
 import { once } from "node:events"
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -23,6 +23,24 @@ test("one actor build returns the matching public contract", async t => {
     assert.equal(contract?.actors[0].actorName, "Counter")
     assert.equal(contract.actors[0].rpc.methods[0].name, "read")
     assert.match(await readFile(path.join(root, "actors.mjs"), "utf8"), /Counter/)
+})
+
+test("the installed compiler generates declarations using only its runtime dependencies", async t => {
+    const installed = await mkdtemp(path.join(os.tmpdir(), "installed-actor-sdk-"))
+    t.after(() => rm(installed, { recursive: true, force: true }))
+    await cp(path.join(sdk, "dist"), path.join(installed, "dist"), { recursive: true })
+    await cp(path.join(sdk, "package.json"), path.join(installed, "package.json"))
+    const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
+    for (const name of Object.keys(manifest.dependencies)) {
+        const destination = path.join(installed, "node_modules", name)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await symlink(await realpath(path.join(sdk, "node_modules", name)), destination, "dir")
+    }
+    const root = await project(t, installed)
+    await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async read(): Promise<number> { return 7 } }')
+    const output = path.join(root, "generated")
+    await run("bun", [path.join(installed, "dist/cli.js"), "generate", "src/actors.ts", "--out-dir", output], { cwd: root })
+    assert.match(await readFile(path.join(output, "types.d.ts"), "utf8"), /read\(\): Promise<number>/)
 })
 
 test("bundling uses the analyzed source even when files change during a build", async t => {
@@ -215,12 +233,12 @@ test("an exiting actor reports failure before publishing its result and state", 
     assert.match(reply.message, /exited with code 1/)
 })
 
-async function project(t) {
+async function project(t, installed = sdk) {
     const root = await mkdtemp(path.join(os.tmpdir(), "actor-build-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, "src"))
     await mkdir(path.join(root, "node_modules"))
-    await symlink(sdk, path.join(root, "node_modules/durable-actors"), "dir")
+    await symlink(installed, path.join(root, "node_modules/durable-actors"), "dir")
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
         path.join(root, "tsconfig.json"),

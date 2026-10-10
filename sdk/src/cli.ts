@@ -79,10 +79,10 @@ function projectInstructions(destination: string, template: string): string {
         return `Created Python actors in ${destination}.
 
 From that directory, run:
-  bun install
   uv sync
   bunx durable-actors dev
 
+Bun runs the shared CLI; actor code and clients run in Python.
 Edit src/actors.py. The CLI checks types before starting and reloading.
 Generate typed Python clients with: bunx durable-actors generate`
     if (template === "actor") return actorProjectInstructions(destination)

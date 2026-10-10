@@ -117,10 +117,9 @@ The pair survives actor hibernation while the gateway owns the room. Gateway rep
 
 ## CLI and configuration
 
-The shared Node CLI uses the project's `.venv` and runs strict mypy on actor definitions and generated clients. Keep the CLI, Python SDK, and native runtime versions aligned.
+The shared CLI runs on Bun 1.4.2+, uses the project's Python `.venv`, and runs strict mypy on actor definitions and generated clients. `bunx` runs the published CLI and downloads the native runtime automatically. Keep the CLI, Python SDK, and native runtime versions aligned.
 
 ```sh
-bun add -D durable-actors
 uv add 'durable-actors[codegen]'
 bunx durable-actors dev
 ```

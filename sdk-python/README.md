@@ -6,13 +6,15 @@ Durable actors and typed clients, backed by the Rust runtime.
 
 ## Quickstart
 
-Requires Bun 1.4.2+, Python 3.11+, and uv.
+Requires Python 3.11+, uv, and Bun 1.4.2+. Bun runs the shared CLI that starts the actor server and generates clients. Actor code and clients run in Python.
+
+Create a project anywhere; the SDK comes from PyPI and the CLI downloads the native runtime automatically.
 
 ```sh
-bunx durable-actors init my-actors --template python
+uv init my-actors
 cd my-actors
-bun install
-uv sync
+uv add 'durable-actors[codegen]'
+mkdir src
 ```
 
 Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Persisted fields are stored in SQLite. Litestream is installed and managed automatically with the runtime; local development persists to the filesystem. Wrap persisted fields with `emitted()` to broadcast saved changes.

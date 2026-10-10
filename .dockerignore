@@ -22,6 +22,7 @@
 !sdk/LICENSE.md
 !sdk/scripts
 !sdk/scripts/build-client-runtime.mjs
+!sdk/scripts/build-declarations.mjs
 !sdk/tsconfig*.json
 !sdk/src
 !sdk/src/**

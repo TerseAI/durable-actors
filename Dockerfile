@@ -31,11 +31,13 @@ RUN bun install --frozen-lockfile
 COPY packages/observer-ui ./packages/observer-ui
 COPY sdk/src ./sdk/src
 COPY sdk/scripts/build-client-runtime.mjs ./sdk/scripts/build-client-runtime.mjs
+COPY sdk/scripts/build-declarations.mjs ./sdk/scripts/build-declarations.mjs
 COPY sdk/LICENSE.md ./sdk/LICENSE.md
 COPY sdk/tsconfig*.json ./sdk/
 RUN bun run --bun --cwd packages/observer-ui build \
     && bun run --bun --cwd sdk build:client \
-    && bun run --bun --cwd sdk tsc -p tsconfig.build.json
+    && bun run --bun --cwd sdk tsc -p tsconfig.build.json \
+    && bun run --bun --cwd sdk build:declarations
 
 FROM python:3.13-slim-bookworm AS python-sdk
 WORKDIR /build

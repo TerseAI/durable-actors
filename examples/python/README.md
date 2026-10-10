@@ -6,23 +6,25 @@ Persistent messages, typed RPCs, and live state updates.
 
 ## Run
 
-From the repository root, build the runtime and shared CLI:
+Install Python 3.11+, uv, and Bun 1.4.2+. Bun runs the shared CLI; actor code and clients run in Python.
+
+Get the example and install its Python dependencies:
 
 ```sh
-cargo build --locked
-bun install
-bun run --bun --cwd sdk build
-cd examples/python
-uv sync
-DURABLE_ACTORS_BINARY="$PWD/../../target/debug/durable-actors" DURABLE_ACTORS_ENTRYPOINT=actors.py bun ../../sdk/dist/cli.js dev
+git clone --depth 1 https://github.com/TerseAI/durable-actors.git
+cd durable-actors/examples/python
+uv sync --no-sources
+DURABLE_ACTORS_ENTRYPOINT=actors.py bunx durable-actors dev
 ```
 
-In a second terminal, from `examples/python`:
+The CLI downloads the native runtime automatically. To write your own actor in a new project, follow the [quickstart](../../sdk-python/README.md#quickstart).
+
+In a second terminal, from the same `durable-actors/examples/python` directory:
 
 ```sh
-bun ../../sdk/dist/cli.js generate
-uv run client.py
-uv run watch.py
+bunx durable-actors generate
+uv run --no-sources client.py
+uv run --no-sources watch.py
 ```
 
 The client saves a message; the watcher prints live history until you press Enter. Restart the actor server to verify that messages persist.
@@ -36,4 +38,4 @@ chat = actors.Chat.get("lobby")
 print(chat.append(actors.Chat.Message(text="Hello from Python")))
 ```
 
-This example uses the repository SDK through `tool.uv.sources`; remove that table to use the published package.
+`--no-sources` installs the published Python SDK instead of the repository dependency in `tool.uv.sources`. For SDK development, see the [contributing guide](../../CONTRIBUTING.md).

@@ -76,7 +76,7 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "bun run --bun build:observer && bun run --bun build:client && tsc -p tsconfig.build.json && bun scripts/build-template.mjs",
+        "build": "bun run --bun build:observer && bun run --bun build:client && tsc -p tsconfig.build.json && bun run --bun build:declarations && bun scripts/build-template.mjs",
         "check": "bun run --bun format:check && bun run --bun test && bun run --bun package:check",
         "clean": "rm -rf dist .test-dist",
         "package:check": "bun test --timeout 60000 tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs",
@@ -86,14 +86,14 @@
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "build:observer": "bun run --bun --cwd ../packages/observer-ui build",
         "docs": "typedoc --options typedoc.json",
-        "build:client": "bun scripts/build-client-runtime.mjs"
+        "build:client": "bun scripts/build-client-runtime.mjs",
+        "build:declarations": "bun scripts/build-declarations.mjs"
     },
     "dependencies": {
         "@types/json-schema": "^7.0.15",
         "ajv": "^8.20.0",
         "chokidar": "^4.0.3",
         "commander": "^14.0.3",
-        "dts-bundle-generator": "9.5.1",
         "durable-actors-observer": "workspace:*",
         "esbuild": "^0.28.2",
         "import-meta-resolve": "^4.2.0",
@@ -111,6 +111,7 @@
         "@types/node": "^22.0.0",
         "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
+        "dts-bundle-generator": "9.5.1",
         "typedoc": "^0.28.20",
         "typedoc-plugin-missing-exports": "^4.1.4"
     }

@@ -31,7 +31,7 @@ test("init python creates a project using the shared CLI", async t => {
     const project = path.join(directory, "counter")
     assert.match(await readFile(path.join(project, "pyproject.toml"), "utf8"), /durable-actors\[codegen\]/u)
     assert.match(await readFile(path.join(project, "src/actors.py"), "utf8"), /class Counter/u)
-    assert.match(result.stdout, /uv sync/u)
+    assert.match(result.stdout, /From that directory, run:\n  uv sync\n  bunx durable-actors dev/u)
     assert.match(result.stdout, /durable-actors dev/u)
 })
 
