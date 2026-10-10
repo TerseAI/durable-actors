@@ -19,7 +19,7 @@ for (const template of ["actor", "chat", "ai-chat", "documents"]) {
         const project = path.join(directory, name)
         await run(process.execPath, [cli, "init", name, "--template", template], { cwd: directory })
         const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"))
-        const files = [".gitignore", "README.md", "package.json", "pnpm-workspace.yaml", "src", "tsconfig.json"]
+        const files = [".gitignore", "README.md", "bunfig.toml", "package.json", "src", "tsconfig.json"]
         if (template !== "actor") files.push(".env.example", "index.html")
         assert.deepEqual((await readdir(project)).sort(), files.sort())
         assert.equal(metadata.name, name)
@@ -60,7 +60,7 @@ test("init presents copyable next steps with optional terminal color", async t =
     assert.ok(plain.stdout.includes(`✓ ${name} is ready.`))
     assert.match(plain.stdout, /Start here/)
     assert.ok(plain.stdout.includes("cd -- 'Sam'\\''s actors'"))
-    assert.match(plain.stdout, /pnpm install\n\n\s+Start the actor server\n\s+pnpm exec durable-actors dev/)
+    assert.match(plain.stdout, /bun install\n\n\s+Start the actor server\n\s+bunx durable-actors dev/)
     assert.match(plain.stdout, /src\/actors\.ts/)
     assert.match(plain.stdout, /Connect your app/)
     assert.equal(plain.stdout, stripVTControlCharacters(plain.stdout))
@@ -85,8 +85,8 @@ test("init defaults to a standalone actor project that can typecheck and generat
     assert.equal(metadata.scripts.check, "tsc --noEmit")
     assert.deepEqual(await readdir(path.join(project, "src")), ["actors.ts"])
     assert.match(await readFile(path.join(project, ".gitignore"), "utf8"), /\.durable-actors\//)
-    assert.match(stdout, /pnpm install/)
-    assert.match(stdout, /\n\s+pnpm exec durable-actors dev\n/)
+    assert.match(stdout, /bun install/)
+    assert.match(stdout, /\n\s+bunx durable-actors dev\n/)
     assert.match(stdout, /separate.*project/i)
     assert.doesNotMatch(stdout, /localhost:3000|127\.0\.0\.1:3000|another terminal/)
 
@@ -99,14 +99,3 @@ test("init defaults to a standalone actor project that can typecheck and generat
     assert.match(generated, /Counter/)
     assert.match(generated, /increment/)
 })
-
-for (const template of ["actor", "chat", "ai-chat", "documents"]) {
-    test(`init ${template} preapproves required dependency builds for pnpm`, async t => {
-        const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-init-pnpm-"))
-        t.after(() => rm(directory, { recursive: true, force: true }))
-        const project = path.join(directory, template)
-        await run(process.execPath, [cli, "init", project, "--template", template])
-        const { stdout } = await run("pnpm", ["config", "get", "allowBuilds", "--json"], { cwd: project })
-        assert.deepEqual(JSON.parse(stdout), { esbuild: true })
-    })
-}

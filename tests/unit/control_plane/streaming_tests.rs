@@ -16,7 +16,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn browser_receives_only_emittable_state_after_commit_and_on_reconnect() -> Result<()> {
     let mut stack = Stack::start().await?;
     let grant = stack.grant(serde_json::json!({"user":"one"})).await?;
@@ -47,7 +47,7 @@ async fn browser_receives_only_emittable_state_after_commit_and_on_reconnect() -
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_isolated()
 -> Result<()> {
     #[derive(Default)]
@@ -77,7 +77,7 @@ async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain_json() -> Result<()>
 {
     let mut stack = Stack::start().await?;
@@ -145,7 +145,7 @@ async fn signed_url_connects_without_a_protocol_or_handshake_and_exchanges_plain
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading() -> Result<()> {
     let mut stack = Stack::start().await?;
     let grant = stack.grant(serde_json::json!({})).await?;
@@ -176,7 +176,7 @@ async fn signed_socket_rejects_missing_invalid_and_backend_keys_before_upgrading
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn signed_socket_rejects_invalid_messages() -> Result<()> {
     let mut stack = Stack::start().await?;
     std::fs::write(stack.directory.path().join("release"), "")?;
@@ -194,7 +194,7 @@ async fn signed_socket_rejects_invalid_messages() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order() -> Result<()> {
     let mut stack = Stack::start().await?;
     let grant = stack.grant(serde_json::json!({})).await?;
@@ -237,7 +237,7 @@ async fn inbound_bursts_wait_for_the_running_handler_and_are_delivered_in_order(
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn generated_backend_calls_http_and_authorizes_a_native_websocket() -> Result<()> {
     let mut stack = Stack::start().await?;
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
@@ -296,7 +296,7 @@ socket.close();
     )?;
     let result = tokio::time::timeout(
         Duration::from_secs(15),
-        tokio::process::Command::new("node")
+        tokio::process::Command::new("bun")
             .arg(script)
             .kill_on_drop(true)
             .output(),
@@ -312,7 +312,7 @@ socket.close();
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn broadcast_tag_modes_reach_only_matching_websockets() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut first = stack.connect().await?;
@@ -370,7 +370,7 @@ async fn broadcast_tag_modes_reach_only_matching_websockets() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     let mut stack = Stack::start().await?;
     assert_eq!(
@@ -433,7 +433,7 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build; exercises a handler longer than 30 seconds"]
+#[ignore = "requires bun run --bun --cwd sdk build; exercises a handler longer than 30 seconds"]
 async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
@@ -487,7 +487,7 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn gateway_shutdown_is_not_postponed_by_incoming_control_frames() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut socket = stack.connect().await?;
@@ -813,7 +813,7 @@ async fn start_worker(
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
     ensure!(
         sdk.join("host.js").exists(),
-        "run pnpm --dir sdk build before this test"
+        "run bun run --bun --cwd sdk build before this test"
     );
     let entrypoint = directory.join("actors.ts");
     std::fs::write(
@@ -976,7 +976,7 @@ fn socket_key(grant: &serde_json::Value) -> Result<String> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut socket = stack.connect().await?;
@@ -1090,7 +1090,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> Result<()> {
     let mut stack = Stack::start().await?;
     let http = reqwest::Client::new();
@@ -1154,7 +1154,7 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() -> Result<()> {
     let mut stack = Stack::start().await?;
     let reply: serde_json::Value = reqwest::Client::new()
@@ -1193,7 +1193,7 @@ async fn combined_invocation_commits_a_real_actor_call_and_returns_its_result() 
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn a_slow_reader_can_resume_after_queued_output_waits() -> Result<()> {
     let mut stack = Stack::start().await?;
     let mut socket = stack.connect().await?;

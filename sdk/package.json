@@ -6,9 +6,9 @@
     "license": "MIT",
     "sideEffects": false,
     "engines": {
-        "node": "^20.19.0 || >=22.12.0"
+        "bun": ">=1.4.2"
     },
-    "packageManager": "pnpm@10.17.1",
+    "packageManager": "bun@1.4.2",
     "keywords": [
         "actors",
         "distributed-systems",
@@ -31,7 +31,7 @@
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
-        "durable-actors": "dist/cli.js"
+        "durable-actors": "bin/durable-actors.js"
     },
     "exports": {
         "./backend": {
@@ -71,30 +71,29 @@
         }
     },
     "files": [
+        "bin",
         "dist",
         "README.md",
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "pnpm run build:observer && pnpm run build:client && tsc -p tsconfig.build.json && node scripts/build-template.mjs && pnpm --dir .. install --offline --frozen-lockfile --ignore-scripts",
-        "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
+        "build": "bun run --bun build:observer && bun run --bun build:client && tsc -p tsconfig.build.json && bun run --bun build:declarations && bun scripts/build-template.mjs",
+        "check": "bun run --bun format:check && bun run --bun test && bun run --bun package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "node --test tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs",
-        "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && node tests/prepare.mjs && tsc -p tsconfig.test.json && node scripts/test.mjs",
+        "package:check": "bun test --timeout 60000 tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs tests/scripts/host-runtime.test.mjs",
+        "prepack": "bun run --bun clean && bun run --bun build && bun run --bun package:check",
+        "test": "bun run --bun clean && bun run --bun build && bun tests/prepare.mjs && tsc -p tsconfig.test.json && bun test --parallel=1 --timeout 60000 ./.test-dist/tests",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",
-        "build:observer": "pnpm --filter durable-actors-observer build",
+        "build:observer": "bun run --bun --cwd ../packages/observer-ui build",
         "docs": "typedoc --options typedoc.json",
-        "build:client": "node scripts/build-client-runtime.mjs"
+        "build:client": "bun scripts/build-client-runtime.mjs",
+        "build:declarations": "bun scripts/build-declaration-compiler.mjs"
     },
     "dependencies": {
         "@types/json-schema": "^7.0.15",
         "ajv": "^8.20.0",
-        "chokidar": "^4.0.3",
         "commander": "^14.0.3",
-        "dotenv": "^18.0.0",
-        "dts-bundle-generator": "9.5.1",
         "durable-actors-observer": "workspace:*",
         "esbuild": "^0.28.2",
         "import-meta-resolve": "^4.2.0",
@@ -112,6 +111,7 @@
         "@types/node": "^22.0.0",
         "@types/validate-npm-package-name": "^4.0.2",
         "@types/ws": "^8.18.1",
+        "dts-bundle-generator": "9.5.1",
         "typedoc": "^0.28.20",
         "typedoc-plugin-missing-exports": "^4.1.4"
     }

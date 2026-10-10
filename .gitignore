@@ -1,6 +1,7 @@
 node_modules/
 sdk/node_modules/
 sdk/dist/
+sdk/dist-host/
 sdk/.test-dist/
 packages/*/dist/
 sdk/src/generated/
@@ -20,3 +21,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 sdk-python/dist/
+/python-runtime/durable_actors_runtime/observer/
+/dist/
+/dist-python-runtime/
+/dist-python-sdk/

@@ -6,12 +6,12 @@ Durable actors and typed clients, backed by the Rust runtime.
 
 ## Quickstart
 
-Requires Node.js 22.19+, pnpm, and Bun 1.3.9+.
+Requires Bun 1.4.2+.
 
 ```sh
-npx durable-actors init my-actors
+bunx durable-actors init my-actors
 cd my-actors
-pnpm install
+bun install
 ```
 
 Define `src/actors.ts`. Fields marked `@Persisted` survive restarts. They share one SQLite database and transaction with `this.db` SQL. Litestream is installed and managed automatically with the runtime; local development persists to the filesystem.
@@ -29,7 +29,7 @@ export class Counter extends Actor {
 ```
 
 ```sh
-pnpm exec durable-actors dev
+bunx durable-actors dev
 ```
 
 ## Call an actor
@@ -37,7 +37,7 @@ pnpm exec durable-actors dev
 In another terminal in the same directory, generate the client:
 
 ```sh
-pnpm exec durable-actors generate
+bunx durable-actors generate
 ```
 
 Save as `client.ts` and run `bun client.ts`:

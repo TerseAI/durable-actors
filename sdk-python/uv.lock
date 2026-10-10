@@ -146,6 +146,89 @@ wheels = [
 ]
 
 [[package]]
+name = "durable-actors"
+version = "0.7.16"
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+cli = [
+    { name = "anyio" },
+    { name = "click" },
+    { name = "datamodel-code-generator" },
+    { name = "durable-actors-runtime" },
+    { name = "mypy" },
+    { name = "pip" },
+    { name = "python-dotenv" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+codegen = [
+    { name = "datamodel-code-generator" },
+    { name = "mypy" },
+    { name = "pip" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "build" },
+    { name = "datamodel-code-generator" },
+    { name = "mypy" },
+    { name = "pip" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "types-jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", marker = "extra == 'cli'", specifier = ">=4,<5" },
+    { name = "click", marker = "extra == 'cli'", specifier = ">=8.1,<9" },
+    { name = "datamodel-code-generator", marker = "extra == 'codegen'", specifier = ">=0.83,<0.84" },
+    { name = "durable-actors", extras = ["codegen"], marker = "extra == 'cli'", specifier = "==0.7.16" },
+    { name = "durable-actors-runtime", marker = "extra == 'cli'", directory = "../" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mypy", marker = "extra == 'codegen'", specifier = ">=1.15,<2" },
+    { name = "packaging", specifier = ">=24,<27" },
+    { name = "pip", marker = "extra == 'codegen'", specifier = ">=25,<27" },
+    { name = "pydantic", specifier = ">=2.12,<2.14" },
+    { name = "python-dotenv", marker = "extra == 'cli'", specifier = ">=1,<2" },
+    { name = "starlette", marker = "extra == 'cli'", specifier = ">=0.47,<2" },
+    { name = "typing-extensions", specifier = ">=4.12,<5" },
+    { name = "uvicorn", marker = "extra == 'cli'", specifier = ">=0.35,<1" },
+    { name = "websockets", specifier = ">=15,<17" },
+]
+provides-extras = ["codegen", "cli"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "build", specifier = ">=1,<2" },
+    { name = "datamodel-code-generator", specifier = ">=0.83,<0.84" },
+    { name = "mypy", specifier = ">=1.15,<2" },
+    { name = "pip", specifier = ">=25,<27" },
+    { name = "pyright", specifier = ">=1.1.400,<2" },
+    { name = "pytest", specifier = ">=8,<10" },
+    { name = "pytest-asyncio", specifier = ">=1,<2" },
+    { name = "ruff", specifier = ">=0.11,<1" },
+    { name = "types-jsonschema" },
+]
+
+[[package]]
+name = "durable-actors-runtime"
+version = "0.7.16"
+source = { directory = "../" }
+
+[[package]]
 name = "genson"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -384,66 +467,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/f0/89eb11dffbe9279ff37144dec786927314502ae0b114f1449dc78c458aab/librt-0.15.0-cp315-cp315t-win32.whl", hash = "sha256:c16d15ee371643ab48dc8248a3e680ebbeca573a13af2c3dd0c985b142d77162", size = 104313, upload-time = "2026-08-07T10:49:12.305Z" },
     { url = "https://files.pythonhosted.org/packages/6d/4a/1f1978c200f563beda63c36adff2d65bbecb81e365e8e69e572f5f70fbc6/librt-0.15.0-cp315-cp315t-win_amd64.whl", hash = "sha256:dbd605739f228912dc49027cb764456b9757750bdc2b6b7773164db7096c6fd1", size = 126889, upload-time = "2026-08-07T10:49:13.881Z" },
     { url = "https://files.pythonhosted.org/packages/38/a6/800800bfed7b1fb10fc3f3d557785c3854e80d3f7a9800d784b176a1fc2d/librt-0.15.0-cp315-cp315t-win_arm64.whl", hash = "sha256:84d244b00604d17df3fc7736c327892d6bba66181254aa4087be807b6c342bdc", size = 110700, upload-time = "2026-08-07T10:49:15.499Z" },
-]
-
-[[package]]
-name = "durable-actors"
-version = "0.7.16"
-source = { editable = "." }
-dependencies = [
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "typing-extensions" },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-codegen = [
-    { name = "datamodel-code-generator" },
-    { name = "mypy" },
-    { name = "pip" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "build" },
-    { name = "datamodel-code-generator" },
-    { name = "mypy" },
-    { name = "pip" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "types-jsonschema" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datamodel-code-generator", marker = "extra == 'codegen'", specifier = ">=0.83,<0.84" },
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "jsonschema", specifier = ">=4.23,<5" },
-    { name = "mypy", marker = "extra == 'codegen'", specifier = ">=1.15,<2" },
-    { name = "packaging", specifier = ">=24,<27" },
-    { name = "pip", marker = "extra == 'codegen'", specifier = ">=25,<27" },
-    { name = "pydantic", specifier = ">=2.12,<3" },
-    { name = "typing-extensions", specifier = ">=4.12,<5" },
-    { name = "websockets", specifier = ">=15,<17" },
-]
-provides-extras = ["codegen"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "build", specifier = ">=1,<2" },
-    { name = "datamodel-code-generator", specifier = ">=0.83,<0.84" },
-    { name = "mypy", specifier = ">=1.15,<2" },
-    { name = "pip", specifier = ">=25,<27" },
-    { name = "pyright", specifier = ">=1.1.400,<2" },
-    { name = "pytest", specifier = ">=8,<10" },
-    { name = "pytest-asyncio", specifier = ">=1,<2" },
-    { name = "ruff", specifier = ">=0.11,<1" },
-    { name = "types-jsonschema" },
 ]
 
 [[package]]
@@ -820,6 +843,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-dotenv"
+version = "1.2.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/26/2fbeedb218a787a5eea551c7532cac4e009f83d689dd2faa0d0353473f86/python_dotenv-1.2.4.tar.gz", hash = "sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0", size = 60824, upload-time = "2026-10-01T05:36:10Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/d1/38f3a3405989a89ac18390803e70c6ad7c7760da4f9b83cbeca0c44a0c72/python_dotenv-1.2.4-py3-none-any.whl", hash = "sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc", size = 23266, upload-time = "2026-10-01T05:36:08.633Z" },
+]
+
+[[package]]
 name = "pytokens"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1071,6 +1103,19 @@ wheels = [
 ]
 
 [[package]]
+name = "starlette"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/2b/3850dc6bf7ef71b088962eba31dafc6cffd2f96e577ebb0bb316df96da3e/starlette-1.7.0.tar.gz", hash = "sha256:c79f74ea63cff761804fbbfb182f1e0b440c2d07b164d24700c5a1bab5d6ff5d", size = 2736246, upload-time = "2026-09-23T07:30:26.35Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/d6/1ec1b290f9e0fb067899b61e1d37a30c923068bad260b216dbe37a7d2967/starlette-1.7.0-py3-none-any.whl", hash = "sha256:67f8e99895493dd2911a03f11314af6ceebeae4e704bb9f43dfc6a9db151c93e", size = 78980, upload-time = "2026-09-23T07:30:24.567Z" },
+]
+
+[[package]]
 name = "typeguard"
 version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1113,6 +1158,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c09092e6b34058f36a460eea2d4c3e8b910c695975a0/typing_inspection-0.4.4.tar.gz", hash = "sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47", size = 76928, upload-time = "2026-08-12T12:37:25.997Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.54.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
 
 [[package]]

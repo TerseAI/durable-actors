@@ -22,7 +22,6 @@ async function checkPython(project: string, targets: string[], executable?: stri
 async function compilePythonContract(entrypoint: string): Promise<unknown> {
     const project = process.cwd()
     const executable = await pythonExecutable(project)
-    await checkPython(project, [entrypoint], executable)
     const directory = await mkdtemp(path.join(tmpdir(), "durable-actors-build-"))
     try {
         return JSON.parse(

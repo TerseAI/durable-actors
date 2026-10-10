@@ -15,6 +15,7 @@ use tracing::{error, info};
 
 use crate::{
     actor::{ActorExecutorConnection, ActorExecutorListener},
+    artifacts::ActorRuntime,
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
     host::http::ActorHostHttpService,
@@ -619,8 +620,13 @@ async fn connect_executor(
 ) -> Result<(ActorExecutorConnection, tokio::process::Child)> {
     let listener = ActorExecutorListener::bind(socket).await?;
     let entrypoint = std::env::var("DURABLE_ACTORS_ENTRYPOINT").ok();
-    let javascript =
-        spawn_executor_process(false, &socket.display().to_string(), entrypoint.as_deref())?;
+    let runtime = executor_runtime(
+        entrypoint.as_deref(),
+        std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME")
+            .ok()
+            .as_deref(),
+    )?;
+    let javascript = spawn_executor_process(false, &socket.display().to_string(), runtime)?;
     *javascript_spawned_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     Ok((listener.accept().await?, javascript))
 }
@@ -690,12 +696,35 @@ async fn stop_host_tasks(
     .await;
 }
 
+pub(super) fn executor_runtime(
+    entrypoint: Option<&str>,
+    configured: Option<&str>,
+) -> Result<ActorRuntime> {
+    let image_runtime = configured
+        .map(|value| match value {
+            "typescript" => Ok(ActorRuntime::Typescript),
+            "python" => Ok(ActorRuntime::Python),
+            _ => anyhow::bail!("DURABLE_ACTORS_EXECUTOR_RUNTIME must be typescript or python"),
+        })
+        .transpose()?;
+    let artifact_runtime = entrypoint.map(ActorRuntime::from_entrypoint).transpose()?;
+    if let (Some(image), Some(artifact)) = (image_runtime, artifact_runtime) {
+        ensure!(
+            image == artifact,
+            "actor artifact does not match the image's executor runtime"
+        );
+    }
+    Ok(image_runtime
+        .or(artifact_runtime)
+        .unwrap_or(ActorRuntime::Typescript))
+}
+
 pub(super) fn spawn_executor_process(
     generic: bool,
     socket: &str,
-    entrypoint: Option<&str>,
+    runtime: ActorRuntime,
 ) -> Result<tokio::process::Child> {
-    let mut command = if entrypoint.is_some_and(|path| path.ends_with(".pyz")) {
+    let mut command = if runtime == ActorRuntime::Python {
         let mut command = Command::new(
             std::env::var("DURABLE_ACTORS_PYTHON").unwrap_or_else(|_| "python3".into()),
         );

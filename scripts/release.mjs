@@ -1,15 +1,17 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const manifestFiles = {
+    bunLock: "bun.lock",
     cargoLock: "Cargo.lock",
     cargoToml: "Cargo.toml",
     npmPackage: "sdk/package.json",
     observerPackage: "packages/observer-ui/package.json",
     pythonPackage: "sdk-python/pyproject.toml",
+    pythonRuntime: "pyproject.toml",
     pythonLock: "sdk-python/uv.lock",
     helmChart: "charts/durable-actors/Chart.yaml"
 }
@@ -49,11 +51,16 @@ export function verifyReleaseVersion(manifests, expected) {
 export function stampReleaseVersion(manifests, version) {
     parseVersion(version)
     return {
+        bunLock: stampWorkspaceVersions(manifests.bunLock, version),
         cargoLock: replaceOne(manifests.cargoLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.lock"),
         cargoToml: replaceOne(manifests.cargoToml, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.toml"),
         npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json"),
-        pythonPackage: replaceOne(manifests.pythonPackage, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/pyproject.toml"),
-        pythonLock: replaceOne(manifests.pythonLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/uv.lock"),
+        pythonPackage: replaceOne(manifests.pythonPackage, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "sdk-python/pyproject.toml")
+            .replace(/(durable-actors(?:\[codegen\]|-runtime)==)[^"]+/gu, `$1${version}`),
+        pythonRuntime: replaceOne(manifests.pythonRuntime, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "pyproject.toml"),
+        pythonLock: manifests.pythonLock
+            .replace(/(\[\[package\]\]\nname = "durable-actors(?:-runtime)?"\nversion = ")[^"]+(")/gu, `$1${version}$2`)
+            .replace(/(name = "durable-actors", extras = \["codegen"\], marker = "extra == 'cli'", specifier = "==)[^"]+/gu, `$1${version}`),
         helmChart: replaceOne(
             replaceOne(manifests.helmChart, /^version: .+$/mu, `version: ${version}`, "charts/durable-actors/Chart.yaml"),
             /^appVersion: .+$/mu,
@@ -62,6 +69,14 @@ export function stampReleaseVersion(manifests, version) {
         ),
         observerPackage: replaceOne(manifests.observerPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "packages/observer-ui/package.json")
     }
+}
+
+function stampWorkspaceVersions(source, version) {
+    for (const workspace of ["sdk", "packages/observer-ui"]) {
+        const pattern = new RegExp(String.raw`("${workspace}": \{\n\s+"name": "[^"]+",\n\s+"version": ")[^"]+(")`, "u")
+        source = replaceOne(source, pattern, `$1${version}$2`, "bun.lock")
+    }
+    return source
 }
 
 function prepare(manifests, version) {
@@ -87,12 +102,21 @@ function manifestVersions(manifests) {
             path: manifestFiles.cargoLock,
             version: matchVersion(manifests.cargoLock, /^\[\[package\]\]\nname = "durable-actors"\nversion = "([^"]+)"/mu, manifestFiles.cargoLock)
         },
+        { path: manifestFiles.pythonRuntime, version: matchVersion(manifests.pythonRuntime, /^version = "([^"]+)"/mu, manifestFiles.pythonRuntime) },
+        { path: "sdk-python/pyproject.toml (CLI SDK)", version: matchVersion(manifests.pythonPackage, /durable-actors\[codegen\]==([^"]+)/u, manifestFiles.pythonPackage) },
+        { path: "sdk-python/pyproject.toml (CLI runtime)", version: matchVersion(manifests.pythonPackage, /durable-actors-runtime==([^"]+)/u, manifestFiles.pythonPackage) },
+        { path: "sdk-python/uv.lock (runtime)", version: matchVersion(manifests.pythonLock, /^\[\[package\]\]\nname = "durable-actors-runtime"\nversion = "([^"]+)"/mu, manifestFiles.pythonLock) },
+        { path: "sdk-python/uv.lock (CLI SDK)", version: matchVersion(manifests.pythonLock, /name = "durable-actors", extras = \["codegen"\], marker = "extra == 'cli'", specifier = "==([^"]+)"/u, manifestFiles.pythonLock) },
         { path: manifestFiles.pythonPackage, version: matchVersion(manifests.pythonPackage, /^version = "([^"]+)"/mu, manifestFiles.pythonPackage) },
         { path: manifestFiles.pythonLock, version: matchVersion(manifests.pythonLock, /^\[\[package\]\]\nname = "durable-actors"\nversion = "([^"]+)"/mu, manifestFiles.pythonLock) },
         { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^version: ([^\s]+)$/mu, manifestFiles.helmChart) },
         { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^appVersion: "([^"]+)"$/mu, manifestFiles.helmChart) },
         { path: manifestFiles.npmPackage, version: JSON.parse(manifests.npmPackage).version },
-        { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version }
+        { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version },
+        ...["sdk", "packages/observer-ui"].map(workspace => ({
+            path: `bun.lock (${workspace})`,
+            version: Bun.JSONC.parse(manifests.bunLock).workspaces[workspace].version
+        }))
     ]
 }
 

@@ -1,3 +1,0 @@
-[submodule "third_party/terse-litestream"]
-	path = third_party/terse-litestream
-	url = https://github.com/TerseAI/terse-litestream.git

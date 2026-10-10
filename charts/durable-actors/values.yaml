@@ -22,10 +22,17 @@ actors:
 resources:
   requests: {cpu: 250m, memory: 512Mi}
   limits: {memory: 1Gi}
-image:
-  repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
-  # Release packaging supplies the matching immutable runtime digest.
-  digest: ""
+images:
+  # Release packaging supplies immutable digests for all three images.
+  controlPlane:
+    repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
+    digest: ""
+  typescript:
+    repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
+    digest: ""
+  python:
+    repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
+    digest: ""
 sandboxNamespace: ""
 nodeSelector: {}
 networkPolicy:
