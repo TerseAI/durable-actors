@@ -1,10 +1,11 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const manifestFiles = {
+    bunLock: "bun.lock",
     cargoLock: "Cargo.lock",
     cargoToml: "Cargo.toml",
     npmPackage: "sdk/package.json",
@@ -49,6 +50,7 @@ export function verifyReleaseVersion(manifests, expected) {
 export function stampReleaseVersion(manifests, version) {
     parseVersion(version)
     return {
+        bunLock: stampWorkspaceVersions(manifests.bunLock, version),
         cargoLock: replaceOne(manifests.cargoLock, /^(\[\[package\]\]\nname = "durable-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.lock"),
         cargoToml: replaceOne(manifests.cargoToml, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.toml"),
         npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json"),
@@ -62,6 +64,14 @@ export function stampReleaseVersion(manifests, version) {
         ),
         observerPackage: replaceOne(manifests.observerPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "packages/observer-ui/package.json")
     }
+}
+
+function stampWorkspaceVersions(source, version) {
+    for (const workspace of ["sdk", "packages/observer-ui"]) {
+        const pattern = new RegExp(String.raw`("${workspace}": \{\n\s+"name": "[^"]+",\n\s+"version": ")[^"]+(")`, "u")
+        source = replaceOne(source, pattern, `$1${version}$2`, "bun.lock")
+    }
+    return source
 }
 
 function prepare(manifests, version) {
@@ -92,7 +102,11 @@ function manifestVersions(manifests) {
         { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^version: ([^\s]+)$/mu, manifestFiles.helmChart) },
         { path: manifestFiles.helmChart, version: matchVersion(manifests.helmChart, /^appVersion: "([^"]+)"$/mu, manifestFiles.helmChart) },
         { path: manifestFiles.npmPackage, version: JSON.parse(manifests.npmPackage).version },
-        { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version }
+        { path: manifestFiles.observerPackage, version: JSON.parse(manifests.observerPackage).version },
+        ...["sdk", "packages/observer-ui"].map(workspace => ({
+            path: `bun.lock (${workspace})`,
+            version: Bun.JSONC.parse(manifests.bunLock).workspaces[workspace].version
+        }))
     ]
 }
 

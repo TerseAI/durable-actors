@@ -92,7 +92,7 @@ test("rebuilds for configuration and dependency changes", { timeout: 15_000 }, a
     for (const file of [
         "tsconfig.json",
         "package.json",
-        "pnpm-lock.yaml",
+        "bun.lock",
         "helper.js",
         "actors.py",
         "pyproject.toml",

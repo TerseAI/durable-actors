@@ -10,17 +10,17 @@ From the repository root, build the runtime and shared CLI:
 
 ```sh
 cargo build --locked
-pnpm install
-pnpm --dir sdk build
+bun install
+bun run --bun --cwd sdk build
 cd examples/python
 uv sync
-DURABLE_ACTORS_BINARY="$PWD/../../target/debug/durable-actors" DURABLE_ACTORS_ENTRYPOINT=actors.py node ../../sdk/dist/cli.js dev
+DURABLE_ACTORS_BINARY="$PWD/../../target/debug/durable-actors" DURABLE_ACTORS_ENTRYPOINT=actors.py bun ../../sdk/dist/cli.js dev
 ```
 
 In a second terminal, from `examples/python`:
 
 ```sh
-node ../../sdk/dist/cli.js generate
+bun ../../sdk/dist/cli.js generate
 uv run client.py
 uv run watch.py
 ```

@@ -69,7 +69,7 @@ test("generate defaults to the server using .env settings and exported environme
         envFile,
         `DURABLE_ACTORS_PROJECT_ID=default\nDURABLE_ACTORS_CONTROL_PLANE_URL=${origin}\nDURABLE_ACTORS_SECRET=local-key\n`
     )
-    const fileEnv = { ...process.env }
+    const fileEnv: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development" }
     for (const key of ["DURABLE_ACTORS_PROJECT_ID", "DURABLE_ACTORS_CONTROL_PLANE_URL", "DURABLE_ACTORS_SECRET"])
         delete fileEnv[key]
     const localEnv = {
@@ -111,7 +111,7 @@ test("generate loads .env.local before .env and preserves exported environment o
     server.listen(0, "127.0.0.1")
     await once(server, "listening")
     const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const fileEnv = { ...process.env }
+    const fileEnv: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development" }
     for (const key of [
         "DURABLE_ACTORS_PROJECT_ID",
         "DURABLE_ACTORS_CONTROL_PLANE_URL",

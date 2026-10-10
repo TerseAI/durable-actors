@@ -2,7 +2,7 @@ import { actors } from "../generated/index.js"
 
 const [command, ...args] = process.argv.slice(2)
 if (command !== "prompt" || !args.join(" ").trim()) {
-    console.error('Usage: pnpm start prompt "Your prompt"')
+    console.error('Usage: bun run --bun start prompt "Your prompt"')
     process.exit(1)
 }
 const agent = actors.PiAgent.get("demo")

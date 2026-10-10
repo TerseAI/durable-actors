@@ -15,23 +15,27 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && mkdir -p /out \
     && cp target/release/durable-actors /out/durable-actors
 
-FROM node:22.19.0-bookworm AS sdk-builder
+FROM oven/bun:1.4.2 AS sdk-builder
 WORKDIR /build
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json bun.lock bunfig.toml ./
 COPY sdk/package.json ./sdk/package.json
 COPY packages/observer-ui/package.json ./packages/observer-ui/package.json
 COPY examples/chat/package.json ./examples/chat/package.json
 COPY examples/ai-chat/package.json ./examples/ai-chat/package.json
 COPY examples/documents/package.json ./examples/documents/package.json
-RUN corepack enable && pnpm install --frozen-lockfile
+COPY examples/bank-python/package.json ./examples/bank-python/package.json
+COPY examples/bank-typescript/package.json ./examples/bank-typescript/package.json
+COPY examples/cli/package.json ./examples/cli/package.json
+COPY examples/pi-agent/package.json ./examples/pi-agent/package.json
+RUN bun install --frozen-lockfile
 COPY packages/observer-ui ./packages/observer-ui
 COPY sdk/src ./sdk/src
 COPY sdk/scripts/build-client-runtime.mjs ./sdk/scripts/build-client-runtime.mjs
 COPY sdk/LICENSE.md ./sdk/LICENSE.md
 COPY sdk/tsconfig*.json ./sdk/
-RUN pnpm --dir packages/observer-ui build \
-    && pnpm --dir sdk build:client \
-    && pnpm --dir sdk exec tsc -p tsconfig.build.json
+RUN bun run --bun --cwd packages/observer-ui build \
+    && bun run --bun --cwd sdk build:client \
+    && bun run --bun --cwd sdk tsc -p tsconfig.build.json
 
 FROM python:3.13-slim-bookworm AS python-sdk
 WORKDIR /build

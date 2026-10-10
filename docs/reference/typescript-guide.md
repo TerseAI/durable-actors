@@ -3,8 +3,8 @@
 ## Before you start
 
 ```bash
-pnpm install
-pnpm --dir sdk build
+bun install
+bun run --bun --cwd sdk build
 cd examples/bank-typescript
 cp .env.example .env
 ```
@@ -32,14 +32,14 @@ export class BankAccount extends Actor {
 Start the local dev server from `examples/bank-typescript`. The first run downloads the runtime:
 
 ```bash
-pnpm dev
+bun run --bun dev
 ```
 
 Wait for `Ready`, then generate the client in a second terminal:
 
 ```bash
 cd examples/bank-typescript
-pnpm generate
+bun run --bun generate
 ```
 
 This creates a `generated` folder with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.ts` that gets the `demo` account and calls a method:
@@ -51,7 +51,7 @@ const account = actors.BankAccount.get("demo")
 console.log(await account.getBalance())
 ```
 
-Run it with `pnpm client`, which runs `bun client.ts`. Bun loads `.env`, so the client connects to port 7111.
+Run it with `bun run --bun client`, which runs `bun client.ts`. Bun loads `.env`, so the client connects to port 7111.
 
 An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 

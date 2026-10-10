@@ -23,12 +23,9 @@ async function buildTemplate(template) {
             recursive: true,
             filter: file => !["generated", "node_modules", ".durable-actors", "dist"].includes(path.basename(file))
         })
-    // npm excludes .gitignore; init restores its name after copying the template.
+    // Package archives omit .gitignore and bunfig.toml; init restores their names.
     await copyFile(new URL(".gitignore", source), new URL("gitignore", destination))
-    await copyFile(
-        new URL("../templates/pnpm-workspace.yaml", import.meta.url),
-        new URL("pnpm-workspace.yaml", destination)
-    )
+    await copyFile(new URL("../../bunfig.toml", import.meta.url), new URL("bunfig", destination))
     if (template === "python") {
         const manifest = new URL("pyproject.toml", destination)
         await writeFile(

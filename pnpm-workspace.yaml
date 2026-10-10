@@ -1,8 +1,0 @@
-packages:
-    - sdk
-    - packages/*
-    - examples/*
-
-linkWorkspacePackages: true
-
-preferWorkspacePackages: true

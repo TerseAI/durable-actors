@@ -25,6 +25,9 @@ jobs:
             ltx-revision: ${{ steps.ltx.outputs.revision }}
             ltx-version: ${{ steps.ltx.outputs.version }}
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Read release version
               id: version
               env:
@@ -51,7 +54,7 @@ jobs:
                   fi
 
             - name: Assert every manifest matches the tag
-              run: node scripts/release.mjs verify "${{ steps.version.outputs.version }}"
+              run: bun scripts/release.mjs verify "${{ steps.version.outputs.version }}"
 
             - name: Read the pinned LTX dependency
               id: ltx
@@ -188,6 +191,9 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
@@ -204,7 +210,7 @@ jobs:
 
             - name: Install pinned Litestream
               run: |
-                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  bun scripts/litestream.mjs "$RUNNER_TEMP/litestream"
                   printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
               run: cargo fmt --all -- --check
@@ -217,21 +223,8 @@ jobs:
             - name: Verify crate package
               run: cargo publish --locked --dry-run
 
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
-
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: "22.19.0"
-                  cache: pnpm
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
-
-            - run: pnpm install --frozen-lockfile
-            - run: pnpm --dir sdk build
+            - run: bun install --frozen-lockfile
+            - run: bun run --bun --cwd sdk build
             - run: cargo build --locked
             - name: Run WebSocket and restart integration tests
               run: cargo test --locked -- --ignored
@@ -241,42 +234,32 @@ jobs:
         needs: preflight
         runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: ${{ github.sha }}
 
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
-
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: "22.19.0"
-                  cache: pnpm
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
-
             - name: Install dependencies
-              run: pnpm install --frozen-lockfile
+              run: bun install --frozen-lockfile
 
             - name: Install pinned Litestream
               run: |
-                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
+                  bun scripts/litestream.mjs "$RUNNER_TEMP/litestream"
                   printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
             - name: Check formatting
-              run: pnpm --dir sdk format:check
+              run: bun run --bun --cwd sdk format:check
 
             - name: Run tests
-              run: pnpm --dir packages/observer-ui test && pnpm --dir sdk test && pnpm --dir packages/observer-ui package:check
+              run: bun run --bun --cwd packages/observer-ui test && bun run --bun --cwd sdk test && bun run --bun --cwd packages/observer-ui package:check
 
             - name: Check and pack the tested npm packages
               run: |
-                  pnpm --dir sdk package:check
-                  pnpm --dir packages/observer-ui --config.ignore-scripts=true pack --pack-destination ../../dist-tarballs
-                  pnpm --dir sdk --config.ignore-scripts=true pack --pack-destination ../dist-tarballs
+                  bun run --bun --cwd sdk package:check
+                  bun pm --cwd packages/observer-ui pack --ignore-scripts --destination ../../dist-tarballs
+                  bun pm --cwd sdk pack --ignore-scripts --destination ../dist-tarballs
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: sdk-package
@@ -304,19 +287,12 @@ jobs:
         permissions:
             contents: write
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  ref: ${{ github.sha }}
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: "1.4.2"
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  node-version: "22.19.0"
-                  cache: pnpm
+                  ref: ${{ github.sha }}
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
               with:
                   name: native-${{ matrix.runner }}
@@ -325,17 +301,17 @@ jobs:
               with:
                   name: sdk-package
                   path: .artifacts
-            - run: pnpm install --frozen-lockfile
+            - run: bun install --frozen-lockfile
             - name: Check the packaged SDK and native bundle
               env:
                   DURABLE_ACTORS_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
                   DURABLE_ACTORS_TEST_OBSERVER_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-observer-${{ needs.preflight.outputs.version }}.tgz
               run: |
-                  node --test tests/scripts/build-runtime.test.mjs
-                  npm pkg set "pnpm.overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
-                  pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
-                  pnpm --dir examples/chat exec durable-actors generate src/actors.ts
-                  pnpm --dir examples/chat build
+                  bun test --timeout 60000 tests/scripts/build-runtime.test.mjs
+                  bun pm pkg set "overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
+                  bun add --cwd examples/chat --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
+                  bun run --bun --cwd examples/chat durable-actors generate src/actors.ts
+                  bun run --bun --cwd examples/chat build
             - name: Upload native bundles and checksums
               env:
                   GH_TOKEN: ${{ github.token }}
@@ -495,6 +471,9 @@ jobs:
             packages: write
         runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Install Helm
               run: |
@@ -506,9 +485,9 @@ jobs:
             - name: Pin the published runtime image
               env:
                   RUNTIME_DIGEST: ${{ needs.image.outputs.digest }}
-              run: node scripts/pin-chart-image.mjs "$RUNTIME_DIGEST"
+              run: bun scripts/pin-chart-image.mjs "$RUNTIME_DIGEST"
             - run: helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
-            - run: node --test charts/durable-actors/tests/chart.test.mjs tests/scripts/chart-image.test.mjs tests/scripts/python-release.test.mjs
+            - run: bun test --timeout 60000 charts/durable-actors/tests/chart.test.mjs tests/scripts/chart-image.test.mjs tests/scripts/python-release.test.mjs
             - run: helm package charts/durable-actors --destination .artifacts/charts
             - name: Publish the chart to OCI
               env:

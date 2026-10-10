@@ -30,11 +30,11 @@
     ],
     "scripts": {
         "build": "vite build --mode library && vite build && tsc -p tsconfig.json",
-        "test": "node --import tsx --test tests/*.test.tsx",
+        "test": "bun test --parallel=1 tests/*.test.tsx",
         "format": "prettier --write src tests vite.config.ts index.html",
         "format:check": "prettier --check src tests vite.config.ts index.html",
-        "prepack": "pnpm run build && pnpm run test && pnpm run package:check",
-        "package:check": "node --test tests/package.test.mjs",
+        "prepack": "bun run --bun build && bun run --bun test && bun run --bun package:check",
+        "package:check": "bun test --timeout 60000 tests/package.test.mjs",
         "dev": "vite",
         "preview": "vite preview"
     },
@@ -49,11 +49,10 @@
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
         "esbuild": "^0.28.2",
-        "jsdom": "^26.0.0",
+        "jsdom": "^30.1.2",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
         "tailwindcss": "^4.3.3",
-        "tsx": "^4.0.0",
         "typescript": "~5.9.3",
         "vite": "^8.3.0"
     },

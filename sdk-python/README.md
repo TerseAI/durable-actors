@@ -6,12 +6,12 @@ Durable actors and typed clients, backed by the Rust runtime.
 
 ## Quickstart
 
-Requires Node.js 22.19+, pnpm, Python 3.11+, and uv.
+Requires Bun 1.4.2+, Python 3.11+, and uv.
 
 ```sh
-pnpm dlx durable-actors init my-actors --template python
+bunx durable-actors init my-actors --template python
 cd my-actors
-pnpm install
+bun install
 uv sync
 ```
 
@@ -29,7 +29,7 @@ class Counter(Actor):
 ```
 
 ```sh
-pnpm exec durable-actors dev
+bunx durable-actors dev
 ```
 
 ## Call an actor
@@ -37,7 +37,7 @@ pnpm exec durable-actors dev
 In another terminal in the same directory, generate the client:
 
 ```sh
-pnpm exec durable-actors generate
+bunx durable-actors generate
 ```
 
 Save as `client.py` and run `uv run client.py`:

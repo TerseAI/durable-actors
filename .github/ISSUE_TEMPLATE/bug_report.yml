@@ -30,7 +30,7 @@ body:
       id: environment
       attributes:
           label: Environment
-          description: OS and architecture, Node.js and Bun versions, and local or hosted deployment. Include Rust or Go versions when relevant.
+          description: OS and architecture, Bun version, and local or hosted deployment. Include Rust or Go versions when relevant.
       validations:
           required: true
     - type: textarea

@@ -15,8 +15,8 @@
 !docs/reference/openapi.yaml
 !package.json
 !scripts
-!pnpm-lock.yaml
-!pnpm-workspace.yaml
+!bun.lock
+!bunfig.toml
 !sdk
 !sdk/package.json
 !sdk/LICENSE.md
@@ -58,3 +58,15 @@
 !third_party/terse-litestream/README.md
 !third_party/terse-litestream/LICENSE
 !third_party/terse-litestream/NOTICE
+
+!examples/bank-python
+!examples/bank-python/package.json
+
+!examples/bank-typescript
+!examples/bank-typescript/package.json
+
+!examples/cli
+!examples/cli/package.json
+
+!examples/pi-agent
+!examples/pi-agent/package.json

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { mkdirSync } from "node:fs"
 
 console.log(JSON.stringify({ pid: process.pid, args: process.argv.slice(2), tokenPresent: Boolean(process.env.NGROK_AUTHTOKEN) }))

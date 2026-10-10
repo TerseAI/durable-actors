@@ -3,8 +3,8 @@
 ## Before you start
 
 ```bash
-pnpm install
-pnpm --dir sdk build
+bun install
+bun run --bun --cwd sdk build
 cd examples/bank-python
 uv sync
 cp .env.example .env
@@ -32,14 +32,14 @@ class BankAccount(Actor):
 Start the local dev server from `examples/bank-python`. The first run downloads the runtime:
 
 ```bash
-pnpm dev
+bun run --bun dev
 ```
 
 Wait for `Ready`, then generate the client in a second terminal:
 
 ```bash
 cd examples/bank-python
-pnpm generate
+bun run --bun generate
 ```
 
 This creates a `generated` package with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.py` that gets the `demo` account and calls a method:
@@ -51,7 +51,7 @@ account = actors.BankAccount.get("demo")
 print(account.get_balance())
 ```
 
-Run it with `pnpm client`, which runs `uv run --env-file .env client.py` so the client connects to port 7112.
+Run it with `bun run --bun client`, which runs `uv run --env-file .env client.py` so the client connects to port 7112.
 
 An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 

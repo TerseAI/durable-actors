@@ -120,16 +120,16 @@ The pair survives actor hibernation while the gateway owns the room. Gateway rep
 The shared Node CLI uses the project's `.venv` and runs strict mypy on actor definitions and generated clients. Keep the CLI, Python SDK, and native runtime versions aligned.
 
 ```sh
-pnpm add -D durable-actors
+bun add -D durable-actors
 uv add 'durable-actors[codegen]'
-pnpm exec durable-actors dev
+bunx durable-actors dev
 ```
 
 Generate in another terminal, from the running server or a trusted source file:
 
 ```sh
-pnpm exec durable-actors generate --language python
-pnpm exec durable-actors generate src/actors.py --out-dir generated
+bunx durable-actors generate --language python
+bunx durable-actors generate src/actors.py --out-dir generated
 ```
 
 Clients default to project `local` at `http://127.0.0.1:7100`; explicit `Client` options override environment settings. See [configuration](configuration.md) for server settings, and use `DURABLE_ACTORS_PYTHON` to select another interpreter.

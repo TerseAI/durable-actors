@@ -1,1 +1,14 @@
-{"name":"durable-actors-example-python","private":true,"dependencies":{"durable-actors":"workspace:*"},"scripts":{"dev":"durable-actors dev","generate":"durable-actors generate"}}
+{
+    "name": "durable-actors-example-python",
+    "private": true,
+    "dependencies": {
+        "durable-actors": "workspace:*"
+    },
+    "scripts": {
+        "dev": "durable-actors dev",
+        "generate": "durable-actors generate"
+    },
+    "trustedDependencies": [
+        "esbuild"
+    ]
+}

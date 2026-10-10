@@ -17,7 +17,7 @@ test("start launches the configured runtime without a local actor project and pr
     const executable = path.join(directory, "runtime.mjs")
     await writeFile(
         executable,
-        `#!/usr/bin/env node
+        `#!/usr/bin/env bun
 console.log(JSON.stringify({ args: process.argv.slice(2), role: process.env.DURABLE_ACTORS_PROCESS_ROLE }))
 process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
 `,
@@ -66,7 +66,7 @@ test("dev passes actor sources to the runtime and redeploys watched changes", as
     const executable = path.join(directory, "runtime.mjs")
     await writeFile(
         executable,
-        `#!/usr/bin/env node
+        `#!/usr/bin/env bun
 import { createWriteStream, appendFileSync } from "node:fs"
 import { createServer } from "node:http"
 const args = process.argv.slice(2)
@@ -169,10 +169,12 @@ process.exitCode = Number(process.env.TEST_RUNTIME_EXIT_CODE ?? 0)
     const watchLimit = path.join(directory, "watch-limit.mjs")
     await writeFile(
         watchLimit,
-        `import fs from "node:fs"
-import { syncBuiltinESMExports } from "node:module"
-fs.watch = () => { throw Object.assign(new Error("too many open files"), { code: "EMFILE" }) }
-syncBuiltinESMExports()
+        `import { mock } from "bun:test"
+import * as fs from "node:fs"
+mock.module("node:fs", () => ({
+    ...fs,
+    watch: () => { throw Object.assign(new Error("too many open files"), { code: "EMFILE" }) }
+}))
 `
     )
     const limited = await run(process.execPath, ["--import", watchLimit, ...args], {
