@@ -3,7 +3,9 @@ use std::{future::Future, path::Path, sync::Arc, time::Duration};
 use anyhow::{Context, Result, ensure};
 use tokio::net::TcpListener;
 
-use super::process::{ActorHostConfig, serve_assigned_host, spawn_executor_process};
+use super::process::{
+    ActorHostConfig, executor_runtime, serve_assigned_host, spawn_executor_process,
+};
 use crate::actor::{ActorExecutorListener, WarmExecutor};
 use crate::bucket::WarmGcs;
 use crate::litestream::{Litestream, Replicator};
@@ -42,8 +44,10 @@ pub async fn serve_warm(shutdown: impl Future<Output = ()> + Send + 'static) -> 
     let bind = std::env::var("DURABLE_ACTORS_HOST_BIND").unwrap_or_else(|_| "0.0.0.0:80".into());
     let mut listener = super::server::HostServer::new(TcpListener::bind(bind).await?, routes);
     let ipc = ActorExecutorListener::bind(&socket).await?;
-    let mut javascript = spawn_executor_process(true, &socket, None)?;
-    let (mut executor, storage) = tokio::try_join!(
+    let configured_runtime = std::env::var("DURABLE_ACTORS_EXECUTOR_RUNTIME").ok();
+    let runtime = executor_runtime(None, configured_runtime.as_deref())?;
+    let mut javascript = spawn_executor_process(true, &socket, runtime)?;
+    let (executor, storage) = tokio::try_join!(
         async { tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await? },
         WarmGcs::new(),
     )?;
@@ -52,7 +56,7 @@ pub async fn serve_warm(shutdown: impl Future<Output = ()> + Send + 'static) -> 
     let assigned = tokio::select! {
         value = receive => value?,
         result = listener.stopped() => anyhow::bail!("warm assignment server stopped: {result:?}"),
-        status = javascript.wait() => anyhow::bail!("generic Bun executor exited: {}", status?),
+        status = javascript.wait() => anyhow::bail!("generic actor executor exited: {}", status?),
         () = &mut shutdown => return Ok(()),
     };
     let environment = assigned.environment;
@@ -73,13 +77,10 @@ pub async fn serve_warm(shutdown: impl Future<Output = ()> + Send + 'static) -> 
                 .any(|part| matches!(part, std::path::Component::ParentDir)),
         "customer entrypoint must be a compiled module under /customer"
     );
-    if entrypoint.ends_with(".pyz") {
-        javascript.kill().await?;
-        drop(executor);
-        let ipc = ActorExecutorListener::bind(&socket).await?;
-        javascript = spawn_executor_process(true, &socket, Some(&entrypoint))?;
-        executor = tokio::time::timeout(Duration::from_secs(30), ipc.accept_warm()).await??;
-    }
+    ensure!(
+        crate::artifacts::ActorRuntime::from_entrypoint(&entrypoint)? == runtime,
+        "actor artifact does not match the prewarmed executor runtime"
+    );
     let warm = WarmHost {
         readiness: Some(assigned.ready),
         listener,

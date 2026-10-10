@@ -2,20 +2,20 @@
 
 Durable actors and typed clients, backed by the Rust runtime.
 
-[Quickstart](#quickstart) · [Reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/python.md) · [Runnable example](https://github.com/TerseAI/durable-actors/blob/main/examples/python/README.md)
+[Quickstart](#quickstart) · [Reference](https://github.com/TerseAI/durable-actors/blob/main/docs/reference/python-guide.md) · [Runnable example](https://github.com/TerseAI/durable-actors/blob/main/examples/python/README.md)
 
 ## Quickstart
 
-Requires Node.js 22.19+, pnpm, Python 3.11+, and uv.
+Requires Python 3.11+ and uv. The CLI, SDK, and native runtime are installed as Python packages.
+
+Create a project anywhere. uv installs the SDK, CLI, and matching native runtime wheel from PyPI.
 
 ```sh
-pnpm dlx durable-actors init my-actors --template python
+uvx --from 'durable-actors[cli]' durable-actors init my-actors
 cd my-actors
-pnpm install
-uv sync
 ```
 
-Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Persisted fields are stored in SQLite. Litestream is installed and managed automatically with the runtime; local development persists to the filesystem. Wrap persisted fields with `emitted()` to broadcast saved changes.
+Define `src/actors.py`. Every instance field must use `persisted()` or `ephemeral()`. Persisted fields are stored in SQLite. Litestream is built into the runtime; local development persists to the filesystem. Wrap persisted fields with `emitted()` to broadcast saved changes.
 
 ```python
 from durable_actors import Actor, emitted, persisted
@@ -29,7 +29,7 @@ class Counter(Actor):
 ```
 
 ```sh
-pnpm exec durable-actors dev
+uv run durable-actors dev
 ```
 
 ## Call an actor
@@ -37,7 +37,7 @@ pnpm exec durable-actors dev
 In another terminal in the same directory, generate the client:
 
 ```sh
-pnpm exec durable-actors generate
+uv run durable-actors generate
 ```
 
 Save as `client.py` and run `uv run client.py`:

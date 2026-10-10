@@ -935,7 +935,7 @@ async fn application_credentials_work_without_postgres() -> Result<()> {
     let client = reqwest::Client::new();
     let requests = [(
         "actors/Room/lobby/find-websocket",
-        serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000}),
+        serde_json::json!({"metadata":{"userId":"trusted"}}),
     )];
     for (path, body) in requests {
         let response = client
@@ -1029,7 +1029,8 @@ async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_acc
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
     let client = reqwest::Client::new();
     let url = format!("{origin}/v1/projects/default/actors/Room/lobby/find-websocket");
-    let body = serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000,"homeRegion":"north-america-east"});
+    let body =
+        serde_json::json!({"metadata":{"userId":"trusted"},"homeRegion":"north-america-east"});
     let host_token = issuer
         .issue_host(
             &fixture_host("fixture"),
@@ -1212,14 +1213,6 @@ async fn actor_discovery_authenticates_and_validates_each_request_contract() -> 
         (
             "find-websocket",
             serde_json::json!({"metadata":{},"unknown":true}),
-        ),
-        (
-            "find-websocket",
-            serde_json::json!({"metadata":null,"authorizationLifetimeMs":999}),
-        ),
-        (
-            "find-websocket",
-            serde_json::json!({"metadata":null,"authorizationLifetimeMs":86400001}),
         ),
     ] {
         let reply = client
@@ -1851,7 +1844,10 @@ async fn provider_bootstrap_keeps_deployment_access_without_serializing_launch_c
             host_idle_timeout_ms: 10000,
         },
         test_issuer()?,
-        Some("image".into()),
+        Some(super::super::process::RuntimeImages {
+            typescript: "image".into(),
+            python: "python".into(),
+        }),
     )
     .with_runtime_access(access);
     let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({

@@ -4,11 +4,26 @@ Each example includes an app and a local actor runtime:
 
 | Example | What it demonstrates | Create a project |
 | --- | --- | --- |
-| [AI chat](ai-chat/README.md) | Streaming AI replies and saved conversations | `npx durable-actors init my-ai-chat --template ai-chat` |
-| [Chatroom](chat/README.md) | Shared chat over WebSockets | `npx durable-actors init my-chat --template chat` |
-| [Collaborative documents](documents/README.md) | Shared document editing | `npx durable-actors init my-documents --template documents` |
+| [AI chat](ai-chat/README.md) | Streaming AI replies and saved conversations | `bunx durable-actors init my-ai-chat --template ai-chat` |
+| [Chatroom](chat/README.md) | Shared chat over WebSockets | `bunx durable-actors init my-chat --template chat` |
+| [Collaborative documents](documents/README.md) | Shared document editing | `bunx durable-actors init my-documents --template documents` |
 
 Follow the example's README to install dependencies, copy `.env.example` to `.env`, and start its two processes. AI chat also requires an OpenAI API key.
+
+## Pi agent and CLI
+
+[Pi agent](pi-agent/README.md) runs a basic Pi prompt inside an actor. The separate [CLI](cli/README.md) calls it through a client generated from the running server. Model calls require an OpenAI API key.
+
+## Guide examples
+
+The [TypeScript](../docs/reference/typescript-guide.md) and [Python](../docs/reference/python-guide.md) guides build these projects step by step. Each contains the guide's finished code and runs from a repository checkout.
+
+| Example | What it demonstrates | Actor port |
+| --- | --- | --- |
+| [Bank account (TypeScript)](bank-typescript/README.md) | Fields, WebSockets, SQLite, interleaving, and sandbox overrides | `7111` |
+| [Bank account (Python)](bank-python/README.md) | The same actors in Python | `7112` |
+
+Their ports don't overlap with the app examples below, so every example can run at once.
 
 ## Run the examples together
 
@@ -22,6 +37,6 @@ Each app needs its own app port and actor runtime port. Set these values in each
 
 The control-plane URL must match that project's actor runtime port. Leave each project in its own directory so its `.durable-actors/` state is separate. If you configure `DURABLE_ACTORS_DATA_DIR`, use a different directory for each project.
 
-In each project, run `npm run dev:actors`, wait for `Ready`, then run `npm run dev` in a second terminal. Open the corresponding app port above.
+In each project, run `bun run dev:actors`, wait for `Ready`, then run `bun run dev` in a second terminal. Open the corresponding app port above.
 
-If a file/watch limit disables automatic actor reload, the runtime continues serving requests. Restart `npm run dev:actors` after source changes. You can also opt out of watching with `npm run dev:actors -- --no-watch`.
+If a file/watch limit disables automatic actor reload, the runtime continues serving requests. Restart `bun run dev:actors` after source changes. You can also opt out of watching with `bun run dev:actors --no-watch`.

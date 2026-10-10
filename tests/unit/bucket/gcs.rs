@@ -203,22 +203,7 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async { axum::serve(listener, routes).await });
-    let bucket = GcsBucket {
-        bucket: "projects/_/buckets/test-bucket".into(),
-        clients: GcsClients {
-            transfers: Arc::new(tokio::sync::Semaphore::new(2)),
-            storage: Storage::builder()
-                .with_endpoint(&endpoint)
-                .with_credentials(anonymous::Builder::new().build())
-                .build()
-                .await?,
-            control: StorageControl::builder()
-                .with_endpoint(&endpoint)
-                .with_credentials(anonymous::Builder::new().build())
-                .build()
-                .await?,
-        },
-    };
+    let bucket = test_bucket(&endpoint).await?;
     let key = "runtime/lease.json";
     let object = bucket.get(key).await.context("read object")?.unwrap();
     assert_eq!(object.generation, 42);
@@ -258,6 +243,61 @@ async fn gcs_adapter_preserves_generation_conditions_and_pagination() -> Result<
     );
     server.abort();
     Ok(())
+}
+
+#[tokio::test]
+async fn object_writes_declare_crc32c_so_gcs_rejects_corruption() -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let uploads = Arc::new(std::sync::Mutex::new(Vec::<Bytes>::new()));
+    let record = uploads.clone();
+    let routes = Router::new().route(
+        "/upload/storage/v1/b/test-bucket/o",
+        post(move |body: Bytes| async move {
+            record.lock().unwrap().push(body);
+            Json(json!({"generation":"1"}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async { axum::serve(listener, routes).await });
+    let payload = Bytes::from_static(b"lease");
+    assert!(
+        test_bucket(&endpoint)
+            .await?
+            .compare_and_swap("runtime/lease.json", None, payload.clone())
+            .await?
+    );
+    let declared = format!(
+        r#""crc32c":"{}""#,
+        STANDARD.encode(crc32c::crc32c(&payload).to_be_bytes())
+    );
+    let uploads = uploads.lock().unwrap();
+    let body = String::from_utf8_lossy(&uploads[0]);
+    assert!(
+        body.contains(&declared),
+        "upload omitted {declared}: {body}"
+    );
+    server.abort();
+    Ok(())
+}
+
+async fn test_bucket(endpoint: &str) -> Result<GcsBucket> {
+    Ok(GcsBucket {
+        bucket: "projects/_/buckets/test-bucket".into(),
+        clients: GcsClients {
+            transfers: Arc::new(tokio::sync::Semaphore::new(2)),
+            storage: Storage::builder()
+                .with_endpoint(endpoint)
+                .with_credentials(anonymous::Builder::new().build())
+                .build()
+                .await?,
+            control: StorageControl::builder()
+                .with_endpoint(endpoint)
+                .with_credentials(anonymous::Builder::new().build())
+                .build()
+                .await?,
+        },
+    })
 }
 
 async fn read(Path(key): Path<String>) -> Response {

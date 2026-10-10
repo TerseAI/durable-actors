@@ -1,0 +1,6 @@
+apiVersion: v2
+name: durable-actors
+description: Durable Actors on GKE Agent Substrate with shared snapshot workers
+type: application
+version: 0.8.0
+appVersion: "0.8.0"

@@ -20,6 +20,9 @@ from pydantic import BaseModel, ConfigDict
 
 from .guards import is_document
 
+# HTTPX raises these only while establishing a connection, before any request bytes are sent.
+NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
+
 
 class ActorInvocationError(Exception):
     """An RPC failure reported with its code and request identifier.
@@ -27,6 +30,7 @@ class ActorInvocationError(Exception):
     Attributes:
         code: Failure category. "outcome_unknown" means execution may have
             happened even though its response was lost; retrying can repeat work.
+            "unavailable" means the invocation was never executed.
         request_id: Identifier for correlating the invocation with runtime logs.
 
     str(error) returns the failure message.
@@ -51,7 +55,6 @@ class SocketGrant(BaseModel):
         websocket_url: Authorized ws:// or wss:// URL to connect to.
         home_region: Region hosting the actor.
         connect_by_ms: Latest connection time, as Unix epoch milliseconds.
-        authorized_until_ms: Authorization expiry, as Unix epoch milliseconds.
     """
 
     model_config = ConfigDict(
@@ -60,13 +63,11 @@ class SocketGrant(BaseModel):
             "websocket_url": "websocketUrl",
             "home_region": "homeRegion",
             "connect_by_ms": "connectByMs",
-            "authorized_until_ms": "authorizedUntilMs",
         }[name],
     )
     websocket_url: str
     home_region: str
     connect_by_ms: int
-    authorized_until_ms: int
 
 
 class RpcTransport(Protocol):
@@ -84,7 +85,6 @@ class ActorTransport(RpcTransport, Protocol):
         actor_id: str,
         metadata: Any,
         *,
-        authorization_lifetime_ms: int = 900000,
         home_region: str | None = None,
     ) -> SocketGrant: ...
 
@@ -212,7 +212,6 @@ class Client:
         actor_id: str,
         metadata: Any,
         *,
-        authorization_lifetime_ms: int = 900000,
         home_region: str | None = None,
     ) -> SocketGrant:
         """Request a short-lived WebSocket grant without opening a connection.
@@ -221,22 +220,16 @@ class Client:
             actor_name: Exported actor class name.
             actor_id: Identity of the actor instance.
             metadata: JSON-compatible connection metadata, limited to 16 KiB.
-            authorization_lifetime_ms: Duration from 1,000 to 86,400,000
-                milliseconds; defaults to 15 minutes.
             home_region: Placement preference overriding the client default.
 
         Returns:
-            The authorized URL, home region, and connection/authorization deadlines.
+            The authorized URL, home region, and connection deadline.
+            Accepted connections remain authorized until they close.
         """
         self._ensure_open()
         placement = home_region if home_region is not None else self.home_region
         if placement is not None:
             component(placement, 255)
-        if (
-            type(authorization_lifetime_ms) is not int
-            or not 1000 <= authorization_lifetime_ms <= 86400000
-        ):
-            raise ValueError("authorization lifetime must be between one second and one day")
         if len(json.dumps(metadata, allow_nan=False).encode()) > 16384:
             raise ValueError("socket metadata exceeds 16 KiB")
         response = self._http.post(
@@ -244,7 +237,6 @@ class Client:
             headers=self.headers,
             json={
                 "metadata": metadata,
-                "authorizationLifetimeMs": authorization_lifetime_ms,
                 **({"homeRegion": placement} if placement is not None else {}),
             },
             follow_redirects=False,
@@ -332,14 +324,17 @@ class Client:
                 reply = self._invoke_attempt(path, request_id, method, args, target, key)
             except httpx.TransportError as error:
                 self._targets.pop(key, None)
-                if target is not None and isinstance(error, httpx.ConnectError) and refused(error):
-                    reply = {"type": "not_executed", "reason": "upstream_not_reached"}
-                else:
+                if not isinstance(error, NEVER_SENT):
                     raise ActorInvocationError(
                         "outcome_unknown",
                         request_id,
                         "invocation response was lost; execution may have occurred",
                     ) from error
+                if target is None:
+                    raise ActorInvocationError(
+                        "unavailable", request_id, f"could not connect to {self.origin}: {error}"
+                    ) from error
+                reply = {"type": "not_executed", "reason": "upstream_not_reached"}
             kind = reply.get("type")
             if kind == "completed" and "result" in reply:
                 return reply["result"]
@@ -488,21 +483,6 @@ def document(response: httpx.Response) -> dict[str, Any]:
     if not is_document(value):
         raise ActorProtocolError("response must be a JSON object")
     return value
-
-
-def refused(error: BaseException) -> bool:
-    import errno
-
-    seen: set[int] = set()
-    while id(error) not in seen:
-        seen.add(id(error))
-        if isinstance(error, OSError) and error.errno == errno.ECONNREFUSED:
-            return True
-        cause = error.__cause__ or error.__context__
-        if cause is None:
-            return False
-        error = cause
-    return False
 
 
 def stderr_telemetry(event: dict[str, Any]) -> None:

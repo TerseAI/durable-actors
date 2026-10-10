@@ -128,6 +128,30 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
 }
 
 #[tokio::test]
+async fn compiled_artifact_selects_the_language_image() -> Result<()> {
+    let (service, admin, _) = fixture()?;
+    let contract = super::super::contracts::PublicActorContract::new(contract())?;
+    for (entrypoint, image) in [("actors.mjs", "im-runtime"), ("actors.pyz", "im-python")] {
+        let mut source = source();
+        let mut bundle =
+            crate::artifacts::ArtifactManifest::decode(source.code_snapshot.as_ref().unwrap())?;
+        bundle.files[0].path = entrypoint.into();
+        bundle.files[0].object = format!(
+            "durable-actors/v3/artifacts/00000000-0000-4000-8000-000000000001/{entrypoint}"
+        );
+        source.actor_entrypoint = Some(entrypoint.into());
+        source.code_snapshot = Some(bundle.encode()?);
+        service
+            .deploy_source(&admin, &source, Some(&contract))
+            .await?;
+        let active = admin.current_deployment("default").await?.unwrap();
+        assert_eq!(active.image_ref, image);
+        assert_eq!(active.actor_entrypoint.as_deref(), Some(entrypoint));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn bundle_registration_validates_immutable_artifacts_before_retiring_hosts() -> Result<()> {
     let (service, admin, provider) = fixture()?;
     let source = source();
@@ -284,7 +308,10 @@ fn fixture_with_idle_timeout(
                 host_idle_timeout_ms,
             },
             issuer.clone(),
-            Some("im-runtime".into()),
+            Some(super::super::process::RuntimeImages {
+                typescript: "im-runtime".into(),
+                python: "im-python".into(),
+            }),
         )
         .with_runtime_access(Arc::new(crate::bucket::access::RuntimeAccess::new(
             crate::bucket::access::BucketLocation::Gcs {

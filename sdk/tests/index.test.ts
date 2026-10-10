@@ -9,13 +9,16 @@ test("importing actor definitions does not load remote transports or TypeScript 
     execFileSync(process.execPath, [
         "--input-type=module",
         "--eval",
-        `
-        import { register } from "node:module";
-        register("data:text/javascript," + encodeURIComponent(\`export function resolve(specifier, context, next) {
-            if (/^(?:@grpc\\\\/|protobufjs$|ws$|tsx\\\\/)/.test(specifier)) throw new Error("eager dependency: " + specifier);
-            return next(specifier, context);
-        }\`));
+        String.raw`
+        import { plugin } from "bun";
+        import assert from "node:assert/strict";
+        plugin({ name: "prevent-eager-dependencies", setup(build) {
+            build.onResolve({ filter: /(?:^|\/node_modules\/)(?:@grpc\/|(?:protobufjs|ws|tsx|typescript|dts-bundle-generator)(?:\/|$))/ }, args => {
+                throw new Error("eager dependency: " + args.path);
+            });
+        } });
         await import(${JSON.stringify(entrypoint)});
+        await assert.rejects(import("typescript"), /eager dependency: .*typescript/);
     `
     ])
 })
@@ -24,11 +27,11 @@ test("the package root exposes the complete minimal actor API", () => {
     assert.deepEqual(Object.keys(api).sort(), [
         "Actor",
         "ActorInvocationError",
+        "Compute",
         "Emittable",
         "Ephemeral",
         "Interleave",
-        "Persisted",
-        "Sandbox"
+        "Persisted"
     ])
 })
 

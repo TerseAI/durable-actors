@@ -11,6 +11,24 @@ use futures_util::{Stream, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActorRuntime {
+    Typescript,
+    Python,
+}
+
+impl ActorRuntime {
+    pub(crate) fn from_entrypoint(entrypoint: &str) -> Result<Self> {
+        if entrypoint.ends_with(".mjs") {
+            Ok(Self::Typescript)
+        } else if entrypoint.ends_with(".pyz") {
+            Ok(Self::Python)
+        } else {
+            anyhow::bail!("actor entrypoint must be a compiled .mjs or .pyz artifact")
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArtifactManifest {

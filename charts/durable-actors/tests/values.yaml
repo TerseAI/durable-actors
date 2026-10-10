@@ -1,0 +1,24 @@
+images:
+  controlPlane:
+    digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  typescript:
+    digest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  python:
+    digest: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+storage:
+  mode: rapid
+  authorityBucket: test-authority
+  artifactBucket: test-code
+  archiveBucket: test-archive
+  rapid:
+    buckets:
+      - {bucket: test-rapid-a, zone: us-west4-a}
+      - {bucket: test-rapid-b, zone: us-west4-b}
+
+serviceAccount:
+  googleServiceAccount: test-control@test-project.iam.gserviceaccount.com
+
+substrate:
+  snapshotLocation: gs://test-substrate/runtime/
+
+cluster: {projectId: test-project, location: us-west4-a, name: test-cluster}

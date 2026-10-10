@@ -6,7 +6,7 @@ Durable Actors help you **build real-time applications** like chat systems (e.g.
 
 They provide _stateful serverless functions_, a foundational building block that abstracts away persistence, coordination, and infrastructure challenges in distributed systems.
 
-[Live demo](https://demo.useterse.ai) · [TypeScript documentation](sdk/README.md) · [Python documentation](sdk-python/README.md)
+[Live demo](https://demo.useterse.ai) · [TypeScript documentation](docs/reference/typescript-guide.md) · [Python documentation](docs/reference/python-guide.md)
 
 ## How it works
 
@@ -17,7 +17,7 @@ They provide _stateful serverless functions_, a foundational building block that
 - **If you were building Notion...** a document actor can coordinate concurrent edits from several people and agents (serialized execution)
 
 2. Generate type-safe clients automatically with the Durable Actors SDK. For now, it supports Python and TypeScript.
-3. Develop locally with one command and later self-host the Durable Actors runtime for production.
+3. Develop locally with one command and later [self-host the Durable Actors runtime on GCP](docs/self-hosting.md).
 
 ## Quickstart: Multiplayer AI Chat
 
@@ -25,13 +25,13 @@ They provide _stateful serverless functions_, a foundational building block that
 
 ### 1. Create your project
 
-Install Node.js 22.19+ and Bun 1.3.9+.
+Install Bun 1.4.2+.
 
 ```sh
-npx durable-actors init my-actors
+bunx durable-actors init my-actors
 cd my-actors
-npm install
-npx durable-actors dev # Run the server locally on your machine
+bun install
+bunx durable-actors dev # Run the server locally on your machine
 ```
 
 ### 2. Define an _actor_
@@ -74,7 +74,7 @@ export class ChatHistory extends Actor<null, string, Message[]> {
 We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
 
 ```sh
-npx durable-actors generate
+bunx durable-actors generate
 ```
 
 Create a WebSocket connection to one shared chat:
@@ -156,8 +156,6 @@ Durable Agents provides built-in observability features:
 ![o11y-screenshot](https://github.com/user-attachments/assets/ac390257-8534-4911-830c-0e9155b36831)
 
 ## Examples
-
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)
 
 For complete sample applications, see [AI Chat](examples/ai-chat), [Collaborative Documents](examples/documents), and [Chatroom](examples/chat).
 

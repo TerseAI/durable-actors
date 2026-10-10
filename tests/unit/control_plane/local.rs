@@ -55,12 +55,13 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
     let directory = tempfile::tempdir_in(&cwd)?;
     let relative = directory.path().strip_prefix(&cwd)?;
     let options = DevOptions {
+        watch: false,
         project_id: "default".into(),
         api_key: Some("test-key".into()),
         project: cwd.clone(),
         port: 0,
         data_dir: Some(relative.into()),
-        entrypoint: "actors.ts".into(),
+        entrypoint: Some("actors.ts".into()),
         storage: DevStorage::Local,
         ready_fd: None,
         sdk_host: None,
@@ -132,6 +133,32 @@ async fn relative_state_directories_are_absolute_in_host_configuration() -> Resu
             .event
             .event_id,
         event_id
+    );
+    Ok(())
+}
+
+#[test]
+fn actor_source_discovery_supports_both_languages_and_project_layouts() -> Result<()> {
+    for entrypoint in ["src/actors.ts", "src/actors.py", "actors.ts", "actors.py"] {
+        let root = tempfile::tempdir()?;
+        let file = root.path().join(entrypoint);
+        std::fs::create_dir_all(file.parent().unwrap())?;
+        std::fs::write(file, "")?;
+        assert_eq!(resolve_entrypoint(root.path(), None)?, entrypoint);
+    }
+    let root = tempfile::tempdir()?;
+    assert!(resolve_entrypoint(root.path(), None).is_err());
+    std::fs::write(root.path().join("actors.ts"), "")?;
+    std::fs::write(root.path().join("actors.py"), "")?;
+    assert!(
+        resolve_entrypoint(root.path(), None)
+            .unwrap_err()
+            .to_string()
+            .contains("Multiple actor sources")
+    );
+    assert_eq!(
+        resolve_entrypoint(root.path(), Some("actors.py"))?,
+        "actors.py"
     );
     Ok(())
 }

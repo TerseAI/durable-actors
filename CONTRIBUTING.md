@@ -8,9 +8,8 @@ Please follow our [code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities 
 
 To use Durable Actors in your own application, start with the [language quickstarts](README.md#languages). To develop this repository, install:
 
-- Node.js 22.19+ and pnpm 10.17.1 (the pinned workspace version).
-- Bun 1.3.9+; CI exercises both 1.3.9 and 1.4.2.
-- Rust 1.89+ with Cargo and rustfmt, and a native C/C++ build toolchain.
+- Bun 1.4.2 (the pinned runtime and package manager).
+- Rust 1.91+ with Cargo and rustfmt, and a native C/C++ build toolchain.
 - Helm 3 for changes to the Kubernetes chart.
 - Python 3.11+ and uv for changes to `sdk-python`.
 - PostgreSQL 16 for database tests. Docker is an optional way to run it.
@@ -20,14 +19,16 @@ Fork the repository, then clone your fork and install the workspace dependencies
 ```sh
 git clone https://github.com/YOUR_USERNAME/durable-actors.git
 cd durable-actors
-pnpm install --frozen-lockfile
-pnpm --dir sdk build
+bun install --frozen-lockfile
+bun run --bun --cwd sdk build
 cargo build --locked
 ```
 
 Repository builds set the pinned Google SDK’s Rapid append opt-in in `.cargo/config.toml`. When building outside the checkout (including `cargo install`), set `RUSTFLAGS="--cfg google_cloud_unstable_storage_bidi"`.
 
-The SDK build includes the observer UI and actor template. A full native bundle can be built with `pnpm build`.
+The SDK build includes the observer UI and actor template. A full native bundle can be built with `bun run --bun build`.
+
+Cargo fetches the Rust `terse-litestream` and `terse-ltx` crates at the revisions pinned in `Cargo.toml` and `Cargo.lock`. No submodule checkout is needed. `third_party/` contains their license notices for distribution in native bundles and runtime images.
 
 ## Find your way around
 
@@ -37,7 +38,7 @@ The SDK build includes the observer UI and actor template. A full native bundle 
 | `sdk-python/`           | Python actors, executor, and generated clients |
 | `sdk/`                  | TypeScript SDK, compiler, generated client, and CLI |
 | `packages/observer-ui/` | Actor observability UI                              |
-| `charts/terse/`          | GKE Sandbox and GCS Rapid storage deployment          |
+| `charts/durable-actors/`          | GKE hosting with Standard GCS and optional Rapid          |
 | `tests/`                | Rust tests and repository script tests              |
 | `examples/`             | Chat, AI chat, and collaborative documents          |
 | `docs/`                 | API and configuration references                    |
@@ -50,15 +51,24 @@ Update documentation and examples when changing a public API, configuration, or 
 
 ## Run checks
 
+SQLite test fixtures use the upstream Go Litestream CLI to create and restore compatible backups. Install Go 1.27.1 and the pinned test tool, then add Go's binary directory to your PATH:
+
+```sh
+go install github.com/benbjohnson/litestream/cmd/litestream@v0.5.17
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+The production runtime embeds the Rust crate and does not need this Go executable.
+
 From the repository root:
 
 ```sh
-pnpm format:check
-pnpm test
-pnpm docs:check
+bun run --bun format:check
+bun run --bun test
+bun run --bun docs:check
 ```
 
-`pnpm test` covers the observer UI, repository scripts, Rust tests, and SDK. PostgreSQL tests skip their database work unless `DURABLE_ACTORS_TEST_POSTGRES_URL` is set. Use a dedicated test database; the suite creates and removes test schemas. For example, with Docker:
+`bun run --bun test` covers the observer UI, repository scripts, Rust tests, and SDK. PostgreSQL tests skip their database work unless `DURABLE_ACTORS_TEST_POSTGRES_URL` is set. Use a dedicated test database; the suite creates and removes test schemas. For example, with Docker:
 
 ```sh
 docker run --name durable-actors-test-postgres --rm -d \
@@ -68,7 +78,7 @@ docker run --name durable-actors-test-postgres --rm -d \
   -p 127.0.0.1:5432:5432 postgres:16
 docker exec durable-actors-test-postgres pg_isready -U postgres -d durable_actors_test
 export DURABLE_ACTORS_TEST_POSTGRES_URL='postgresql://postgres:postgres@127.0.0.1:5432/durable_actors_test?sslmode=disable'
-pnpm test
+bun run --bun test
 ```
 
 Wait until `pg_isready` reports that PostgreSQL is accepting connections before running the tests. Stop the disposable database with `docker stop durable-actors-test-postgres` when finished.
@@ -76,7 +86,7 @@ Wait until `pg_isready` reports that PostgreSQL is accepting connections before 
 For runtime and integration changes, build the SDK and runtime, then run the opt-in tests with Bun on your PATH:
 
 ```sh
-pnpm --dir sdk build
+bun run --bun --cwd sdk build
 cargo build --locked
 cargo test --locked -- --ignored
 ```
@@ -84,42 +94,69 @@ cargo test --locked -- --ignored
 For Kubernetes deployment changes:
 
 ```sh
-helm lint charts/terse -f charts/terse/tests/values.yaml
-node --test charts/terse/tests/chart.test.mjs
+helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
+bun test --timeout 60000 charts/durable-actors/tests/chart.test.mjs
 ```
 
 For Python SDK changes, build the runtime and run from `sdk-python`:
 
 ```sh
-uv sync --locked --all-extras
-uv run ruff check src tests
-uv run ruff format --check src tests
-uv run mypy src/durable_actors
-uv run pyright
-DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run pytest -q
+uv sync --locked --all-extras --no-install-package durable-actors-runtime
+uv run --no-sync ruff check src tests
+uv run --no-sync ruff format --check src tests
+uv run --no-sync mypy src/durable_actors
+uv run --no-sync pyright
+DURABLE_ACTORS_TEST_RUNTIME="$(cd .. && pwd)/target/debug/durable-actors" uv run --no-sync pytest -q
 uv build --no-sources
 ```
+
+The `native-build.yml` workflow builds `durable-actors-runtime` wheels with Maturin for Linux/macOS on x64/ARM64. It builds the observer UI once per wheel, includes the prebuilt assets and third-party license notices, then installs both wheels in a clean environment. CLI acceptance tests clear PATH to verify initialization, development, reloads, persistence, code generation, and the observer without Bun or Node. The release publishes runtime wheels before the SDK; configure the new runtime project's trusted publisher before its first release.
+
+To build and test the native Python package locally, from the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run --bun --cwd packages/observer-ui build
+mkdir -p python-runtime/durable_actors_runtime/observer
+cp -R packages/observer-ui/dist/standalone/. python-runtime/durable_actors_runtime/observer/
+uvx --from 'maturin>=1.15,<2' maturin build --release --out dist
+uv pip install --python sdk-python/.venv/bin/python dist/durable_actors_runtime-*.whl
+sdk-python/.venv/bin/python -m pytest sdk-python/tests/test_cli.py -q
+```
+
+Building the UI from source requires Bun; installing and running the published Python packages requires only Python/uv. SDK clients and production actor images do not install `[cli]` or its observer dependencies.
 
 Python integration tests require `DURABLE_ACTORS_TEST_RUNTIME`; they skip without it. To run the shared CLI's Python tests from the repository root after building the SDK:
 
 ```sh
-pnpm --dir sdk exec tsc -p tsconfig.test.json
-DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" node --test sdk/.test-dist/tests/cli/python.test.js
+bun run --bun --cwd sdk tsc -p tsconfig.test.json
+DURABLE_ACTORS_TEST_PYTHON="$PWD/sdk-python/.venv/bin/python" DURABLE_ACTORS_TEST_RUNTIME="$PWD/target/debug/durable-actors" bun test --timeout 60000 ./sdk/.test-dist/tests/cli/python.test.js
 ```
-The release workflow requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for package `durable-actors`: owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`.
+The release workflow requires a [PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for both `durable-actors` and `durable-actors-runtime`: owner `TerseAI`, repository `durable-actors`, workflow `release.yml`, environment `pypi`.
 
 For SDK packaging or documentation changes, run the relevant checks:
 
 ```sh
-pnpm --dir sdk package:check
-pnpm --dir packages/observer-ui package:check
-pnpm docs:build
+bun run --bun --cwd sdk package:check
+bun run --bun --cwd packages/observer-ui package:check
+bun run --bun docs:build
 ```
 
 The [CI workflow](.github/workflows/ci.yml) is the source of truth for toolchain versions and the full validation matrix.
+
+The Dockerfile builds three production images from a shared Rust build. Validate a target with:
+
+```sh
+docker build --target typescript -t durable-actors:typescript .
+bash scripts/test-runtime-image.sh durable-actors:typescript typescript
+```
+
+Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64. The TypeScript execution package bundles only the actor and host modules, collects dependency licenses, and is checked by `sdk package:check`. Examples, the CLI, compiler, and observer UI are excluded from that image. SQL migrations and `docs/reference/openapi.yaml` are Rust build inputs embedded in the executable; their source directories are not copied into the final images.
 
 ## Open a pull request
 
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
 Contributions are made under the repository's [MIT license](LICENSE.md).
+
+Published chart packages include all three image digests from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.

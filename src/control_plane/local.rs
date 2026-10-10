@@ -47,12 +47,8 @@ pub struct DevOptions {
     pub port: u16,
     #[arg(long, env = "DURABLE_ACTORS_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        env = "DURABLE_ACTORS_ENTRYPOINT",
-        default_value = "src/actors.ts"
-    )]
-    pub entrypoint: String,
+    #[arg(long, env = "DURABLE_ACTORS_ENTRYPOINT")]
+    pub entrypoint: Option<String>,
     #[arg(
         long,
         env = "DURABLE_ACTORS_STORAGE",
@@ -64,6 +60,32 @@ pub struct DevOptions {
     pub ready_fd: Option<i32>,
     #[arg(long, hide = true)]
     pub sdk_host: Option<PathBuf>,
+    /// Reload actor sources when they change. SDK dev commands enable this by default.
+    #[arg(long)]
+    pub watch: bool,
+}
+
+pub(super) fn resolve_entrypoint(project: &Path, configured: Option<&str>) -> Result<String> {
+    if let Some(entrypoint) = configured {
+        return Ok(entrypoint.into());
+    }
+    let candidates = ["src/actors.ts", "src/actors.py", "actors.ts", "actors.py"];
+    let found: Vec<_> = candidates
+        .into_iter()
+        .filter(|file| project.join(file).is_file())
+        .collect();
+    ensure!(
+        !found.is_empty(),
+        "No actor source found in {}. Create src/actors.ts, src/actors.py, actors.ts, or actors.py, or set DURABLE_ACTORS_ENTRYPOINT",
+        project.display()
+    );
+    ensure!(
+        found.len() == 1,
+        "Multiple actor sources found in {}: {}. Set DURABLE_ACTORS_ENTRYPOINT to choose one",
+        project.display(),
+        found.join(", ")
+    );
+    Ok(found[0].into())
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -73,7 +95,7 @@ pub enum DevStorage {
 }
 
 pub async fn serve_local(
-    options: DevOptions,
+    mut options: DevOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     super::admin::validate_component("project ID", &options.project_id, 64)?;
@@ -81,11 +103,12 @@ pub async fn serve_local(
         .project
         .canonicalize()
         .context("find actor project directory")?;
+    let entrypoint = resolve_entrypoint(&project, options.entrypoint.as_deref())?;
     ensure!(
-        project.join(&options.entrypoint).is_file(),
-        "actor file {} is missing; create it before starting the demo",
-        options.entrypoint
+        project.join(&entrypoint).is_file(),
+        "actor file {entrypoint} is missing"
     );
+    options.entrypoint = Some(entrypoint);
     let directory = options
         .data_dir
         .clone()
@@ -106,7 +129,11 @@ pub async fn serve_local(
         )
         .await?,
     );
-    let routes = local_routes(
+    let watcher = options
+        .watch
+        .then(|| super::local_watch::Sources::new(&project, &directory))
+        .transpose()?;
+    let (routes, reload) = local_routes(
         &options,
         &project,
         &origin,
@@ -134,7 +161,24 @@ pub async fn serve_local(
             )
         );
     }
-    server.run_until(shutdown, ready).await
+    server
+        .run_until(shutdown, ready, async move {
+            if let Some(watcher) = watcher {
+                watcher
+                    .watch(|| async {
+                        reload
+                            .service
+                            .deploy_source(&reload.admin, &reload.spec, None)
+                            .await?;
+                        anstream::println!("Updated local actors.");
+                        Ok(())
+                    })
+                    .await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        })
+        .await
 }
 
 struct LocalServer {
@@ -167,11 +211,13 @@ impl LocalServer {
         mut self,
         shutdown: impl Future<Output = ()>,
         ready: Result<()>,
+        reload: impl Future<Output = ()>,
     ) -> Result<()> {
         let result = match ready {
             Ok(()) => {
                 tokio::select! {
                     _ = shutdown => Ok(()),
+                    _ = reload => Err(anyhow::anyhow!("actor source watcher stopped")),
                     result = &mut self.server => result.context("local server task failed").and_then(|result| result.context("local server failed")),
                 }
             }
@@ -274,7 +320,7 @@ async fn local_routes(
     storage: &LocalState,
     provider: Arc<LocalSandboxProvider>,
     directory: &Path,
-) -> Result<tonic::service::Routes> {
+) -> Result<(tonic::service::Routes, LocalReload)> {
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
@@ -290,7 +336,7 @@ async fn local_routes(
         code_snapshot: None,
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
-        actor_entrypoint: Some(options.entrypoint.clone()),
+        actor_entrypoint: options.entrypoint.clone(),
         secret_refs: vec![],
     };
     let registry = Arc::new(LocalAdminRegistry::default());
@@ -347,9 +393,23 @@ async fn local_routes(
         service.changes.clone(),
     )
     .with_traces(service.traces.clone());
+    let reload = LocalReload {
+        service: service.clone(),
+        admin: admin.clone(),
+        spec,
+    };
     let public = public_api::router(service.clone(), admin.clone())
         .merge(super::inspection::local_router(inspector, admin));
-    Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
+    Ok((
+        tonic::service::Routes::from(public).add_service(service.into_internal_service()),
+        reload,
+    ))
+}
+
+struct LocalReload {
+    service: ControlPlaneService,
+    admin: AdminService,
+    spec: HostLaunchSpec,
 }
 
 fn local_issuer() -> Result<ActorJwtIssuer> {

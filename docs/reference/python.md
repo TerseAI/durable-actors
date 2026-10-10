@@ -117,22 +117,21 @@ The pair survives actor hibernation while the gateway owns the room. Gateway rep
 
 ## CLI and configuration
 
-The shared Node CLI uses the project's `.venv` and runs strict mypy on actor definitions and generated clients. Keep the CLI, Python SDK, and native runtime versions aligned.
+The Python CLI uses its own Python interpreter for actor builds and execution. It runs strict mypy before publishing actor code or generating clients. The `[cli]` extra pins the native runtime wheel to the SDK version; uv manages its installation and lockfile.
 
 ```sh
-pnpm add -D durable-actors
-uv add 'durable-actors[codegen]'
-pnpm exec durable-actors dev
+uv add --dev 'durable-actors[cli]'
+uv run durable-actors dev
 ```
 
 Generate in another terminal, from the running server or a trusted source file:
 
 ```sh
-pnpm exec durable-actors generate --language python
-pnpm exec durable-actors generate src/actors.py --out-dir generated
+uv run durable-actors generate
+uv run durable-actors generate src/actors.py --out-dir generated
 ```
 
-Clients default to project `local` at `http://127.0.0.1:7100`; explicit `Client` options override environment settings. See [configuration](configuration.md) for server settings, and use `DURABLE_ACTORS_PYTHON` to select another interpreter.
+Clients default to project `local` at `http://127.0.0.1:7100`; explicit `Client` options override environment settings. See [configuration](configuration.md) for server settings, and run the CLI in the Python environment containing your actor dependencies.
 
 ```python
 from durable_actors import Client
@@ -167,14 +166,14 @@ access = actors.Room.Authorization(
 grant = ActorProxy.handle(access)
 ```
 
-## Sandbox resources
+## Compute resources
 
 Override deployment defaults per actor; see [configuration](configuration.md#per-actor-sandbox-overrides) for limits and placement rules.
 
 ```python
-from durable_actors import Actor, persisted, sandbox
+from durable_actors import Actor, compute, persisted
 
-@sandbox(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
+@compute(cpu=2, memory_mib=2048, regions=["canada"], idle_timeout_ms=60_000)
 class CustomerAgent(Actor):
     count: int = persisted(0)
 

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "durable-actors-runtime"
+version = "0.8.0"
+description = "Native runtime and observer assets for the Durable Actors Python CLI"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE.md", "third_party/terse-litestream/LICENSE", "third_party/terse-litestream/NOTICE", "third_party/terse-ltx/LICENSE"]
+
+[project.urls]
+Repository = "https://github.com/TerseAI/durable-actors"
+
+[tool.maturin]
+bindings = "bin"
+python-source = "python-runtime"
+module-name = "durable_actors_runtime"
+features = ["python-cli"]
+locked = true
+strip = true
+targets = [{ name = "durable-actors-native", kind = "bin" }]
+include = [{ path = "durable_actors_runtime/observer/**/*", format = "wheel" }]

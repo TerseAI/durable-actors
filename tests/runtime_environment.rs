@@ -55,7 +55,7 @@ async fn control_plane_rejects_invalid_bind_addresses() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn local_runtime_uses_configured_options_secret_and_parent_lifetime() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;

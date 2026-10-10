@@ -201,6 +201,7 @@ async fn echo_websocket(upgrade: WebSocketUpgrade) -> Response {
 
 fn process_environment() -> HashMap<&'static str, &'static str> {
     HashMap::from([
+        ("DURABLE_ACTORS_PERSISTENCE", "rapid"),
         ("DURABLE_ACTORS_GATEWAY_ROUTE", "http://10.0.0.1:7100"),
         (
             "DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT",
@@ -210,8 +211,12 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
         (
-            "DURABLE_ACTORS_RUNTIME_IMAGE",
+            "DURABLE_ACTORS_TYPESCRIPT_IMAGE",
             "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        (
+            "DURABLE_ACTORS_PYTHON_IMAGE",
+            "registry.example/python@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ),
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
         ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
@@ -339,5 +344,56 @@ fn default_region_requires_configured_substrate_workers() -> Result<()> {
     assert!(parse(&values).is_err());
     values.remove("DURABLE_ACTORS_REGION");
     assert!(parse(&values).is_ok());
+    Ok(())
+}
+
+#[test]
+fn standard_gcs_starts_with_one_bucket_and_no_rapid_configuration() -> Result<()> {
+    let mut values = process_environment();
+    values.remove("DURABLE_ACTORS_PERSISTENCE");
+    values.remove("DURABLE_ACTORS_ARCHIVE_BUCKET");
+    values.remove("DURABLE_ACTORS_RAPID_BUCKETS");
+    values.remove("DURABLE_ACTORS_ARTIFACT_BUCKET");
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    assert_eq!(config.storage.artifact_bucket, config.storage.bucket);
+    assert_eq!(
+        config.storage.persistence,
+        crate::bucket::PersistenceConfig::Local
+    );
+    Ok(())
+}
+
+#[test]
+fn persistence_selection_rejects_typos_and_conflicting_rapid_configuration() {
+    for mode in ["standrad", "", "standard"] {
+        let mut values = process_environment();
+        values.insert("DURABLE_ACTORS_PERSISTENCE", mode);
+        assert!(
+            ControlPlaneProcessConfig::from_lookup(|name| {
+                values.get(name).map(|value| (*value).into())
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn compiled_artifacts_select_their_language_image() -> Result<()> {
+    let values = process_environment();
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    let images = &config.sandbox_provider.runtime_images;
+    assert_eq!(
+        images.for_entrypoint("actors.mjs")?,
+        values["DURABLE_ACTORS_TYPESCRIPT_IMAGE"]
+    );
+    assert_eq!(
+        images.for_entrypoint("actors.pyz")?,
+        values["DURABLE_ACTORS_PYTHON_IMAGE"]
+    );
+    assert!(images.for_entrypoint("actors.ts").is_err());
     Ok(())
 }

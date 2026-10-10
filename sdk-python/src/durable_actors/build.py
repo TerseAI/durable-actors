@@ -223,8 +223,21 @@ def load_module(root: Path, module: str) -> list[type[Actor[Any, Any, Any, Any]]
     ]
 
 
+def check_actor(project: Path, entrypoint: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "mypy", "--strict", entrypoint],
+        cwd=project,
+        stdout=sys.stderr,
+        check=False,
+    )
+    if result.returncode:
+        raise ValueError("Python actor type check failed")
+
+
 def main() -> None:
     project, entrypoint, output, *mode = sys.argv[1:]
+    if mode == ["local"]:
+        check_actor(Path(project), entrypoint)
     contract = build_actor(Path(project), entrypoint, Path(output), local=mode == ["local"])
     print(json.dumps(contract, separators=(",", ":")))
 

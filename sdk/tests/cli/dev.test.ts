@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -82,7 +82,7 @@ test("dev explains invalid project paths before starting the runtime", async t =
             })
 })
 
-test("dev resolves project and entrypoint settings from .env", async t => {
+test("dev honors explicit sources, discovers conventional sources, and rejects ambiguity", async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actor-dev-env-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     await mkdir(path.join(directory, "project", "actors"), { recursive: true })
@@ -93,6 +93,9 @@ test("dev resolves project and entrypoint settings from .env", async t => {
         "dir"
     )
     await writeFile(path.join(directory, "project", "actors", "index.ts"), "export {}")
+    await mkdir(path.join(directory, "project", "src"))
+    await writeFile(path.join(directory, "project", "src", "actors.ts"), "export {}")
+    await writeFile(path.join(directory, "project", "actors.py"), "")
     await writeFile(
         path.join(directory, ".env"),
         "DURABLE_ACTORS_PROJECT=project\nDURABLE_ACTORS_ENTRYPOINT=actors/index.ts\n"
@@ -117,4 +120,25 @@ console.log(JSON.stringify(process.argv.slice(2)))
     const args: string[] = JSON.parse(stdout)
     assert.equal(args[args.indexOf("--project") + 1], "project")
     assert.equal(args[args.indexOf("--entrypoint") + 1], "actors/index.ts")
+    await writeFile(path.join(directory, ".env"), "DURABLE_ACTORS_PROJECT=project\n")
+    await assert.rejects(
+        run(process.execPath, [cli, "dev"], {
+            cwd: directory,
+            env: { ...environment, DURABLE_ACTORS_BINARY: executable },
+            timeout: 5000
+        }),
+        /Multiple actor sources.*src\/actors.ts, actors.py.*DURABLE_ACTORS_ENTRYPOINT/u
+    )
+    await rm(path.join(directory, "project", "actors.py"))
+    for (const entrypoint of ["src/actors.ts", "actors.ts"]) {
+        const { stdout } = await run(process.execPath, [cli, "dev"], {
+            cwd: directory,
+            env: { ...environment, DURABLE_ACTORS_BINARY: executable },
+            timeout: 5000
+        })
+        const args: string[] = JSON.parse(stdout)
+        assert.equal(args[args.indexOf("--entrypoint") + 1], entrypoint)
+        if (entrypoint === "src/actors.ts")
+            await rename(path.join(directory, "project", entrypoint), path.join(directory, "project", "actors.ts"))
+    }
 })

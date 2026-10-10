@@ -2,26 +2,26 @@
 
 An Express + React chatroom with shared messages and persistent history.
 
-[Quickstart](../../sdk/README.md#quickstart) · [Reference](../../docs/reference/typescript.md)
+[Quickstart](../../sdk/README.md#quickstart) · [Reference](../../docs/reference/typescript-guide.md)
 
 ## Run locally
 
-Requires Node.js 22.19+ and Bun 1.3.9+.
+Requires Bun 1.4.2+.
 
 ```sh
-npx durable-actors init chat-example --template chat
+bunx durable-actors init chat-example --template chat
 cd chat-example
-npm install
+bun install
 cp .env.example .env
-npm run dev:actors
+bun run dev:actors
 ```
 
-Already in the example directory? Start at `npm install`.
+Already in the example directory? Start at `bun install`.
 
 Wait for `Ready`. In another terminal in the same directory:
 
 ```sh
-npm run dev
+bun run dev
 ```
 
 Open [localhost:3000](http://127.0.0.1:3000) in two tabs; messages stay saved after an actor server restart.
@@ -69,8 +69,8 @@ The demo joins as a guest; add authentication and room access checks before issu
 
 ## Development
 
-Actors reload automatically; restart `npm run dev` after changing public actor types. See [port settings](../README.md#run-the-examples-together) to run multiple examples.
+Actors reload automatically; restart `bun run dev` after changing public actor types. See [port settings](../README.md#run-the-examples-together) to run multiple examples.
 
 ```sh
-npm run build
+bun run build
 ```

@@ -1,6 +1,5 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { Command, Option } from "commander"
-import { config } from "dotenv"
 import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { styleText } from "node:util"
@@ -13,7 +12,6 @@ import { registerStartCommand } from "./cli/start.js"
 import { actorEnvironment } from "./environment.js"
 
 try {
-    config({ path: [".env.local", ".env"], quiet: true })
     Object.assign(process.env, actorEnvironment(process.env))
     const program = new Command()
         .name("durable-actors")
@@ -43,6 +41,10 @@ try {
 }
 
 async function initializeProject(directory: string, options: { template: string }): Promise<void> {
+    if (options.template === "python")
+        throw new Error(
+            "Create Python projects with: uvx --from 'durable-actors[cli]' durable-actors init " + directory
+        )
     const destination = path.resolve(directory)
     await mkdir(destination).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "EEXIST") throw new Error(`${destination} already exists. Choose a new directory.`)
@@ -54,8 +56,7 @@ async function initializeProject(directory: string, options: { template: string 
             force: false
         })
         await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
-        if (options.template === "python")
-            await rename(path.join(destination, ".env.example"), path.join(destination, ".env"))
+        await rename(path.join(destination, "bunfig"), path.join(destination, "bunfig.toml"))
         await nameProject(destination)
     } catch (error) {
         await rm(destination, { recursive: true, force: true })
@@ -78,27 +79,17 @@ async function nameProject(destination: string): Promise<void> {
 }
 
 function projectInstructions(destination: string, template: string): string {
-    if (template === "python")
-        return `Created Python actors in ${destination}.
-
-From that directory, run:
-  pnpm install
-  uv sync
-  pnpm exec durable-actors dev
-
-Edit src/actors.py. The CLI checks types before starting and reloading.
-Generate typed Python clients with: pnpm exec durable-actors generate`
     if (template === "actor") return actorProjectInstructions(destination)
 
     return `Created ${template} app in ${destination}.
 
 From that directory, run:
-  npm install
+  bun install
   cp .env.example .env${template === "ai-chat" ? "\n  # Add your OpenAI API key to .env" : ""}
-  npm run dev:actors
+  bun run dev:actors
 
 Add the connection settings printed by durable-actors dev to .env, then in another terminal:
-  npm run dev
+  bun run dev
 
 Open http://127.0.0.1:3000. The README walks through the app.`
 }
@@ -114,10 +105,10 @@ ${styleText(["bold", "cyan"], "durable actors")} ${styleText("dim", "/ new proje
 
   ${styleText("bold", "Start here")}
     ${styleText("cyan", `cd -- ${quoted}`)}
-    ${styleText("cyan", "pnpm install")}
+    ${styleText("cyan", "bun install")}
 
   ${styleText("bold", "Start the actor server")}
-    ${styleText("cyan", "pnpm exec durable-actors dev")}
+    ${styleText("cyan", "bunx durable-actors dev")}
 
   ${styleText("bold", "Make it yours")}
     Your first actor is a counter that remembers.

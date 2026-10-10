@@ -17,26 +17,55 @@ jobs:
         runs-on: ${{ matrix.runner }}
         timeout-minutes: 60
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+            - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
-                  node-version: "22.19.0"
+                  python-version: "3.11"
+                  enable-cache: true
             - name: Install Rust toolchain
-              run: rustup toolchain install 1.89.0 --profile minimal && rustup default 1.89.0
+              run: rustup toolchain install 1.91.0 --profile minimal && rustup default 1.91.0
             - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
               with:
                   shared-key: native-${{ matrix.runner }}
                   save-if: ${{ github.ref == 'refs/heads/main' }}
             - name: Build Rust runtime
-              run: node scripts/build-runtime.mjs
+              run: bun scripts/build-runtime.mjs
             - name: Check the native executable
               run: target/release/durable-actors --version
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: native-${{ matrix.runner }}
                   path: dist-runtime/*
+                  if-no-files-found: error
+                  retention-days: 7
+            - name: Build Python runtime wheel and observer assets
+              shell: bash
+              run: |
+                  bun install --frozen-lockfile
+                  bun run --bun --cwd packages/observer-ui build
+                  mkdir -p python-runtime/durable_actors_runtime/observer
+                  cp -R packages/observer-ui/dist/standalone/. python-runtime/durable_actors_runtime/observer/
+                  uvx --from 'maturin>=1.15,<2' --with patchelf maturin build --release --out dist-python-runtime
+                  uv build --wheel --no-sources sdk-python --out-dir dist-python-sdk
+            - name: Install wheels and test Python-only workflows
+              shell: bash
+              env:
+                  DURABLE_ACTORS_TEST_WHEEL: "1"
+              run: |
+                  uv venv .artifacts/python-cli --python 3.11
+                  wheels=(dist-python-sdk/*.whl)
+                  uv pip install --python .artifacts/python-cli/bin/python --find-links dist-python-runtime "${wheels[0]}[cli]" pytest pytest-asyncio
+                  .artifacts/python-cli/bin/durable-actors --version
+                  .artifacts/python-cli/bin/durable-actors-native --version
+                  .artifacts/python-cli/bin/python -m pytest sdk-python/tests/test_cli.py -q
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: python-runtime-${{ matrix.runner }}
+                  path: dist-python-runtime/*.whl
                   if-no-files-found: error
                   retention-days: 7

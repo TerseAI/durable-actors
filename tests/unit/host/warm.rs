@@ -43,7 +43,7 @@ fn snapshot_assignment_reads_the_current_identity_and_fails_closed() -> Result<(
 }
 
 #[tokio::test]
-#[ignore = "requires Bun and pnpm --dir sdk build"]
+#[ignore = "requires Bun and bun run --bun --cwd sdk build"]
 async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Result<()> {
     let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
@@ -247,7 +247,7 @@ async fn compile_counter(sdk: &Path, project: &Path) -> Result<Vec<u8>> {
     let compiled = project.join("actors.mjs");
     tokio::fs::write(&source, "import { Actor, Persisted } from 'durable-actors'; export class Counter extends Actor { @Persisted value = 0; async read() { return this.value; } async increment() { return ++this.value; } }").await?;
     tokio::fs::write(project.join("tsconfig.json"), r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true},"include":["actors.ts"]}"#).await?;
-    let result = Command::new("node").args(["--input-type=module", "--eval", "const { buildActor } = await import(process.argv[1]); await buildActor(process.argv[2], process.argv[3]);"])
+    let result = Command::new("bun").args(["--input-type=module", "--eval", "const { buildActor } = await import(process.argv[1]); await buildActor(process.argv[2], process.argv[3]);"])
         .arg(sdk.join("dist/compiler/actor-build.js")).arg(source).arg(&compiled).output().await?;
     ensure!(
         result.status.success(),
