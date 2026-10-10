@@ -13,10 +13,12 @@ jobs:
         uses: ./.github/workflows/python.yml
 
     image:
-        name: Runtime image (${{ matrix.arch }})
+        name: Runtime image (${{ matrix.target }}, ${{ matrix.arch }})
         strategy:
             fail-fast: false
             matrix:
+                target: [control-plane, typescript, python]
+                arch: [amd64, arm64]
                 include:
                     - arch: amd64
                       platform: linux/amd64
@@ -38,13 +40,12 @@ jobs:
               uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
               with:
                   context: .
+                  target: ${{ matrix.target }}
                   platforms: ${{ matrix.platform }}
                   load: true
                   tags: durable-actors:ci
-            - name: Check the image executable
-              run: |
-                  docker run --rm durable-actors:ci --version
-                  docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" durable-actors:ci /tmp/image_smoke.py
+            - name: Check the image runtime
+              run: bash scripts/test-runtime-image.sh durable-actors:ci "${{ matrix.target }}"
 
     rust:
         name: Rust runtime
@@ -84,7 +85,7 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun run --bun --cwd sdk build
             - name: Check packaged actors on Bun
-              run: bun test --timeout 60000 sdk/tests/scripts/build-artifact.test.mjs
+              run: bun test --timeout 60000 sdk/tests/scripts/build-artifact.test.mjs sdk/tests/scripts/host-runtime.test.mjs
             - run: cargo build --locked
             - name: Run WebSocket and restart integration tests
               run: cargo test --locked -- --ignored

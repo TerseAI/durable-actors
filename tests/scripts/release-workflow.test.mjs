@@ -34,15 +34,6 @@ test("CI and release exercise direct host sockets with the built SDK", () => {
     }
 })
 
-test("runtime image prepares standalone client sources before compiling the SDK", () => {
-    const dockerfile = read("Dockerfile")
-    assert.match(read(".dockerignore"), /^!sdk\/scripts$/m)
-    assert.match(dockerfile, /COPY sdk\/scripts\/build-client-runtime\.mjs \.\/sdk\/scripts\/build-client-runtime\.mjs/)
-    assert.match(read(".dockerignore"), /^!sdk\/scripts\/build-client-runtime\.mjs$/m)
-    assert.match(read(".dockerignore"), /^!sdk\/LICENSE.md$/m)
-    assert.match(dockerfile, /bun run --bun --cwd sdk build:client[\s\S]*bun run --bun --cwd sdk tsc/)
-})
-
 test("the SDK is packed once after validation and reused by native tests and npm", () => {
     const validation = releaseJob("npm-ci")
     assert.match(validation, /oven-sh\/setup-bun@v2/)

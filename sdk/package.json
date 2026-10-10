@@ -80,7 +80,7 @@
         "build": "bun run --bun build:observer && bun run --bun build:client && tsc -p tsconfig.build.json && bun run --bun build:declarations && bun scripts/build-template.mjs",
         "check": "bun run --bun format:check && bun run --bun test && bun run --bun package:check",
         "clean": "rm -rf dist .test-dist",
-        "package:check": "bun test --timeout 60000 tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs",
+        "package:check": "bun test --timeout 60000 tests/scripts/codegen-api.test.mjs tests/scripts/build-artifact.test.mjs tests/scripts/standalone-client.test.mjs tests/scripts/host-runtime.test.mjs",
         "prepack": "bun run --bun clean && bun run --bun build && bun run --bun package:check",
         "test": "bun run --bun clean && bun run --bun build && bun tests/prepare.mjs && tsc -p tsconfig.test.json && bun scripts/test.mjs",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/*.mjs\" \"tests/**/*.mjs\"",

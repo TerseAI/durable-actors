@@ -128,10 +128,19 @@ bun run --bun docs:build
 
 The [CI workflow](.github/workflows/ci.yml) is the source of truth for toolchain versions and the full validation matrix.
 
+The Dockerfile builds three production images from a shared Rust build. Validate a target with:
+
+```sh
+docker build --target typescript -t durable-actors:typescript .
+bash scripts/test-runtime-image.sh durable-actors:typescript typescript
+```
+
+Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64. The TypeScript execution package bundles only the actor and host modules, collects dependency licenses, and is checked by `sdk package:check`. Examples, the CLI, compiler, and observer UI are excluded from that image. SQL migrations and `docs/reference/openapi.yaml` are Rust build inputs embedded in the executable; their source directories are not copied into the final images.
+
 ## Open a pull request
 
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
 Contributions are made under the repository's [MIT license](LICENSE.md).
 
-Published chart packages include the runtime image digest from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.
+Published chart packages include all three image digests from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.

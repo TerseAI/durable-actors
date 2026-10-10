@@ -1,6 +1,8 @@
+import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -10,7 +12,35 @@ import httpx
 from durable_actors import Client
 
 
+def check_generic_executor() -> None:
+    with (
+        tempfile.TemporaryDirectory() as directory,
+        socket.socket(socket.AF_UNIX) as listener,
+    ):
+        address = str(Path(directory, "executor.sock"))
+        listener.bind(address)
+        listener.listen(1)
+        listener.settimeout(10)
+        executor = subprocess.Popen(
+            [sys.executable, "-m", "durable_actors.host", "--generic"],
+            env={**os.environ, "DURABLE_ACTORS_EXECUTOR_SOCKET": address},
+        )
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(10)
+                with connection.makefile("rb") as messages:
+                    assert json.loads(messages.readline()) == {
+                        "type": "warm",
+                        "protocol": 24,
+                    }
+        finally:
+            executor.terminate()
+            executor.wait(timeout=10)
+
+
 def main() -> None:
+    check_generic_executor()
     with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -29,8 +59,6 @@ class Counter(Actor):
                     "dev",
                     "--project",
                     directory,
-                    "--entrypoint",
-                    "actors.py",
                     "--port",
                     str(port),
                 ],
@@ -65,7 +93,7 @@ class Counter(Actor):
                     runtime.kill()
                     runtime.communicate()
                     raise
-    print("Python actor image: invocation and durable restart passed")
+    print("Python image: generic warmup, invocation, and durable restart passed")
 
 
 main()

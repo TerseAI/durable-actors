@@ -107,75 +107,76 @@ test("generate infers Python from a published contract without actor source", { 
     assert.match(await readFile(path.join(directory, "generated/_counter.py"), "utf8"), /def increment/u)
 })
 
-test(
-    "dev checks Python changes before reload and preserves durable state",
-    { skip: !python || !runtime, timeout: 60000 },
-    async t => {
-        const directory = await mkdtemp(path.join(tmpdir(), "actors-python-dev-"))
-        t.after(() => rm(directory, { recursive: true, force: true }))
-        await mkdir(path.join(directory, "src"))
-        const entrypoint = path.join(directory, "src/actors.py")
-        await writeFile(entrypoint, source)
-        const child = spawn(process.execPath, [cli, "dev", "--port", "0"], {
-            cwd: directory,
-            env: {
-                ...environment,
-                DURABLE_ACTORS_PYTHON: python,
-                DURABLE_ACTORS_BINARY: runtime,
-                NO_COLOR: "1"
-            },
-            stdio: ["pipe", "pipe", "pipe"]
-        })
-        const exited = once(child, "exit")
-        t.after(async () => {
-            child.kill("SIGTERM")
-            await exited
-        })
-        let output = ""
-        child.stdout.on("data", chunk => {
-            output += String(chunk)
-        })
-        child.stderr.on("data", chunk => {
-            output += String(chunk)
-        })
-        const waitFor = async (matches: () => boolean) => {
-            const deadline = Date.now() + 20000
-            while (!matches()) {
-                assert.equal(child.exitCode, null, output)
-                assert.ok(Date.now() < deadline, output)
-                await new Promise(resolve => setTimeout(resolve, 50))
+for (const sourcePath of ["src/actors.py", "actors.py"])
+    test(
+        `dev discovers ${sourcePath}, checks changes before reload and preserves durable state`,
+        { skip: !python || !runtime, timeout: 60000 },
+        async t => {
+            const directory = await mkdtemp(path.join(tmpdir(), "actors-python-dev-"))
+            t.after(() => rm(directory, { recursive: true, force: true }))
+            await mkdir(path.join(directory, "src"))
+            const entrypoint = path.join(directory, sourcePath)
+            await writeFile(entrypoint, source)
+            const child = spawn(process.execPath, [cli, "dev", "--port", "0"], {
+                cwd: directory,
+                env: {
+                    ...environment,
+                    DURABLE_ACTORS_PYTHON: python,
+                    DURABLE_ACTORS_BINARY: runtime,
+                    NO_COLOR: "1"
+                },
+                stdio: ["pipe", "pipe", "pipe"]
+            })
+            const exited = once(child, "exit")
+            t.after(async () => {
+                child.kill("SIGTERM")
+                await exited
+            })
+            let output = ""
+            child.stdout.on("data", chunk => {
+                output += String(chunk)
+            })
+            child.stderr.on("data", chunk => {
+                output += String(chunk)
+            })
+            const waitFor = async (matches: () => boolean) => {
+                const deadline = Date.now() + 20000
+                while (!matches()) {
+                    assert.equal(child.exitCode, null, output)
+                    assert.ok(Date.now() < deadline, output)
+                    await new Promise(resolve => setTimeout(resolve, 50))
+                }
             }
-        }
-        await waitFor(() => /DURABLE_ACTORS_CONTROL_PLANE_URL=http:\/\/127.0.0.1:\d+/u.test(output))
-        const origin = output.match(/DURABLE_ACTORS_CONTROL_PLANE_URL=(http:\/\/127.0.0.1:\d+)/u)![1]
-        const invoke = async () => {
-            const result = await run(
-                python!,
-                [
-                    "-c",
-                    `from durable_actors import Client
+            await waitFor(() => /DURABLE_ACTORS_CONTROL_PLANE_URL=http:\/\/127.0.0.1:\d+/u.test(output))
+            const origin = output.match(/DURABLE_ACTORS_CONTROL_PLANE_URL=(http:\/\/127.0.0.1:\d+)/u)![1]
+            const invoke = async () => {
+                const result = await run(
+                    python!,
+                    [
+                        "-c",
+                        `from durable_actors import Client
 with Client(control_plane_url="${origin}") as client:
     print(client.invoke("Counter", "one", "increment", []))`
-                ],
-                { cwd: directory }
-            )
-            return Number(result.stdout.trim())
+                    ],
+                    { cwd: directory }
+                )
+                return Number(result.stdout.trim())
+            }
+            assert.equal(await invoke(), 1)
+            output = ""
+            await writeFile(entrypoint, source.replace("return self.count", 'return "wrong"'))
+            await waitFor(() => output.includes("Incompatible return value"))
+            assert.equal(await invoke(), 2)
+            assert.ok(!output.includes("Updated local actors."), output)
+            output = ""
+            await writeFile(entrypoint, source.replace("self.count += amount", "self.count += amount * 10"))
+            await waitFor(() => output.includes("Updated local actors."))
+            assert.equal(await invoke(), 12)
+            child.kill("SIGTERM")
+            await exited
+            await assert.rejects(fetch(origin))
         }
-        assert.equal(await invoke(), 1)
-        output = ""
-        await writeFile(entrypoint, source.replace("return self.count", 'return "wrong"'))
-        await waitFor(() => output.includes("Incompatible return value"))
-        assert.equal(await invoke(), 2)
-        assert.ok(!output.includes("Updated local actors."), output)
-        output = ""
-        await writeFile(entrypoint, source.replace("self.count += amount", "self.count += amount * 10"))
-        await waitFor(() => output.includes("Updated local actors."))
-        assert.equal(await invoke(), 12)
-        child.kill("SIGTERM")
-        await exited
-        await assert.rejects(fetch(origin))
-    }
-)
+    )
 
 test("deployment builder dispatches Python and produces a loadable artifact", { skip: !python }, async t => {
     const directory = await mkdtemp(path.join(tmpdir(), "actors-python-deploy-"))

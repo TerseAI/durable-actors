@@ -14,7 +14,7 @@ Get the example and install its Python dependencies:
 git clone --depth 1 https://github.com/TerseAI/durable-actors.git
 cd durable-actors/examples/python
 uv sync --no-sources
-DURABLE_ACTORS_ENTRYPOINT=actors.py bunx durable-actors dev
+bunx durable-actors dev
 ```
 
 The CLI downloads the native runtime automatically. To write your own actor in a new project, follow the [quickstart](../../sdk-python/README.md#quickstart).

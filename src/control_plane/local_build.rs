@@ -54,13 +54,11 @@ impl LocalBuilds {
         let root = self.directory.join(&source.project_id);
         tokio::fs::create_dir_all(&root).await?;
         let directory = tempfile::Builder::new().prefix("build-").tempdir_in(root)?;
-        let entrypoint = source
-            .actor_entrypoint
-            .as_deref()
-            .unwrap_or("src/actors.ts");
+        let entrypoint =
+            super::local::resolve_entrypoint(&self.project, source.actor_entrypoint.as_deref())?;
         let contract = self
             .compiler
-            .compile(&self.project, entrypoint, directory.path())
+            .compile(&self.project, &entrypoint, directory.path())
             .await?;
         let mut spec = source.clone();
         spec.source = Some(DeploymentSource::Local(LocalSource {

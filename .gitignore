@@ -1,6 +1,7 @@
 node_modules/
 sdk/node_modules/
 sdk/dist/
+sdk/dist-host/
 sdk/.test-dist/
 packages/*/dist/
 sdk/src/generated/

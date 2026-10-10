@@ -47,12 +47,8 @@ pub struct DevOptions {
     pub port: u16,
     #[arg(long, env = "DURABLE_ACTORS_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        env = "DURABLE_ACTORS_ENTRYPOINT",
-        default_value = "src/actors.ts"
-    )]
-    pub entrypoint: String,
+    #[arg(long, env = "DURABLE_ACTORS_ENTRYPOINT")]
+    pub entrypoint: Option<String>,
     #[arg(
         long,
         env = "DURABLE_ACTORS_STORAGE",
@@ -66,6 +62,29 @@ pub struct DevOptions {
     pub sdk_host: Option<PathBuf>,
 }
 
+pub(super) fn resolve_entrypoint(project: &Path, configured: Option<&str>) -> Result<String> {
+    if let Some(entrypoint) = configured {
+        return Ok(entrypoint.into());
+    }
+    let candidates = ["src/actors.ts", "src/actors.py", "actors.ts", "actors.py"];
+    let found: Vec<_> = candidates
+        .into_iter()
+        .filter(|file| project.join(file).is_file())
+        .collect();
+    ensure!(
+        !found.is_empty(),
+        "No actor source found in {}. Create src/actors.ts, src/actors.py, actors.ts, or actors.py, or set DURABLE_ACTORS_ENTRYPOINT",
+        project.display()
+    );
+    ensure!(
+        found.len() == 1,
+        "Multiple actor sources found in {}: {}. Set DURABLE_ACTORS_ENTRYPOINT to choose one",
+        project.display(),
+        found.join(", ")
+    );
+    Ok(found[0].into())
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum DevStorage {
     Local,
@@ -73,7 +92,7 @@ pub enum DevStorage {
 }
 
 pub async fn serve_local(
-    options: DevOptions,
+    mut options: DevOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     super::admin::validate_component("project ID", &options.project_id, 64)?;
@@ -81,11 +100,12 @@ pub async fn serve_local(
         .project
         .canonicalize()
         .context("find actor project directory")?;
+    let entrypoint = resolve_entrypoint(&project, options.entrypoint.as_deref())?;
     ensure!(
-        project.join(&options.entrypoint).is_file(),
-        "actor file {} is missing; create it before starting the demo",
-        options.entrypoint
+        project.join(&entrypoint).is_file(),
+        "actor file {entrypoint} is missing"
     );
+    options.entrypoint = Some(entrypoint);
     let directory = options
         .data_dir
         .clone()
@@ -290,7 +310,7 @@ async fn local_routes(
         code_snapshot: None,
         image_ref: "local".into(),
         working_directory: project.display().to_string(),
-        actor_entrypoint: Some(options.entrypoint.clone()),
+        actor_entrypoint: options.entrypoint.clone(),
         secret_refs: vec![],
     };
     let registry = Arc::new(LocalAdminRegistry::default());

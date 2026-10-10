@@ -24,7 +24,7 @@ Configuration uses environment variables. Precedence is to use exported variable
 | Variable                    | Default                            | Description                                                                                                           |
 | --------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_PROJECT`    | `.`                                | Actor project directory.                                                                                              |
-| `DURABLE_ACTORS_ENTRYPOINT` | `src/actors.ts` or `src/actors.py` | Actor source file, relative to the project. TypeScript wins when both exist.                                          |
+| `DURABLE_ACTORS_ENTRYPOINT` | Auto-detected | Actor source file, relative to the project. Discovers `actors.ts` or `actors.py` in `src/` or the project root; multiple matches require an explicit setting. |
 | `DURABLE_ACTORS_PORT`       | `7100`                             | Listening port; `0` selects a free port. `--port` overrides it for one run.                                           |
 | `DURABLE_ACTORS_DATA_DIR`   | `<project>/.durable-actors`        | Persistent local state directory.                                                                                     |
 | `DURABLE_ACTORS_STORAGE`    | `local`                            | `local` for file storage or `gcs` for a GCS bucket. GCS also requires `DURABLE_ACTORS_BUCKET` and Google credentials. |
@@ -84,7 +84,9 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
 | `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
 | `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |
-| `DURABLE_ACTORS_RUNTIME_IMAGE` | Shared runtime OCI image pinned by SHA-256 digest. |
+| `DURABLE_ACTORS_TYPESCRIPT_IMAGE` | TypeScript actor OCI image pinned by SHA-256 digest; selected for compiled `.mjs` artifacts. |
+| `DURABLE_ACTORS_PYTHON_IMAGE` | Python actor OCI image pinned by SHA-256 digest; selected for compiled `.pyz` artifacts. |
+| `DURABLE_ACTORS_EXECUTOR_RUNTIME` | Set by actor images to `typescript` or `python`; selects the executor before a warm spare is assigned. Native hosts infer it from the compiled entrypoint. |
 | `DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT` | Workload Identity service account used as the storage-token cache issuer identity. |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |

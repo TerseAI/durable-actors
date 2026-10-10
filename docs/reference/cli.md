@@ -44,7 +44,7 @@ durable-actors init my-project --template python
 
 ## durable-actors dev
 
-Run local actors and reload code changes. Run it from the actor project directory. It loads `src/actors.ts`, or `src/actors.py` when only that file exists, so no configuration is required.
+Run local actors and reload code changes. Run it from the actor project directory. It discovers `actors.ts` or `actors.py` in `src/` or the project root. If more than one exists, set `DURABLE_ACTORS_ENTRYPOINT` to choose; an explicit setting always wins.
 
 ```sh
 durable-actors dev [--port <number>] [--no-watch]
@@ -60,7 +60,7 @@ Optional `.env` overrides:
 | Variable                    | Default                            | Description                                |
 | --------------------------- | ---------------------------------- | ------------------------------------------ |
 | `DURABLE_ACTORS_PROJECT`    | Current directory                  | Actor project directory                    |
-| `DURABLE_ACTORS_ENTRYPOINT` | `src/actors.ts` or `src/actors.py` | Actor source file, relative to the project |
+| `DURABLE_ACTORS_ENTRYPOINT` | Auto-detected | Actor source file, relative to the project; discovers `actors.ts` or `actors.py` in `src/` or the project root |
 | `DURABLE_ACTORS_PYTHON`     | Project `.venv`                    | Python interpreter                         |
 
 Python projects start from `durable-actors init my-project --template python`.

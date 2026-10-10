@@ -154,24 +154,6 @@
     "resources": {
       "type": "object"
     },
-    "image": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "repository": {
-          "type": "string",
-          "minLength": 1
-        },
-        "digest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        }
-      },
-      "required": [
-        "repository",
-        "digest"
-      ]
-    },
     "sandboxNamespace": {
       "type": "string",
       "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
@@ -198,6 +180,26 @@
       "required": [
         "dnsCidrs"
       ]
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "controlPlane": {
+          "$ref": "#/definitions/image"
+        },
+        "typescript": {
+          "$ref": "#/definitions/image"
+        },
+        "python": {
+          "$ref": "#/definitions/image"
+        }
+      },
+      "required": [
+        "controlPlane",
+        "typescript",
+        "python"
+      ]
     }
   },
   "required": [
@@ -210,10 +212,30 @@
     "replicaCount",
     "actors",
     "resources",
-    "image",
+    "images",
     "sandboxNamespace",
     "nodeSelector",
     "networkPolicy"
   ],
-  "$schema": "https://json-schema.org/draft-07/schema#"
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "repository",
+        "digest"
+      ]
+    }
+  }
 }

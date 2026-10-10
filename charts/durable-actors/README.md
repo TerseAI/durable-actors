@@ -20,7 +20,11 @@ ingress:
 
 Use your installed ingress controller's class. The controller must support WebSockets; configure its connection timeouts through `ingress.annotations`. With ingress disabled, route your HTTPS endpoint to the chart's ClusterIP Service on port 7100.
 
-Published chart packages include the matching immutable runtime digest. For source builds, supply `image.digest` for an image built from the same source revision.
+Published chart packages pin three matching image digests: `images.controlPlane.digest`, `images.typescript.digest`, and `images.python.digest`. For source builds, supply all three from the same source revision, without the `sha256:` prefix. Each image also has its own `repository` setting.
+
+The Dockerfile has `control-plane`, `typescript`, and `python` targets. The default target contains the Rust control plane. The TypeScript image adds Bun and the execution SDK; the Python image adds Python and its SDK. Releases publish `<version>-control-plane`, `<version>-typescript`, and `<version>-python` tags, each supporting amd64 and arm64. The controller selects the actor image from the compiled artifact and keeps warm pools separate by image.
+
+When upgrading from the shared image configuration, replace `image.repository` and `image.digest` with the three `images` entries. Direct control-plane deployments must replace `DURABLE_ACTORS_RUNTIME_IMAGE` with `DURABLE_ACTORS_TYPESCRIPT_IMAGE` and `DURABLE_ACTORS_PYTHON_IMAGE`. Redeploy existing actor bundles to replace their stored image references.
 
 ## Defaults
 

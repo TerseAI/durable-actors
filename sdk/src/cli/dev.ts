@@ -41,10 +41,10 @@ export function registerDevCommand(program: Command): void {
         .addHelpText(
             "after",
             `
-Run from your actor project directory; dev loads src/actors.ts, or src/actors.py when only it exists.
+Run from your actor project directory; dev finds src/actors.ts, src/actors.py, actors.ts, or actors.py.
 No configuration is required. Optional overrides in .env:
   DURABLE_ACTORS_PROJECT     project directory (default: current directory)
-  DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: src/actors.ts or src/actors.py)
+  DURABLE_ACTORS_ENTRYPOINT  actor source file, relative to the project (default: discover actors.ts or actors.py in src/ or the project root)
 
 Python projects: durable-actors init my-project --template python
 DURABLE_ACTORS_PYTHON selects an interpreter; otherwise dev uses the project .venv.
@@ -73,12 +73,17 @@ async function developmentOptions(
 }
 
 async function defaultEntrypoint(project: string): Promise<string> {
+    const found: string[] = []
     for (const entrypoint of DEFAULT_ENTRYPOINTS)
-        if ((await developmentPathStats(path.resolve(project, entrypoint)))?.isFile()) return entrypoint
-    return DEFAULT_ENTRYPOINTS[0]
+        if ((await developmentPathStats(path.resolve(project, entrypoint)))?.isFile()) found.push(entrypoint)
+    if (found.length > 1)
+        throw new Error(
+            `Multiple actor sources found in ${path.resolve(project)}: ${found.join(", ")}. Set DURABLE_ACTORS_ENTRYPOINT to choose one.`
+        )
+    return found[0] ?? DEFAULT_ENTRYPOINTS[0]
 }
 
-const DEFAULT_ENTRYPOINTS = ["src/actors.ts", "src/actors.py"] as const
+const DEFAULT_ENTRYPOINTS = ["src/actors.ts", "src/actors.py", "actors.ts", "actors.py"] as const
 
 function portNumber(value: string): number {
     const port = Number(value)
