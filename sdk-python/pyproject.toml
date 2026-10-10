@@ -13,7 +13,7 @@ license = "MIT"
 dependencies = ["pydantic>=2.12,<2.14", "typing-extensions>=4.12,<5", "httpx>=0.28,<1", "websockets>=15,<17", "jsonschema>=4.23,<5", "packaging>=24,<27"]
 
 [project.scripts]
-durable-actors = "durable_actors.cli:main"
+durable-actors = "durable_actors.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/TerseAI/durable-actors"

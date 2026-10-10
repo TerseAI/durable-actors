@@ -61,7 +61,18 @@ jobs:
               working-directory: sdk-python
               run: |
                   uv build --no-sources
-                  uv run --isolated --no-project --with ./dist/durable_actors-*.whl python -c 'from pathlib import Path; import durable_actors; assert Path(durable_actors.__file__).with_name("py.typed").is_file()'
+                  uv run --isolated --no-project --with ./dist/durable_actors-*.whl python - <<'PY'
+                  import subprocess
+                  import sys
+                  from pathlib import Path
+                  import durable_actors
+
+                  assert Path(durable_actors.__file__).with_name("py.typed").is_file()
+                  result = subprocess.run([sys.executable, "-m", "durable_actors", "--help"], capture_output=True, text=True)
+                  assert result.returncode == 1, result
+                  assert "Install durable-actors[cli]" in result.stderr, result.stderr
+                  assert "Traceback" not in result.stderr, result.stderr
+                  PY
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               if: matrix.python == '3.13'
               with:

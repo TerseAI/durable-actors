@@ -48,7 +48,7 @@ def cli_env(tmp_path):
 
 def cli(project, environment, *arguments, check=True):
     result = subprocess.run(
-        [sys.executable, "-m", "durable_actors.cli", *arguments],
+        [sys.executable, "-m", "durable_actors", *arguments],
         cwd=project,
         env=environment,
         capture_output=True,
@@ -76,7 +76,7 @@ def process(project, environment, *arguments):
     log = project / f"{arguments[0]}.log"
     with log.open("w") as output:
         child = subprocess.Popen(
-            [sys.executable, "-m", "durable_actors.cli", *arguments],
+            [sys.executable, "-m", "durable_actors", *arguments],
             cwd=project,
             env=environment,
             stdout=output,
