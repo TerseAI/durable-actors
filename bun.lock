@@ -151,7 +151,7 @@
       "name": "durable-actors",
       "version": "0.7.16",
       "bin": {
-        "durable-actors": "dist/cli.js",
+        "durable-actors": "bin/durable-actors.js",
       },
       "dependencies": {
         "@types/json-schema": "^7.0.15",

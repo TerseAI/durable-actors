@@ -31,7 +31,7 @@
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
-        "durable-actors": "dist/cli.js"
+        "durable-actors": "bin/durable-actors.js"
     },
     "exports": {
         "./backend": {
@@ -71,6 +71,7 @@
         }
     },
     "files": [
+        "bin",
         "dist",
         "README.md",
         "LICENSE.md"

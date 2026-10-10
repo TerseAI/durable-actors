@@ -19,6 +19,7 @@ FROM oven/bun:1.4.2 AS sdk-builder
 WORKDIR /build
 COPY package.json bun.lock bunfig.toml ./
 COPY sdk/package.json ./sdk/package.json
+COPY sdk/bin ./sdk/bin
 COPY packages/observer-ui/package.json ./packages/observer-ui/package.json
 COPY examples/chat/package.json ./examples/chat/package.json
 COPY examples/ai-chat/package.json ./examples/ai-chat/package.json
@@ -62,6 +63,7 @@ COPY --from=sdk-builder /build/node_modules /opt/durable-actors/node_modules
 COPY --from=sdk-builder /build/sdk/node_modules /opt/durable-actors/sdk/node_modules
 COPY --from=sdk-builder /build/packages/observer-ui /opt/durable-actors/packages/observer-ui
 COPY --from=sdk-builder /build/sdk/dist /opt/durable-actors/sdk/dist
+COPY --from=sdk-builder /build/sdk/bin /opt/durable-actors/sdk/bin
 COPY sdk/package.json /opt/durable-actors/sdk/package.json
 RUN mkdir -p /customer /node_modules \
     && ln -s /opt/durable-actors/sdk /node_modules/durable-actors

@@ -19,6 +19,8 @@
 !bunfig.toml
 !sdk
 !sdk/package.json
+!sdk/bin
+!sdk/bin/**
 !sdk/LICENSE.md
 !sdk/scripts
 !sdk/scripts/build-client-runtime.mjs

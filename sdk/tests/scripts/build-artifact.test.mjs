@@ -28,6 +28,7 @@ test("one actor build returns the matching public contract", async t => {
 test("the installed compiler generates declarations using only its runtime dependencies", async t => {
     const installed = await mkdtemp(path.join(os.tmpdir(), "installed-actor-sdk-"))
     t.after(() => rm(installed, { recursive: true, force: true }))
+    await cp(path.join(sdk, "bin"), path.join(installed, "bin"), { recursive: true })
     await cp(path.join(sdk, "dist"), path.join(installed, "dist"), { recursive: true })
     await cp(path.join(sdk, "package.json"), path.join(installed, "package.json"))
     const manifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"))
@@ -39,7 +40,7 @@ test("the installed compiler generates declarations using only its runtime depen
     const root = await project(t, installed)
     await writeFile(path.join(root, "src/actors.ts"), 'import { Actor } from "durable-actors"; export class Counter extends Actor { async read(): Promise<number> { return 7 } }')
     const output = path.join(root, "generated")
-    await run("bun", [path.join(installed, "dist/cli.js"), "generate", "src/actors.ts", "--out-dir", output], { cwd: root })
+    await run("bun", [path.join(installed, manifest.bin["durable-actors"]), "generate", "src/actors.ts", "--out-dir", output], { cwd: root })
     assert.match(await readFile(path.join(output, "types.d.ts"), "utf8"), /read\(\): Promise<number>/)
 })
 

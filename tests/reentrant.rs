@@ -6,7 +6,7 @@ async fn reentrant_rpc_sockets_and_recovery_work_end_to_end() -> anyhow::Result<
     let result = tokio::time::timeout(
         Duration::from_secs(240),
         tokio::process::Command::new("bun")
-            .arg("--test")
+            .arg("test")
             .arg("sdk/tests/scripts/reentrant.test.mjs")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .env(
