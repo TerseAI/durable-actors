@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,74 +13,86 @@ from importlib.metadata import distribution, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import click
 import httpx
+from dotenv import load_dotenv
 
 from .client import Client
 from .codegen import generate_client
 
 
-def parser() -> argparse.ArgumentParser:
-    program = argparse.ArgumentParser(prog="durable-actors")
-    program.add_argument("-V", "--version", action="version", version=version("durable-actors"))
-    commands = program.add_subparsers(dest="command", required=True)
-    init = commands.add_parser("init", help="Create a Python actor project")
-    init.add_argument("directory", type=Path)
-    dev = commands.add_parser("dev", help="Run local actors and reload source changes")
-    dev.add_argument("--no-watch", action="store_true")
-    dev.add_argument("--port", type=int)
-    dev.add_argument("--project", type=Path)
-    dev.add_argument("--entrypoint")
-    dev.add_argument("--data-dir", type=Path)
-    dev.add_argument("--storage", choices=["local", "gcs"])
-    generate = commands.add_parser("generate", help="Generate typed Python clients")
-    generate.add_argument("entrypoint", nargs="?", help="Compile this source instead of the server")
-    generate.add_argument("--out-dir", type=Path, default=Path("generated"))
-    generate.add_argument("--control-plane-url")
-    observe = commands.add_parser("observe", help="Open the actor observer")
-    observe.add_argument("--no-open", action="store_true")
-    observe.add_argument("--control-plane-url")
-    commands.add_parser("start", help="Run the control plane using its environment settings")
-    return program
+@click.group()
+@click.version_option(None, "-V", "--version", package_name="durable-actors")
+def cli() -> None:
+    """Develop and inspect Python durable actors."""
+    # Explicit process variables win; local settings override shared settings.
+    load_dotenv(Path.cwd() / ".env.local")
+    load_dotenv(Path.cwd() / ".env")
+
+
+@cli.command()
+@click.option("--watch/--no-watch", default=True, help="Reload source changes.")
+@click.option(
+    "--port", type=click.IntRange(0, 65535), help="Local server port; 0 selects a free port."
+)
+@click.option("--project", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--entrypoint", help="Actor source path relative to the project.")
+@click.option("--data-dir", type=click.Path(file_okay=False, path_type=Path))
+@click.option("--storage", type=click.Choice(["local", "gcs"]))
+def dev(
+    watch: bool,
+    port: int | None,
+    project: Path | None,
+    entrypoint: str | None,
+    data_dir: Path | None,
+    storage: str | None,
+) -> None:
+    """Run local actors and reload source changes."""
+    arguments = ["dev"]
+    for flag, value in (
+        ("port", port),
+        ("project", project),
+        ("entrypoint", entrypoint),
+        ("data-dir", data_dir),
+        ("storage", storage),
+    ):
+        if value is not None:
+            arguments.extend([f"--{flag}", str(value)])
+    if watch:
+        arguments.append("--watch")
+    execute_runtime(arguments)
+
+
+@cli.command()
+def start() -> None:
+    """Run the control plane using its environment settings."""
+    execute_runtime([])
+
+
+@cli.command()
+@click.option("--open/--no-open", "open_browser", default=True, help="Open a browser on startup.")
+@click.option("--control-plane-url", help="Override the configured control plane URL.")
+def observe(control_plane_url: str | None, open_browser: bool) -> None:
+    """Open the actor observer."""
+    from .observer import observe as serve_observer
+
+    serve_observer(control_plane_url, open_browser=open_browser)
 
 
 def main() -> None:
-    options = parser().parse_args()
     try:
-        from dotenv import load_dotenv
-
-        # Explicit process variables win; local settings override shared settings.
-        load_dotenv(Path.cwd() / ".env.local")
-        load_dotenv(Path.cwd() / ".env")
-        if options.command == "init":
-            initialize(options.directory)
-        elif options.command == "dev":
-            arguments = ["dev"]
-            for flag in ("port", "project", "entrypoint", "data-dir", "storage"):
-                value = getattr(options, flag.replace("-", "_"))
-                if value is not None:
-                    arguments.extend([f"--{flag}", str(value)])
-            if not options.no_watch:
-                arguments.append("--watch")
-            execute_runtime(arguments)
-        elif options.command == "start":
-            execute_runtime([])
-        elif options.command == "generate":
-            generate(options.entrypoint, options.out_dir, options.control_plane_url)
-        elif options.command == "observe":
-            from .observer import observe
-
-            observe(options.control_plane_url, open_browser=not options.no_open)
+        cli(prog_name="durable-actors")
     except (ImportError, ModuleNotFoundError) as error:
-        print(f"{error}. Install durable-actors[cli] in this Python environment.", file=sys.stderr)
+        click.ClickException(
+            f"{error}. Install durable-actors[cli] in this Python environment."
+        ).show()
         raise SystemExit(1) from error
     except subprocess.CalledProcessError as error:
-        print(error.stderr or error.stdout or str(error), file=sys.stderr)
+        click.ClickException(error.stderr or error.stdout or str(error)).show()
         raise SystemExit(1) from error
     except (ValueError, OSError, RuntimeError, httpx.HTTPError) as error:
-        print(error, file=sys.stderr)
+        click.ClickException(str(error)).show()
         raise SystemExit(1) from error
-    except KeyboardInterrupt:
-        raise SystemExit(130) from None
 
 
 def native_executable() -> Path:
@@ -106,7 +118,10 @@ def execute_runtime(arguments: list[str]) -> None:
     os.execve(executable, [str(executable), *arguments], environment)
 
 
+@cli.command("init")
+@click.argument("directory", type=click.Path(file_okay=False, path_type=Path))
 def initialize(directory: Path) -> None:
+    """Create a Python actor project in DIRECTORY."""
     directory = directory.absolute()
     directory.mkdir(parents=True)  # Refuse existing directories, including empty ones.
     try:
@@ -127,20 +142,25 @@ def initialize(directory: Path) -> None:
     except BaseException:
         shutil.rmtree(directory)
         raise
-    print(
-        f"Created Python actors in {directory}.\n\n  cd {shlex_quote(str(directory))}\n  uv run durable-actors dev\n\nEdit src/actors.py. Generate clients with: uv run durable-actors generate"
+    click.echo(
+        f"Created Python actors in {directory}.\n\n  cd {shlex.quote(str(directory))}\n  uv run durable-actors dev\n\nEdit src/actors.py. Generate clients with: uv run durable-actors generate"
     )
 
 
-def shlex_quote(value: str) -> str:
-    from shlex import quote
-
-    return quote(value)
-
-
+@cli.command()
+@click.argument("entrypoint", required=False, type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--out-dir",
+    "output",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("generated"),
+    show_default=True,
+)
+@click.option("--control-plane-url", "origin", help="Override the configured control plane URL.")
 def generate(entrypoint: str | None, output: Path, origin: str | None) -> None:
+    """Generate typed clients from ENTRYPOINT or the running server."""
     if entrypoint and origin:
-        raise ValueError("--control-plane-url cannot be combined with a source entrypoint")
+        raise click.UsageError("--control-plane-url cannot be combined with a source entrypoint")
     if entrypoint:
         with TemporaryDirectory(prefix="durable-actors-build-") as temporary:
             result = subprocess.run(
@@ -165,7 +185,7 @@ def generate(entrypoint: str | None, output: Path, origin: str | None) -> None:
     from .build import check_actor
 
     check_actor(Path.cwd(), str(output.resolve()))
-    print(f"Generated {len(contract['actors'])} actor contract(s) in {output.resolve()}.")
+    click.echo(f"Generated {len(contract['actors'])} actor contract(s) in {output.resolve()}.")
 
 
 if __name__ == "__main__":

@@ -117,6 +117,12 @@ def runtime_origin(log):
 
 
 def test_init_and_local_generation_need_only_python(tmp_path, cli_env):
+    assert version("durable-actors") in cli(tmp_path, cli_env, "--version").stdout
+    assert "--no-watch" in cli(tmp_path, cli_env, "dev", "--help").stdout
+    invalid_port = cli(tmp_path, cli_env, "dev", "--port", "65536", check=False)
+    assert invalid_port.returncode == 2
+    assert "--port" in invalid_port.stderr
+    assert "Traceback" not in invalid_port.stderr
     cli(tmp_path, cli_env, "init", "counter")
     project = tmp_path / "counter"
     metadata = tomllib.loads((project / "pyproject.toml").read_text())
@@ -130,6 +136,18 @@ def test_init_and_local_generation_need_only_python(tmp_path, cli_env):
     assert (project / ".gitignore").is_file()
     existing = cli(tmp_path, cli_env, "init", "counter", check=False)
     assert existing.returncode != 0
+    assert "Traceback" not in existing.stderr
+    conflicting_source = cli(
+        project,
+        cli_env,
+        "generate",
+        "src/actors.py",
+        "--control-plane-url",
+        "http://localhost",
+        check=False,
+    )
+    assert conflicting_source.returncode == 2
+    assert "cannot be combined" in conflicting_source.stderr
     cli(project, cli_env, "generate", "src/actors.py")
     assert (project / "generated/py.typed").is_file()
     (project / "src/actors.py").write_text(SOURCE.replace("return self.count", 'return "wrong"'))
@@ -196,7 +214,9 @@ def test_observer_assets_proxy_streaming_and_browser_boundaries(tmp_path, cli_en
 
     try:
         assert files("durable_actors_runtime").joinpath("observer/index.html").is_file()
-        assert files("durable_actors_runtime").joinpath("observer/THIRD-PARTY-LICENSES.md").is_file()
+        assert (
+            files("durable_actors_runtime").joinpath("observer/THIRD-PARTY-LICENSES.md").is_file()
+        )
     except ImportError:
         if os.environ.get("DURABLE_ACTORS_TEST_WHEEL"):
             raise

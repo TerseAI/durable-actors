@@ -161,6 +161,7 @@ dependencies = [
 [package.optional-dependencies]
 cli = [
     { name = "anyio" },
+    { name = "click" },
     { name = "datamodel-code-generator" },
     { name = "durable-actors-runtime" },
     { name = "mypy" },
@@ -191,6 +192,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'cli'", specifier = ">=4,<5" },
+    { name = "click", marker = "extra == 'cli'", specifier = ">=8.1,<9" },
     { name = "datamodel-code-generator", marker = "extra == 'codegen'", specifier = ">=0.83,<0.84" },
     { name = "durable-actors", extras = ["codegen"], marker = "extra == 'cli'", specifier = "==0.7.16" },
     { name = "durable-actors-runtime", marker = "extra == 'cli'", directory = "../" },

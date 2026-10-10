@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import webbrowser
 from collections.abc import AsyncIterator
@@ -143,13 +144,20 @@ def observe(origin: str | None, *, open_browser: bool) -> None:
             listener.bind(("127.0.0.1", 0))
             host = f"127.0.0.1:{listener.getsockname()[1]}"
             url = f"http://{host}"
-            print(
-                f"Connected to the control plane.\nObserve: {url}\nPress Ctrl+C to stop.",
-                flush=True,
-            )
-            if open_browser:
-                webbrowser.open(url)
-            server = uvicorn.Server(
+
+            class ObserverServer(uvicorn.Server):
+                async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+                    await super().startup(sockets)
+                    if not self.started:
+                        return
+                    print(
+                        f"Connected to the control plane.\nObserve: {url}\nPress Ctrl+C to stop.",
+                        flush=True,
+                    )
+                    if open_browser:
+                        await asyncio.to_thread(webbrowser.open, url)
+
+            server = ObserverServer(
                 uvicorn.Config(
                     observer_app(client, assets, host), log_level="warning", lifespan="off"
                 )
