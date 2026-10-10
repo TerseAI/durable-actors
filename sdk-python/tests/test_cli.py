@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from durable_actors.cli import native_executable
-from durable_actors.client import Client
+from durable_actors.client import ActorInvocationError, Client
 
 SOURCE = """from durable_actors import Actor, persisted
 class Counter(Actor):
@@ -104,6 +104,11 @@ def eventually(read, child, log, *, timeout=45):
             if result:
                 return result
         except (httpx.HTTPError, ValueError) as error:
+            last = error
+        except ActorInvocationError as error:
+            # Reload briefly withdraws the old host before publishing its replacement.
+            if error.code != "unavailable":
+                raise
             last = error
         time.sleep(0.1)
     pytest.fail(f"Timed out: {last}\n{log.read_text()}")
