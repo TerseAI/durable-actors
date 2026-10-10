@@ -21,14 +21,7 @@ COPY package.json bun.lock bunfig.toml ./
 COPY sdk/package.json ./sdk/package.json
 COPY sdk/bin ./sdk/bin
 COPY packages/observer-ui/package.json ./packages/observer-ui/package.json
-COPY examples/chat/package.json ./examples/chat/package.json
-COPY examples/ai-chat/package.json ./examples/ai-chat/package.json
-COPY examples/documents/package.json ./examples/documents/package.json
-COPY examples/bank-python/package.json ./examples/bank-python/package.json
-COPY examples/bank-typescript/package.json ./examples/bank-typescript/package.json
-COPY examples/cli/package.json ./examples/cli/package.json
-COPY examples/pi-agent/package.json ./examples/pi-agent/package.json
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --filter './sdk' --filter './packages/observer-ui'
 COPY packages/observer-ui ./packages/observer-ui
 COPY sdk/src ./sdk/src
 COPY sdk/scripts/build-client-runtime.mjs ./sdk/scripts/build-client-runtime.mjs
