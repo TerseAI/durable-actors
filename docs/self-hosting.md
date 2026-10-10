@@ -1,15 +1,15 @@
 # Self-host Durable Actors on GCP
 
-Deploy Durable Actors on GKE Sandbox with PostgreSQL and one Standard GCS bucket. Standard GCS is the default. GCS Rapid is an optional acceleration for workloads that need lower state-write latency.
+Deploy Durable Actors on GKE Agent Substrate with PostgreSQL and one Standard GCS bucket. Standard GCS is the default. GCS Rapid is an optional acceleration for workloads that need lower state-write latency.
 
 ## Prerequisites
 
-- GKE Standard with Workload Identity Federation and enforced NetworkPolicy. Use an ordinary node pool for the controller and a COS Sandbox node pool with the `gvisor` RuntimeClass for actors. The actor pool must have nodes in your chosen `placement.zone`.
+- GKE Standard with Workload Identity Federation and enforced NetworkPolicy. Install Agent Substrate and use a separate worker node pool. The chart targets Substrate `v0.2.0-gke.0`; follow the [Substrate prerequisites](../charts/durable-actors/README.md#prerequisites), including projected certificates and managed autoscaling metrics.
 - PostgreSQL reachable from the controller, with a database user allowed to run migrations. Use a TLS connection for a remote database. A private Cloud SQL instance is suitable when your cluster has a supported connection to it.
-- An HTTPS hostname and certificate. The chart can create an Ingress for an existing controller, or you can route an existing HTTPS gateway to its Service. The endpoint must support WebSockets.
+- An HTTPS hostname and certificate. The chart can create a GKE Gateway, or you can route an existing HTTPS gateway to its Service. The endpoint must support WebSockets.
 - Helm, `kubectl`, Google Cloud CLI, and permissions to create the following resources.
 
-Google Cloud is the supported hosting platform. [GKE Sandbox setup](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods) and [Workload Identity setup](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity) describe the cluster configuration.
+Google Cloud is the supported hosting platform. [GKE Agent Substrate setup](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods) and [Workload Identity setup](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity) describe the cluster configuration.
 
 ## Create the bucket and identity
 
@@ -28,10 +28,10 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member="serviceAccount:${GSA}" --role=roles/storage.objectUser
 gcloud iam service-accounts add-iam-policy-binding "$GSA" --project="$PROJECT" \
   --role=roles/iam.workloadIdentityUser \
-  --member="serviceAccount:${PROJECT}.svc.id.goog[actors/actors-durable-actors]"
+  --member="serviceAccount:${PROJECT}.svc.id.goog[actors/actors-terse]"
 ```
 
-The bucket stores ownership, immutable code, and state snapshots under separate prefixes. Actor pods receive credentials scoped to their own state and deployed code. Do not configure lifecycle deletion for referenced state or code. Take PostgreSQL backups and rehearse recovery alongside the retained bucket data.
+The bucket stores ownership, immutable code, and state snapshots under separate prefixes. Actor sandboxes receive credentials scoped to their own state and deployed code. Do not configure lifecycle deletion for referenced state or code. Take PostgreSQL backups and rehearse recovery alongside the retained bucket data.
 
 ## Create credentials
 
@@ -55,15 +55,21 @@ Create `actors-values.yaml`, substituting your actual bucket, identity, hostname
 
 ```yaml
 publicUrl: https://actors.example.com
-placement:
-  zone: us-west4-a
+cluster: {projectId: my-google-project, location: us-west4-a, name: actors}
+region: north-america-west
+credentialsSecret: actors-credentials
+substrate:
+  snapshotLocation: gs://my-actor-snapshots/runtime/
 storage:
-  bucket: my-unique-actor-state
+  mode: standard
+  authorityBucket: my-unique-actor-state
+  artifactBucket: my-unique-actor-state
+  rapid:
+    buckets: []
 serviceAccount:
   googleServiceAccount: actors@my-google-project.iam.gserviceaccount.com
-ingress:
+gateway:
   enabled: true
-  className: my-ingress
   tlsSecret: actors-tls
 ```
 
@@ -73,12 +79,12 @@ Set `VERSION` to the desired [Durable Actors release](https://github.com/TerseAI
 helm upgrade --install actors \
   "https://github.com/TerseAI/durable-actors/releases/download/v${VERSION}/durable-actors-${VERSION}.tgz" \
   --namespace actors --values actors-values.yaml --wait --timeout 10m
-kubectl -n actors rollout status deployment/actors-durable-actors
+kubectl -n actors rollout status deployment/actors-terse
 ```
 
 The same chart is published at `oci://ghcr.io/terseai/charts/durable-actors`; use that reference with `--version "$VERSION"` if you prefer OCI distribution.
 
-Point DNS at your ingress controller. With `ingress.enabled: false`, route your HTTPS gateway to `actors-durable-actors.actors.svc.cluster.local:7100`. Configure the controller's WebSocket timeout through `ingress.annotations` or your external gateway configuration. The public origin is required even when the chart does not create ingress.
+Provision a private snapshot bucket and grant object and bucket metadata access to the Substrate `ate-api-server` and `atelet` identities, as described in the chart prerequisites. Point DNS at your gateway. With `gateway.enabled: false`, route your HTTPS gateway to `actors-terse.actors.svc.cluster.local:7100`. Configure the controller's WebSocket timeout through your gateway configuration. The public origin is required even when the chart does not create ingress.
 
 ## Connect and verify
 
@@ -93,7 +99,7 @@ curl --fail https://actors.example.com/healthz
 
 Use the [deployment registration API](reference/openapi.md) to register compiled actor code and its contract for your project, then generate your application client using the [TypeScript](reference/typescript-guide.md) or [Python](reference/python-guide.md) guide. A healthy controller does not register or deploy an application automatically. Upload immutable compiled artifacts into the configured bucket and register their manifest; artifact format and registration endpoints are described in the [OpenAPI specification](reference/openapi.yaml).
 
-Verify an actor write and read, restart its sandbox, and read the value again. Also verify a WebSocket connection through your chosen ingress. One controller handles HTTP and sockets by default; actors start on demand. Increase `actors.warm` for lower cold-start latency and `replicaCount` for controller redundancy. These settings do not create additional node pools or guarantee capacity.
+Verify an actor write and read, restart its sandbox, and read the value again. Also verify a WebSocket connection through your chosen ingress. Control-plane replicas handle HTTP and sockets by default; actors restore from prepared snapshots on shared workers. Increase `substrate.worker.autoscaling.minReplicas` for ready capacity and set the maximum to fit available node capacity. These settings do not create additional node pools or guarantee capacity.
 
 ## Speed up writes with GCS Rapid
 
@@ -125,7 +131,9 @@ Select Rapid in the installation values:
 
 ```yaml
 storage:
-  bucket: my-unique-actor-state
+  authorityBucket: my-unique-actor-state
+  artifactBucket: my-unique-actor-state
+  archiveBucket: my-unique-actor-state
   mode: rapid
   rapid:
     buckets:
@@ -143,14 +151,14 @@ Pin a release version, review its compatibility notes, and repeat the install co
 
 ```sh
 kubectl -n actors get pods
-kubectl -n actors logs deployment/actors-durable-actors -c control-plane --since=10m
-kubectl -n actors-actors get pods
-kubectl -n actors-actors get events --sort-by=.lastTimestamp
+kubectl -n actors logs deployment/actors-terse -c control-plane --since=10m
+kubectl -n terse-substrate get pods
+kubectl -n terse-substrate get events --sort-by=.lastTimestamp
 ```
 
-- Pending actor pods: check gVisor node capacity, the selected zone, and resource requests.
+- Pending workers or rejected activations: check worker reservations, node capacity, and actor resource requests.
 - Storage permission errors: check bucket roles, the Google service account annotation, and the Workload Identity binding.
-- DNS failures: for host-networked or link-local DNS, add the resolver address to `networkPolicy.dnsCidrs`, such as a `/32` for your cluster's NodeLocal DNS listener.
+- Substrate connection failures: check the projected API token, trust bundle, worker selectors, and snapshot bucket access.
 - Controller startup failures: check PostgreSQL reachability, migration permissions, and the signing-key format.
 - WebSocket disconnects: check ingress upgrade support and connection timeouts.
 

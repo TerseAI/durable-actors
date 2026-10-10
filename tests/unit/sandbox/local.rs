@@ -283,7 +283,6 @@ impl LocalFixture {
                 actor_id: id.into(),
             }),
             code_snapshot: None,
-            spare: None,
             resources: Default::default(),
             runtime_config: None,
             host_config_key: "local".into(),
@@ -382,7 +381,6 @@ async fn shutdown_rejects_new_hosts_before_starting_a_process() -> Result<()> {
         owner_hint: Some("{\"generation\":17,\"record\":{\"epoch\":3}}".into()),
         actor: None,
         code_snapshot: None,
-        spare: None,
         resources: Default::default(),
         runtime_config: None,
 

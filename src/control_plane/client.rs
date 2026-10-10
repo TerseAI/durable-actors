@@ -106,21 +106,6 @@ impl ControlPlaneClient {
         Self::from_channel(channel, token.as_ref())
     }
 
-    pub(crate) async fn prewarm(endpoint: &str) -> Result<Self> {
-        let channel = control_plane_endpoint(endpoint)?
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .keep_alive_while_idle(true)
-            .connect()
-            .await
-            .context("prewarm actor control-plane connection")?;
-        Self::from_channel(channel, "unassigned-spare")
-    }
-
-    pub(crate) fn with_host_token(self, token: &str) -> Result<Self> {
-        self.replace_token(token)?;
-        Ok(self)
-    }
-
     fn from_channel(channel: Channel, token: &str) -> Result<Self> {
         Ok(Self {
             client: ActorControlPlaneServiceClient::new(channel)

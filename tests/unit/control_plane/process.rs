@@ -50,47 +50,12 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
         values.get(name).map(|value| (*value).into())
     })?;
     assert_eq!(config.storage.bucket, "actor-state-test");
-    let resources = &config.sandbox_provider.pool.resources;
+    let resources = &crate::sandbox::ResourceLimits::default();
     assert_eq!((resources.cpu_millis, resources.memory_mib), (1000, 256));
     assert_eq!(resources, &crate::sandbox::ResourceLimits::default());
     assert_eq!(config.sandbox_provider.runtime.host_idle_timeout_ms, 10_000);
     assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
     assert_eq!(config.api_key.as_deref(), Some("api-key"));
-    Ok(())
-}
-
-#[test]
-fn pool_capacity_is_configurable_and_validated() -> Result<()> {
-    let mut values = process_environment();
-    let parse = |values: &HashMap<&str, &str>| {
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
-    };
-    let defaults = parse(&values)?.sandbox_provider.pool;
-    assert_eq!(
-        (defaults.idle, defaults.fleet_maximum, defaults.max_starting),
-        (64, 256, 32)
-    );
-    values.extend([
-        ("DURABLE_ACTORS_SPARE_IDLE", "128"),
-        ("DURABLE_ACTORS_SPARE_FLEET_MAX", "512"),
-        ("DURABLE_ACTORS_SPARE_MAX_STARTING", "4"),
-        ("DURABLE_ACTORS_HOST_CPU_MILLIS", "500"),
-    ]);
-    let configured = parse(&values)?.sandbox_provider.pool;
-    assert_eq!(configured.resources.cpu_millis, 500);
-    assert_eq!(
-        (
-            configured.idle,
-            configured.fleet_maximum,
-            configured.max_starting
-        ),
-        (128, 512, 4)
-    );
-    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "1");
-    assert!(parse(&values).is_err());
-    values.insert("DURABLE_ACTORS_SPARE_FLEET_MAX", "512");
-    values.insert("DURABLE_ACTORS_SPARE_MAX_STARTING", "0");
-    assert!(parse(&values).is_err());
     Ok(())
 }
 
@@ -191,7 +156,7 @@ fn authentication_warning_depends_on_the_listening_address_and_secret() -> Resul
 }
 
 #[test]
-fn rapid_configuration_uses_two_zones_and_gke() -> Result<()> {
+fn production_configuration_uses_substrate_and_two_rapid_zones() -> Result<()> {
     let values = process_environment();
     let config = ControlPlaneProcessConfig::from_lookup(|name| {
         values.get(name).map(|value| (*value).into())
@@ -200,32 +165,11 @@ fn rapid_configuration_uses_two_zones_and_gke() -> Result<()> {
         config.storage.persistence,
         crate::bucket::PersistenceConfig::Rapid { .. }
     ));
+    assert_eq!(config.sandbox_provider.substrate.atespace, "staging");
     assert_eq!(
-        config.sandbox_provider.gke.zones["north-america-west"],
-        vec!["us-west4-a"]
+        config.sandbox_provider.substrate.regions,
+        ["north-america-west"]
     );
-    Ok(())
-}
-
-#[test]
-fn compute_region_accepts_multiple_zones_and_rejects_empty_or_mismatched_sets() -> Result<()> {
-    let mut values = process_environment();
-    values.insert(
-        "DURABLE_ACTORS_GKE_ZONES",
-        r#"{"north-america-west":["us-west4-a","us-west4-b","us-west4-c"]}"#,
-    );
-    let parse = |values: &HashMap<&str, &str>| {
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
-    };
-    parse(&values)?;
-    for zones in [
-        r#"{"north-america-west":[]}"#,
-        r#"{"north-america-west":["us-west4-a","us-east4-b"]}"#,
-        r#"{"north-america-west":["us-west4-a","us-west4-a"]}"#,
-    ] {
-        values.insert("DURABLE_ACTORS_GKE_ZONES", zones);
-        assert!(parse(&values).is_err(), "{zones}");
-    }
     Ok(())
 }
 
@@ -281,9 +225,37 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
             r#"[{"bucket":"rapid-test-a","zone":"us-west4-a"},{"bucket":"rapid-test-b","zone":"us-west4-b"}]"#,
         ),
         (
-            "DURABLE_ACTORS_GKE_ZONES",
-            r#"{"north-america-west":"us-west4-a"}"#,
+            "DURABLE_ACTORS_SUBSTRATE_ENDPOINT",
+            "https://api.ate-system.svc",
         ),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_ROUTER",
+            "http://atenet-router.ate-system.svc",
+        ),
+        ("DURABLE_ACTORS_SUBSTRATE_ATESPACE", "staging"),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_REGIONS",
+            r#"["north-america-west"]"#,
+        ),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE",
+            "/run/substrate/token",
+        ),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE",
+            "/run/substrate/trust-bundle.pem",
+        ),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS",
+            r#"{"workload":"terse"}"#,
+        ),
+        ("DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG", "gvisor-default"),
+        (
+            "DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS",
+            "gs://snapshots/runtime/",
+        ),
+        ("DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS", r#"["8.8.8.8/32"]"#),
+        ("DURABLE_ACTORS_SECRETS_NAMESPACE", "terse-control"),
         ("DURABLE_ACTORS_PUBLIC_URL", "https://actors.example.com"),
         (
             "DURABLE_ACTORS_CONTROL_PLANE_URL",
@@ -359,7 +331,7 @@ fn archive_batch_triggers_are_configurable_and_positive() -> Result<()> {
 }
 
 #[test]
-fn default_region_requires_a_configured_compute_zone() -> Result<()> {
+fn default_region_requires_configured_substrate_workers() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
@@ -371,10 +343,6 @@ fn default_region_requires_a_configured_compute_zone() -> Result<()> {
     values.insert("DURABLE_ACTORS_REGION", "north-america-east");
     assert!(parse(&values).is_err());
     values.remove("DURABLE_ACTORS_REGION");
-    values.insert(
-        "DURABLE_ACTORS_GKE_ZONES",
-        r#"{"north-america-west":"us-west4-b"}"#,
-    );
     assert!(parse(&values).is_ok());
     Ok(())
 }
@@ -409,29 +377,6 @@ fn persistence_selection_rejects_typos_and_conflicting_rapid_configuration() {
             .is_err()
         );
     }
-}
-
-#[test]
-fn single_gke_zone_infers_the_actor_region() -> Result<()> {
-    let mut values = process_environment();
-    values.remove("DURABLE_ACTORS_GKE_ZONES");
-    values.insert("DURABLE_ACTORS_GKE_ZONE", "us-east4-a");
-    let config =
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))?;
-    assert_eq!(config.region.as_deref(), Some("north-america-east"));
-    assert_eq!(
-        config.sandbox_provider.gke.zones["north-america-east"],
-        ["us-east4-a"]
-    );
-    values.insert(
-        "DURABLE_ACTORS_GKE_ZONES",
-        r#"{"north-america-west":"us-west4-a"}"#,
-    );
-    assert!(
-        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
-            .is_err()
-    );
-    Ok(())
 }
 
 #[test]

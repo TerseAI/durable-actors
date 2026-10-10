@@ -39,6 +39,7 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /customer \
+    && chown 10000:10000 /customer \
     && useradd --uid 10000 --create-home --home-dir /home/runtime runtime
 COPY --from=builder /out/durable-actors /usr/local/bin/durable-actors
 COPY LICENSE.md /usr/share/licenses/durable-actors/
@@ -59,6 +60,7 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /customer \
+    && chown 10000:10000 /customer \
     && useradd --uid 10000 --create-home --home-dir /home/runtime runtime
 COPY --from=python-sdk /usr/local /usr/local
 COPY --from=runtime-base /usr/local/bin/durable-actors /usr/local/bin/durable-actors

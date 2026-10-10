@@ -26,7 +26,6 @@ use crate::{
 
 pub(crate) struct HostStorage {
     pub runtime: Arc<RuntimeStorage>,
-    objects: Option<google_cloud_storage::client::Storage>,
     pub(super) stop: CancellationToken,
     observer: Arc<ControlPlaneClient>,
     host: HostId,
@@ -36,6 +35,7 @@ pub(crate) struct HostStorage {
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
     activation: Mutex<Option<ActorActivation>>,
+    handoff: Mutex<Option<crate::bucket::ActivationHandoff>>,
     fence: Mutex<LeaseFence>,
     lease: Mutex<Option<HostLease>>,
     renewal: tokio::sync::Mutex<()>,
@@ -67,7 +67,7 @@ impl HostStorage {
         };
         let mut runtime = RuntimeStorage::new(authority, Arc::new(SystemClock))?;
         if config.persistence.rapid_settings().is_some() {
-            let clients = clients.clone().context("Rapid persistence requires GCS")?;
+            let clients = clients.context("Rapid persistence requires GCS")?;
             let snapshots = Arc::new(crate::bucket::RapidSnapshots::gcs(
                 &config.persistence,
                 clients,
@@ -77,7 +77,6 @@ impl HostStorage {
             runtime = runtime.with_persistence(config.persistence, snapshots)?;
         }
         Ok(Self {
-            objects: clients.map(|clients| clients.storage),
             observer: client,
             stop,
             runtime: Arc::new(runtime),
@@ -88,24 +87,11 @@ impl HostStorage {
             new_actor: false,
             owner_hint: None,
             activation: Mutex::new(None),
+            handoff: Mutex::new(None),
             fence: Mutex::new(LeaseFence::default()),
             lease: Mutex::new(None),
             renewal: tokio::sync::Mutex::new(()),
         })
-    }
-
-    pub(crate) async fn install_code(
-        &self,
-        artifact: &crate::artifacts::ArtifactManifest,
-    ) -> Result<()> {
-        artifact
-            .install(
-                std::path::Path::new("/customer"),
-                self.objects
-                    .as_ref()
-                    .context("GCS artifact client missing")?,
-            )
-            .await
     }
 
     pub(crate) fn with_activation(
@@ -115,6 +101,14 @@ impl HostStorage {
     ) -> Self {
         self.new_actor = new_actor;
         self.owner_hint = owner_hint;
+        self
+    }
+
+    pub(crate) fn with_handoff(
+        mut self,
+        handoff: Option<crate::bucket::ActivationHandoff>,
+    ) -> Self {
+        self.handoff = Mutex::new(handoff);
         self
     }
 
@@ -357,17 +351,39 @@ impl HostLeaseRegistry for HostStorage {
             }),
         };
         let first = self.lease.lock().unwrap().is_none();
-        let lease = if first {
-            let loaded = self
-                .runtime
-                .register_activation(
-                    actor,
-                    request,
-                    &self.region,
-                    self.new_actor,
-                    self.owner_hint.as_ref(),
+        let handoff = if first {
+            self.handoff.lock().unwrap().take()
+        } else {
+            None
+        };
+        let duration_ms = handoff
+            .as_ref()
+            .map(|handoff| {
+                Ok::<_, anyhow::Error>(
+                    handoff
+                        .expires_at_ms()
+                        .saturating_sub(SystemClock.now_ms()?)
+                        .min(request.duration_ms),
                 )
-                .await?;
+            })
+            .transpose()?
+            .unwrap_or(request.duration_ms);
+        let lease = if first {
+            let loaded = if let Some(handoff) = handoff {
+                self.runtime
+                    .adopt_activation(actor, request, &self.region, handoff)
+                    .await?
+            } else {
+                self.runtime
+                    .register_activation(
+                        actor,
+                        request,
+                        &self.region,
+                        self.new_actor,
+                        self.owner_hint.as_ref(),
+                    )
+                    .await?
+            };
             let lease = loaded.placement.lease;
             *self.activation.lock().unwrap() = Some(ActorActivation {
                 owner_epoch: loaded.placement.owner_epoch,
@@ -382,7 +398,7 @@ impl HostLeaseRegistry for HostStorage {
         };
         self.fence.lock().unwrap().confirm(
             started,
-            Duration::from_millis(request.duration_ms),
+            Duration::from_millis(duration_ms),
             Instant::now(),
         )?;
         self.lease.lock().unwrap().replace(lease.clone());

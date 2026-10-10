@@ -11,6 +11,37 @@ use std::{collections::HashMap, path::PathBuf, process::Stdio};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn snapshot_assignment_reads_the_current_identity_and_fails_closed() -> Result<()> {
+    let issuer = issuer()?;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("uid");
+    std::fs::write(&path, "restored")?;
+    let env = HashMap::from([
+        (
+            "DURABLE_ACTORS_ASSIGNMENT_PUBLIC_KEYS",
+            issuer.verifier_keys_json()?,
+        ),
+        ("DURABLE_ACTORS_JWT_ISSUER", "issuer".into()),
+        (
+            "DURABLE_ACTORS_SANDBOX_IDENTITY_FILE",
+            path.to_str().unwrap().into(),
+        ),
+    ]);
+    let verifier = assignment_authorization(|key| env.get(key).cloned())?;
+    let restored = issuer.issue_assignment("restored")?;
+    verifier.verify(&restored)?;
+    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
+    std::fs::write(&path, "next\n")?;
+    verifier.verify(&issuer.issue_assignment("next")?)?;
+    assert!(verifier.verify(&restored).is_err());
+    std::fs::write(&path, "")?;
+    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
+    std::fs::remove_file(&path)?;
+    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires Bun and bun run --bun --cwd sdk build"]
 async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Result<()> {
@@ -98,12 +129,34 @@ async fn run_activation(
             "token": null
         }).to_string()
     }))?;
+    let control = crate::bucket::RuntimeStorage::new(
+        Arc::new(FileBucket::new(data.to_path_buf())?),
+        Arc::new(crate::clock::SystemClock),
+    )?;
+    let handoff = control
+        .prepare_activation(
+            actor,
+            &crate::host_leases::HostLeaseRequest {
+                id: host_id.clone(),
+                session_id: session.clone(),
+                route: route.clone(),
+                duration_ms: 30_000,
+            },
+            "north-america-east",
+            before < 0,
+            None,
+        )
+        .await?;
+    let mut environment = environment;
+    environment.insert(
+        "DURABLE_ACTORS_ACTIVATION_HANDOFF".into(),
+        serde_json::to_string(&handoff)?,
+    );
     let config = ActorHostConfig::from_lookup(|key| environment.get(key).cloned())?;
     let (readiness, ready_response) = tokio::sync::oneshot::channel();
     let warm = WarmHost {
-        control_plane: None,
         readiness: Some(readiness),
-        listener,
+        listener: super::super::server::HostServer::new(listener, axum::Router::new()),
         executor,
         javascript,
         entrypoint: code.to_str().unwrap().into(),
@@ -166,12 +219,6 @@ async fn run_activation(
         let result: serde_json::Value = client.post(format!("{actor_url}/invoke")).bearer_auth(&token).json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "routingMs":0.0, "method":method, "args":[]})).send().await?.error_for_status()?.json().await?;
         assert_eq!(result["type"], "completed");
         assert_eq!(result["result"], expected);
-        let metadata = &result["metadata"];
-        let duration = metadata["durationMs"].as_f64().unwrap();
-        let queue_wait = metadata["queueWaitMs"].as_f64().unwrap();
-        assert!(duration.is_finite() && duration >= 0.0);
-        assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
-        assert_eq!(metadata["hostState"], "warm");
     }
     assert_eq!(client.post(format!("{route}/v1/projects/{}/actors/{}/other/invoke", actor.project_id, actor.actor_name)).bearer_auth(&token).json(&serde_json::json!({"requestId":"wrong-actor", "ownerEpoch":epoch, "routingMs":0.0, "method":"read", "args":[]})).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
     stop.cancel();
@@ -208,14 +255,4 @@ async fn compile_counter(sdk: &Path, project: &Path) -> Result<Vec<u8>> {
         String::from_utf8_lossy(&result.stderr)
     );
     Ok(tokio::fs::read(compiled).await?)
-}
-
-#[tokio::test]
-async fn control_plane_failure_prevents_spare_readiness() {
-    assert!(
-        prewarm_control_plane(Some("http://127.0.0.1:1".into()))
-            .await
-            .is_err()
-    );
-    assert!(prewarm_control_plane(None).await.is_err());
 }

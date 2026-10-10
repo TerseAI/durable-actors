@@ -1,13 +1,13 @@
+pub(crate) mod transport;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::host::HostId;
 
-pub(crate) mod gke;
 mod local;
 mod local_store;
-pub(crate) mod pool;
+pub(crate) mod substrate;
 
 pub(crate) use local::LocalSandboxProvider;
 
@@ -27,43 +27,13 @@ impl Default for ResourceLimits {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpareHandle {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub control_route: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub control_token: String,
-    pub name: String,
-    pub resource_id: String,
-    pub route: String,
-    pub canonical_region: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SpareKind {
-    Actor,
-}
-
-impl SpareKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Actor => "actor",
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateSpareRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_plane_url: Option<String>,
-    pub kind: SpareKind,
-    pub name: String,
+pub struct RuntimeTemplateRequest {
+    pub code_snapshot: Option<String>,
     pub image_ref: String,
     pub canonical_region: String,
-    pub resources: ResourceLimits,
+    pub resources: Vec<ResourceLimits>,
+    pub jwt_public_keys: String,
+    pub jwt_issuer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -74,7 +44,6 @@ pub struct EnsureHostRequest {
     pub owner_hint: Option<String>,
     pub actor: Option<crate::actor::ActorKey>,
     pub code_snapshot: Option<String>,
-    pub spare: Option<SpareHandle>,
     pub resources: ResourceLimits,
     pub runtime_config: Option<String>,
 
@@ -157,17 +126,14 @@ impl std::error::Error for HostNotReady {}
 
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    fn bootstraps_storage(&self) -> bool {
+        false
+    }
+
+    async fn prepare_runtime(&self, request: &RuntimeTemplateRequest) -> Result<()>;
     async fn wait_ready(&self, _host: &HostId) -> Result<()> {
         Ok(())
     }
-
-    async fn create_spare(&self, _request: &CreateSpareRequest) -> Result<SpareHandle> {
-        anyhow::bail!("provider does not support generic spares")
-    }
-    async fn retire_spare(&self, _request: &SpareHandle) -> Result<()> {
-        anyhow::bail!("provider does not support generic spares")
-    }
-    async fn stopped_spares(&self, spares: &[SpareHandle]) -> Result<Vec<String>>;
 
     async fn ensure_host(&self, request: &EnsureHostRequest) -> Result<ActorHostHandle>;
     async fn terminate_hosts(&self, request: &TerminateHostsRequest) -> Result<HostTermination>;

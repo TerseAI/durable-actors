@@ -1,27 +1,3 @@
-publicUrl: ""
-placement:
-  zone: ""
-storage:
-  bucket: ""
-  mode: standard
-  rapid:
-    buckets: []
-credentialsSecret: actors-credentials
-serviceAccount:
-  googleServiceAccount: ""
-ingress:
-  enabled: false
-  className: ""
-  tlsSecret: ""
-  annotations: {}
-replicaCount: 1
-actors:
-  warm: 0
-  cpuMillis: 500
-  memoryMiB: 256
-resources:
-  requests: {cpu: 250m, memory: 512Mi}
-  limits: {memory: 1Gi}
 images:
   # Release packaging supplies immutable digests for all three images.
   controlPlane:
@@ -33,7 +9,79 @@ images:
   python:
     repository: us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/durable-actors
     digest: ""
-sandboxNamespace: ""
-nodeSelector: {}
-networkPolicy:
-  dnsCidrs: []
+cluster:
+  projectId: ""
+  location: ""
+  name: ""
+replicaCount: 2
+publicUrl: https://actors.useterse.ai
+region: north-america-west
+storage:
+  mode: standard
+  authorityBucket: ""
+  artifactBucket: ""
+  archiveBucket: ""
+  rapid:
+    buckets: []
+    archiveBatchBytes: 16777216
+    archiveBatchIntervalMs: 10000
+cloudSql:
+  instanceConnectionName: ""
+  image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
+# Existing Secret in the release namespace, with postgres-url, jwt-signing-key, api-key.
+credentialsSecret: terse-credentials
+serviceAccount:
+  googleServiceAccount: ""
+controlPlane:
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+sockets:
+  maxConnectionsPerActor: 32768
+  dedicatedGateway: false
+  replicaCount: 2
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+hostIdleTimeoutMs: 10000
+gateway:
+  enabled: true
+  className: gke-l7-global-external-managed
+  # Existing TLS Secret in the release namespace, valid for publicUrl's hostname.
+  tlsSecret: actors-tls
+  preSharedCert: ""
+  addressName: ""
+substrate:
+  endpoint: https://api.ate-system.svc
+  router: http://atenet-router.ate-system.svc
+  atespace: terse
+  namespace: terse-substrate
+  workerPoolName: shared
+  workerLabels: {workload: terse-substrate}
+  sandboxConfig: gvisor-default
+  snapshotLocation: ""
+  trustBundleName: servicedns.podcert.ate.dev:identity:primary-bundle
+  worker:
+    autoscaling:
+      minReplicas: 1
+      maxReplicas: 3
+      targetAllocationPercent: 70
+      scaleDownStabilizationSeconds: 300
+    image: us-docker.pkg.dev/gke-substrate-release/substrate/ateom-gvisor:v0.2.0-gke.0@sha256:744175f4531187f08261176f1c395aaab4b57394acc9842d935c113f5559db8c
+    cpu: "4"
+    memory: 8Gi
+    nodeSelector:
+      terse.ai/substrate: "true"
+      ate.dev/substrate-version: v0.2.0-gke.0
+    tolerations:
+      - {key: terse.ai/substrate, operator: Equal, value: "true", effect: NoSchedule}
+  # Public IPv4 only; the runtime adds its control-plane service IP explicitly.
+  egressCidrs: ["1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/7", "11.0.0.0/8", "12.0.0.0/6", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/3", "96.0.0.0/6", "100.0.0.0/10", "100.128.0.0/9", "101.0.0.0/8", "102.0.0.0/7", "104.0.0.0/5", "112.0.0.0/5", "120.0.0.0/6", "124.0.0.0/7", "126.0.0.0/8", "128.0.0.0/3", "160.0.0.0/5", "168.0.0.0/8", "169.0.0.0/9", "169.128.0.0/10", "169.192.0.0/11", "169.224.0.0/12", "169.240.0.0/13", "169.248.0.0/14", "169.252.0.0/15", "169.255.0.0/16", "170.0.0.0/7", "172.0.0.0/12", "172.32.0.0/11", "172.64.0.0/10", "172.128.0.0/9", "173.0.0.0/8", "174.0.0.0/7", "176.0.0.0/4", "192.0.0.0/9", "192.128.0.0/11", "192.160.0.0/13", "192.169.0.0/16", "192.170.0.0/15", "192.172.0.0/14", "192.176.0.0/12", "192.192.0.0/10", "193.0.0.0/8", "194.0.0.0/7", "196.0.0.0/6", "200.0.0.0/5", "208.0.0.0/4"]

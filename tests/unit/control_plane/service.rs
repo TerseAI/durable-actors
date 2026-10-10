@@ -122,8 +122,7 @@ impl HostProvisioner for FakeRetiringProvisioner {
 }
 
 #[tokio::test]
-async fn gcs_routes_use_the_hosts_epoch_without_claiming_or_preparing_in_the_control_plane()
--> Result<()> {
+async fn gcs_routes_use_the_provisioned_hosts_epoch() -> Result<()> {
     struct Provisioner(HostLease);
     #[async_trait]
     impl HostProvisioner for Provisioner {
@@ -589,28 +588,10 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[],
         "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
     }))?;
-    let pool = crate::sandbox::pool::SparePool::new(
-        crate::postgres::PostgresDatabase::lazy("postgresql://localhost:1/unavailable")?,
-        provisioner.provider.clone(),
-        crate::sandbox::pool::PoolConfig {
-            control_plane_url: None,
-            kind: crate::sandbox::SpareKind::Actor,
-            idle: 0,
-            fleet_maximum: 64,
-            max_starting: 8,
-            idle_ttl_seconds: 600,
-            regions: vec!["north-america-east".into()],
-            resources: crate::sandbox::ResourceLimits {
-                cpu_millis: 4000,
-                memory_mib: 8192,
-            },
-        },
-    );
-    let provisioner = provisioner.with_pool(pool);
     for (actor_name, cpu_millis, memory_mib) in [
-        ("Counter", 2500, 8192),
-        ("Room", 4000, 4096),
-        ("Plain", 4000, 8192),
+        ("Counter", 2500, 256),
+        ("Room", 1000, 4096),
+        ("Plain", 1000, 256),
     ] {
         let actor = ActorKey {
             project_id: "default".into(),
@@ -1817,4 +1798,72 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         sockets,
     )?);
     Ok(service)
+}
+
+#[tokio::test]
+async fn provider_bootstrap_keeps_deployment_access_without_serializing_launch_credentials()
+-> Result<()> {
+    struct Provider;
+    #[async_trait]
+    impl SandboxProvider for Provider {
+        fn bootstraps_storage(&self) -> bool {
+            true
+        }
+        async fn prepare_runtime(&self, _: &crate::sandbox::RuntimeTemplateRequest) -> Result<()> {
+            Ok(())
+        }
+        async fn ensure_host(
+            &self,
+            request: &crate::sandbox::EnsureHostRequest,
+        ) -> Result<crate::sandbox::ActorHostHandle> {
+            ensure!(
+                request.runtime_config.is_none(),
+                "credentials were issued before provider startup"
+            );
+            anyhow::bail!("provider reached")
+        }
+        async fn terminate_hosts(
+            &self,
+            _: &crate::sandbox::TerminateHostsRequest,
+        ) -> Result<crate::sandbox::HostTermination> {
+            unreachable!()
+        }
+    }
+    let access = Arc::new(crate::bucket::access::RuntimeAccess::new(
+        crate::bucket::access::BucketLocation::File {
+            directory: std::env::temp_dir(),
+        },
+        crate::bucket::PersistenceConfig::Local,
+    )?);
+    let provisioner = SandboxHostProvisioner::new(
+        Arc::new(Provider),
+        HostSandboxRuntimeConfig {
+            control_plane_url: "http://control".into(),
+            jwt_issuer: "issuer".into(),
+            invocation_jwt_audience: "invocation".into(),
+            host_idle_timeout_ms: 10000,
+        },
+        test_issuer()?,
+        Some(super::super::process::RuntimeImages {
+            typescript: "image".into(),
+            python: "python".into(),
+        }),
+    )
+    .with_runtime_access(access);
+    let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
+        "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[]
+    }))?;
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let error = provisioner
+        .launch(&spec, "north-america-west", &actor, true, None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), "provider reached");
+    assert!(provisioner.runtime_access.is_some());
+    Ok(())
 }

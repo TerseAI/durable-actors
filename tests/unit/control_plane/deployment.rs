@@ -54,6 +54,13 @@ async fn bundle_registration_preserves_code_and_contract_during_secret_rotation(
     assert_eq!(active.actor_entrypoint.as_deref(), Some("actors.mjs"));
     assert_eq!(active.code_snapshot, Some(bundle.encode()?));
     assert!(active.sandboxes.contains_key("ChatRoom"));
+    assert!(
+        provider.prepared.lock().unwrap()[0].contains(&crate::sandbox::ResourceLimits {
+            cpu_millis: 2000,
+            memory_mib: 4096,
+        }),
+        "deployment must prepare the contract's resource shape before publication"
+    );
     let mut current: serde_json::Value = client
         .get(&url)
         .bearer_auth("api-key")
@@ -344,13 +351,22 @@ fn contract() -> serde_json::Value {
 #[derive(Default)]
 struct Provider {
     retired: Mutex<Vec<String>>,
+    prepared: Mutex<Vec<Vec<crate::sandbox::ResourceLimits>>>,
 }
 
 #[async_trait]
 impl SandboxProvider for Provider {
-    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
-        anyhow::bail!("unexpected spare inspection")
+    async fn prepare_runtime(
+        &self,
+        request: &crate::sandbox::RuntimeTemplateRequest,
+    ) -> Result<()> {
+        self.prepared
+            .lock()
+            .unwrap()
+            .push(request.resources.clone());
+        Ok(())
     }
+
     async fn ensure_host(&self, _: &EnsureHostRequest) -> Result<ActorHostHandle> {
         anyhow::bail!("no actor invocation in deployment test")
     }
