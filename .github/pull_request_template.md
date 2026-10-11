@@ -1,5 +1,7 @@
 ## What changed and why?
 
+<!-- Use a branch such as your-name/DUR-123-summary and include Fixes DUR-123 below. -->
+
 Describe the problem and the resulting behavior. Link related issues.
 
 ## Validation

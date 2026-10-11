@@ -155,6 +155,8 @@ Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64.
 
 ## Open a pull request
 
+Include exactly one Durable Actors ticket ID in the source branch, for example `your-name/DUR-123-fix-reconnect`. The `Ticket branch` check rejects missing, malformed, ambiguous, or other-team IDs. Release PRs follow the same rule. This checks the identifier format without accessing Linear; ask a maintainer for the corresponding DUR ticket if you do not have Linear access. Include `Fixes DUR-123` in the PR description so the integration can link and complete the ticket.
+
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
 Contributions are made under the repository's [MIT license](LICENSE.md). See also the [Contributor License Agreement](CLA.md).

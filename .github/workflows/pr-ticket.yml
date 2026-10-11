@@ -1,0 +1,22 @@
+name: PR ticket
+
+on:
+    pull_request:
+        types: [opened, reopened, synchronize, edited]
+
+permissions:
+    contents: read
+
+jobs:
+    ticket:
+        name: Ticket branch
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Test branch validation
+              run: node --test tests/scripts/pr-ticket.test.mjs
+            - name: Require a Durable Actors ticket
+              env:
+                  PR_HEAD_REF: ${{ github.head_ref }}
+              run: node scripts/check-pr-ticket.mjs
