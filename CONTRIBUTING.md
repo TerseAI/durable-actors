@@ -157,6 +157,6 @@ Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64.
 
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
-Contributions are made under the repository's [MIT license](LICENSE.md).
+Contributions are made under the repository's [MIT license](LICENSE.md). See also the [Contributor License Agreement](CLA.md).
 
 Published chart packages include all three image digests from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.
