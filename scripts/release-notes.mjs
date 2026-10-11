@@ -11,13 +11,19 @@ export function formatReleaseNotes(body) {
         const bullet = /^[*-] (.+)$/.exec(line)
         if (!bullet || section === "New Contributors") continue
         if (!Object.hasOwn(sections, section)) throw new Error(`Classify this PR with release:feature, release:fix, or release:skip before releasing: ${bullet[1]}`)
-        sections[section].push(`- ${bullet[1]}`)
+        sections[section].push(releaseBullet(bullet[1]))
     }
     return (
         Object.entries(sections)
             .map(([title, lines]) => [`## ${title}`, lines.join("\n")].filter(Boolean).join("\n\n"))
             .join("\n\n") + "\n"
     )
+}
+
+function releaseBullet(change) {
+    const match = /^(.+) by @\S+ in (https:\/\/github\.com\/TerseAI\/durable-actors\/pull\/([1-9]\d*))$/.exec(change)
+    if (!match) throw new Error(`Could not read the PR link from this generated change: ${change}`)
+    return `- ${match[1]} ([#${match[3]}](${match[2]}))`
 }
 
 function main() {
