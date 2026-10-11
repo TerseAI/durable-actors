@@ -7,9 +7,16 @@ export function ticketFromBranch(branch) {
     return tickets[0][1].toUpperCase()
 }
 
+export function releaseCategory(labels) {
+    const categories = labels.filter(label => ["release:feature", "release:fix", "release:skip"].includes(label))
+    if (categories.length !== 1) throw new Error("Choose exactly one release label: release:feature, release:fix, or release:skip. A maintainer can apply it for external contributors.")
+    return categories[0].slice("release:".length)
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     try {
         console.log(`Ticket identifier: ${ticketFromBranch(process.env.PR_HEAD_REF)}`)
+        console.log(`Release category: ${releaseCategory(JSON.parse(process.env.PR_LABELS ?? "[]"))}`)
     } catch (error) {
         console.error(error.message)
         process.exitCode = 1
