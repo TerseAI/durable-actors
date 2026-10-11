@@ -1,6 +1,6 @@
-# Terse Contributor License Agreement
+# Durable Actors Contributor License Agreement
 
-By submitting a contribution to Terse AI, I give Terse AI permission to use, copy, modify, distribute, make available, sublicense, and license my contribution on any terms Terse AI chooses, including under the Sustainable Use License, proprietary licenses, commercial licenses, or future licenses.
+By submitting a contribution to Durable Actors, I give Terse AI permission to use, copy, modify, distribute, make available, sublicense, and license my contribution on any terms Terse AI chooses, including under the Sustainable Use License, proprietary licenses, commercial licenses, or future licenses.
 
 I am giving Terse AI this license so that Terse AI can accept my contribution into its project and distribute the project under its chosen licensing model.
 
