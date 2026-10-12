@@ -1,33 +1,71 @@
 {
   "type": "object",
-  "additionalProperties": false,
   "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
     "publicUrl": {
       "type": "string",
       "pattern": "^https://[^/?#@]+/?$"
     },
-    "placement": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "zone": {
-          "type": "string",
-          "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
-        }
-      },
-      "required": [
-        "zone"
-      ]
+    "region": {
+      "type": "string",
+      "minLength": 1
     },
     "storage": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "bucket": {
+        "authorityBucket": {
           "type": "string",
-          "minLength": 3,
-          "maxLength": 63,
-          "pattern": "^[a-z0-9][a-z0-9._-]+[a-z0-9]$"
+          "minLength": 3
+        },
+        "artifactBucket": {
+          "type": "string",
+          "minLength": 3
+        },
+        "archiveBucket": {
+          "type": "string"
+        },
+        "rapid": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "buckets"
+          ],
+          "properties": {
+            "buckets": {
+              "type": "array",
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "bucket",
+                  "zone"
+                ],
+                "properties": {
+                  "bucket": {
+                    "type": "string",
+                    "minLength": 3
+                  },
+                  "zone": {
+                    "type": "string",
+                    "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+                  }
+                }
+              }
+            },
+            "archiveBatchBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "archiveBatchIntervalMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         },
         "mode": {
           "type": "string",
@@ -35,54 +73,19 @@
             "standard",
             "rapid"
           ]
-        },
-        "rapid": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "buckets": {
-              "type": "array",
-              "maxItems": 2,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "bucket": {
-                    "type": "string",
-                    "minLength": 3,
-                    "maxLength": 63,
-                    "pattern": "^[a-z0-9][a-z0-9._-]+[a-z0-9]$"
-                  },
-                  "zone": {
-                    "type": "string",
-                    "pattern": "^[a-z]+-[a-z]+[0-9]+-[a-z]$"
-                  }
-                },
-                "required": [
-                  "bucket",
-                  "zone"
-                ]
-              }
-            }
-          },
-          "required": [
-            "buckets"
-          ]
         }
       },
       "required": [
-        "bucket",
-        "mode",
-        "rapid"
-      ]
-    },
-    "credentialsSecret": {
-      "type": "string",
-      "minLength": 1
+        "authorityBucket",
+        "artifactBucket",
+        "archiveBucket",
+        "rapid",
+        "mode"
+      ],
+      "additionalProperties": false
     },
     "serviceAccount": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "googleServiceAccount": {
           "type": "string",
@@ -93,93 +96,145 @@
         "googleServiceAccount"
       ]
     },
-    "ingress": {
+    "sockets": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "enabled": {
+        "maxConnectionsPerActor": {
+          "type": "integer",
+          "maximum": 32768,
+          "minimum": 1
+        },
+        "dedicatedGateway": {
           "type": "boolean"
         },
-        "className": {
-          "type": "string"
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 2
         },
-        "tlsSecret": {
-          "type": "string"
+        "nodeSelector": {
+          "type": "object"
         },
-        "annotations": {
+        "resources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "maxConnectionsPerActor",
+        "dedicatedGateway",
+        "replicaCount"
+      ]
+    },
+    "substrate": {
+      "type": "object",
+      "required": [
+        "endpoint",
+        "router",
+        "atespace",
+        "snapshotLocation",
+        "worker",
+        "egressCidrs"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "snapshotLocation": {
+          "type": "string",
+          "pattern": "^gs://[^/]+/.*/$|^gs://[^/]+/$"
+        },
+        "atespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "worker": {
           "type": "object",
-          "additionalProperties": {
+          "required": [
+            "cpu",
+            "memory",
+            "image",
+            "autoscaling"
+          ],
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            },
+            "image": {
+              "type": "string",
+              "pattern": "@sha256:[a-f0-9]{64}$"
+            },
+            "autoscaling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "minReplicas",
+                "maxReplicas",
+                "targetAllocationPercent",
+                "scaleDownStabilizationSeconds"
+              ],
+              "properties": {
+                "minReplicas": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxReplicas": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "targetAllocationPercent": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 90
+                },
+                "scaleDownStabilizationSeconds": {
+                  "type": "integer",
+                  "minimum": 120,
+                  "maximum": 3600
+                }
+              }
+            }
+          }
+        },
+        "egressCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
             "type": "string"
           }
         }
-      },
-      "required": [
-        "enabled",
-        "className",
-        "tlsSecret",
-        "annotations"
-      ]
-    },
-    "replicaCount": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 100
-    },
-    "actors": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "warm": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 256
-        },
-        "cpuMillis": {
-          "type": "integer",
-          "minimum": 100,
-          "maximum": 64000
-        },
-        "memoryMiB": {
-          "type": "integer",
-          "minimum": 128,
-          "maximum": 262144
-        }
-      },
-      "required": [
-        "warm",
-        "cpuMillis",
-        "memoryMiB"
-      ]
-    },
-    "resources": {
-      "type": "object"
-    },
-    "sandboxNamespace": {
-      "type": "string",
-      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-      "maxLength": 63
-    },
-    "nodeSelector": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
       }
     },
-    "networkPolicy": {
+    "cluster": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {
-        "dnsCidrs": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      },
       "required": [
-        "dnsCidrs"
-      ]
+        "projectId",
+        "location",
+        "name"
+      ],
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*$"
+        }
+      }
     },
     "images": {
       "type": "object",
@@ -203,19 +258,13 @@
     }
   },
   "required": [
-    "publicUrl",
-    "placement",
-    "storage",
-    "credentialsSecret",
-    "serviceAccount",
-    "ingress",
-    "replicaCount",
-    "actors",
-    "resources",
     "images",
-    "sandboxNamespace",
-    "nodeSelector",
-    "networkPolicy"
+    "replicaCount",
+    "publicUrl",
+    "region",
+    "storage",
+    "serviceAccount",
+    "substrate"
   ],
   "$schema": "https://json-schema.org/draft-07/schema#",
   "definitions": {

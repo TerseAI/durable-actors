@@ -65,6 +65,17 @@ pub struct OwnershipHint {
     record: Ownership,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct ActivationHandoff {
+    record: Ownership,
+}
+
+impl ActivationHandoff {
+    pub(crate) fn expires_at_ms(&self) -> u64 {
+        self.record.lease.expires_at_ms
+    }
+}
+
 pub struct LoadedActor {
     pub placement: ObjectPlacement,
     pub state: Option<Bytes>,

@@ -6,16 +6,17 @@ mod lease_maintenance;
 mod persistence;
 mod process;
 mod queues;
+mod server;
 pub(crate) mod sockets;
-mod spare;
 pub(crate) mod storage;
+mod warm;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub(crate) use self::process::host_idle_timeout_ms;
 pub use self::process::{ActorHostConfig, serve_actor_host};
-pub use self::spare::serve_spare;
+pub use self::warm::serve_warm;
 pub(crate) use self::{
     actor_host::ActorHost,
     lease_maintenance::{HostLeaseMaintainer, LeaseRenewalTask},

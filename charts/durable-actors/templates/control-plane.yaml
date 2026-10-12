@@ -1,57 +1,105 @@
-{{- include "actors.validate" . -}}
+{{- include "terse.validate" . -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "actors.name" . }}
+  name: {{ include "terse.name" . }}
   annotations:
-    iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.googleServiceAccount | quote }}
+    iam.gke.io/gcp-service-account: {{ required "serviceAccount.googleServiceAccount is required" .Values.serviceAccount.googleServiceAccount | quote }}
+{{- $workloads := list (dict "name" (include "terse.name" .) "component" "control-plane" "replicas" .Values.replicaCount "config" .Values.controlPlane) }}
+{{- if .Values.sockets.dedicatedGateway }}
+{{- $workloads = append $workloads (dict "name" (include "terse.socketGatewayName" .) "component" "socket-gateway" "replicas" .Values.sockets.replicaCount "config" .Values.sockets) }}
+{{- end }}
+{{- range $workload := $workloads }}
+{{- $name := $workload.name }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "actors.name" . }}
+  name: {{ $name }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ $workload.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "actors.name" . }}
+      app.kubernetes.io/name: {{ include "terse.name" $ }}
+      app.kubernetes.io/component: {{ $workload.component }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "actors.name" . }}
+        app.kubernetes.io/name: {{ include "terse.name" $ }}
+        app.kubernetes.io/component: {{ $workload.component }}
     spec:
-      serviceAccountName: {{ include "actors.name" . }}
+      serviceAccountName: {{ include "terse.name" $ }}
       terminationGracePeriodSeconds: 60
-      {{- with .Values.nodeSelector }}
+      {{- with $workload.config.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: sandbox.gke.io/runtime
-                    operator: NotIn
-                    values: [gvisor]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          {{- if ne $.Values.storage.durability "zonal" }}
+          minDomains: 2
+          {{- end }}
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "terse.name" $ }}
+              app.kubernetes.io/component: {{ $workload.component }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
-      containers:
-        - name: control-plane
-          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
-          ports:
-            - {name: http, containerPort: 7100}
+      {{- if $.Values.cloudSql.instanceConnectionName }}
+      initContainers:
+        - name: cloud-sql-proxy
+          image: {{ $.Values.cloudSql.image | quote }}
+          restartPolicy: Always
+          args:
+            - --address=127.0.0.1
+            - --port=5432
+            - --private-ip
+            - --structured-logs
+            - --health-check
+            - --http-address=0.0.0.0
+            - --http-port=9090
+            - {{ $.Values.cloudSql.instanceConnectionName | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          startupProbe:
+            httpGet: {path: /startup, port: 9090}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /liveness, port: 9090}
+            periodSeconds: 10
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "terse.image" $.Values.images.controlPlane | quote }}
+          ports:
+            - name: http
+              containerPort: 7100
+            - name: metrics
+              containerPort: 9091
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $workload.config.resources | nindent 12 }}
           volumeMounts:
-            - {name: tmp, mountPath: /tmp}
+            - name: tmp
+              mountPath: /tmp
+            - name: substrate-auth
+              mountPath: /run/substrate
+              readOnly: true
           startupProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 5
@@ -65,59 +113,86 @@ spec:
           env:
             - {name: DURABLE_ACTORS_PROCESS_ROLE, value: control_plane}
             - {name: DURABLE_ACTORS_CONTROL_PLANE_BIND, value: "0.0.0.0:7100"}
+            - {name: DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS, value: {{ or (not $.Values.sockets.dedicatedGateway) (eq $workload.component "socket-gateway") | quote }}}
             - name: DURABLE_ACTORS_GATEWAY_IP
               valueFrom:
                 fieldRef: {fieldPath: status.podIP}
             - {name: DURABLE_ACTORS_GATEWAY_ROUTE, value: "http://$(DURABLE_ACTORS_GATEWAY_IP):7100"}
             - name: DURABLE_ACTORS_CONTROL_PLANE_URL
-              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "actors.name" .) .Release.Namespace | quote }}
-            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
-            - {name: DURABLE_ACTORS_TYPESCRIPT_IMAGE, value: {{ include "actors.image" .Values.images.typescript | quote }}}
-            - {name: DURABLE_ACTORS_PYTHON_IMAGE, value: {{ include "actors.image" .Values.images.python | quote }}}
-            - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ include "actors.sandboxNamespace" . | quote }}}
-            - {name: DURABLE_ACTORS_GKE_ZONE, value: {{ .Values.placement.zone | quote }}}
-            - {name: DURABLE_ACTORS_PERSISTENCE, value: {{ .Values.storage.mode | quote }}}
-            - {name: DURABLE_ACTORS_BUCKET, value: {{ .Values.storage.bucket | quote }}}
-            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ .Values.storage.bucket | quote }}}
-            {{- if eq .Values.storage.mode "rapid" }}
-            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ .Values.storage.bucket | quote }}}
-            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ .Values.storage.rapid.buckets | toJson | quote }}}
+              value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "terse.name" $) $.Release.Namespace | quote }}
+            - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ $.Values.publicUrl | quote }}}
+            - {name: DURABLE_ACTORS_REGION, value: {{ $.Values.region | quote }}}
+            - {name: DURABLE_ACTORS_TYPESCRIPT_IMAGE, value: {{ include "terse.image" $.Values.images.typescript | quote }}}
+            - {name: DURABLE_ACTORS_PYTHON_IMAGE, value: {{ include "terse.image" $.Values.images.python | quote }}}
+            - {name: DURABLE_ACTORS_METRICS_BIND, value: "0.0.0.0:9091"}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ENDPOINT, value: {{ $.Values.substrate.endpoint | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ROUTER, value: {{ $.Values.substrate.router | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_ATESPACE, value: {{ $.Values.substrate.atespace | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_REGIONS, value: {{ list $.Values.region | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS, value: {{ $.Values.substrate.workerLabels | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG, value: {{ $.Values.substrate.sandboxConfig | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS, value: {{ $.Values.substrate.snapshotLocation | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS, value: {{ $.Values.substrate.egressCidrs | toJson | quote }}}
+            - {name: DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE, value: /run/substrate/token}
+            - {name: DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE, value: /run/substrate/trust-bundle.pem}
+            - {name: DURABLE_ACTORS_SECRETS_NAMESPACE, value: {{ $.Release.Namespace | quote }}}
+            - {name: DURABLE_ACTORS_BUCKET, value: {{ required "storage.authorityBucket is required" $.Values.storage.authorityBucket | quote }}}
+            - {name: DURABLE_ACTORS_ARTIFACT_BUCKET, value: {{ required "storage.artifactBucket is required" $.Values.storage.artifactBucket | quote }}}
+            - {name: DURABLE_ACTORS_PERSISTENCE, value: {{ $.Values.storage.mode | quote }}}
+            {{- if eq $.Values.storage.mode "rapid" }}
+            - {name: DURABLE_ACTORS_RAPID_BUCKETS, value: {{ $.Values.storage.rapid.buckets | toJson | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: {{ $.Values.storage.rapid.archiveBatchBytes | int64 | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: {{ $.Values.storage.rapid.archiveBatchIntervalMs | int64 | quote }}}
+            - {name: DURABLE_ACTORS_ARCHIVE_BUCKET, value: {{ required "storage.archiveBucket is required" $.Values.storage.archiveBucket | quote }}}
             {{- end }}
-            - {name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT, value: {{ .Values.serviceAccount.googleServiceAccount | quote }}}
-            - {name: DURABLE_ACTORS_SPARE_IDLE, value: {{ .Values.actors.warm | quote }}}
-            - {name: DURABLE_ACTORS_HOST_CPU_MILLIS, value: {{ .Values.actors.cpuMillis | quote }}}
-            - {name: DURABLE_ACTORS_HOST_MEMORY_MIB, value: {{ .Values.actors.memoryMiB | quote }}}
+            - name: DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT
+              value: {{ $.Values.serviceAccount.googleServiceAccount | quote }}
+            - {name: DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS, value: {{ $.Values.hostIdleTimeoutMs | quote }}}
+            - {name: DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS, value: {{ $.Values.sockets.maxConnectionsPerActor | quote }}}
             - name: DURABLE_ACTORS_POSTGRES_URL
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: postgres-url}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: postgres-url}
             - name: DURABLE_ACTORS_JWT_SIGNING_KEY
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: jwt-signing-key}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: jwt-signing-key}
             - name: DURABLE_ACTORS_SECRET
               valueFrom:
-                secretKeyRef: {name: {{ .Values.credentialsSecret | quote }}, key: api-key}
+                secretKeyRef: {name: {{ $.Values.credentialsSecret | quote }}, key: api-key}
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: substrate-auth
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+              - clusterTrustBundle:
+                  name: {{ $.Values.substrate.trustBundleName | quote }}
+                  path: trust-bundle.pem
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "actors.name" . }}
+  name: {{ $name }}
 spec:
   selector:
-    app.kubernetes.io/name: {{ include "actors.name" . }}
+    app.kubernetes.io/name: {{ include "terse.name" $ }}
+    app.kubernetes.io/component: {{ $workload.component }}
   ports:
-    - {name: http, port: 7100, targetPort: http}
-{{- if gt (int .Values.replicaCount) 1 }}
+    - name: http
+      port: 7100
+      targetPort: http
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "actors.name" . }}
+  name: {{ $name }}
 spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "actors.name" . }}
+      app.kubernetes.io/name: {{ include "terse.name" $ }}
+      app.kubernetes.io/component: {{ $workload.component }}
 {{- end }}

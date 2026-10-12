@@ -37,16 +37,28 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Capacity and placement
 
+Actor resource limits come from `@Compute` (default 1 CPU and 256 MiB). Resource shapes use the same WorkerPool; deployment registration prepares snapshots containing customer code before activation. Worker capacity must cover concurrent reservations and snapshot preparation. The chart exposes capacity through `substrate.worker`.
+
+| Variable | Description |
+| --- | --- |
+| `DURABLE_ACTORS_METRICS_BIND` | Internal capacity metrics listener; defaults to `127.0.0.1:9090`. The Helm chart uses `0.0.0.0:9091` for GKE collection. |
+| `DURABLE_ACTORS_SUBSTRATE_ENDPOINT` | Private TLS gRPC API origin. |
+| `DURABLE_ACTORS_SUBSTRATE_ROUTER` | Private HTTP actor-router origin. |
+| `DURABLE_ACTORS_SUBSTRATE_ATESPACE` | Namespace for this runtime's Substrate actors and templates. |
+| `DURABLE_ACTORS_SUBSTRATE_REGIONS` | JSON array of configured canonical regions. |
+| `DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS` | JSON map selecting worker pools; region is added automatically. |
+| `DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS` | Private `gs://` snapshot prefix ending in `/`. |
+| `DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG` | Installed Substrate sandbox configuration, normally `gvisor-default`. |
+| `DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE` | Projected service-account token, reread for each API call. |
+| `DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE` | Projected CA PEM file for API TLS. |
+| `DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS` | JSON array of permitted customer destinations; control-plane Service IP is added automatically. |
+| `DURABLE_ACTORS_SECRETS_NAMESPACE` | Namespace containing labeled customer Secrets. |
+
+`DURABLE_ACTORS_SANDBOX_IDENTITY_FILE` supplies the current Substrate actor UID through a SystemInfo volume. Assignment verification rereads it for every request and rejects a missing or empty identity. `DURABLE_ACTORS_ASSIGNMENT_PUBLIC_KEYS` contains the public JWKS used to verify assignment capabilities; the snapshot does not contain the signing key.
+
 | Variable                              | Default | Description                                                                                                                                                                                                                                                                                 |
 | ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS` | `10000` | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket handlers reset the timer; running handlers defer eviction. Open WebSockets remain at the gateway and do not keep the sandbox alive. Automatic gateway replies do not reset actor idle time. |
-| `DURABLE_ACTORS_HOST_STARTUP_MS`      | `10000` | Positive actor-host startup timeout in milliseconds.                                                                                                                                                                                                                                        |
-| `DURABLE_ACTORS_SPARE_IDLE`           | `64`    | Ready actor sandboxes per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment.                                                               |
-| `DURABLE_ACTORS_SPARE_FLEET_MAX`      | `256`   | Maximum unassigned spares across pools. Active actors do not count against this budget.                                                                                                                                                                                                     |
-| `DURABLE_ACTORS_SPARE_MAX_STARTING`   | `32`    | Maximum simultaneous spare starts across control-plane replicas.                                                                                                                                                                                                                            |
-| `DURABLE_ACTORS_SPARE_TTL_SECONDS`    | `600`   | Unassigned host lifetime; 30–3600 seconds.                                                                                                                                                                                                                                                  |
-| `DURABLE_ACTORS_HOST_CPU_MILLIS`      | `500`   | Actor CPU request and cap; 100–64000 millicores.                                                                                                                                                                                                                                            |
-| `DURABLE_ACTORS_HOST_MEMORY_MIB`      | `256`   | Actor memory request and cap; 128–262144 MiB.                                                                                                                                                                                                                                               |
 | `DURABLE_ACTORS_REGION`               | Unset   | Default region for new actors. Without a decorator region override, explicit assignments must match it; existing actors keep their saved home.                                                                                                                                              |
 | `DURABLE_ACTORS_HOME_REGION`          | Unset   | Region requested by a trusted backend. Omit to use the actor's saved home or the server default.                                                                                                                                                                                            |
 
@@ -63,30 +75,27 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Kubernetes hosting
 
-Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Sandbox with PostgreSQL and one Standard GCS bucket. One controller handles HTTP and WebSockets, and actor pods start on demand. The chart sets `DURABLE_ACTORS_SPARE_IDLE=0`; the runtime's standalone default above remains 64.
+Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/durable-actors/README.md) to run on GKE Agent Substrate with PostgreSQL and GCS. Shared workers restore prepared runtime-and-code snapshots. The chart can place WebSocket gateways in a separate deployment.
 
 | Variable | Description |
 | --- | --- |
-| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` for the server; the provider assigns actor/spare roles. |
+| `DURABLE_ACTORS_PROCESS_ROLE` | `control_plane` for the server; the provider assigns warm snapshot and actor roles. |
 | `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
 | `DURABLE_ACTORS_GATEWAY_ROUTE` | Private HTTP origin of the gateway pod; the chart uses its pod IP. |
 | `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process can own socket rooms; defaults to `true`. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
-| `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
+| `DURABLE_ACTORS_POSTGRES_URL` | Registry and trace database; the user needs migration privileges. |
 | `DURABLE_ACTORS_PERSISTENCE` | `standard` by default. Select `rapid` for two-zone Rapid append logs with Standard archives. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS bucket for ownership and, in Standard mode, immutable state snapshots. |
-| `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled actor code. Defaults to `DURABLE_ACTORS_BUCKET` in Standard mode; the chart uses that bucket in both modes. |
-| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Required only in Rapid mode: permanent Standard GCS manifests, checkpoints, and archived log segments. The chart uses `storage.bucket`. |
+| `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled actor code. Defaults to `DURABLE_ACTORS_BUCKET` in Standard mode; the chart uses `storage.artifactBucket`. |
+| `DURABLE_ACTORS_ARCHIVE_BUCKET` | Required only in Rapid mode: permanent Standard GCS manifests, checkpoints, and archived log segments. The chart uses `storage.archiveBucket`. |
 | `DURABLE_ACTORS_RAPID_BUCKETS` | Required only in Rapid mode: JSON array of exactly two `{ "bucket": "name", "zone": "us-west4-a" }` placements in distinct zones. Both durable flushes are required for acknowledgment. |
 | `DURABLE_ACTORS_ARCHIVE_BATCH_BYTES` | Rapid archive batch target, default `16777216` bytes. |
 | `DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS` | Rapid archive batch interval, default `10000` milliseconds. |
-| `DURABLE_ACTORS_GKE_NAMESPACE` | Dedicated sandbox namespace; the chart defaults to `<release-namespace>-<release-name>`. |
-| `DURABLE_ACTORS_GKE_ZONE` | Actor placement zone, for example `us-west4-a`; the runtime infers the canonical compute region. The chart sets this from `placement.zone`. |
-| `DURABLE_ACTORS_GKE_ZONES` | Advanced alternative to `GKE_ZONE`: JSON map from canonical compute region to eligible Google zones, such as `{"north-america-west":["us-west4-a","us-west4-b"]}`. A single zone string per region is also accepted. Configure only one of the two placement variables. |
 | `DURABLE_ACTORS_TYPESCRIPT_IMAGE` | TypeScript actor OCI image pinned by SHA-256 digest; selected for compiled `.mjs` artifacts. |
 | `DURABLE_ACTORS_PYTHON_IMAGE` | Python actor OCI image pinned by SHA-256 digest; selected for compiled `.pyz` artifacts. |
-| `DURABLE_ACTORS_EXECUTOR_RUNTIME` | Set by actor images to `typescript` or `python`; selects the executor before a warm spare is assigned. Native hosts infer it from the compiled entrypoint. |
+| `DURABLE_ACTORS_EXECUTOR_RUNTIME` | Set by actor images to `typescript` or `python`; selects the executor before preparing a runtime snapshot. Native hosts infer it from the compiled entrypoint. |
 | `DURABLE_ACTORS_GOOGLE_SERVICE_ACCOUNT` | Workload Identity service account used as the storage-token cache issuer identity. |
 | `DURABLE_ACTORS_JWT_SIGNING_KEY` | Shared base64 Ed25519 PKCS#8 key; stable across restarts. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional ADC file; use Workload Identity on GKE. |

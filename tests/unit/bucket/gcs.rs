@@ -39,13 +39,11 @@ async fn bulk_transfers_do_not_block_ownership_reads_and_updates() -> Result<()>
 async fn warmed_connections_keep_credentials_isolated_and_refreshable() -> Result<()> {
     let server = WarmServer::start(false).await?;
     let warm = server.client().await?;
-    warm.preconnect().await;
     let token = TestCredentials::new("first");
     let first = warm.bind("test-bucket", token.clone().into())?;
     assert_eq!(first.get("owner").await?.unwrap().bytes.as_ref(), b"lease");
 
     let warm = server.client().await?;
-    warm.preconnect().await;
     let second = warm.bind("test-bucket", TestCredentials::new("second").into())?;
     second.get("owner").await?;
     *token.0.lock().unwrap() = "refreshed".into();
@@ -73,85 +71,6 @@ async fn warmed_connections_keep_credentials_isolated_and_refreshable() -> Resul
     );
     assert_eq!(authenticated[0].0, authenticated[2].0);
     assert_ne!(authenticated[0].0, authenticated[1].0);
-    assert!(
-        requests
-            .iter()
-            .filter(|request| request.1.is_none())
-            .count()
-            >= 2
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn idle_spares_refresh_their_connection_without_credentials() -> Result<()> {
-    let server = WarmServer::start(false).await?;
-    let warm = server.client().await?;
-    warm.preconnect().await;
-    let warming = warm.keep_warm();
-    tokio::pin!(warming);
-    tokio::select! {
-        biased;
-        () = &mut warming => anyhow::bail!("idle warmup stopped"),
-        () = std::future::ready(()) => {}
-    }
-    for expected in 2..=3 {
-        tokio::time::pause();
-        tokio::time::advance(std::time::Duration::from_secs(20)).await;
-        tokio::time::resume();
-        tokio::select! {
-            () = &mut warming => anyhow::bail!("idle warmup stopped"),
-            result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while server.requests.lock().unwrap().len() < expected {
-                    tokio::task::yield_now().await;
-                }
-            }) => { result?; }
-        }
-    }
-    assert!(
-        server
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.1.is_none())
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn stalled_warmup_is_bounded_and_can_be_cancelled_for_assignment() -> Result<()> {
-    let server = WarmServer::start(true).await?;
-    let warm = server.client().await?;
-    tokio::time::timeout(std::time::Duration::from_secs(2), warm.preconnect()).await?;
-    let initial = server.requests.lock().unwrap().len();
-    assert!(initial >= 1);
-    {
-        let warming = warm.preconnect();
-        tokio::pin!(warming);
-        tokio::select! {
-            () = &mut warming => anyhow::bail!("probe completed before cancellation"),
-            () = async {
-                while server.requests.lock().unwrap().len() <= initial {
-                    tokio::task::yield_now().await;
-                }
-            } => {}
-        }
-    }
-    let bucket = warm.bind("test-bucket", TestCredentials::new("assigned").into())?;
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(2), bucket.get("owner")).await??;
-    assert_eq!(result.unwrap().bytes.as_ref(), b"lease");
-    let requests = server.requests.lock().unwrap();
-    assert_eq!(requests[0].1, None);
-    assert_eq!(requests[1].1, None);
-    assert_eq!(
-        requests
-            .iter()
-            .filter_map(|request| request.1.as_deref())
-            .collect::<Vec<_>>(),
-        ["Bearer assigned"]
-    );
     Ok(())
 }
 

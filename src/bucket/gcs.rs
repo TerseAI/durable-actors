@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -79,26 +76,6 @@ impl WarmGcs {
             clients: GcsClients::new(credentials.clone().into()).await?,
             credentials,
         })
-    }
-
-    pub async fn preconnect(&self) {
-        // An anonymous read warms the HTTP pool without granting an idle spare access.
-        let probe = self
-            .clients
-            .storage
-            .read_object("projects/_/buckets/durable-actors-warmup", "connection")
-            .send();
-        let _ = tokio::time::timeout(Duration::from_millis(250), probe).await;
-    }
-
-    pub async fn keep_warm(&self) {
-        let period = Duration::from_secs(20);
-        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            self.preconnect().await;
-        }
     }
 
     pub fn bind(self, bucket: &str, credentials: Credentials) -> Result<GcsBucket> {

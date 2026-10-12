@@ -64,7 +64,6 @@ fn request(id: &str) -> EnsureHostRequest {
             actor_id: id.into(),
         }),
         code_snapshot: None,
-        spare: None,
         resources: Default::default(),
         runtime_config: None,
         host_config_key: "config".into(),

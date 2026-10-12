@@ -57,7 +57,9 @@ impl Gateway {
             capability.actor == *actor && capability.owner_epoch == epoch,
             "invocation target mismatch"
         );
-        Ok(backend_origin(&capability.route)?.to_string())
+        Ok(crate::sandbox::transport::host_route(&capability.route)?
+            .0
+            .to_string())
     }
 
     pub fn router(self, service: ControlPlaneService, admin: super::admin::AdminService) -> Router {

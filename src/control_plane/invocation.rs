@@ -161,15 +161,11 @@ pub(super) async fn publish(
         .map_err(|_| ApiError::unauthorized("actor invocation credential was rejected"))?;
     crate::actor::validate_socket_effects(&request.effects).map_err(ApiError::bad_request)?;
     let url = format!(
-        "{}/v1/projects/{}/actors/{}/{}/socket-effects",
-        route.trim_end_matches('/'),
-        actor.project_id,
-        actor.actor_name,
-        actor.actor_id
+        "/v1/projects/{}/actors/{}/{}/socket-effects",
+        actor.project_id, actor.actor_name, actor.actor_id
     );
-    let response = state
-        .hosts
-        .post(url)
+    let response = crate::sandbox::transport::host_request(&state.hosts, &route, &url)
+        .map_err(ApiError::bad_request)?
         .header(header::AUTHORIZATION, authorization)
         .json(&request)
         .send()
@@ -198,14 +194,11 @@ async fn dispatch(
 ) -> Result<Value, ApiError> {
     let actor = &invocation.actor;
     let url = format!(
-        "{}/v1/projects/{}/actors/{}/{}/invoke",
-        route.trim_end_matches('/'),
-        actor.project_id,
-        actor.actor_name,
-        actor.actor_id
+        "/v1/projects/{}/actors/{}/{}/invoke",
+        actor.project_id, actor.actor_name, actor.actor_id
     );
-    let response = client
-        .post(url)
+    let response = crate::sandbox::transport::host_request(client, route, &url)
+        .map_err(ApiError::bad_request)?
         .bearer_auth(token)
         .json(&json!({
             "requestId":invocation.request_id, "ownerEpoch":owner_epoch,

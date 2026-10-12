@@ -126,7 +126,6 @@ pub(crate) trait AdminRegistry: Send + Sync {
     async fn lock_deployment(&self, project_id: &str) -> Result<Box<dyn DeploymentUpdate + '_>>;
     async fn deployment_contract(&self, project_id: &str) -> Result<Option<PublishedContract>>;
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>>;
-    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>>;
     #[cfg(test)]
     async fn remove_deployment(&self, project_id: &str) -> Result<()> {
         self.lock_deployment(project_id).await?.remove().await
@@ -310,16 +309,6 @@ impl AdminRegistry for LocalAdminRegistry {
             .and_then(|record| record.contract.clone()))
     }
 
-    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
-        Ok(self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
-            .values()
-            .filter_map(|state| state.deployment.clone())
-            .collect())
-    }
-
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {
         Ok(self
             .state
@@ -419,14 +408,6 @@ impl AdminRegistry for PostgresAdminRegistry {
             })
         })
         .transpose()
-    }
-
-    async fn launch_specs(&self) -> Result<Vec<HostLaunchSpec>> {
-        self.database.connection().await?.query(
-            "SELECT image_ref, working_directory, actor_entrypoint, secret_refs, code_snapshot, source_json, project_id, sandbox_json FROM durable_actors_deployment",
-            &[],
-        ).await.context("load PostgreSQL host launch specs")?
-            .iter().map(launch_spec_from_row).collect()
     }
 
     async fn launch_spec(&self, project_id: &str) -> Result<Option<HostLaunchSpec>> {

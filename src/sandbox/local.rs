@@ -65,8 +65,8 @@ impl LocalSandboxProvider {
 
 #[async_trait]
 impl SandboxProvider for LocalSandboxProvider {
-    async fn stopped_spares(&self, _: &[crate::sandbox::SpareHandle]) -> Result<Vec<String>> {
-        anyhow::bail!("local hosts use their own process registry")
+    async fn prepare_runtime(&self, _: &crate::sandbox::RuntimeTemplateRequest) -> Result<()> {
+        Ok(())
     }
 
     async fn wait_ready(&self, host: &crate::host::HostId) -> Result<()> {

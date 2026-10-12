@@ -173,7 +173,6 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
     let runtime = Arc::new(RuntimeStorage::new(bucket.clone(), Arc::new(SystemClock))?);
     let host = HostId::new("host.v3.revision.host");
     Ok(HostStorage {
-        objects: None,
         observer: Arc::new(ControlPlaneClient::connect("http://127.0.0.1:1", "unavailable").await?),
         stop: CancellationToken::new(),
         runtime,
@@ -188,6 +187,7 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
         new_actor: true,
         owner_hint: None,
         activation: Mutex::new(None),
+        handoff: Mutex::new(None),
         fence: Mutex::new(LeaseFence::default()),
         lease: Mutex::new(None),
         renewal: tokio::sync::Mutex::new(()),
@@ -499,5 +499,57 @@ async fn shutdown_stays_fenced_when_ownership_release_times_out() -> Result<()> 
     .unwrap_err();
     assert!(error.to_string().contains("ownership release timed out"));
     assert!(storage.ensure_authority().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn adopting_a_claim_keeps_only_its_remaining_lease_window() -> Result<()> {
+    struct Earlier(u64);
+    impl Clock for Earlier {
+        fn now_ms(&self) -> Result<u64> {
+            Ok(self.0)
+        }
+    }
+    let bucket = Arc::new(MemoryBucket::default());
+    let storage = host_storage(bucket.clone()).await?;
+    let actor = storage.actor.clone().unwrap();
+    let request = HostLeaseRequest {
+        id: storage.host.clone(),
+        session_id: storage.session.clone(),
+        route: "http://host".into(),
+        duration_ms: 30000,
+    };
+    let control = RuntimeStorage::new(
+        bucket.clone(),
+        Arc::new(Earlier(SystemClock.now_ms()? - 20000)),
+    )?;
+    let handoff = control
+        .prepare_activation(&actor, &request, "us-east", true, None)
+        .await?;
+    let expiry = handoff.expires_at_ms();
+    let storage = storage.with_handoff(Some(handoff));
+    let lease = storage.register(&request).await?;
+    assert_eq!(lease.expires_at_ms, expiry);
+    assert_eq!(
+        storage
+            .acquire_actor(&actor, &request.id)
+            .await?
+            .owner_epoch,
+        1
+    );
+    assert!(
+        storage
+            .fence
+            .lock()
+            .unwrap()
+            .check(Instant::now() + Duration::from_secs(6))
+            .is_err()
+    );
+    assert!(
+        storage
+            .prepare_state_write(&actor, &request.id, 1, 0)
+            .await
+            .is_err()
+    );
     Ok(())
 }

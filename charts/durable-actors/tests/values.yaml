@@ -1,10 +1,3 @@
-publicUrl: https://actors.example.com
-placement:
-  zone: us-west4-a
-storage:
-  bucket: test-state
-serviceAccount:
-  googleServiceAccount: actors@test-project.iam.gserviceaccount.com
 images:
   controlPlane:
     digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -12,3 +5,20 @@ images:
     digest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   python:
     digest: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+storage:
+  mode: rapid
+  authorityBucket: test-authority
+  artifactBucket: test-code
+  archiveBucket: test-archive
+  rapid:
+    buckets:
+      - {bucket: test-rapid-a, zone: us-west4-a}
+      - {bucket: test-rapid-b, zone: us-west4-b}
+
+serviceAccount:
+  googleServiceAccount: test-control@test-project.iam.gserviceaccount.com
+
+substrate:
+  snapshotLocation: gs://test-substrate/runtime/
+
+cluster: {projectId: test-project, location: us-west4-a, name: test-cluster}
