@@ -48,21 +48,22 @@ export class ChatRoom extends Actor<ChatSession, { text: string }> {
     @Persisted private events: string[] = []
 
     async onConnect(socket: ActorSocket<ChatSession>): Promise<void> {
-        this.events.push(`connect:${socket.metadata.userId}:${(await this.getConnections()).length}`)
+        this.events = [...this.events, `connect:${socket.metadata.userId}:${(await this.getConnections()).length}`]
         socket.metadata = { ...socket.metadata, connectedAt: 2 }
         socket.setTags("member")
         socket.send({ text: "ready" })
     }
 
     async onMessage(socket: ActorSocket<ChatSession>, message: { text: string }): Promise<void> {
-        this.events.push(`message:${socket.metadata.userId}:${message.text}`)
+        this.events = [...this.events, `message:${socket.metadata.userId}:${message.text}`]
         this.broadcast(message)
     }
 
     async onDisconnect(socket: ActorSocket<ChatSession>, code: number, reason: string): Promise<void> {
-        this.events.push(
+        this.events = [
+            ...this.events,
             `disconnect:${socket.metadata.userId}:${code}:${reason}:${(await this.getConnections()).length}`
-        )
+        ]
     }
 
     async getEvents(): Promise<readonly string[]> {

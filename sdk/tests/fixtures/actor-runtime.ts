@@ -11,8 +11,14 @@ export { hydrateActorState, snapshotActorState } from "../../src/host/actor-runt
 export class SqliteActorDatabase extends Database {
     private state: SqliteState | undefined
 
-    constructor(connect?: ConstructorParameters<typeof Database>[1]) {
-        super(() => commit(this.state!), connect)
+    constructor(connect?: ConstructorParameters<typeof Database>[2]) {
+        super(
+            () => commit(this.state!),
+            () => {
+                throw new Error("immediate SQLite persistence is not implemented")
+            },
+            connect
+        )
     }
 
     override restore(state: SqliteState | undefined): void {

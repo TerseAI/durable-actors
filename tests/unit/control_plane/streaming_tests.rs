@@ -1,6 +1,7 @@
 use super::tests::test_issuer;
 use super::*;
 use crate::request_tracking::HostState;
+use crate::state_transport::{SqlitePersisted, SqliteWrite, SqliteWriter};
 use crate::{
     actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
     control_plane::{ActorTokenPurpose, ControlPlaneClient, admin::LocalAdminRegistry},
@@ -693,7 +694,7 @@ impl Stack {
             .mark_ready(
                 Some(local_sockets.clone()),
                 Some(source.unwrap_or_else(|| local_sockets.clone())),
-                replication.clone(),
+                Arc::new(CaptureSqliteWrites(replication.clone())),
             )
             .await?;
         let host = Arc::new(ActorHost::new(
@@ -1235,4 +1236,20 @@ fn assert_completed_invocation(mut reply: serde_json::Value, result: serde_json:
     assert!(queue_wait.is_finite() && queue_wait >= 0.0 && queue_wait <= duration);
     assert_eq!(metadata["hostState"], "warm");
     assert!(metadata["routingMs"].as_f64().unwrap() >= 0.0);
+}
+
+struct CaptureSqliteWrites(pub std::sync::Arc<dyn crate::litestream::Replicator>);
+
+#[async_trait]
+impl SqliteWriter for CaptureSqliteWrites {
+    async fn persist_sqlite(&self, write: &SqliteWrite) -> Result<SqlitePersisted> {
+        anyhow::ensure!(
+            write.mode == crate::state_transport::SqlitePersistenceMode::AtomicSnapshot,
+            "unexpected durable write in test"
+        );
+        Ok(SqlitePersisted {
+            txid: self.0.sync(&write.path).await?,
+            state_version: None,
+        })
+    }
 }

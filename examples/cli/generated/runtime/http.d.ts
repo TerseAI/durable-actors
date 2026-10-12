@@ -1,0 +1,55 @@
+import type { JsonValue } from "./json.js";
+export declare class HttpActorHostTransport implements ActorHostTransport {
+    private readonly fetchRequest;
+    constructor(fetchRequest?: typeof globalThis.fetch);
+    invoke(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply>;
+    publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>;
+    private post;
+}
+export declare function parseActorHostReply(reply: unknown): ActorHostReply;
+export declare function connectionRefused(error: unknown, ancestors?: Set<unknown>): boolean;
+export declare function responseDocument(response: Response): Promise<unknown>;
+export declare function isRecord(value: unknown): value is Record<string, unknown>;
+export interface ActorAddress {
+    readonly projectId: string;
+    readonly actorName: string;
+    readonly actorId: string;
+}
+export interface ActorHostTarget {
+    readonly route: string;
+    readonly token: string;
+    readonly ownerEpoch: number;
+    readonly expiresAtMs: number;
+}
+export interface ActorInvocation extends ActorAddress {
+    readonly requestId: string;
+    readonly method: string;
+    readonly args: readonly JsonValue[];
+}
+type ActorRejectionReason = "stale_owner" | "host_unavailable" | "upstream_not_reached";
+export interface ActorResponseMetadata {
+    readonly routingMs: number;
+    readonly durationMs: number;
+    readonly queueWaitMs: number | null;
+    readonly hostState: "cold" | "warm";
+}
+export type ActorHostReply = ({
+    readonly type: "completed";
+    readonly result: unknown;
+} | {
+    readonly type: "failed";
+    readonly code: string;
+    readonly message: string;
+} | {
+    readonly type: "unauthenticated";
+} | {
+    readonly type: "not_executed";
+    readonly reason: ActorRejectionReason;
+}) & {
+    readonly metadata?: ActorResponseMetadata;
+};
+export interface ActorHostTransport {
+    invoke(target: ActorHostTarget, invocation: ActorInvocation): Promise<ActorHostReply>;
+    publish(target: ActorHostTarget, actor: ActorAddress, effects: readonly unknown[]): Promise<void>;
+}
+export {};
