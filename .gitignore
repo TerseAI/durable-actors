@@ -4,6 +4,7 @@ sdk/dist/
 sdk/.test-dist/
 packages/*/dist/
 sdk/src/generated/
+examples/cli/generated/
 target/
 dist-runtime/
 .durable-actors/
