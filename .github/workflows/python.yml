@@ -15,9 +15,10 @@ jobs:
             matrix:
                 python: ["3.11", "3.13", "3.14"]
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: oven-sh/setup-bun@v2
               with:
-                  submodules: recursive
+                  bun-version: "1.4.2"
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   python-version: ${{ matrix.python }}
@@ -28,52 +29,50 @@ jobs:
             - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
               with:
                   shared-key: validation-ubuntu-24.04
-            - name: Install pinned Litestream
-              run: |
-                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
-                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
+            - uses: ./.github/actions/setup-test-litestream
             - name: Build native runtime
               run: cargo build --locked
             - name: Install Python dependencies
               working-directory: sdk-python
-              run: uv sync --locked --all-extras
+              run: uv sync --locked --all-extras --no-install-package durable-actors-runtime
             - name: Check source and generated client types
               working-directory: sdk-python
               run: |
-                  uv run --locked ruff check src tests
-                  uv run --locked ruff format --check src tests
-                  uv run --locked mypy src/durable_actors
-                  uv run --locked pyright
+                  uv run --no-sync ruff check src tests
+                  uv run --no-sync ruff format --check src tests
+                  uv run --no-sync mypy src/durable_actors
+                  uv run --no-sync pyright
             - name: Test Python actors against the Rust runtime
               working-directory: sdk-python
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
-              run: uv run --locked pytest -q
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: "22.19.0"
-                  cache: pnpm
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
-            - name: Build shared CLI and test Python workflows
+              run: uv run --no-sync pytest -q
+            - name: Check Bun CLI compatibility with Python projects
               env:
                   DURABLE_ACTORS_TEST_RUNTIME: ${{ github.workspace }}/target/debug/durable-actors
                   DURABLE_ACTORS_TEST_PYTHON: ${{ github.workspace }}/sdk-python/.venv/bin/python
               run: |
-                  pnpm install --frozen-lockfile
-                  pnpm --dir sdk build
-                  pnpm --dir sdk exec tsc -p tsconfig.test.json
-                  node --test sdk/.test-dist/tests/cli/python.test.js
+                  bun install --frozen-lockfile
+                  bun run --bun --cwd sdk build
+                  bun run --bun --cwd sdk tsc -p tsconfig.test.json
+                  bun test --timeout 60000 ./sdk/.test-dist/tests/cli/python.test.js
             - name: Build distributions
               if: matrix.python == '3.13'
               working-directory: sdk-python
               run: |
                   uv build --no-sources
-                  uv run --isolated --no-project --with ./dist/durable_actors-*.whl python -c 'from pathlib import Path; import durable_actors; assert Path(durable_actors.__file__).with_name("py.typed").is_file()'
+                  uv run --isolated --no-project --with ./dist/durable_actors-*.whl python - <<'PY'
+                  import subprocess
+                  import sys
+                  from pathlib import Path
+                  import durable_actors
+
+                  assert Path(durable_actors.__file__).with_name("py.typed").is_file()
+                  result = subprocess.run([sys.executable, "-m", "durable_actors", "--help"], capture_output=True, text=True)
+                  assert result.returncode == 1, result
+                  assert "Install durable-actors[cli]" in result.stderr, result.stderr
+                  assert "Traceback" not in result.stderr, result.stderr
+                  PY
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               if: matrix.python == '3.13'
               with:

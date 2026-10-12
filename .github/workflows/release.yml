@@ -22,9 +22,14 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         outputs:
             version: ${{ steps.version.outputs.version }}
-            ltx-revision: ${{ steps.ltx.outputs.revision }}
-            ltx-version: ${{ steps.ltx.outputs.version }}
+            ltx-revision: ${{ steps.dependencies.outputs.ltx-revision }}
+            ltx-version: ${{ steps.dependencies.outputs.ltx-version }}
+            litestream-revision: ${{ steps.dependencies.outputs.litestream-revision }}
+            litestream-version: ${{ steps.dependencies.outputs.litestream-version }}
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Read release version
               id: version
               env:
@@ -51,22 +56,24 @@ jobs:
                   fi
 
             - name: Assert every manifest matches the tag
-              run: node scripts/release.mjs verify "${{ steps.version.outputs.version }}"
+              run: bun scripts/release.mjs verify "${{ steps.version.outputs.version }}"
 
-            - name: Read the pinned LTX dependency
-              id: ltx
+            - name: Read the pinned Rust dependencies
+              id: dependencies
               run: |
                   python3 - <<'PYTHON'
                   import os, re, tomllib
                   from pathlib import Path
 
-                  dependency = tomllib.loads(Path("Cargo.toml").read_text())["dependencies"]["terse-ltx"]
-                  assert dependency["git"] == "https://github.com/TerseAI/terse-ltx"
-                  assert re.fullmatch(r"[0-9a-f]{40}", dependency["rev"])
-                  assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", dependency["version"])
+                  dependencies = tomllib.loads(Path("Cargo.toml").read_text())["dependencies"]
                   with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                      print(f"revision={dependency['rev']}", file=output)
-                      print(f"version={dependency['version']}", file=output)
+                      for name in ("ltx", "litestream"):
+                          dependency = dependencies[f"terse-{name}"]
+                          assert dependency["git"] == f"https://github.com/TerseAI/terse-{name}"
+                          assert re.fullmatch(r"[0-9a-f]{40}", dependency["rev"])
+                          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", dependency["version"])
+                          print(f"{name}-revision={dependency['rev']}", file=output)
+                          print(f"{name}-version={dependency['version']}", file=output)
                   PYTHON
 
     ltx:
@@ -132,14 +139,13 @@ jobs:
         needs: [preflight, ltx]
         runs-on: blacksmith-4vcpu-ubuntu-2404
         timeout-minutes: 20
-        defaults:
-            run:
-                working-directory: third_party/terse-litestream
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Checkout the pinned Litestream source
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
-                  ref: ${{ github.sha }}
+                  repository: TerseAI/terse-litestream
+                  ref: ${{ needs.preflight.outputs.litestream-revision }}
+                  persist-credentials: false
             # Validates terse-litestream at its own rust-version.
             - name: Install Rust toolchain
               run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy && rustup default 1.89.0
@@ -148,20 +154,30 @@ jobs:
                   go-version: "1.27.1"
                   cache: false
             - name: Validate capture and upstream compatibility
+              env:
+                  LITESTREAM_VERSION: ${{ needs.preflight.outputs.litestream-version }}
               run: |
+                  python3 - <<'PYTHON'
+                  import os, tomllib
+                  from pathlib import Path
+
+                  package = tomllib.loads(Path("Cargo.toml").read_text())["package"]
+                  assert package["name"] == "terse-litestream"
+                  assert package["version"] == os.environ["LITESTREAM_VERSION"]
+                  PYTHON
                   scripts/verify.sh
                   cargo publish --locked --dry-run
             - name: Publish terse-litestream
               env:
                   CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+                  LITESTREAM_VERSION: ${{ needs.preflight.outputs.litestream-version }}
               run: |
-                  version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
                   status=$(curl -sS \
                     --user-agent "durable-actors-release/1.0 (+https://github.com/TerseAI/durable-actors)" \
                     -o /dev/null -w "%{http_code}" \
-                    "https://crates.io/api/v1/crates/terse-litestream/$version")
+                    "https://crates.io/api/v1/crates/terse-litestream/$LITESTREAM_VERSION")
                   if [ "$status" = "200" ]; then
-                      echo "terse-litestream@$version already published"
+                      echo "terse-litestream@$LITESTREAM_VERSION already published"
                   elif [ "$status" = "404" ]; then
                       cargo publish --locked --no-verify
                   else
@@ -188,10 +204,12 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
@@ -202,10 +220,7 @@ jobs:
                   shared-key: validation-ubuntu-24.04
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
-            - name: Install pinned Litestream
-              run: |
-                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
-                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
+            - uses: ./.github/actions/setup-test-litestream
             - name: Check formatting
               run: cargo fmt --all -- --check
 
@@ -217,21 +232,8 @@ jobs:
             - name: Verify crate package
               run: cargo publish --locked --dry-run
 
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
-
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: "22.19.0"
-                  cache: pnpm
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
-
-            - run: pnpm install --frozen-lockfile
-            - run: pnpm --dir sdk build
+            - run: bun install --frozen-lockfile
+            - run: bun run --bun --cwd sdk build
             - run: cargo build --locked
             - name: Run WebSocket and restart integration tests
               run: cargo test --locked -- --ignored
@@ -241,42 +243,29 @@ jobs:
         needs: preflight
         runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: ${{ github.sha }}
 
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
-
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: "22.19.0"
-                  cache: pnpm
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.4.2"
-
             - name: Install dependencies
-              run: pnpm install --frozen-lockfile
+              run: bun install --frozen-lockfile
 
-            - name: Install pinned Litestream
-              run: |
-                  node scripts/litestream.mjs "$RUNNER_TEMP/litestream"
-                  printf '%s\n' "$RUNNER_TEMP/litestream" >> "$GITHUB_PATH"
+            - uses: ./.github/actions/setup-test-litestream
             - name: Check formatting
-              run: pnpm --dir sdk format:check
+              run: bun run --bun --cwd sdk format:check
 
             - name: Run tests
-              run: pnpm --dir packages/observer-ui test && pnpm --dir sdk test && pnpm --dir packages/observer-ui package:check
+              run: bun run --bun --cwd packages/observer-ui test && bun run --bun --cwd sdk test && bun run --bun --cwd packages/observer-ui package:check
 
             - name: Check and pack the tested npm packages
               run: |
-                  pnpm --dir sdk package:check
-                  pnpm --dir packages/observer-ui --config.ignore-scripts=true pack --pack-destination ../../dist-tarballs
-                  pnpm --dir sdk --config.ignore-scripts=true pack --pack-destination ../dist-tarballs
+                  bun run --bun --cwd sdk package:check
+                  bun pm --cwd packages/observer-ui pack --ignore-scripts --destination ../../dist-tarballs
+                  bun pm --cwd sdk pack --ignore-scripts --destination ../dist-tarballs
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
                   name: sdk-package
@@ -304,19 +293,12 @@ jobs:
         permissions:
             contents: write
         steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  ref: ${{ github.sha }}
-            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-              with:
-                  version: 10.17.1
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: "1.4.2"
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  node-version: "22.19.0"
-                  cache: pnpm
+                  ref: ${{ github.sha }}
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
               with:
                   name: native-${{ matrix.runner }}
@@ -325,17 +307,17 @@ jobs:
               with:
                   name: sdk-package
                   path: .artifacts
-            - run: pnpm install --frozen-lockfile
+            - run: bun install --frozen-lockfile
             - name: Check the packaged SDK and native bundle
               env:
                   DURABLE_ACTORS_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-${{ needs.preflight.outputs.version }}.tgz
                   DURABLE_ACTORS_TEST_OBSERVER_PACKAGE: ${{ github.workspace }}/.artifacts/durable-actors-observer-${{ needs.preflight.outputs.version }}.tgz
               run: |
-                  node --test tests/scripts/build-runtime.test.mjs
-                  npm pkg set "pnpm.overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
-                  pnpm --dir examples/chat add --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
-                  pnpm --dir examples/chat exec durable-actors generate src/actors.ts
-                  pnpm --dir examples/chat build
+                  bun test --timeout 60000 tests/scripts/build-runtime.test.mjs
+                  bun pm pkg set "overrides.durable-actors-observer=file:$DURABLE_ACTORS_TEST_OBSERVER_PACKAGE"
+                  bun add --cwd examples/chat --ignore-scripts "$DURABLE_ACTORS_TEST_PACKAGE"
+                  bun run --bun --cwd examples/chat durable-actors generate src/actors.ts
+                  bun run --bun --cwd examples/chat build
             - name: Upload native bundles and checksums
               env:
                   GH_TOKEN: ${{ github.token }}
@@ -343,11 +325,13 @@ jobs:
               run: gh release upload "$RELEASE_TAG" dist-runtime/*.tar.gz dist-runtime/*.sha256 --clobber
 
     image-build:
-        name: Build runtime image (${{ matrix.arch }})
+        name: Build runtime image (${{ matrix.target }}, ${{ matrix.arch }})
         needs: preflight
         strategy:
             fail-fast: false
             matrix:
+                target: [control-plane, typescript, python]
+                arch: [amd64, arm64]
                 include:
                     - arch: amd64
                       platform: linux/amd64
@@ -363,7 +347,6 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Set up Blacksmith Docker builder
@@ -377,36 +360,38 @@ jobs:
               uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
               with:
                   context: .
+                  target: ${{ matrix.target }}
                   platforms: ${{ matrix.platform }}
                   outputs: type=docker,dest=${{ runner.temp }}/runtime-image.tar
-                  tags: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
+                  tags: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}
                   labels: |
                       org.opencontainers.image.source=https://github.com/TerseAI/durable-actors
                       org.opencontainers.image.revision=${{ github.sha }}
                       org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
                       org.opencontainers.image.licenses=MIT
 
-            - name: Check Python actors in the release image
+            - name: Check the release image runtime
               env:
-                  IMAGE_ARCH_TAG: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
+                  IMAGE_ARCH_TAG: ${{ env.IMAGE }}:${{ needs.preflight.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}
               run: |
                   docker load --input "${{ runner.temp }}/runtime-image.tar"
-                  docker run --rm --entrypoint python3 -v "$PWD/sdk-python/tests/fixtures/image_smoke.py:/tmp/image_smoke.py:ro" "$IMAGE_ARCH_TAG" /tmp/image_smoke.py
+                  bash scripts/test-runtime-image.sh "$IMAGE_ARCH_TAG" "${{ matrix.target }}"
 
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  name: runtime-image-${{ matrix.arch }}
+                  name: runtime-image-${{ matrix.target }}-${{ matrix.arch }}
                   path: ${{ runner.temp }}/runtime-image.tar
                   if-no-files-found: error
                   compression-level: 0
                   retention-days: 1
 
     image-push:
-        name: Push runtime image (${{ matrix.arch }})
+        name: Push runtime image (${{ matrix.target }}, ${{ matrix.arch }})
         needs: [preflight, rust, npm-ci, python-ci, image-build]
         strategy:
             fail-fast: false
             matrix:
+                target: [control-plane, typescript, python]
                 arch: [amd64, arm64]
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 15
@@ -428,20 +413,23 @@ jobs:
 
             - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
               with:
-                  name: runtime-image-${{ matrix.arch }}
+                  name: runtime-image-${{ matrix.target }}-${{ matrix.arch }}
                   path: ${{ runner.temp }}/runtime-image
             - name: Push the validated image
               env:
                   VERSION: ${{ needs.preflight.outputs.version }}
                   ARCH: ${{ matrix.arch }}
+                  TARGET: ${{ matrix.target }}
               run: |
                   docker load --input "$RUNNER_TEMP/runtime-image/runtime-image.tar"
-                  docker push "${IMAGE}:${VERSION}-${ARCH}"
+                  docker push "${IMAGE}:${VERSION}-${TARGET}-${ARCH}"
 
     image:
         name: Publish runtime image
         outputs:
-            digest: ${{ steps.manifest.outputs.digest }}
+            control-plane-digest: ${{ steps.manifest.outputs.control-plane-digest }}
+            typescript-digest: ${{ steps.manifest.outputs.typescript-digest }}
+            python-digest: ${{ steps.manifest.outputs.python-digest }}
         needs: [preflight, image-push]
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 10
@@ -468,24 +456,38 @@ jobs:
                   VERSION: ${{ needs.preflight.outputs.version }}
               run: |
                   set -euo pipefail
-                  docker buildx imagetools create \
-                    --tag "${IMAGE}:${VERSION}" \
-                    --tag "${IMAGE}:latest" \
-                    "${IMAGE}:${VERSION}-amd64" \
-                    "${IMAGE}:${VERSION}-arm64"
-                  inspection="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}")"
-                  digest="$(awk '/^Digest:/ { print $2; exit }' <<< "$inspection")"
-                  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                      echo "::error::Could not resolve the published manifest digest"
-                      exit 1
-                  fi
-                  echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+                  for target in control-plane typescript python; do
+                      docker buildx imagetools create \
+                        --tag "${IMAGE}:${VERSION}-${target}" \
+                        --tag "${IMAGE}:latest-${target}" \
+                        "${IMAGE}:${VERSION}-${target}-amd64" \
+                        "${IMAGE}:${VERSION}-${target}-arm64"
+                      inspection="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}-${target}")"
+                      digest="$(awk '/^Digest:/ { print $2; exit }' <<< "$inspection")"
+                      if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                          echo "::error::Could not resolve the published $target manifest digest"
+                          exit 1
+                      fi
+                      echo "${target}-digest=${digest}" >> "$GITHUB_OUTPUT"
+                  done
 
-            - name: Attest image provenance
+            - name: Attest control-plane image provenance
               uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
               with:
                   subject-name: ${{ env.IMAGE }}
-                  subject-digest: ${{ steps.manifest.outputs.digest }}
+                  subject-digest: ${{ steps.manifest.outputs.control-plane-digest }}
+
+            - name: Attest typescript image provenance
+              uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+              with:
+                  subject-name: ${{ env.IMAGE }}
+                  subject-digest: ${{ steps.manifest.outputs.typescript-digest }}
+
+            - name: Attest python image provenance
+              uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+              with:
+                  subject-name: ${{ env.IMAGE }}
+                  subject-digest: ${{ steps.manifest.outputs.python-digest }}
 
     helm:
         name: Publish Helm chart
@@ -495,6 +497,9 @@ jobs:
             packages: write
         runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.4.2"
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Install Helm
               run: |
@@ -503,12 +508,14 @@ jobs:
                   sha256sum --check helm-v3.19.0-linux-amd64.tar.gz.sha256sum
                   tar -xzf helm-v3.19.0-linux-amd64.tar.gz
                   sudo install linux-amd64/helm /usr/local/bin/helm
-            - name: Pin the published runtime image
+            - name: Pin the published runtime images
               env:
-                  RUNTIME_DIGEST: ${{ needs.image.outputs.digest }}
-              run: node scripts/pin-chart-image.mjs "$RUNTIME_DIGEST"
+                  CONTROL_PLANE_DIGEST: ${{ needs.image.outputs.control-plane-digest }}
+                  TYPESCRIPT_DIGEST: ${{ needs.image.outputs.typescript-digest }}
+                  PYTHON_DIGEST: ${{ needs.image.outputs.python-digest }}
+              run: bun scripts/pin-chart-image.mjs "$CONTROL_PLANE_DIGEST" "$TYPESCRIPT_DIGEST" "$PYTHON_DIGEST"
             - run: helm lint charts/durable-actors -f charts/durable-actors/tests/values.yaml
-            - run: node --test charts/durable-actors/tests/chart.test.mjs tests/scripts/chart-image.test.mjs tests/scripts/python-release.test.mjs
+            - run: bun test --timeout 60000 charts/durable-actors/tests/chart.test.mjs tests/scripts/chart-image.test.mjs tests/scripts/python-release.test.mjs
             - run: helm package charts/durable-actors --destination .artifacts/charts
             - name: Publish the chart to OCI
               env:
@@ -576,7 +583,6 @@ jobs:
             - name: Checkout the tagged commit
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                  submodules: recursive
                   ref: ${{ github.sha }}
 
             - name: Install Rust toolchain
@@ -602,9 +608,26 @@ jobs:
                       exit 1
                   fi
 
+    python-runtime:
+        name: Publish Python native runtime wheels
+        needs: [preflight, native, python-ci, image, native-publish]
+        runs-on: ubuntu-latest
+        environment: pypi
+        permissions:
+            id-token: write
+        steps:
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  pattern: python-runtime-*
+                  merge-multiple: true
+                  path: dist
+            - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+              with:
+                  skip-existing: true
+
     python:
         name: Publish Python SDK
-        needs: [preflight, python-ci, image, native-publish]
+        needs: [preflight, python-ci, image, native-publish, python-runtime]
         runs-on: ubuntu-latest
         environment: pypi
         permissions:

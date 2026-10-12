@@ -123,7 +123,7 @@ export class Staging {
 
     async build() {
         console.log(`Building this checkout's runtime and ${this.example} actor bundle…`)
-        await this.command("pnpm", ["--dir", "sdk", "build"], { stream: true })
+        await this.command("bun", ["run", "--bun", "--cwd", "sdk", "build"], { stream: true })
         await this.command("cargo", ["build", "--locked", "--bin", "durable-actors"], { stream: true })
         this.env.DURABLE_ACTORS_BINARY = path.join(this.root, "target/debug/durable-actors")
         const contract = JSON.parse(await this.command(process.execPath, [path.join(this.root, "sdk/dist/compiler/deployment-build.js"), this.examplePath, "src/actors.ts", this.work]))
@@ -146,7 +146,7 @@ export class Staging {
         await writeFile(path.join(dockerConfig, "config.json"), configuration, { mode: 0o600 })
         const dockerEnv = { ...this.env, DOCKER_CONFIG: dockerConfig, DOCKER_HOST: host }
         try {
-            await this.command("docker", ["buildx", "build", "--platform=linux/amd64", "--tag", image, "--load", "."], { env: dockerEnv, stream: true })
+            await this.command("docker", ["buildx", "build", "--target", "typescript", "--platform=linux/amd64", "--tag", image, "--load", "."], { env: dockerEnv, stream: true })
             const token = (await this.gcloud(["auth", "print-access-token"])).trim()
             await this.command("docker", ["login", this.env.STAGING_IMAGE_REPOSITORY.split("/")[0], "--username=oauth2accesstoken", "--password-stdin"], { env: dockerEnv, input: token })
             await this.command("docker", ["push", image], { env: dockerEnv, stream: true })

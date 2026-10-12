@@ -190,7 +190,7 @@ test("an exact actor class search keeps its keyboard navigation option", async (
     const view = render(<ActorObserver client={{ checkConnection: async () => {}, listActors: async () => inventory }} />)
     const search = await view.findByRole("combobox", { name: "Search actors and instances" })
     fireEvent.change(search, { target: { value: "room" } })
-    assert.ok(view.getByRole("option", { name: "Room 3 instances" }))
+    assert.ok(view.getByRole("option", { name: /^Room\s*3 instances$/ }))
     fireEvent.keyDown(search, { key: "Enter" })
     assert.equal(document.activeElement, view.getByRole("heading", { name: "Room", level: 1 }))
     assert.ok(view.getByRole("heading", { name: "Room instances" }))

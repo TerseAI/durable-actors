@@ -2,7 +2,11 @@
 name = "durable-actors-python-example"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["durable-actors[codegen]"]
+dependencies = ["durable-actors"]
+
+[dependency-groups]
+dev = ["durable-actors[cli]"]
 
 [tool.uv.sources]
 durable-actors = { path = "../../sdk-python", editable = true }
+durable-actors-runtime = { path = "../.." }

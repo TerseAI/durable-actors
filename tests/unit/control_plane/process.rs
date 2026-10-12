@@ -267,8 +267,12 @@ fn process_environment() -> HashMap<&'static str, &'static str> {
         ("DURABLE_ACTORS_SECRET", "api-key"),
         ("DURABLE_ACTORS_BUCKET", "actor-state-test"),
         (
-            "DURABLE_ACTORS_RUNTIME_IMAGE",
+            "DURABLE_ACTORS_TYPESCRIPT_IMAGE",
             "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        (
+            "DURABLE_ACTORS_PYTHON_IMAGE",
+            "registry.example/python@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ),
         ("DURABLE_ACTORS_ARTIFACT_BUCKET", "customer-code"),
         ("DURABLE_ACTORS_ARCHIVE_BUCKET", "actor-archive"),
@@ -427,5 +431,24 @@ fn single_gke_zone_infers_the_actor_region() -> Result<()> {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|v| (*v).into()))
             .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn compiled_artifacts_select_their_language_image() -> Result<()> {
+    let values = process_environment();
+    let config = ControlPlaneProcessConfig::from_lookup(|name| {
+        values.get(name).map(|value| (*value).into())
+    })?;
+    let images = &config.sandbox_provider.runtime_images;
+    assert_eq!(
+        images.for_entrypoint("actors.mjs")?,
+        values["DURABLE_ACTORS_TYPESCRIPT_IMAGE"]
+    );
+    assert_eq!(
+        images.for_entrypoint("actors.pyz")?,
+        values["DURABLE_ACTORS_PYTHON_IMAGE"]
+    );
+    assert!(images.for_entrypoint("actors.ts").is_err());
     Ok(())
 }

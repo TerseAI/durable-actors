@@ -41,7 +41,7 @@ spec:
         fsGroup: 10000
       containers:
         - name: control-plane
-          image: {{ include "actors.image" . | quote }}
+          image: {{ include "actors.image" .Values.images.controlPlane | quote }}
           ports:
             - {name: http, containerPort: 7100}
           securityContext:
@@ -72,7 +72,8 @@ spec:
             - name: DURABLE_ACTORS_CONTROL_PLANE_URL
               value: {{ printf "http://%s.%s.svc.cluster.local:7100" (include "actors.name" .) .Release.Namespace | quote }}
             - {name: DURABLE_ACTORS_PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
-            - {name: DURABLE_ACTORS_RUNTIME_IMAGE, value: {{ include "actors.image" . | quote }}}
+            - {name: DURABLE_ACTORS_TYPESCRIPT_IMAGE, value: {{ include "actors.image" .Values.images.typescript | quote }}}
+            - {name: DURABLE_ACTORS_PYTHON_IMAGE, value: {{ include "actors.image" .Values.images.python | quote }}}
             - {name: DURABLE_ACTORS_GKE_NAMESPACE, value: {{ include "actors.sandboxNamespace" . | quote }}}
             - {name: DURABLE_ACTORS_GKE_ZONE, value: {{ .Values.placement.zone | quote }}}
             - {name: DURABLE_ACTORS_PERSISTENCE, value: {{ .Values.storage.mode | quote }}}

@@ -14,6 +14,7 @@ mod invocation;
 mod issuer;
 mod local;
 mod local_build;
+mod local_watch;
 mod process;
 mod protocol;
 mod public_api;

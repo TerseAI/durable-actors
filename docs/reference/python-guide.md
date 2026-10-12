@@ -2,13 +2,16 @@
 
 ## Before you start
 
+Install Python 3.11+ and uv. The CLI installs its matching native runtime through a platform wheel for Linux or macOS, on x64 or ARM64.
+
+Create a new project in any directory:
+
 ```bash
-pnpm install
-pnpm --dir sdk build
-cd examples/bank-python
-uv sync
-cp .env.example .env
+uvx --from 'durable-actors[cli]' durable-actors init my-bank
+cd my-bank
 ```
+
+The generated project keeps the SDK in production dependencies and CLI tools in its development dependency group. `uv run` installs both; no repository checkout or Rust compiler is needed.
 
 ## Defining an actor
 
@@ -29,17 +32,16 @@ class BankAccount(Actor):
 
 ## Generating a client
 
-Start the local dev server from `examples/bank-python`. The first run downloads the runtime:
+Start the local dev server from `my-bank`. The first run downloads the runtime:
 
 ```bash
-pnpm dev
+uv run durable-actors dev
 ```
 
-Wait for `Ready`, then generate the client in a second terminal:
+Wait for `Ready`, then generate the client in a second terminal opened in the same `my-bank` directory:
 
 ```bash
-cd examples/bank-python
-pnpm generate
+uv run durable-actors generate
 ```
 
 This creates a `generated` package with typed stubs for your actors. Each actor instance is addressed by an ID. Create a `client.py` that gets the `demo` account and calls a method:
@@ -51,7 +53,13 @@ account = actors.BankAccount.get("demo")
 print(account.get_balance())
 ```
 
-Run it with `pnpm client`, which runs `uv run --env-file .env client.py` so the client connects to port 7112.
+Run the client with Python:
+
+```bash
+uv run client.py
+```
+
+It prints `0`. The server and client both use `http://127.0.0.1:7100` by default.
 
 An actor starts when one of its methods is called, stays in memory while it is busy, and shuts down after sitting idle. Regenerate the client after changing an actor's methods.
 

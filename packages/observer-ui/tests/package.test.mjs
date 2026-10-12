@@ -31,6 +31,7 @@ test("the standalone package contains its browser entry and styles", async () =>
     for (const [, file] of html.matchAll(/(?:src|href)="\.\/([^"]+)"/gu)) {
         assert.ok((await readFile(`dist/standalone/${file}`)).length > 0)
     }
+    assert.match(await readFile("dist/standalone/THIRD-PARTY-LICENSES.md", "utf8"), /react|Copyright/u)
     const application = await readFile("dist/standalone/app.js", "utf8")
     assert.doesNotMatch(application, /Keep the observe command running/u)
 })

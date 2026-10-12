@@ -25,13 +25,13 @@ They provide _stateful serverless functions_, a foundational building block that
 
 ### 1. Create your project
 
-Install Node.js 22.19+ and Bun 1.3.9+.
+Install Bun 1.4.2+.
 
 ```sh
-npx durable-actors init my-actors
+bunx durable-actors init my-actors
 cd my-actors
-npm install
-npx durable-actors dev # Run the server locally on your machine
+bun install
+bunx durable-actors dev # Run the server locally on your machine
 ```
 
 ### 2. Define an _actor_
@@ -74,7 +74,7 @@ export class ChatHistory extends Actor<null, string, Message[]> {
 We make it super easy to integrate the actors into your existing tech stack. Just generate the client and you get a fully type safe contract to interact with.
 
 ```sh
-npx durable-actors generate
+bunx durable-actors generate
 ```
 
 Create a WebSocket connection to one shared chat:

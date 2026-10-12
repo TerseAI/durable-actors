@@ -13,25 +13,25 @@ use tokio::{
 };
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn interrupt_exits_while_the_parent_stdin_pipe_is_open() -> Result<()> {
     assert_shutdown(Some("-INT")).await
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn terminate_exits_while_the_parent_stdin_pipe_is_open() -> Result<()> {
     assert_shutdown(Some("-TERM")).await
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
     assert_shutdown(None).await
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
     assert_idle_behavior(
         "@Persisted count = 0;
@@ -44,7 +44,7 @@ async fn local_hosts_use_the_configured_idle_timeout() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn idle_actors_rehydrate_with_live_websockets() -> Result<()> {
     assert_idle_behavior(
         r#"
@@ -109,7 +109,7 @@ async fn assert_idle_behavior(actor: &str, client: &str) -> Result<()> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let result = timeout(
         Duration::from_secs(20),
-        Command::new("node")
+        Command::new("bun")
             .arg(root.join("tests/fixtures").join(client))
             .arg(root.join("sdk/dist/client/remoteClient.js"))
             .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)
@@ -215,7 +215,7 @@ async fn wait_until_ready(output: &mut BufReader<tokio::process::ChildStdout>) -
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build"]
+#[ignore = "requires bun run --bun --cwd sdk build"]
 async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> Result<()> {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk");
     let project = tempfile::tempdir_in(&sdk)?;
@@ -334,7 +334,7 @@ async fn local_deployments_reload_code_and_preserve_state_across_restarts() -> R
         let result = timeout(
             // Each pass runs four builds and starts hosts for three projects.
             Duration::from_secs(60),
-            Command::new("node")
+            Command::new("bun")
                 .arg(&script)
                 .arg(before.to_string())
                 .env("DURABLE_ACTORS_CONTROL_PLANE_URL", origin)

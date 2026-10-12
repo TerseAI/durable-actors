@@ -20,6 +20,6 @@ if (command === "atomic-test" && (args.length === 0 || (args.length === 1 && arg
 } else if (command === "events-read" && args.length === 0) {
     console.log(await suite.getEvents())
 } else {
-    console.error("Usage: pnpm start atomic-test [--fail] | immediate-test | crash-write <marker> | atomic-crash-write <marker> | crash-read | interleave-test | events-read")
+    console.error("Usage: bun run --bun start atomic-test [--fail] | immediate-test | crash-write <marker> | atomic-crash-write <marker> | crash-read | interleave-test | events-read")
     process.exit(1)
 }

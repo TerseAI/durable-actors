@@ -21,7 +21,7 @@ test("dev explains how to install a missing project SDK", async t => {
             cwd: project,
             env: { ...process.env, DURABLE_ACTORS_PROJECT: project, DURABLE_ACTORS_ENTRYPOINT: "actors.ts" }
         }),
-        /Run pnpm install in the actor project/
+        /Run bun install in the actor project/
     )
 })
 

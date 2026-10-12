@@ -12,7 +12,7 @@ use tokio::{
 };
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(
@@ -76,7 +76,7 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
         );
         let output = timeout(
             Duration::from_secs(60),
-            Command::new("node")
+            Command::new("bun")
                 .args(["--input-type=module", "--eval", &script, &runtime.origin])
                 .env("DURABLE_ACTORS_TELEMETRY", "0")
                 .kill_on_drop(true)
@@ -133,7 +133,7 @@ async fn sqlite_and_object_fields_survive_runtime_restart_together() -> Result<(
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_on_restart()
 -> Result<()> {
     let project = tempfile::Builder::new()
@@ -164,7 +164,7 @@ async fn dev_publishes_the_compiled_contract_before_readiness_and_refreshes_it_o
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn dev_observability_is_open_while_application_routes_enforce_the_secret() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
@@ -207,7 +207,7 @@ async fn dev_observability_is_open_while_application_routes_enforce_the_secret()
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn dev_rejects_an_invalid_actor_contract_before_publishing_readiness() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(
@@ -237,7 +237,7 @@ async fn dev_rejects_an_invalid_actor_contract_before_publishing_readiness() -> 
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Result<()> {
     let project = tempfile::tempdir()?;
     local_project::write_actor(project.path(), "async read(): Promise<number> { return 1 }")?;
@@ -249,7 +249,7 @@ async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Re
     );
     let output = timeout(
         Duration::from_secs(30),
-        Command::new("node")
+        Command::new("bun")
             .args(["--input-type=module", "--eval", &backend, &runtime.origin])
             .kill_on_drop(true)
             .output(),
@@ -261,7 +261,7 @@ async fn dev_supports_backend_rpc_and_cli_generation_without_credentials() -> Re
         String::from_utf8_lossy(&output.stderr)
     );
     let consumer = tempfile::tempdir()?;
-    let output = Command::new("node")
+    let output = Command::new("bun")
         .arg(sdk.join("cli.js"))
         .args(["generate"])
         .current_dir(consumer.path())

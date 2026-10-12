@@ -3,10 +3,10 @@
     "private": true,
     "type": "module",
     "engines": {
-        "node": ">=22.19.0"
+        "bun": ">=1.4.2"
     },
     "scripts": {
-        "dev": "durable-actors generate && tsx --env-file=.env src/backend.ts",
+        "dev": "durable-actors generate && bun src/backend.ts",
         "dev:actors": "durable-actors dev",
         "build": "durable-actors generate src/actors.ts && tsc --noEmit && vite build"
     },
@@ -21,8 +21,10 @@
         "@types/node": "^22.0.0",
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
-        "tsx": "^4.0.0",
         "typescript": "~5.9.3",
         "vite": "^8.3.0"
-    }
+    },
+    "trustedDependencies": [
+        "esbuild"
+    ]
 }

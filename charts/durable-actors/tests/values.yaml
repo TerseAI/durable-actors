@@ -5,5 +5,10 @@ storage:
   bucket: test-state
 serviceAccount:
   googleServiceAccount: actors@test-project.iam.gserviceaccount.com
-image:
-  digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+images:
+  controlPlane:
+    digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  typescript:
+    digest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  python:
+    digest: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc

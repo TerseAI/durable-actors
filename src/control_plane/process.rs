@@ -47,8 +47,24 @@ pub struct ControlPlaneStorageConfig {
     pub artifact_bucket: String,
 }
 
+pub struct RuntimeImages {
+    pub typescript: String,
+    pub python: String,
+}
+
+impl RuntimeImages {
+    pub(crate) fn for_entrypoint(&self, entrypoint: &str) -> Result<&str> {
+        Ok(
+            match crate::artifacts::ActorRuntime::from_entrypoint(entrypoint)? {
+                crate::artifacts::ActorRuntime::Typescript => &self.typescript,
+                crate::artifacts::ActorRuntime::Python => &self.python,
+            },
+        )
+    }
+}
+
 pub struct SandboxProviderConfig {
-    pub runtime_image: String,
+    pub runtime_images: RuntimeImages,
     pub(super) pool: crate::sandbox::pool::PoolConfig,
     pub(crate) gke: GkeConfig,
     pub runtime: HostSandboxRuntimeConfig,
@@ -254,7 +270,7 @@ async fn sandbox_provisioner(
             provider,
             config.runtime,
             issuer.clone(),
-            Some(config.runtime_image),
+            Some(config.runtime_images),
         )
         .with_runtime_access(access)
         .with_pool(pool),
@@ -463,10 +479,9 @@ fn sandbox_provider_config(
     );
     let regions = zones.keys().cloned().collect();
     Ok(SandboxProviderConfig {
-        runtime_image: {
-            let image = required(get, "DURABLE_ACTORS_RUNTIME_IMAGE")?;
-            crate::sandbox::gke::validate_image(&image)?;
-            image
+        runtime_images: RuntimeImages {
+            typescript: runtime_image(get, "DURABLE_ACTORS_TYPESCRIPT_IMAGE")?,
+            python: runtime_image(get, "DURABLE_ACTORS_PYTHON_IMAGE")?,
         },
         pool: crate::sandbox::pool::PoolConfig {
             control_plane_url: Some(control_plane_url.clone()),
@@ -597,3 +612,9 @@ fn validated_http_url(value: &str, name: &str) -> Result<String> {
 #[cfg(test)]
 #[path = "../../tests/unit/control_plane/process.rs"]
 mod tests;
+
+fn runtime_image(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
+    let image = required(get, name)?;
+    crate::sandbox::gke::validate_image(&image).with_context(|| format!("invalid {name}"))?;
+    Ok(image)
+}

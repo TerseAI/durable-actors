@@ -151,7 +151,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
     }
     const { stdout } = await run(process.execPath, [cli, "dev"], { env })
     assert.doesNotMatch(stdout, /export DURABLE_ACTORS_SECRET=/u)
-    assert.deepEqual(JSON.parse(stdout).slice(0, 17), [
+    assert.deepEqual(JSON.parse(stdout).slice(0, 18), [
         "dev",
         "--project-id",
         "default",
@@ -165,6 +165,7 @@ console.log(JSON.stringify(process.argv.slice(2)))
         "gcs",
         "--sdk-host",
         path.resolve(path.dirname(cli), "host.js"),
+        "--watch",
         "--api-key",
         "dev-key",
         "--data-dir",

@@ -15,7 +15,7 @@ export async function projectSdkModule(
         const host = resolve("durable-actors/host", parent)
         target = await realpath(fileURLToPath(new URL(entrypoint, host)))
     } catch (cause) {
-        throw new Error(`Cannot load the durable-actors SDK in ${project}. Run pnpm install in the actor project.`, {
+        throw new Error(`Cannot load the durable-actors SDK in ${project}. Run bun install in the actor project.`, {
             cause
         })
     }

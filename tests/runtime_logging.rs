@@ -11,7 +11,7 @@ use tokio::{
 };
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()> {
     let runtime = LocalRuntime::start(None).await?;
     let client = reqwest::Client::new();
@@ -78,7 +78,7 @@ async fn local_requests_are_concise_and_human_readable_by_default() -> Result<()
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir sdk build and Bun"]
+#[ignore = "requires bun run --bun --cwd sdk build and Bun"]
 async fn local_request_logs_respect_rust_log() -> Result<()> {
     let runtime = LocalRuntime::start(Some("warn")).await?;
     reqwest::get(format!("{}/healthz", runtime.origin))

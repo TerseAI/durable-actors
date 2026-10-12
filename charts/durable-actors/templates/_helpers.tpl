@@ -5,7 +5,7 @@
 {{- default (printf "%s-%s" .Release.Namespace .Release.Name | trunc 63 | trimSuffix "-") .Values.sandboxNamespace -}}
 {{- end -}}
 {{- define "actors.image" -}}
-{{- printf "%s@sha256:%s" .Values.image.repository (required "image.digest is required for source builds; published charts include it" .Values.image.digest) -}}
+{{- printf "%s@sha256:%s" .repository (required "image digest is required for source builds; published charts include all image digests" .digest) -}}
 {{- end -}}
 {{- define "actors.validate" -}}
 {{- if eq (include "actors.sandboxNamespace" .) .Release.Namespace }}{{ fail "sandbox namespace must differ from the control-plane namespace" }}{{ end -}}

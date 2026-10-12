@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 const fs = require("node:fs");
 const id = process.env.DURABLE_ACTORS_HOST_ID;
 fs.writeFileSync(`${id}.started`, String(process.pid));

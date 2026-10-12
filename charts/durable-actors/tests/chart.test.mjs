@@ -75,9 +75,18 @@ for (const [name, overrides] of [
     ["duplicate Rapid zones", { storage: { mode: "rapid", rapid: { buckets: [{ bucket: "rapid-a", zone: "us-west4-a" }, { bucket: "rapid-b", zone: "us-west4-a" }] } } }],
     ["shared Standard and Rapid bucket", { storage: { mode: "rapid", rapid: { buckets: [{ bucket: "test-state", zone: "us-west4-a" }, { bucket: "rapid-b", zone: "us-west4-b" }] } } }],
     ["Rapid settings in Standard mode", { storage: { rapid: { buckets: [{ bucket: "rapid-a", zone: "us-west4-a" }] } } }],
-    ["mutable runtime image", { image: { digest: "latest" } }],
+    ["mutable control-plane image", { images: { controlPlane: { digest: "latest" } } }],
+    ["mutable TypeScript image", { images: { typescript: { digest: "latest" } } }],
+    ["mutable Python image", { images: { python: { digest: "latest" } } }],
     ["insecure public URL", { publicUrl: "http://actors.example.com" }],
     ["shared trust namespace", { sandboxNamespace: "actors" }],
     ["missing ingress certificate", { ingress: { enabled: true } }],
     ["warm pool above fleet limit", { actors: { warm: 300 } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(overrides).status, 0))
+
+test("deploys the control plane separately and configures language-specific actor images", () => {
+    const output = manifests()
+    assert.match(output, new RegExp(`image: "[^"\\n]+@sha256:${"a".repeat(64)}"`))
+    assert.match(output, new RegExp(`DURABLE_ACTORS_TYPESCRIPT_IMAGE, value: "[^"\\n]+@sha256:${"b".repeat(64)}"`))
+    assert.match(output, new RegExp(`DURABLE_ACTORS_PYTHON_IMAGE, value: "[^"\\n]+@sha256:${"c".repeat(64)}"`))
+})

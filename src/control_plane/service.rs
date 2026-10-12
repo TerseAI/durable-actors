@@ -806,7 +806,7 @@ pub(crate) trait HostProvisioner: Send + Sync {
 }
 
 pub(crate) struct SandboxHostProvisioner {
-    runtime_image: Option<String>,
+    runtime_images: Option<super::process::RuntimeImages>,
     pool: Option<Arc<crate::sandbox::pool::SparePool>>,
     runtime_access: Option<Arc<crate::bucket::access::RuntimeAccess>>,
     provider: Arc<dyn SandboxProvider>,
@@ -831,10 +831,10 @@ impl SandboxHostProvisioner {
         provider: Arc<dyn SandboxProvider>,
         runtime: HostSandboxRuntimeConfig,
         issuer: ActorJwtIssuer,
-        runtime_image: Option<String>,
+        runtime_images: Option<super::process::RuntimeImages>,
     ) -> Self {
         Self {
-            runtime_image,
+            runtime_images,
             pool: None,
             runtime_access: None,
             provider,
@@ -870,9 +870,11 @@ impl HostProvisioner for SandboxHostProvisioner {
             .validate_code(&manifest)?;
         let mut prepared = source.clone();
         prepared.image_ref = self
-            .runtime_image
-            .clone()
-            .context("hosted deployments require a runtime image")?;
+            .runtime_images
+            .as_ref()
+            .context("hosted deployments require runtime images")?
+            .for_entrypoint(manifest.entrypoint()?)?
+            .into();
         prepared.validate()?;
         Ok((prepared, None))
     }

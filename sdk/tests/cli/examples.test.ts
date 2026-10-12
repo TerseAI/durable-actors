@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { access, copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -73,7 +74,6 @@ for (const template of ["chat", "ai-chat", "documents"]) {
         `the ${template} template builds its app and actor contract from a fresh init`,
         { timeout: 60_000 },
         async t => {
-            // Match the examples' directory depth so pnpm's relative executable paths remain valid.
             const directory = await mkdtemp(path.resolve(sdk, "../.durable-actors-example-"))
             t.after(() => rm(directory, { recursive: true, force: true }))
             const project = path.join(directory, template)
@@ -85,7 +85,9 @@ for (const template of ["chat", "ai-chat", "documents"]) {
                 path.resolve(sdk, "../examples", template, "node_modules"),
                 path.join(project, "node_modules")
             )
-            await run("npm", ["run", "build"], { cwd: project })
+            // A globally installed CLI must not hide a missing workspace executable.
+            await access(path.join(project, "node_modules/.bin/durable-actors"), constants.X_OK)
+            await run("bun", ["run", "--bun", "build"], { cwd: project })
             await run(process.execPath, [path.join(sdk, "dist/cli.js"), "generate", "src/actors.ts"], { cwd: project })
         }
     )

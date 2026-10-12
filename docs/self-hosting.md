@@ -67,7 +67,7 @@ ingress:
   tlsSecret: actors-tls
 ```
 
-Set `VERSION` to the desired [Durable Actors release](https://github.com/TerseAI/durable-actors/releases). Published charts already pin the corresponding runtime image digest.
+Set `VERSION` to the desired [Durable Actors release](https://github.com/TerseAI/durable-actors/releases). Published charts already pin the corresponding control-plane, TypeScript, and Python image digests.
 
 ```sh
 helm upgrade --install actors \
