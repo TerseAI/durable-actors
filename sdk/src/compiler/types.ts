@@ -10,6 +10,7 @@ interface CompilerOptions {
 
 interface SdkSymbols {
     readonly Actor: ts.Symbol
+    readonly ActorResource?: ts.Symbol
     readonly Persisted: ts.Symbol
     readonly Ephemeral: ts.Symbol
     readonly Emittable: ts.Symbol
@@ -53,6 +54,7 @@ interface DecoratorResult {
 
 interface ParsedMember extends DecoratorResult {
     readonly node: ts.ClassElement
+    readonly resource?: boolean
 }
 
 interface ParsedActor extends DecoratorResult {

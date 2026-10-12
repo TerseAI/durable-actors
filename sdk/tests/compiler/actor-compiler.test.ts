@@ -8,6 +8,39 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("private actor resources infer ephemeral fields, including subclasses and aliases", () => {
+    const result = analyze(`import { Actor, ActorResource as Resource } from "./sdk.js"
+        class Agent extends Resource {}
+        class WrappedAgent extends Agent {}
+        export class Room extends Actor {
+            private agent = new WrappedAgent()
+            #other = new Agent()
+            async prompt() { return "hello" }
+        }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [
+        {
+            actorName: "Room",
+            fields: [
+                { name: "agent", persistence: Persistence.Ephemeral, visibility: "private" },
+                { name: "#other", persistence: Persistence.Ephemeral, private: true }
+            ]
+        }
+    ])
+})
+
+test("ordinary dependencies and public resource fields still require persistence annotations", () => {
+    for (const field of ["agent = new Resource()", "private agent = new Other()", "private count = 0"]) {
+        const result = analyze(`import { Actor, ActorResource as Resource } from "./sdk.js"
+            class Other {}
+            export class Room extends Actor { ${field} }`)
+        assert.ok(
+            result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("@Persisted or @Ephemeral")),
+            field
+        )
+    }
+})
+
 test("rejects invalid or dynamic compute overrides", () => {
     for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
         const result = analyze(`import { Actor, Compute } from "./sdk.js"
@@ -493,6 +526,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
         Object.entries({
             "actors.ts": source,
             "sdk.ts": `export abstract class Actor { protected constructor() {} }
+            export abstract class ActorResource { private readonly actorResource!: void }
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Interleave(...args: unknown[]) {}

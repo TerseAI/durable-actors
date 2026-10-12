@@ -271,8 +271,25 @@ function readActor(node: ts.ClassDeclaration, checker: ts.TypeChecker, sdk: SdkS
     return {
         name: node.name!.text,
         ...readDecorators(node, checker, sdk),
-        members: node.members.map(member => ({ node: member, ...readDecorators(member, checker, sdk) }))
+        members: node.members.map(member => ({
+            node: member,
+            ...readDecorators(member, checker, sdk),
+            resource: isPrivateResource(member, checker, sdk)
+        }))
     }
+}
+
+function isPrivateResource(node: ts.ClassElement, checker: ts.TypeChecker, sdk: SdkSymbols): boolean {
+    if (!ts.isPropertyDeclaration(node) || sdk.ActorResource === undefined || node.initializer === undefined)
+        return false
+    const privateField =
+        ts.isPrivateIdentifier(node.name) ||
+        ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.PrivateKeyword)
+    if (!privateField || ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword))
+        return false
+    const type = checker.getTypeAtLocation(node)
+    if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) return false
+    return checker.isTypeAssignableTo(type, checker.getDeclaredTypeOfSymbol(sdk.ActorResource))
 }
 
 function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbols): DecoratorResult {
@@ -344,8 +361,10 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
     const atomic = exports.find(symbol => symbol.name === "Atomic")
     const interleave = exports.find(symbol => symbol.name === "Interleave")
     const compute = exports.find(symbol => symbol.name === "Compute")
+    const resource = exports.find(symbol => symbol.name === "ActorResource")
     return {
         Actor: resolve("Actor"),
+        ...(resource === undefined ? {} : { ActorResource: canonicalSymbol(checker, resource) }),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),

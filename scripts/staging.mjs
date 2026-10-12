@@ -378,12 +378,17 @@ function runCommand(command, args, { cwd, env, input, stream = false }) {
     })
 }
 
+export function stagingExamplePath(root, example) {
+    if (!example || !example.split("/").every(segment => /^[a-z0-9][a-z0-9-]{0,54}$/.test(segment))) throw new Error("Usage: node scripts/staging.mjs <example-folder>")
+    return path.join(root, "examples", example)
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     try {
         const root = fileURLToPath(new URL("../", import.meta.url))
         const [example, ...extra] = process.argv.slice(2)
-        if (!example || !/^[a-z0-9][a-z0-9-]{0,54}$/.test(example) || extra.length) throw new Error("Usage: node scripts/staging.mjs <example-folder>")
-        const examplePath = path.join(root, "examples", example)
+        if (extra.length) throw new Error("Usage: node scripts/staging.mjs <example-folder>")
+        const examplePath = stagingExamplePath(root, example)
         const env = stagingEnvironment(await readFile(path.join(root, ".env.staging"), "utf8"))
         const launcher = new Staging(root, env, examplePath)
         await launcher.start()

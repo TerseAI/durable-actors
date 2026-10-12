@@ -74,7 +74,8 @@ function validateField(
     if (member.diagnostics.length > 0) return { diagnostics: [] }
     const annotations = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Persistence)
     const emission = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Emission)
-    if (annotations.length !== 1)
+    const persistence = member.resource && annotations.length === 0 ? Persistence.Ephemeral : annotations[0]?.mode
+    if (persistence === undefined || annotations.length > 1 || fieldName(node.name) === undefined)
         return {
             diagnostics: [
                 definitionDiagnostic(
@@ -84,7 +85,7 @@ function validateField(
                 )
             ]
         }
-    if (emission.length > 1 || (emission.length === 1 && annotations[0]!.mode !== Persistence.Persisted))
+    if (emission.length > 1 || (emission.length === 1 && persistence !== Persistence.Persisted))
         return {
             diagnostics: [
                 definitionDiagnostic(node, "@Emittable requires a public @Persisted field and cannot be repeated")
@@ -93,7 +94,7 @@ function validateField(
     return {
         field: {
             name: fieldName(node.name)!,
-            persistence: annotations[0]!.mode,
+            persistence,
             ...(ts.isPrivateIdentifier(node.name) ? { private: true } : {}),
             ...(hasModifier(node, ts.SyntaxKind.PrivateKeyword)
                 ? { visibility: "private" as const }

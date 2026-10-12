@@ -5,7 +5,7 @@ A separate client project connected to the [persistence-tests example](../persis
 Start the persistence-tests server first. Then, from the repository root in a second terminal:
 
 ```sh
-cd examples/cli
+cd examples/persistence/cli
 cp .env.example .env
 bun run --bun generate
 bun run --bun start crash-read
