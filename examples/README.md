@@ -12,7 +12,7 @@ Follow the example's README to install dependencies, copy `.env.example` to `.en
 
 ## Persistence tests and CLI
 
-[Persistence tests](persistence-tests/README.md) exercise immediate writes, atomic rollback, interleaving, and crash recovery. The separate [CLI](cli/README.md) calls the actor through a generated client. No model API key is needed.
+[Persistence tests](persistence-tests/) exercise immediate writes, atomic rollback, interleaving, and crash recovery. The separate [CLI](cli/README.md) calls the actor through a generated client. No model API key is needed.
 
 ## Guide examples
 

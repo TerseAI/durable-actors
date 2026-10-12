@@ -1,6 +1,6 @@
 # CLI example
 
-A separate client project connected to the [persistence-tests example](../persistence-tests/README.md). It imports the generated client, with no imports from the actor source.
+A separate client project connected to the [persistence-tests example](../persistence-tests/). It imports the generated client, with no imports from the actor source.
 
 Start the persistence-tests server first. Then, from the repository root in a second terminal:
 
