@@ -127,26 +127,29 @@ export class Staging {
         await this.command("cargo", ["build", "--locked", "--bin", "durable-actors"], { stream: true })
         this.env.DURABLE_ACTORS_BINARY = path.join(this.root, "target/debug/durable-actors")
         const contract = JSON.parse(await this.command(process.execPath, [path.join(this.root, "sdk/dist/compiler/deployment-build.js"), this.examplePath, "src/actors.ts", this.work]))
-        this.env.DURABLE_ACTORS_RUNTIME_IMAGE = await this.buildRuntimeImage()
-        await this.saveSetting("DURABLE_ACTORS_RUNTIME_IMAGE", this.env.DURABLE_ACTORS_RUNTIME_IMAGE)
+        for (const runtime of ["typescript", "python"]) {
+            const key = `DURABLE_ACTORS_${runtime.toUpperCase()}_IMAGE`
+            this.env[key] = await this.buildRuntimeImage(runtime)
+            await this.saveSetting(key, this.env[key])
+        }
         await this.saveSetting("DURABLE_ACTORS_BINARY", this.env.DURABLE_ACTORS_BINARY)
         return { bundle: await this.uploadBundle(), contract, secretRefs: Object.keys(this.secrets).length ? [this.secretName] : [] }
     }
 
-    async buildRuntimeImage() {
+    async buildRuntimeImage(runtime) {
         const plugins = JSON.parse(await this.command("docker", ["info", "--format", "{{json .ClientInfo.Plugins}}"]))
         const buildx = plugins.find(plugin => plugin.Name === "buildx")
         if (!buildx) throw new Error("Install Docker Buildx before running staging")
         const host = JSON.parse(await this.command("docker", ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]))
         if (!host.startsWith("unix://")) throw new Error("Staging image builds require a local Docker socket")
-        const image = `${this.env.STAGING_IMAGE_REPOSITORY}:staging`
+        const image = `${this.env.STAGING_IMAGE_REPOSITORY}:staging-${runtime}`
         const dockerConfig = path.join(this.work, "docker")
         const configuration = JSON.stringify({ cliPluginsExtraDirs: [path.dirname(buildx.Path)] })
         await mkdir(dockerConfig, { recursive: true })
         await writeFile(path.join(dockerConfig, "config.json"), configuration, { mode: 0o600 })
         const dockerEnv = { ...this.env, DOCKER_CONFIG: dockerConfig, DOCKER_HOST: host }
         try {
-            await this.command("docker", ["buildx", "build", "--target", "typescript", "--platform=linux/amd64", "--tag", image, "--load", "."], { env: dockerEnv, stream: true })
+            await this.command("docker", ["buildx", "build", "--target", runtime, "--platform=linux/amd64", "--tag", image, "--load", "."], { env: dockerEnv, stream: true })
             const token = (await this.gcloud(["auth", "print-access-token"])).trim()
             await this.command("docker", ["login", this.env.STAGING_IMAGE_REPOSITORY.split("/")[0], "--username=oauth2accesstoken", "--password-stdin"], { env: dockerEnv, input: token })
             await this.command("docker", ["push", image], { env: dockerEnv, stream: true })
