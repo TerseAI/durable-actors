@@ -1,6 +1,12 @@
-/** A live dependency whose private actor field is implicitly ephemeral. */
-abstract class ActorResource {
-    declare private readonly actorResource: void
+import type { ActorDatabase } from "durable-actors"
+
+interface ActorResourceContext {
+    db: ActorDatabase
+}
+
+interface ActorResource {
+    onResume({ db }: ActorResourceContext): Promise<void>
+    onShutdown({ db }: ActorResourceContext): Promise<void>
 }
 
 export { ActorResource }

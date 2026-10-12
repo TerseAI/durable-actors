@@ -21,5 +21,9 @@ export class PiAgent extends Actor {
 
         const submission = await conversation.submit({ type: "input", content: text }, context)
         const result = await submission.wait(context)
+
+        if (result.status === "unanswered") throw new Error(`Pi did not answer: ${result.reason}${typeof result.detail === "string" ? `: ${result.detail}` : ""}`)
+
+        return "Foo"
     }
 }
