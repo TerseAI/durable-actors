@@ -95,6 +95,7 @@ const forwarderIdentity = {
 
 const counterDefinition = registerActorClass(Counter, {
     actorName: "Counter",
+    atomicMethods: ["explode"],
     fields: [{ name: "count", persistence: Persistence.Persisted }]
 })
 const forwarderDefinition = registerActorClass(Forwarder, { actorName: "Forwarder", fields: [] })
@@ -174,7 +175,7 @@ test("invocation does not enforce deployment JSON schemas at runtime", async () 
     assert.equal(reply.type, "invoked")
 })
 
-test("ephemeral caches survive resident calls and reset after failure or reconstruction", async () => {
+test("ephemeral caches survive resident calls and reset after atomic failure or reconstruction", async () => {
     class CachingCounter extends Actor {
         @Persisted count = 0
         @Ephemeral cache = new Map<string, number>()
@@ -192,6 +193,7 @@ test("ephemeral caches survive resident calls and reset after failure or reconst
     }
     const definition = registerActorClass(CachingCounter, {
         actorName: "CachingCounter",
+        atomicMethods: ["fail"],
         fields: [
             { name: "count", persistence: Persistence.Persisted },
             { name: "cache", persistence: Persistence.Ephemeral }
@@ -420,7 +422,7 @@ test("a resident actor rejects another type or ID without changing its state", a
     assertReply(await runtime.handle(command), { type: "invoked", result: 2 })
 })
 
-test("keeps a successful actor instance resident and restores it after failure", async () => {
+test("keeps a successful actor instance resident and restores it after atomic failure", async () => {
     const runtime = new ActorRuntime(counterDefinition, () => {})
     assertReply(
         await runtime.handle({

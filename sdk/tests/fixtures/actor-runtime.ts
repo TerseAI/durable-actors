@@ -2,7 +2,7 @@ import { ActorRuntime as Runtime } from "../../src/host/actor-runtime.js"
 import { SqliteActorDatabase as Database } from "../../src/host/sqlite.js"
 import type { SqliteState } from "../../src/host/sqlite.js"
 
-import { commit } from "./litestream.js"
+import { commit, commitSync } from "./litestream.js"
 
 export type { SqliteState } from "../../src/host/sqlite.js"
 export { SqliteCaptureError } from "../../src/host/sqlite.js"
@@ -14,9 +14,7 @@ export class SqliteActorDatabase extends Database {
     constructor(connect?: ConstructorParameters<typeof Database>[2]) {
         super(
             () => commit(this.state!),
-            () => {
-                throw new Error("immediate SQLite persistence is not implemented")
-            },
+            () => commitSync(this.state!),
             connect
         )
     }

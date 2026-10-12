@@ -50,6 +50,7 @@ class SqliteCounter extends Actor {
 
 const definition = registerActorClass(SqliteCounter, {
     actorName: "SqliteCounter",
+    atomicMethods: ["fail"],
     fields: [{ name: "count", persistence: Persistence.Persisted }]
 })
 
@@ -181,7 +182,7 @@ test("large JSON fields and SQLite databases restore together", async () => {
     assert.ok(Reflect.get(read, "sqlite")?.txid > 0)
 })
 
-test("failed calls roll back object fields, SQL writes, and SQL schema changes", async () => {
+test("failed atomic calls roll back object fields, SQL writes, and SQL schema changes", async () => {
     const runtime = createRuntime()
     await invoke(runtime, "initialize")
     const inserted = await invoke(runtime, "insert", ["retained"])

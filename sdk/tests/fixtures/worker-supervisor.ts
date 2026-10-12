@@ -14,7 +14,7 @@ export function handle(
     publish?: Arguments[4],
     connections?: Arguments[5]
 ): Promise<ActorExecutorReply> {
-    return host.handle(command, allowNext, capture(host, command), unsupportedPersistence, publish, connections)
+    return host.handle(command, allowNext, capture(host, command), persist, publish, connections)
 }
 
 export function execute(
@@ -24,7 +24,7 @@ export function execute(
     publish?: Arguments[4],
     connections?: Arguments[5]
 ): Promise<ActorExecutorReply> {
-    return worker.execute(command, allowNext, capture(worker, command), unsupportedPersistence, publish, connections)
+    return worker.execute(command, allowNext, capture(worker, command), persist, publish, connections)
 }
 
 function capture(host: object, command: ActorExecutorCommand): () => Promise<number> {
@@ -37,6 +37,6 @@ function capture(host: object, command: ActorExecutorCommand): () => Promise<num
     }
 }
 
-async function unsupportedPersistence(): Promise<never> {
-    throw new Error("immediate SQLite persistence is not implemented")
+async function persist(_commitId: number, txid: number): Promise<{ txid: number }> {
+    return { txid }
 }
