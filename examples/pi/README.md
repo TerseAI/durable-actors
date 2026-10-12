@@ -30,8 +30,8 @@ Wait for `Ready`. In a second terminal, from the repository root:
 cd examples/pi/pi-cli
 cp .env.example .env
 bun run generate
-bun run chat "Remember that my name is Alice."
-bun run chat "What is my name?"
+bun run start send "Remember that my name is Alice."
+bun run start send "What is my name?"
 ```
 
 Restart the actor runtime and ask again to check persistence. The CLI needs only the actor runtime URL; the model API key stays in the actor project. Regenerate the client after changing the actor API.

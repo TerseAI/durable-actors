@@ -32,13 +32,15 @@ test("separate CLI commands share actor state through the generated client", asy
             DURABLE_ACTORS_API_KEY: "pi-cli-test-key"
         }
         delete env.DURABLE_ACTORS_SECRET
-        const first = await run(process.execPath, ["src/index.ts", "Alice"], { cwd: project, env })
-        const second = await run(process.execPath, ["src/index.ts", "Hello", "again"], { cwd: project, env })
+        const first = await run(process.execPath, ["src/index.ts", "send", "Alice"], { cwd: project, env })
+        const second = await run(process.execPath, ["src/index.ts", "send", "Hello again"], { cwd: project, env })
         expect(first.stdout.trim()).toBe("Alice")
         expect(second.stdout.trim()).toBe("Alice | Hello again")
-        await expect(run(process.execPath, ["src/index.ts"], { cwd: project, env })).rejects.toMatchObject({
+        const help = await run(process.execPath, ["src/index.ts", "--help"], { cwd: project, env })
+        expect(help.stdout).toContain("send <prompt>")
+        await expect(run(process.execPath, ["src/index.ts", "send"], { cwd: project, env })).rejects.toMatchObject({
             code: 1,
-            stderr: expect.stringContaining('Usage: bun run chat "Your prompt"')
+            stderr: expect.stringContaining("missing required argument 'prompt'")
         })
     } finally {
         await runtime?.stop()

@@ -8,7 +8,8 @@ Follow the [pair's setup instructions](../README.md) to start the actor. From th
 cd examples/pi/pi-cli
 cp .env.example .env
 bun run generate
-bun run chat "Hello"
+bun run start send "Hello"
+bun run start --help
 ```
 
 Each command sends one prompt to `PiAgent` with ID `demo` and prints its reply. Repeated commands continue the same conversation. The CLI reads `DURABLE_ACTORS_CONTROL_PLANE_URL` from `.env`, defaulting here to port `7104`.

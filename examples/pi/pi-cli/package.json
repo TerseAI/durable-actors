@@ -4,9 +4,12 @@
     "type": "module",
     "scripts": {
         "generate": "durable-actors generate",
-        "chat": "bun src/index.ts",
+        "start": "bun src/index.ts",
         "check": "tsc --noEmit",
         "test": "bun test tests"
+    },
+    "dependencies": {
+        "commander": "^14.0.3"
     },
     "devDependencies": {
         "durable-actors": "workspace:^",
