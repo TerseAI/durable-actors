@@ -2,10 +2,23 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { z } from "zod"
 
+import type { ActorResource, ActorResourceContext } from "../../src/index.js"
 import { Actor, findActorDefinition, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorDefinitionError, ActorValidationError } from "../../src/errors.js"
 import { runWithActorClientForTests } from "../fixtures/actorClient.js"
+
+test("public entry exports ActorResourceContext", () => {
+    const resource: ActorResource = {
+        async onResume(context: ActorResourceContext) {
+            void context.db
+        },
+        async onGracefulShutdown(context: ActorResourceContext) {
+            void context.db
+        }
+    }
+    void resource
+})
 
 class ChatRoom extends Actor {
     async history(): Promise<readonly string[]> {

@@ -301,14 +301,14 @@ function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbol
         const call = ts.isCallExpression(node.expression) ? node.expression : undefined
         const symbol = symbolAt(checker, call?.expression ?? node.expression)
         const use = { node, target, called: call !== undefined }
-        const result = readDecorator(symbol, use, sdk)
+        const result = readDecorator(symbol, use, sdk, checker)
         annotations.push(...result.annotations)
         diagnostics.push(...result.diagnostics)
     }
     return { annotations, diagnostics }
 }
 
-function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: SdkSymbols): DecoratorResult {
+function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: SdkSymbols, checker: ts.TypeChecker): DecoratorResult {
     if (symbol === undefined) return { annotations: [], diagnostics: [] }
     switch (symbol) {
         case sdk.Persisted:
@@ -324,7 +324,7 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
         case sdk.Compute:
             return readCompute(use)
         case sdk.Resource:
-            return readResource(use)
+            return readResource(use, sdk, checker)
         default:
             return { annotations: [], diagnostics: [] }
     }
@@ -371,6 +371,7 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
         Resource: resolve("Resource"),
+        ActorResource: resolve("ActorResource"),
         ...(atomic === undefined ? {} : { Atomic: canonicalSymbol(checker, atomic) }),
         ...(compute === undefined ? {} : { Compute: canonicalSymbol(checker, compute) }),
         ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) })

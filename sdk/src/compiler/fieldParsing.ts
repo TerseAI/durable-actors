@@ -10,6 +10,7 @@ export function validateField(actorName: string, member: ParsedMember): FieldVal
 
     const node = member.node
     const nodeName = fieldName(node.name)
+
     if (nodeName === undefined)
         return { diagnostics: [definitionDiagnostic(node.name, `actor field ${actorName}.${node.name.getText()} must have a literal string name`)] }
 
@@ -48,12 +49,15 @@ export function validateField(actorName: string, member: ParsedMember): FieldVal
         }
     }
 
+    // if the field is a resource, it must be ephemeral
+    const finalPersistence = resource.length === 0 ? persistence : Persistence.Ephemeral
+
     const isPrivate = hasModifier(node, ts.SyntaxKind.PrivateKeyword)
     const isProtected = hasModifier(node, ts.SyntaxKind.ProtectedKeyword)
 
     const field: ActorFieldSchema = {
         name: nodeName,
-        persistence,
+        persistence: finalPersistence,
         private: ts.isPrivateIdentifier(node.name),
         visibility: isPrivate ? "private" : isProtected ? "protected" : undefined,
         emittable: emission.length === 1,

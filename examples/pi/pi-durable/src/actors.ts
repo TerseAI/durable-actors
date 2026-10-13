@@ -3,7 +3,7 @@ import { createModels } from "@earendil-works/pi-ai"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
 import { createRegistry } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Actor, Ephemeral } from "durable-actors"
+import { Actor, Resource } from "durable-actors"
 
 const models = createModels()
 models.setProvider(openaiProvider())
@@ -11,19 +11,13 @@ const registry = createRegistry()
 const context = BACKGROUND_CONTEXT
 
 export class PiAgent extends Actor {
-    @Ephemeral private readonly agent = DurablePiAgent.create(this, {
+    @Resource private readonly agent = new DurablePiAgent({
         models,
         registry,
     })
 
     async prompt(text: string): Promise<string> {
-        const conversation = await (await this.agent).root(context, { agent: { model: { provider: "openai", modelId: "gpt-5-mini" } } })
-
-        const submission = await conversation.submit({ type: "input", content: text }, context)
-        const result = await submission.wait(context)
-
-        if (result.status === "unanswered") throw new Error(`Pi did not answer: ${result.reason}${typeof result.detail === "string" ? `: ${result.detail}` : ""}`)
-
-        return "Foo"
+        const response = await this.agent.prompt(text)
+        return response
     }
 }
