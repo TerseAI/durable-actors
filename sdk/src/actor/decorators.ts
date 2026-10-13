@@ -33,9 +33,14 @@ function Emittable(_value: undefined, context: ClassFieldDecoratorContext): void
     if (context.private) throw new ActorDefinitionError("@Emittable requires a public field")
 }
 
+/** Marks a property as being a Resource. Includes them in Actor Lifecycle */
+function Resource(_value: undefined, context: ClassFieldDecoratorContext): void {
+    validateField("Resource", context)
+}
+
 function validateField(name: string, context: ClassFieldDecoratorContext): void {
     if (context.kind !== "field" || context.static || typeof context.name !== "string")
         throw new ActorDefinitionError(`@${name} requires an instance field with a string name`)
 }
 
-export { Atomic, Emittable, Ephemeral, Interleave, Persisted }
+export { Atomic, Emittable, Ephemeral, Interleave, Persisted, Resource }

@@ -1,5 +1,5 @@
 import type { SocketContract } from "../wire/contract.js"
-
+import type { ActorResource } from "./resource.js"
 import type { ComputeOptions } from "./compute.js"
 
 const ACTOR_ARTIFACT_VERSION = 1
@@ -12,9 +12,10 @@ enum Persistence {
 interface ActorFieldSchema {
     readonly name: string
     readonly persistence: Persistence
-    readonly private?: boolean
+    readonly private: boolean
     readonly visibility?: "private" | "protected"
-    readonly emittable?: boolean
+    readonly emittable: boolean
+    readonly resource: boolean
 }
 
 interface ActorSchema {

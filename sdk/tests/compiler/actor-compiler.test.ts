@@ -61,6 +61,13 @@ test("db is reserved for the actor SQLite database", () => {
     assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
 })
 
+test("rejects fields without a literal name", () => {
+    const result = analyze(`import { Actor, Persisted } from "./sdk.js"
+        const key = "count"
+        export class Room extends Actor { @Persisted [key] = 1 }`)
+    assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("literal")))
+})
+
 test("records only atomic methods, including aliased decorators", () => {
     const result = analyze(`import { Actor, Atomic as A } from "./sdk.js"
         export class PiAgent extends Actor { @A async testAtomic() {} async prompt() {} }`)
@@ -532,7 +539,8 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             export function Interleave(...args: unknown[]) {}
             export function Atomic(...args: unknown[]) {}
             export function Compute(...args: unknown[]) {}
-            export function Ephemeral(...args: unknown[]) {}`,
+            export function Ephemeral(...args: unknown[]) {}
+            export function Resource(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])
     )
