@@ -1,7 +1,7 @@
 import { test } from "node:test"
 
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
-import { ActorRuntime } from "../fixtures/actor-runtime.js"
+import { ActorRuntime, SqliteState } from "../fixtures/actor-runtime.js"
 import { seed } from "../fixtures/litestream.js"
 import { assertReply } from "../fixtures/reply.js"
 
@@ -17,16 +17,15 @@ class AlarmProbe extends Actor {
         this.alarm.delete()
         return this.alarm.get()
     }
+
+    async failAfterSet(): Promise<void> {
+        this.alarm.set(3_000)
+        throw new Error("test failure")
+    }
 }
-const definition = registerActorClass(AlarmProbe, {
-    actorName: "AlarmProbe",
-    fields: []
-})
-test("actors can read, replace, and delete their alarm", async context => {
-    const runtime = new ActorRuntime(definition, () => {})
-    context.after(() => runtime.close())
-    const sqlite = await seed()
-    const invoke = (method: string, args: number[] = []) =>
+
+function actorInvoker(runtime: ActorRuntime, sqlite: SqliteState) {
+    return (method: string, args: number[] = []) =>
         runtime.handle({
             type: "invoke",
             request_id: method,
@@ -39,6 +38,18 @@ test("actors can read, replace, and delete their alarm", async context => {
             args,
             sqlite
         })
+}
+
+test("actors can read, replace, and delete their alarm", async context => {
+    const definition = registerActorClass(AlarmProbe, {
+        actorName: "AlarmProbe",
+        fields: []
+    })
+
+    const runtime = new ActorRuntime(definition, () => {})
+    context.after(() => runtime.close())
+    const sqlite = await seed()
+    const invoke = actorInvoker(runtime, sqlite)
     assertReply(await invoke("readAlarm"), {
         type: "invoked",
         result: null
@@ -54,5 +65,46 @@ test("actors can read, replace, and delete their alarm", async context => {
     assertReply(await invoke("deleteAlarm"), {
         type: "invoked",
         result: null
+    })
+
+    // test non-atomic method, error sets the alarm anyway
+    assertReply(await invoke("setAlarm", [2_000]), {
+        type: "invoked",
+        result: 2_000
+    })
+    assertReply(await invoke("failAfterSet"), {
+        type: "failed",
+        code: "actor_method_failed",
+        message: "test failure"
+    })
+    assertReply(await invoke("readAlarm"), {
+        type: "invoked",
+        result: 3_000
+    })
+})
+
+test("failed alarm set in atomic does rollback and is not saved", async context => {
+    const definition = registerActorClass(AlarmProbe, {
+        actorName: "AlarmProbe",
+        atomicMethods: ["failAfterSet"],
+        fields: []
+    })
+    const runtime = new ActorRuntime(definition, () => {})
+
+    context.after(() => runtime.close())
+    const sqlite = await seed()
+    const invoke = actorInvoker(runtime, sqlite)
+    assertReply(await invoke("setAlarm", [2_000]), {
+        type: "invoked",
+        result: 2_000
+    })
+    assertReply(await invoke("failAfterSet"), {
+        type: "failed",
+        code: "actor_method_failed",
+        message: "test failure"
+    })
+    assertReply(await invoke("readAlarm"), {
+        type: "invoked",
+        result: 2_000
     })
 })
