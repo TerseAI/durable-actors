@@ -28,7 +28,8 @@ export function validateField(actorName: string, member: ParsedMember): FieldVal
     
     const isPersistenceValid = (persistence !== undefined && annotations.length === 1) || (resource.length === 1)
     const isEmissionValid = emission.length <= 1
-    const isResourceValid = resource.length <= 1 && persistence !== Persistence.Persisted && emission.length === 0
+    const isResourceValid = resource.length === 0 ||
+        (resource.length === 1 && persistence !== Persistence.Persisted && emission.length === 0)
 
     
     if (!isPersistenceValid) {

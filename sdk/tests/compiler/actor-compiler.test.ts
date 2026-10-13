@@ -8,6 +8,17 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+test("atomic methods can update ordinary persisted properties", () => {
+    const result = analyze(`import { Actor, Atomic, Persisted } from "./sdk.js"
+        export class Counter extends Actor {
+            @Persisted count = 0
+            @Atomic async increment() { this.count += 1 }
+        }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.equal(result.schemas[0]?.fields[0]?.persistence, Persistence.Persisted)
+    assert.deepEqual(result.schemas[0]?.atomicMethods, ["increment"])
+})
+
 test("private actor resources infer ephemeral fields, including subclasses and aliases", () => {
     const result = analyze(`import { Actor, ActorResource as Resource } from "./sdk.js"
         class Agent extends Resource {}
