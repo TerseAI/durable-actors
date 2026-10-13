@@ -1,8 +1,9 @@
 import { isDeepStrictEqual } from "node:util"
 
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
-import { Actor, bindActorIdentity } from "../actor/actor.js"
-import { constructWithActorDatabase, runWithActorDatabase } from "../actor/database.js"
+import { Actor } from "../actor/actor.js"
+import { RuntimeActorContext } from "../actor/context.js"
+import { runWithActorDatabase } from "../actor/database.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
 import { Persistence } from "../actor/schema.js"
@@ -253,15 +254,12 @@ class ActorRuntime {
     }
 
     private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
-        const instance = constructWithActorDatabase(
-            this.database,
-            () => Reflect.construct(this.definition.actorClass, []) as AnyActor
-        )
-        bindActorIdentity(instance, identity.actor_id)
+        const context = RuntimeActorContext.runtime(identity.actor_id, this.database)
+        const instance = context.construct(this.definition.actorClass) as AnyActor
         validateActorState(instance, this.definition.state)
         if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
         this.database.initializeFields(snapshotActorState(instance, this.definition.state))
-        bindPersistedFields(instance, this.definition.state, this.database)
+        bindPersistedFields(instance, context, this.definition.state, this.database)
         if (this.interleaved) this.lastCompletedState = this.database.fields()
         this.identity = { ...identity }
         this.instance = instance

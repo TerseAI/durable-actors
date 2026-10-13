@@ -5,7 +5,8 @@ import type { ActorWorker, ActorWorkerSupervisor } from "../../src/host/worker-s
 import { commit } from "./litestream.js"
 
 type Arguments = Parameters<ActorWorkerSupervisor["handle"]>
-const states = new WeakMap<object, SqliteState>()
+const sqliteState = Symbol("fixture SQLite state")
+type SqliteHost = { [sqliteState]?: SqliteState }
 
 export function handle(
     host: ActorWorkerSupervisor,
@@ -14,7 +15,7 @@ export function handle(
     publish?: Arguments[4],
     connections?: Arguments[5]
 ): Promise<ActorExecutorReply> {
-    return host.handle(command, allowNext, capture(host, command), persist, publish, connections)
+    return host.handle(command, allowNext, capture(host as SqliteHost, command), persist, publish, connections)
 }
 
 export function execute(
@@ -24,13 +25,13 @@ export function execute(
     publish?: Arguments[4],
     connections?: Arguments[5]
 ): Promise<ActorExecutorReply> {
-    return worker.execute(command, allowNext, capture(worker, command), persist, publish, connections)
+    return worker.execute(command, allowNext, capture(worker as SqliteHost, command), persist, publish, connections)
 }
 
-function capture(host: object, command: ActorExecutorCommand): () => Promise<number> {
-    if ("sqlite" in command && command.sqlite && !states.has(host)) states.set(host, command.sqlite)
-    if (command.type === "evict") states.delete(host)
-    const state = states.get(host)
+function capture(host: SqliteHost, command: ActorExecutorCommand): () => Promise<number> {
+    if ("sqlite" in command && command.sqlite) host[sqliteState] ??= command.sqlite
+    if (command.type === "evict") delete host[sqliteState]
+    const state = host[sqliteState]
     return () => {
         if (!state) throw new Error("host has no registered SQLite database")
         return commit(state)

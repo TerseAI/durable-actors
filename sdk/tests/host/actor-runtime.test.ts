@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { Actor, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, type ActorContext, registerActorClass } from "../../src/actor/actor.js"
 import { Ephemeral, Persisted } from "../../src/actor/decorators.js"
 import { Persistence } from "../../src/actor/schema.js"
 import type { ActorConnection, ActorSocket } from "../../src/actor/socket.js"
@@ -223,13 +223,15 @@ test("ephemeral caches survive resident calls and reset after atomic failure or 
     assertReply(await new ActorRuntime(definition, () => {}).handle(restored), expected)
 })
 
+// help me understand this test
 test("failed state recovery reports a fatal error instead of keeping a damaged instance", async () => {
     let rejectConstruction = false
+    const restore = () => {
+        if (rejectConstruction) throw new Error("cannot restore")
+        return true
+    }
     class RecoveryFailure extends Actor {
-        constructor() {
-            super()
-            if (rejectConstruction) throw new Error("cannot restore")
-        }
+        @Ephemeral restored = restore()
 
         async fail(): Promise<void> {
             rejectConstruction = true
@@ -237,7 +239,10 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
         }
     }
     const runtime = new ActorRuntime(
-        registerActorClass(RecoveryFailure, { actorName: "RecoveryFailure", fields: [] }),
+        registerActorClass(RecoveryFailure, {
+            actorName: "RecoveryFailure",
+            fields: [{ name: "restored", persistence: Persistence.Ephemeral }]
+        }),
         () => {}
     )
     const command = {
@@ -255,6 +260,33 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
     })
     assert.deepEqual(await runtime.handle({ ...command, resident_only: true, sqlite: undefined }), {
         type: "state_required"
+    })
+})
+
+test("constructors that do not forward the actor context fail at runtime", async () => {
+    class InvalidConstructor extends Actor {
+        constructor(_context: ActorContext) {
+            super(undefined as never)
+        }
+
+        async read(): Promise<void> {}
+    }
+    const runtime = new ActorRuntime(
+        registerActorClass(InvalidConstructor, { actorName: "InvalidConstructor", fields: [] }),
+        () => {}
+    )
+    const reply = await runtime.handle({
+        type: "invoke",
+        actor: { project_id: "default", actor_name: "InvalidConstructor", actor_id: "one" },
+        request_id: "invalid-constructor",
+        method: "read",
+        args: [],
+        sqlite: await seed(null)
+    })
+    assert.deepEqual(reply, {
+        type: "failed",
+        code: "invalid_actor_state",
+        message: "actors are constructed by the actor runtime"
     })
 })
 

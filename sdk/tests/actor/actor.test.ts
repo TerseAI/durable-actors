@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { z } from "zod"
 
-import { Actor, findActorDefinition, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, type ActorContext, findActorDefinition, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorDefinitionError, ActorValidationError } from "../../src/errors.js"
 import { runWithActorClientForTests } from "../fixtures/actorClient.js"
@@ -22,9 +22,18 @@ test("actor methods cannot replace the reserved database handle", () => {
     )
 })
 
+test("actors can only be constructed with a runtime context", () => {
+    for (const context of [undefined, {}, { actorId: "forged" }])
+        assert.throws(() => Reflect.construct(ChatRoom, [context]), /constructed by the actor runtime/)
+})
+
 test("creating and invoking a reference does not register an executable actor", async () => {
     class RemoteCounter extends Actor {
         count = 0
+
+        constructor(context: ActorContext) {
+            super(context)
+        }
 
         async increment(): Promise<number> {
             assert.fail("reference executed the actor implementation")

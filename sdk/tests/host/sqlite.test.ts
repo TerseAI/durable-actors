@@ -3,12 +3,12 @@ import { fork } from "node:child_process"
 import { once } from "node:events"
 import { afterEach, test } from "node:test"
 
-import { Actor, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, type ActorContext, registerActorClass } from "../../src/actor/actor.js"
+import { Ephemeral } from "../../src/actor/decorators.js"
 import { Persistence } from "../../src/actor/schema.js"
 import type { InvokeCommand } from "../../src/host/protocol.js"
-import { ActorRuntime } from "../fixtures/actor-runtime.js"
-import { SqliteActorDatabase } from "../fixtures/actor-runtime.js"
 import type { SqliteState } from "../fixtures/actor-runtime.js"
+import { ActorRuntime, SqliteActorDatabase } from "../fixtures/actor-runtime.js"
 import { fields, recover, seed } from "../fixtures/litestream.js"
 
 class SqliteCounter extends Actor {
@@ -318,6 +318,87 @@ test("database handles cannot write after their invocation completes", async () 
     assert.throws(escaped, /outside its invocation/)
     release()
     await assert.rejects(pending, /outside its invocation/)
+})
+
+// help me understand this test
+test("field initializers read the actor identity and SQLite during construction", async () => {
+    class InitializedSqlite extends Actor {
+        @Ephemeral identity = this.id
+        @Ephemeral created = this.db.exec("CREATE TABLE IF NOT EXISTS initialized (id INTEGER)")
+
+        async read() {
+            return {
+                identity: this.identity,
+                tables: this.db.exec("SELECT name FROM sqlite_schema WHERE name = 'initialized'")
+            }
+        }
+    }
+    const runtime = createRuntime(
+        registerActorClass(InitializedSqlite, {
+            actorName: "InitializedSqlite",
+            fields: [
+                { name: "identity", persistence: Persistence.Ephemeral },
+                { name: "created", persistence: Persistence.Ephemeral }
+            ]
+        })
+    )
+    const reply = await invoke(runtime, "read", [], {
+        actor: { project_id: "test", actor_name: "InitializedSqlite", actor_id: "one" }
+    })
+    assert.deepEqual(Reflect.get(reply, "result"), { identity: "one", tables: [{ name: "initialized" }] })
+})
+
+test("explicit constructors receive the actor context", async () => {
+    class ConstructedSqlite extends Actor {
+        @Ephemeral identity: string
+
+        constructor(context: ActorContext) {
+            super(context)
+            this.identity = this.id
+            this.db.exec("CREATE TABLE constructed (id INTEGER)")
+        }
+
+        async read() {
+            return {
+                identity: this.identity,
+                tables: this.db.exec("SELECT name FROM sqlite_schema WHERE name = 'constructed'")
+            }
+        }
+    }
+    const runtime = createRuntime(
+        registerActorClass(ConstructedSqlite, {
+            actorName: "ConstructedSqlite",
+            fields: [{ name: "identity", persistence: Persistence.Ephemeral }]
+        })
+    )
+    const reply = await invoke(runtime, "read", [], {
+        actor: { project_id: "test", actor_name: "ConstructedSqlite", actor_id: "one" }
+    })
+    assert.deepEqual(Reflect.get(reply, "result"), { identity: "one", tables: [{ name: "constructed" }] })
+})
+
+// what is this test doing
+test("database work deferred from construction is rejected", async () => {
+    class DeferredSqlite extends Actor {
+        @Ephemeral deferred = Promise.resolve().then(() => this.db.exec("CREATE TABLE deferred (id INTEGER)"))
+
+        async read() {
+            return this.deferred.then(
+                () => "allowed",
+                (error: unknown) => String(error)
+            )
+        }
+    }
+    const runtime = createRuntime(
+        registerActorClass(DeferredSqlite, {
+            actorName: "DeferredSqlite",
+            fields: [{ name: "deferred", persistence: Persistence.Ephemeral }]
+        })
+    )
+    const reply = await invoke(runtime, "read", [], {
+        actor: { project_id: "test", actor_name: "DeferredSqlite", actor_id: "one" }
+    })
+    assert.match(String(Reflect.get(reply, "result")), /outside its invocation/)
 })
 
 test("a replication failure prevents further execution until the actor is reloaded", async () => {

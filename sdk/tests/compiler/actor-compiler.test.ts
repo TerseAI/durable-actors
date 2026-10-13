@@ -272,6 +272,39 @@ test("rejects TypeScript errors in actor dependencies", async () => {
     }
 })
 
+test("explicit actor constructors must forward their runtime context to super", async () => {
+    const root = await createProject()
+    try {
+        const entrypoint = path.join(root, "src/actors.ts")
+        await writeFile(
+            entrypoint,
+            `import { Actor, type ActorContext } from "durable-actors"
+            export class Counter extends Actor {
+                constructor(context: ActorContext) { super(context) }
+            }`
+        )
+        assert.equal(new ActorCompiler().check(entrypoint)[0]?.actorName, "Counter")
+        await writeFile(
+            entrypoint,
+            `import { Actor, type ActorContext } from "durable-actors"
+            export class Counter extends Actor {
+                constructor(context: ActorContext) {}
+            }`
+        )
+        assert.throws(() => new ActorCompiler().check(entrypoint), /must contain a 'super' call/)
+        await writeFile(
+            entrypoint,
+            `import { Actor, type ActorContext } from "durable-actors"
+            export class Counter extends Actor {
+                constructor(context: ActorContext) { super() }
+            }`
+        )
+        assert.throws(() => new ActorCompiler().check(entrypoint), /Expected 1 arguments, but got 0/)
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("source loading respects noEmit configurations with TypeScript extension imports", async () => {
     const root = await createProject()
     try {
@@ -415,14 +448,23 @@ test("rejects unsupported persistence targets and syntax", () => {
         "@Persisted #count = 0",
         "@Persisted [Symbol.iterator] = 0",
         "@Persisted() count = 0",
-        "constructor(public count = 0) { super() }",
+        "constructor(context: ActorContext, public count = 0) { super(context) }",
         "@Persisted declare count: number"
     ]) {
-        const result = analyze(`import { Actor, Persisted } from "./sdk.js"
+        const result = analyze(`import { Actor, type ActorContext, Persisted } from "./sdk.js"
             export class Counter extends Actor { ${member} }`)
         assert.ok(result.diagnostics.length > 0, member)
         assert.deepEqual(result.schemas, [], member)
     }
+})
+
+test("accepts actor constructors without treating parameters as persisted fields", () => {
+    const result = analyze(`import { Actor, type ActorContext } from "./sdk.js"
+        export class Counter extends Actor {
+            constructor(context: ActorContext) { super(context) }
+        }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [{ actorName: "Counter", fields: [] }])
 })
 
 test("checks class decorators and entrypoint exports", () => {
@@ -492,7 +534,8 @@ function analyze(source: string, extra: Record<string, string> = {}) {
     const files = new Map(
         Object.entries({
             "actors.ts": source,
-            "sdk.ts": `export abstract class Actor { protected constructor() {} }
+            "sdk.ts": `export interface ActorContext { readonly actorContext: unique symbol }
+            export abstract class Actor { protected constructor(context: ActorContext) {}
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Interleave(...args: unknown[]) {}
