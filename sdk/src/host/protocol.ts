@@ -2,11 +2,11 @@ import { z } from "zod"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
-import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
 import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
+import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
 import { ActorProtocolError } from "../errors.js"
-import { jsonValueSchema } from "../json.js"
 import type { JsonValue } from "../json.js"
+import { jsonValueSchema } from "../json.js"
 
 import type { SqliteState } from "./sqlite.js"
 
@@ -101,6 +101,13 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
         type: z.literal("command"),
         message_id: z.number().int().nonnegative(),
         command: executorCommandSchema
+    }),
+    z.object({
+        type: z.literal("alarm"),
+        actor: actorIdentitySchema,
+        expected_generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        sqlite: sqliteStateSchema.optional(),
+        resident_only: z.boolean().optional()
     })
 ])
 
@@ -219,7 +226,7 @@ export type {
     ActorWorkerMessage,
     ActorWorkerRequest,
     EvictCommand,
-    InvokeCommand,
     HydrateCommand,
+    InvokeCommand,
     WebSocketEventCommand
 }

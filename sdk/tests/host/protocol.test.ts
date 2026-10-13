@@ -37,3 +37,22 @@ test("rejects incomplete SQLite persistence acknowledgments", () => {
         )
     }
 })
+
+test("supports alarm protocol", () => {
+    const command = {
+        type: "alarm",
+        actor: {
+            project_id: "test",
+            actor_name: "AlarmProbe",
+            actor_id: "one"
+        },
+        expected_generation: 7,
+        sqlite: { txid: 3 }
+    }
+    const message = {
+        type: "command",
+        message_id: 1,
+        command
+    }
+    assert.deepEqual(parseActorSessionServerMessage(JSON.stringify(message)), message)
+})

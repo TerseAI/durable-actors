@@ -1,7 +1,7 @@
 import { HttpActorClient } from "./client.js"
 import { ActorDefinitionError, ActorSerializationError } from "./errors.js"
-import { validateActorComponent } from "./settings.js"
 import type { DurableActorsClientOptions } from "./settings.js"
+import { validateActorComponent } from "./settings.js"
 
 interface ActorRpcTransport {
     invoke(actorName: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
@@ -25,9 +25,17 @@ function createActorStub<Stub extends object>(
     for (const method of methods) {
         validateActorComponent("actor method", method.name)
         if (
-            ["then", "connect", "broadcast", "db", "alarm", "onConnect", "onMessage", "onDisconnect"].includes(
-                method.name
-            )
+            [
+                "then",
+                "connect",
+                "broadcast",
+                "db",
+                "alarm",
+                "onConnect",
+                "onMessage",
+                "onDisconnect",
+                "onAlarm"
+            ].includes(method.name)
         )
             throw new ActorDefinitionError(`actor method ${actorName}.${method.name} is reserved`)
         if (Object.hasOwn(stub, method.name))

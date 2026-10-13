@@ -132,3 +132,32 @@ test("actor references enforce declared metadata and broadcast schemas before di
         }
     )
 })
+
+test("onAlarm is a lifecycle hook, not an RPC method", () => {
+    class AlarmLifecycleProbe extends Actor {
+        async onAlarm(): Promise<void> {}
+        async ping(): Promise<void> {}
+    }
+    const definition = registerActorClass(AlarmLifecycleProbe, {
+        actorName: "AlarmLifecycleProbe",
+        fields: []
+    })
+    assert.deepEqual([...definition.methods], ["ping"])
+    const reference = AlarmLifecycleProbe.get("one")
+    // @ts-expect-error lifecycle hooks are not callable through actor references
+    assert.equal(reference.onAlarm, undefined)
+})
+
+test("onAlarm lifecycle hooks cannot declare arguments", () => {
+    class InvalidAlarmLifecycleProbe extends Actor {
+        async onAlarm(_unexpected?: unknown): Promise<void> {}
+    }
+    assert.throws(
+        () =>
+            registerActorClass(InvalidAlarmLifecycleProbe, {
+                actorName: "InvalidAlarmLifecycleProbe",
+                fields: []
+            }),
+        /onAlarm must take no arguments/
+    )
+})

@@ -32,6 +32,8 @@ interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming,
         reason: string,
         wasClean: boolean
     ): Promise<void>
+    /** Runs when the actor's scheduled alarm becomes due. */
+    onAlarm?(): Promise<void>
 }
 
 /**
@@ -217,12 +219,14 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)
+        if (name === "onAlarm" && descriptor.value.length !== 0)
+            throw new ActorDefinitionError(`actor lifecycle hook ${actorName}.onAlarm must take no arguments`)
         if (lifecycleMethods.has(name)) return []
         return [name]
     })
 }
 
-const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect"])
+const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect", "onAlarm"])
 
 function validateActorClass(actorClass: ActorClass, actorName: string): void {
     if (Object.getPrototypeOf(actorClass.prototype) !== Actor.prototype)
@@ -277,7 +281,7 @@ type ValidActorClass<TActorClass extends ActorClass> =
 type ActorReference<Instance extends AnyActor> = {
     [
         Key in keyof Instance as Instance[Key] extends AsyncMethod
-            ? Key extends SocketLifecycleMethod
+            ? Key extends ActorLifecycleMethod
                 ? never
                 : Key
             : never
@@ -290,7 +294,7 @@ type ActorReference<Instance extends AnyActor> = {
     /** Sends to all connections without running actor code. Messages are not saved. */
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
-type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect"
+type ActorLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect" | "onAlarm"
 type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["metadata"]
 type SocketIncoming<Instance extends AnyActor> = Instance[typeof actorTypes]["incoming"]
 type SocketOutgoing<Instance extends AnyActor> = Instance[typeof actorTypes]["outgoing"]
