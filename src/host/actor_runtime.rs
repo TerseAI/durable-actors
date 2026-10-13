@@ -329,7 +329,6 @@ impl ActorRuntime {
             .hydrate(
                 actor.clone(),
                 self.cached_state.as_ref().and_then(CachedActorState::state),
-                "activate".to_string(),
             )
             .await?;
         self.storage.ensure_authority()?;

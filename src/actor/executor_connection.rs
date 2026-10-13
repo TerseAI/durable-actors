@@ -42,12 +42,6 @@ pub struct ActorMethodEviction {
     pub actor: ActorKey,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ActorHydration {
-    pub actor: ActorKey,
-    pub request_id: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActorSocketConnection {
     pub id: String,
@@ -190,7 +184,7 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>, _request_id: String) -> Result<()> {
+    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
         Ok(())
     }
 
@@ -417,10 +411,10 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>, request_id: String) -> Result<()> {
+    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
         match self
             .exchange(
-                ExecutorCommand::Hydrate(ActorHydration { actor, request_id }),
+                ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
                 state,
             )
             .await?
@@ -846,7 +840,6 @@ impl ExecutorDriver {
         let request_id = match &pending.command {
             ExecutorCommand::Invoke(invocation) => &invocation.request_id,
             ExecutorCommand::WebsocketEvent(invocation) => &invocation.request_id,
-            ExecutorCommand::Hydrate(hydration) => &hydration.request_id,
             _ => anyhow::bail!("SQLite persistence requires an invocation"),
         };
         ensure!(
@@ -1117,8 +1110,7 @@ impl ExecutorCommand {
         match self {
             Self::Invoke(invocation) => &invocation.actor,
             Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Evict(eviction) => &eviction.actor,
-            Self::Hydrate(hydration) => &hydration.actor,
+            Self::Evict(eviction) | Self::Hydrate(eviction) => &eviction.actor,
         }
     }
 }
@@ -1259,7 +1251,7 @@ enum ActorExecutorClientMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorCommand {
-    Hydrate(ActorHydration),
+    Hydrate(ActorMethodEviction),
     Invoke(ActorMethodInvocation),
     WebsocketEvent(ActorSocketInvocation),
     Evict(ActorMethodEviction),
