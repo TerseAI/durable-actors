@@ -124,6 +124,9 @@ export class Staging {
     async build() {
         console.log(`Building this checkout's runtime and ${this.example} actor bundle…`)
         await this.command("bun", ["run", "--bun", "--cwd", "sdk", "build"], { stream: true })
+        const project = JSON.parse(await readFile(path.join(this.examplePath, "package.json"), "utf8"))
+        if (project.dependencies?.["@durable-actors/pi-durable"])
+            await this.command("bun", ["run", "--bun", "--cwd", "packages/pi-durable", "build"], { stream: true })
         await this.command("cargo", ["build", "--locked", "--bin", "durable-actors"], { stream: true })
         this.env.DURABLE_ACTORS_BINARY = path.join(this.root, "target/debug/durable-actors")
         const contract = JSON.parse(await this.command(process.execPath, [path.join(this.root, "sdk/dist/compiler/deployment-build.js"), this.examplePath, "src/actors.ts", this.work]))
