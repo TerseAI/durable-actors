@@ -13,13 +13,19 @@ class ChatRoom extends Actor {
     }
 }
 
-test("actor methods cannot replace the reserved database handle", () => {
-    class DatabaseMethod extends Actor {}
-    Object.defineProperty(DatabaseMethod.prototype, "db", { value: async () => [] })
-    assert.throws(
-        () => registerActorClass(DatabaseMethod, { actorName: "DatabaseMethod", fields: [] }),
-        /reserved method db/
-    )
+test("actor methods cannot replace reserved runtime capabilities", () => {
+    for (const name of ["db", "alarm"]) {
+        class RuntimeCapabilityMethod extends Actor {}
+        Object.defineProperty(RuntimeCapabilityMethod.prototype, name, { value: async () => [] })
+        assert.throws(
+            () =>
+                registerActorClass(RuntimeCapabilityMethod, {
+                    actorName: "RuntimeCapabilityMethod",
+                    fields: []
+                }),
+            new RegExp(`reserved method ${name}`)
+        )
+    }
 })
 
 test("actors can only be constructed with a runtime context", () => {

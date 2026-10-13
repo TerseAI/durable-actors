@@ -1,5 +1,6 @@
 /** @module durable-actors */
 export { Actor } from "./actor/actor.js"
+export type { ActorAlarm } from "./actor/alarm.js"
 export type { ActorDatabase, SqliteValue } from "./actor/database.js"
 export { Compute } from "./actor/compute.js"
 export type { ComputeOptions, ComputeRegion } from "./actor/compute.js"

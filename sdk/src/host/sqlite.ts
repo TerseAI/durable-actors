@@ -1,6 +1,6 @@
 import { createRequire } from "node:module"
 
-import type { ActorAlarmStorage } from "../actor/alarm.js"
+import type { ActorAlarmState, ActorAlarmStorage } from "../actor/alarm.js"
 import type { ActorDatabase, SqliteValue } from "../actor/database.js"
 import { actorDatabaseMode } from "../actor/database.js"
 import type { JsonObject, JsonValue } from "../json.js"
@@ -118,10 +118,15 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         }
     }
 
-    getAlarm(): number | null {
+    getAlarmState(): ActorAlarmState {
         this.alarmDatabase()
-        const [row] = this.execute("SELECT timestamp FROM __terse_alarm") as { timestamp: number }[]
-        return row?.timestamp ?? null
+        const [row] = this.execute("SELECT timestamp, generation FROM __terse_alarm WHERE singleton = 1") as {
+            timestamp: number | null
+            generation: number
+        }[]
+        return row === undefined
+            ? { timestampMs: null, generation: 0 }
+            : { timestampMs: row.timestamp, generation: row.generation }
     }
 
     setAlarm(timestampMs: number): void {

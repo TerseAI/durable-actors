@@ -1,9 +1,14 @@
+import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
-import { ActorRuntime, SqliteState } from "../fixtures/actor-runtime.js"
+import type { ActorAlarm } from "../../src/index.js"
+import type { SqliteState } from "../fixtures/actor-runtime.js"
+import { ActorRuntime } from "../fixtures/actor-runtime.js"
 import { seed } from "../fixtures/litestream.js"
 import { assertReply } from "../fixtures/reply.js"
+
+let escapedAlarm: ActorAlarm
 
 class AlarmProbe extends Actor {
     async readAlarm(): Promise<number | null> {
@@ -18,11 +23,26 @@ class AlarmProbe extends Actor {
         return this.alarm.get()
     }
 
-    async failAfterSet(): Promise<void> {
+    async failAfterImmediateSet(): Promise<void> {
         this.alarm.set(3_000)
         throw new Error("test failure")
     }
+
+    async failAfterAtomicSet(): Promise<void> {
+        this.alarm.set(3_000)
+        throw new Error("test failure")
+    }
+
+    async escapeAlarm(): Promise<void> {
+        escapedAlarm = this.alarm
+    }
 }
+
+const definition = registerActorClass(AlarmProbe, {
+    actorName: "AlarmProbe",
+    atomicMethods: ["failAfterAtomicSet"],
+    fields: []
+})
 
 function actorInvoker(runtime: ActorRuntime, sqlite: SqliteState) {
     return (method: string, args: number[] = []) =>
@@ -41,11 +61,6 @@ function actorInvoker(runtime: ActorRuntime, sqlite: SqliteState) {
 }
 
 test("actors can read, replace, and delete their alarm", async context => {
-    const definition = registerActorClass(AlarmProbe, {
-        actorName: "AlarmProbe",
-        fields: []
-    })
-
     const runtime = new ActorRuntime(definition, () => {})
     context.after(() => runtime.close())
     const sqlite = await seed()
@@ -72,7 +87,7 @@ test("actors can read, replace, and delete their alarm", async context => {
         type: "invoked",
         result: 2_000
     })
-    assertReply(await invoke("failAfterSet"), {
+    assertReply(await invoke("failAfterImmediateSet"), {
         type: "failed",
         code: "actor_method_failed",
         message: "test failure"
@@ -81,24 +96,13 @@ test("actors can read, replace, and delete their alarm", async context => {
         type: "invoked",
         result: 3_000
     })
-})
 
-test("failed alarm set in atomic does rollback and is not saved", async context => {
-    const definition = registerActorClass(AlarmProbe, {
-        actorName: "AlarmProbe",
-        atomicMethods: ["failAfterSet"],
-        fields: []
-    })
-    const runtime = new ActorRuntime(definition, () => {})
-
-    context.after(() => runtime.close())
-    const sqlite = await seed()
-    const invoke = actorInvoker(runtime, sqlite)
+    // test atomic method, error does not set the alarm
     assertReply(await invoke("setAlarm", [2_000]), {
         type: "invoked",
         result: 2_000
     })
-    assertReply(await invoke("failAfterSet"), {
+    assertReply(await invoke("failAfterAtomicSet"), {
         type: "failed",
         code: "actor_method_failed",
         message: "test failure"
@@ -107,4 +111,27 @@ test("failed alarm set in atomic does rollback and is not saved", async context 
         type: "invoked",
         result: 2_000
     })
+})
+
+test("alarm timestamps must be safe integers", async context => {
+    const runtime = new ActorRuntime(definition, () => {})
+    context.after(() => runtime.close())
+    const invoke = actorInvoker(runtime, await seed())
+    for (const timestamp of [NaN, Infinity, -Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assertReply(await invoke("setAlarm", [timestamp]), {
+            type: "failed",
+            code: "actor_method_failed",
+            message: "actor alarm timestamp must be a safe integer"
+        })
+    }
+})
+
+test("alarm handles expire after their invocation", async context => {
+    const runtime = new ActorRuntime(definition, () => {})
+    context.after(() => runtime.close())
+    const invoke = actorInvoker(runtime, await seed())
+    assertReply(await invoke("escapeAlarm"), { type: "invoked", result: null })
+    assert.throws(() => escapedAlarm.get(), /outside its invocation/)
+    assert.throws(() => escapedAlarm.set(1_000), /outside its invocation/)
+    assert.throws(() => escapedAlarm.delete(), /outside its invocation/)
 })

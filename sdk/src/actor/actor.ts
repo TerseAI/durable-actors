@@ -2,7 +2,7 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
-import { ActorAlarm } from "./alarm.js"
+import type { ActorAlarm } from "./alarm.js"
 import type { ActorContext } from "./context.js"
 import { RuntimeActorContext } from "./context.js"
 import type { ActorDatabase } from "./database.js"
@@ -60,6 +60,7 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
         return this.#context.database
     }
 
+    /** The actor's single durable alarm slot. */
     get alarm(): ActorAlarm {
         return this.#context.alarm
     }
@@ -107,8 +108,9 @@ function registerActorClass<Instance extends AnyActor>(
     state: ActorSchema
 ): ActorDefinition {
     const actorName = actorClassName(actorClass)
-    if (state.fields.some(field => field.name === "db"))
-        throw new ActorDefinitionError("actor field db is reserved for SQLite")
+    const reserved = state.fields.find(field => field.name === "db" || field.name === "alarm")
+    if (reserved !== undefined)
+        throw new ActorDefinitionError(`actor field ${reserved.name} is reserved for the actor runtime`)
     const existing = actorDefinitions.get(actorName)
     if (existing !== undefined) {
         if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor name ${actorName}`)
@@ -211,7 +213,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
         if (typeof descriptor.value !== "function") return []
         validateActorComponent("actor method", name)
         if (name === "then") throw new ActorDefinitionError(`actor class ${actorName} cannot define method then`)
-        if (name === "connect" || name === "broadcast" || name === "db")
+        if (name === "connect" || name === "broadcast" || name === "db" || name === "alarm")
             throw new ActorDefinitionError(`actor class ${actorName} cannot define reserved method ${name}`)
         if (!(descriptor.value instanceof asyncFunction))
             throw new ActorDefinitionError(`actor method ${actorName}.${name} must be async`)

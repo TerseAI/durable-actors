@@ -142,28 +142,28 @@ test("alarm slot replaces its timestamp and survives restoration", async context
     })
 
     database.restore(source)
-    assert.equal(database.getAlarm(), null)
+    assert.deepEqual(database.getAlarmState(), { timestampMs: null, generation: 0 })
 
     database.setAlarm(1_000)
-    assert.equal(database.getAlarm(), 1_000)
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000, generation: 1 })
 
     database.setAlarm(2_000)
-    assert.equal(database.getAlarm(), 2_000)
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 2_000, generation: 2 })
 
     const snapshot = await database.snapshot()
     const recovered = await recover(source, snapshot)
 
     restored.restore(recovered)
-    assert.equal(restored.getAlarm(), 2_000)
+    assert.deepEqual(restored.getAlarmState(), { timestampMs: 2_000, generation: 2 })
 
     restored.deleteAlarm()
-    assert.equal(restored.getAlarm(), null)
+    assert.deepEqual(restored.getAlarmState(), { timestampMs: null, generation: 3 })
 
     const deletedSnapshot = await restored.snapshot()
     const recoveredDeletion = await recover(recovered, deletedSnapshot)
 
     afterDeletion.restore(recoveredDeletion)
-    assert.equal(afterDeletion.getAlarm(), null)
+    assert.deepEqual(afterDeletion.getAlarmState(), { timestampMs: null, generation: 3 })
 })
 
 test("alarm mutations roll back with SQLite", async context => {
@@ -174,8 +174,8 @@ test("alarm mutations roll back with SQLite", async context => {
     await database.snapshot()
     database.setAlarm(2_000)
     database.rollback()
-    assert.equal(database.getAlarm(), 1_000)
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000, generation: 1 })
     database.deleteAlarm()
     database.rollback()
-    assert.equal(database.getAlarm(), 1_000)
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000, generation: 1 })
 })

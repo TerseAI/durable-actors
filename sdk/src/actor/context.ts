@@ -1,6 +1,6 @@
-import { ActorDefinitionError } from "../errors.js"
+import { ActorDefinitionError, ActorValidationError } from "../errors.js"
 
-import { ActorAlarm, ActorAlarmStorage } from "./alarm.js"
+import type { ActorAlarm, ActorAlarmStorage } from "./alarm.js"
 import type { ActorDatabase, SqliteValue } from "./database.js"
 import { isActorInvocation } from "./database.js"
 import { validateActorComponent } from "./identity.js"
@@ -83,10 +83,12 @@ class RuntimeActorContext implements ActorContext {
         return {
             get: () => {
                 this.assertAccess()
-                return alarm.getAlarm()
+                return alarm.getAlarmState().timestampMs
             },
             set: timestampMs => {
                 this.assertAccess()
+                if (!Number.isSafeInteger(timestampMs))
+                    throw new ActorValidationError("actor alarm timestamp must be a safe integer")
                 alarm.setAlarm(timestampMs)
             },
             delete: () => {
