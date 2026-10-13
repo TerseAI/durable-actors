@@ -13,15 +13,14 @@ use tracing::{info, warn};
 use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
-        ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, ActorState,
-        validate_socket_effects,
+        ActorMethodEviction, ActorMethodOutcome, ActorSocketEffect, ActorSocketPublisher,
+        DatabaseCall, DatabaseResult, validate_socket_effects,
     },
     state_log::StateSnapshot,
     storage::WritePlan,
 };
 
-use super::HostEndpoint;
+use super::{HostEndpoint, actor_database::HostDatabase};
 use crate::request_tracking::{RequestCompletion, RequestStage, RequestTracker};
 
 #[async_trait]
@@ -165,7 +164,6 @@ impl ActorRuntime {
         } else {
             None
         };
-        let state = cached.state();
         self.cached_state = Some(cached);
         if self.storage.ensure_authority().is_err() {
             return Ok(PreparedInvocation::Completed(
@@ -177,7 +175,7 @@ impl ActorRuntime {
                 result,
                 effects: vec![],
             }),
-            None => PreparedInvocation::Execute(state),
+            None => PreparedInvocation::Execute,
         })
     }
 
@@ -186,60 +184,88 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         outcome: Result<ActorMethodOutcome>,
+        committed: Option<u64>,
         origin: CommitOrigin,
         timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         let executed = self.method_result(invocation, outcome).await;
-        self.finish_method(invocation, owner_epoch, executed, origin, timings)
-            .await
+        self.finish_method(
+            invocation,
+            owner_epoch,
+            executed,
+            committed,
+            origin,
+            timings,
+        )
+        .await
     }
 
-    pub(super) async fn checkpoint(
+    pub(super) async fn database_call(
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        write: &crate::state_transport::SqliteWrite,
         origin: CommitOrigin,
-    ) -> Result<crate::state_transport::SqlitePersisted> {
-        self.storage.ensure_authority()?;
-        let txid = write
-            .txid
-            .context("checkpoint requires a captured SQLite transaction")?;
-        let mut cached = self
-            .cached_state
-            .take()
-            .context("checkpoint has no activated state")?;
-        let result = async {
-            ensure!(
-                cached.owner_epoch == owner_epoch,
-                "checkpoint ownership changed"
-            );
-            let mut state = cached
-                .state()
-                .context("checkpoint has no SQLite state")?
-                .as_ref()
-                .clone();
-            ensure!(
-                state.sqlite.path.as_deref().map(std::path::Path::new)
-                    == Some(write.path.as_path()),
-                "checkpoint database does not match activation"
-            );
-            ensure!(
-                txid > state.sqlite.txid,
-                "checkpoint must advance SQLite transaction"
-            );
-            state.sqlite.txid = txid;
-            self.publish_state(invocation, owner_epoch, &mut cached, None, state, origin)
-                .await?;
-            self.storage.ensure_authority()?;
-            Ok(crate::state_transport::SqlitePersisted {
-                txid,
-                state_version: Some(cached.state_version),
-            })
-        }
-        .await;
+        call: DatabaseCall,
+    ) -> Result<DatabaseReply> {
+        let Some(mut cached) = self.cached_state.take() else {
+            return Ok(DatabaseReply::Rejected(anyhow::anyhow!(
+                "actor database is not activated"
+            )));
+        };
+        let reply = self
+            .execute_database_call(invocation, owner_epoch, origin, &mut cached, call)
+            .await;
         self.cached_state = Some(cached);
-        result
+        reply
+    }
+
+    async fn execute_database_call(
+        &self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        origin: CommitOrigin,
+        cached: &mut CachedActorState,
+        call: DatabaseCall,
+    ) -> Result<DatabaseReply> {
+        ensure!(
+            cached.owner_epoch == owner_epoch,
+            "database call ownership changed"
+        );
+        let immediate = call.immediate();
+        let commit = matches!(call, DatabaseCall::Commit);
+        let executed = match cached.database.call(call).await {
+            Ok(executed) => executed,
+            Err(error) => return Ok(DatabaseReply::Rejected(error)),
+        };
+        if executed.committed {
+            cached.synced = self.replication.sync(&cached.sqlite.path()).await?;
+        }
+        if immediate && executed.committed {
+            self.publish_immediate(invocation, owner_epoch, cached, origin)
+                .await?;
+        }
+        Ok(DatabaseReply::Executed {
+            result: executed.result,
+            committed: commit.then_some(cached.synced),
+        })
+    }
+
+    async fn publish_immediate(
+        &self,
+        invocation: &ActorInvocation,
+        owner_epoch: u64,
+        cached: &mut CachedActorState,
+        origin: CommitOrigin,
+    ) -> Result<()> {
+        self.storage.ensure_authority()?;
+        let txid = cached.synced;
+        ensure!(
+            cached.published.is_none_or(|published| published < txid),
+            "immediate write must advance SQLite transaction"
+        );
+        self.publish_state(invocation, owner_epoch, cached, None, txid, origin)
+            .await?;
+        self.storage.ensure_authority()
     }
 
     pub(super) async fn commit_interleaved(
@@ -247,6 +273,7 @@ impl ActorRuntime {
         invocation: &ActorInvocation,
         owner_epoch: u64,
         outcome: crate::actor::ActorInterleavedOutcome,
+        committed: Option<u64>,
         mut origin: CommitOrigin,
         timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
@@ -262,26 +289,23 @@ impl ActorRuntime {
             cached.owner_epoch == owner_epoch,
             "interleaved ownership changed"
         );
-        // A mid-method checkpoint can already include an earlier completion's changes.
-        let publication = if cached
-            .state
-            .as_ref()
-            .is_none_or(|saved| saved.sqlite.txid < outcome.state.sqlite.txid)
-        {
-            self.publish_result(
-                invocation,
-                owner_epoch,
-                &mut cached,
-                outcome.result.clone(),
-                outcome.state,
-                origin,
-            )
-            .await
-        } else {
-            Ok(ActorExecutionResult::Completed {
+        // An immediate write can already include an earlier completion's changes.
+        let publication = match cached.unpublished(committed) {
+            Some(txid) => {
+                self.publish_result(
+                    invocation,
+                    owner_epoch,
+                    &mut cached,
+                    outcome.result.clone(),
+                    txid,
+                    origin,
+                )
+                .await
+            }
+            None => Ok(ActorExecutionResult::Completed {
                 result: outcome.result.clone(),
                 effects: vec![],
-            })
+            }),
         };
         let version = cached.state_version;
         self.cached_state = if publication.is_err() && cached.pending.is_none() {
@@ -295,22 +319,6 @@ impl ActorRuntime {
             .await
     }
 
-    pub(super) async fn activate_actor(
-        &mut self,
-        actor: &crate::actor::ActorKey,
-    ) -> Result<ActorActivation> {
-        match self.prepare_activation(actor).await? {
-            PreparedActivation::Completed(activation) => Ok(activation),
-            PreparedActivation::Hydrate { activation, state } => {
-                let result = self
-                    .executor
-                    .hydrate(actor.clone(), state, "activate".to_string())
-                    .await;
-                self.finish_activation(activation, result)
-            }
-        }
-    }
-
     pub(super) async fn prepare_activation(
         &mut self,
         actor: &crate::actor::ActorKey,
@@ -322,10 +330,11 @@ impl ActorRuntime {
         let mut activation = self.storage.acquire_actor(actor, &self.endpoint.id).await?;
         if self.cached_state.is_none() {
             let cached = if activation.state_version == 0 {
-                CachedActorState::new(
+                CachedActorState::open(
                     activation.owner_epoch,
                     SqliteCapture::new(self.replication.clone()).await?,
                 )
+                .await?
             } else {
                 let bytes = activation
                     .state
@@ -341,10 +350,7 @@ impl ActorRuntime {
             };
             self.cached_state = Some(cached);
         }
-        Ok(PreparedActivation::Hydrate {
-            activation,
-            state: self.cached_state.as_ref().and_then(CachedActorState::state),
-        })
+        Ok(PreparedActivation::Hydrate { activation })
     }
 
     pub(super) fn finish_activation(
@@ -367,142 +373,17 @@ impl ActorRuntime {
         Ok(activation)
     }
 
-    pub(super) async fn invoke_actor(
-        &mut self,
-        invocation: ActorInvocation,
-        owner_epoch: u64,
-        timings: &mut RequestTracker,
-    ) -> Result<ActorExecutionResult> {
-        self.storage.ensure_authority()?;
-        let outcome = self
-            .invoke_actor_once(&invocation, owner_epoch, timings)
-            .await;
-        self.storage.ensure_authority()?;
-        outcome
-    }
-
-    pub(super) async fn handle_socket_event(
-        &mut self,
-        invocation: ActorSocketInvocation,
-        owner_epoch: u64,
-        timings: &mut RequestTracker,
-    ) -> Result<ActorExecutionResult> {
-        let persistence = ActorInvocation {
-            request_id: invocation.request_id.clone(),
-            actor: invocation.actor.clone(),
-            method: socket_event_name(&invocation.event).into(),
-            args: Vec::new(),
-        };
-        let outcome = self
-            .handle_socket_event_once(invocation, owner_epoch, &persistence, timings)
-            .await;
-        if !matches!(outcome, Ok(ActorExecutionResult::HostUnavailable)) {
-            self.storage.ensure_authority()?;
-        }
-        outcome
-    }
-
-    async fn handle_socket_event_once(
-        &mut self,
-        invocation: ActorSocketInvocation,
-        owner_epoch: u64,
-        persistence: &ActorInvocation,
-        timings: &mut RequestTracker,
-    ) -> Result<ActorExecutionResult> {
-        let state = match self
-            .prepare_invocation(persistence, owner_epoch, false, timings)
-            .await?
-        {
-            PreparedInvocation::Execute(state) => state,
-            PreparedInvocation::Completed(result) => return Ok(result),
-        };
-        let origin = CommitOrigin::socket(&invocation.event);
-        let outcome = self.execute_socket_event(invocation, state).await;
-        timings.mark(RequestStage::ActorExecutionCompleted);
-        let (next_state, effects) = match outcome {
-            Ok(outcome) => outcome,
-            Err(result) => return Ok(result),
-        };
-        let mut cached = self
-            .cached_state
-            .take()
-            .context("actor socket event has no state")?;
-        if cached.state.as_deref() == Some(&next_state) {
-            let version = cached.state_version;
-            self.cached_state = Some(cached);
-            return self
-                .complete_with_state(&persistence.actor, version, Value::Null, effects)
-                .await;
-        }
-        let published = self
-            .publish_result(
-                persistence,
-                owner_epoch,
-                &mut cached,
-                Value::Null,
-                next_state,
-                origin,
-            )
-            .await;
-        timings.mark(RequestStage::StatePublicationCompleted);
-        if published.is_err() {
-            self.evict(&persistence.actor).await;
-        }
-        let version = cached.state_version;
-        self.cached_state = if published.is_err() && cached.pending.is_none() {
-            None
-        } else {
-            Some(cached)
-        };
-        match published {
-            Ok(ActorExecutionResult::Completed { .. }) => {
-                self.complete_with_state(&persistence.actor, version, Value::Null, effects)
-                    .await
-            }
-            Ok(result) => Ok(result),
-            Err(_) => Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            }),
-        }
-    }
-
-    async fn invoke_actor_once(
-        &mut self,
-        invocation: &ActorInvocation,
-        owner_epoch: u64,
-        timings: &mut RequestTracker,
-    ) -> Result<ActorExecutionResult> {
-        let state = match self
-            .prepare_invocation(invocation, owner_epoch, true, timings)
-            .await?
-        {
-            PreparedInvocation::Execute(state) => state,
-            PreparedInvocation::Completed(result) => return Ok(result),
-        };
-        let executed = self.execute_method(invocation, state).await;
-        self.finish_method(
-            invocation,
-            owner_epoch,
-            executed,
-            CommitOrigin::default(),
-            timings,
-        )
-        .await
-    }
-
     async fn finish_method(
         &mut self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
-        executed: std::result::Result<
-            (Value, ActorState, Vec<ActorSocketEffect>),
-            ActorExecutionResult,
-        >,
+        executed: std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult>,
+        committed: Option<u64>,
         origin: CommitOrigin,
         timings: &mut RequestTracker,
     ) -> Result<ActorExecutionResult> {
         timings.mark(RequestStage::ActorExecutionCompleted);
-        let (result, next_state, effects) = match executed {
+        let (result, effects) = match executed {
             Ok(outcome) => outcome,
             Err(failure) => return Ok(failure),
         };
@@ -510,23 +391,16 @@ impl ActorRuntime {
             .cached_state
             .take()
             .context("actor invocation has no state")?;
-        if cached.state.as_deref() == Some(&next_state) {
+        let Some(txid) = cached.unpublished(committed) else {
             let version = cached.state_version;
             self.cached_state = Some(cached);
             return self
                 .complete_with_state(&invocation.actor, version, result, effects)
                 .await;
-        }
+        };
 
         let published = self
-            .publish_result(
-                invocation,
-                owner_epoch,
-                &mut cached,
-                result,
-                next_state,
-                origin,
-            )
+            .publish_result(invocation, owner_epoch, &mut cached, result, txid, origin)
             .await;
         timings.mark(RequestStage::StatePublicationCompleted);
         if published.is_err() {
@@ -608,10 +482,11 @@ impl ActorRuntime {
             .await?;
         if state_version == 0 {
             ensure!(loaded.is_empty(), "uninitialized actor has state");
-            return Ok(CachedActorState::new(
+            return CachedActorState::open(
                 owner_epoch,
                 SqliteCapture::new(self.replication.clone()).await?,
-            ));
+            )
+            .await;
         }
         timings.mark(RequestStage::StateDownloaded);
         let cached = self
@@ -646,58 +521,34 @@ impl ActorRuntime {
         tracing::info!(event = "actor_sqlite_restored", actor = %actor.storage_key(), state_version,
             history_ms, apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0,
             duration_ms = started.elapsed().as_secs_f64() * 1000.0);
-        let mut cached = CachedActorState::new(owner_epoch, capture);
+        let mut cached = CachedActorState::open(owner_epoch, capture).await?;
         cached.state_version = state_version;
-        cached.state = cached.state();
+        cached.published = Some(cached.synced);
         cached.set_completion(snapshot.request_id, snapshot.completion);
         Ok(cached)
-    }
-
-    async fn execute_method(
-        &mut self,
-        invocation: &ActorInvocation,
-        state: Option<Arc<ActorState>>,
-    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
-    {
-        let outcome = self
-            .executor
-            .invoke_shared(
-                ActorMethodInvocation {
-                    request_id: invocation.request_id.clone(),
-                    actor: invocation.actor.clone(),
-                    method: invocation.method.clone(),
-                    args: invocation.args.clone(),
-                },
-                state,
-            )
-            .await;
-        self.method_result(invocation, outcome).await
     }
 
     async fn method_result(
         &mut self,
         invocation: &ActorInvocation,
         outcome: Result<ActorMethodOutcome>,
-    ) -> std::result::Result<(Value, ActorState, Vec<ActorSocketEffect>), ActorExecutionResult>
-    {
+    ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         match outcome {
             Ok(ActorMethodOutcome::Interleaved(_)) => {
                 Err(failed("actor_error", "unexpected interleaved result"))
             }
-            Ok(ActorMethodOutcome::Completed {
-                result,
-                state,
-                effects,
-            }) => match validate_socket_effects(&effects) {
-                Ok(()) => Ok((result, state, effects)),
-                Err(error) => {
-                    self.evict(&invocation.actor).await;
-                    Err(failed(
-                        "actor_error",
-                        format!("actor returned invalid socket effects: {error:#}"),
-                    ))
+            Ok(ActorMethodOutcome::Completed { result, effects }) => {
+                match validate_socket_effects(&effects) {
+                    Ok(()) => Ok((result, effects)),
+                    Err(error) => {
+                        self.evict(&invocation.actor).await;
+                        Err(failed(
+                            "actor_error",
+                            format!("actor returned invalid socket effects: {error:#}"),
+                        ))
+                    }
                 }
-            },
+            }
             Ok(ActorMethodOutcome::Failed(failure)) => {
                 if !matches!(
                     failure.code.as_str(),
@@ -721,52 +572,13 @@ impl ActorRuntime {
         }
     }
 
-    async fn execute_socket_event(
-        &mut self,
-        invocation: ActorSocketInvocation,
-        state: Option<Arc<ActorState>>,
-    ) -> std::result::Result<(ActorState, Vec<ActorSocketEffect>), ActorExecutionResult> {
-        let actor = invocation.actor.clone();
-        match self.executor.handle_socket_shared(invocation, state).await {
-            Ok(ActorSocketOutcome::Interleaved(_)) => {
-                Err(failed("actor_error", "unexpected interleaved result"))
-            }
-            Ok(ActorSocketOutcome::Handled { state, effects }) => {
-                match validate_socket_effects(&effects) {
-                    Ok(()) => Ok((state, effects)),
-                    Err(error) => {
-                        self.evict(&actor).await;
-                        Err(failed(
-                            "actor_error",
-                            format!("actor returned invalid socket effects: {error:#}"),
-                        ))
-                    }
-                }
-            }
-            Ok(ActorSocketOutcome::Failed(failure)) => {
-                if failure.code != "actor_socket_failed" {
-                    self.evict(&actor).await;
-                }
-                let code = match failure.code.as_str() {
-                    "resource_exhausted" => "resource_exhausted",
-                    _ => "actor_error",
-                };
-                Err(failed(code, failure.message))
-            }
-            Err(error) => Err(failed(
-                "actor_error",
-                format!("actor executor failed: {error:#}"),
-            )),
-        }
-    }
-
     async fn publish_result(
         &self,
         invocation: &ActorInvocation,
         owner_epoch: u64,
         cached: &mut CachedActorState,
         result: Value,
-        next_state: ActorState,
+        txid: u64,
         origin: CommitOrigin,
     ) -> Result<ActorExecutionResult> {
         self.publish_state(
@@ -776,7 +588,7 @@ impl ActorRuntime {
             Some(crate::state_log::RequestCompletion {
                 result: result.clone(),
             }),
-            next_state,
+            txid,
             origin,
         )
         .await?;
@@ -792,7 +604,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         completion: Option<crate::state_log::RequestCompletion>,
-        next_state: ActorState,
+        txid: u64,
         origin: CommitOrigin,
     ) -> Result<()> {
         let mut timings = StateWriteTimings::new();
@@ -803,7 +615,7 @@ impl ActorRuntime {
                 owner_epoch,
                 cached,
                 completion,
-                next_state,
+                txid,
                 origin,
                 &mut timings,
             )
@@ -818,7 +630,7 @@ impl ActorRuntime {
         owner_epoch: u64,
         cached: &mut CachedActorState,
         completion: Option<crate::state_log::RequestCompletion>,
-        mut next_state: ActorState,
+        txid: u64,
         origin: CommitOrigin,
         timings: &mut StateWriteTimings,
     ) -> Result<()> {
@@ -857,7 +669,7 @@ impl ActorRuntime {
             state_version: next_version,
             owner_epoch,
             request_id: invocation.request_id.clone(),
-            sqlite: cached.capture_sqlite(&mut next_state).await?,
+            sqlite: cached.capture_sqlite(txid).await?,
             completion,
             attribution: None,
         };
@@ -872,7 +684,7 @@ impl ActorRuntime {
         timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());
         cached.pending = Some(PendingStateCommit {
             snapshot,
-            state: next_state,
+            txid,
             ticket,
             durable: false,
         });
@@ -993,7 +805,7 @@ impl ActorRuntime {
             &pending.snapshot.encode()?,
         ));
         cached.state_version = pending.snapshot.state_version;
-        cached.state = Some(Arc::new(pending.state));
+        cached.published = Some(pending.txid);
         cached.set_completion(pending.snapshot.request_id, pending.snapshot.completion);
         cached.next_write = Some(next_write);
         Ok(())
@@ -1084,23 +896,30 @@ pub(super) fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'sta
 
 pub(super) enum PreparedActivation {
     Completed(ActorActivation),
-    Hydrate {
-        activation: ActorActivation,
-        state: Option<Arc<ActorState>>,
-    },
+    Hydrate { activation: ActorActivation },
 }
 
 pub(super) enum PreparedInvocation {
-    Execute(Option<Arc<ActorState>>),
+    Execute,
     Completed(ActorExecutionResult),
 }
 
+pub(super) enum DatabaseReply {
+    Executed {
+        result: DatabaseResult,
+        committed: Option<u64>,
+    },
+    Rejected(anyhow::Error),
+}
+
 struct CachedActorState {
+    database: HostDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
     state_version: u64,
-    state: Option<Arc<ActorState>>,
+    published: Option<u64>,
+    synced: u64,
     last_request_id: Option<String>,
     last_result: Option<Value>,
     next_write: Option<WritePlan>,
@@ -1109,28 +928,34 @@ struct CachedActorState {
 
 struct PendingStateCommit {
     snapshot: StateSnapshot,
-    state: ActorState,
+    txid: u64,
     ticket: WritePlan,
     durable: bool,
 }
 
 impl CachedActorState {
-    fn new(owner_epoch: u64, sqlite: SqliteCapture) -> Self {
-        Self {
+    async fn open(owner_epoch: u64, sqlite: SqliteCapture) -> Result<Self> {
+        Ok(Self {
+            database: HostDatabase::open(sqlite.path()).await?,
+            synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,
             owner_epoch,
             state_version: 0,
-            state: None,
+            published: None,
             last_request_id: None,
             last_result: None,
             next_write: None,
             pending: None,
-        }
+        })
     }
 
-    async fn capture_sqlite(&mut self, state: &mut ActorState) -> Result<SqliteSnapshot> {
-        let files = self.sqlite.capture(&state.sqlite).await?;
+    fn unpublished(&self, committed: Option<u64>) -> Option<u64> {
+        committed.filter(|txid| self.published.is_none_or(|published| published < *txid))
+    }
+
+    async fn capture_sqlite(&mut self, txid: u64) -> Result<SqliteSnapshot> {
+        let files = self.sqlite.capture(txid).await?;
         let first = files
             .first()
             .context("actor commit has no replication files")?;
@@ -1143,20 +968,11 @@ impl CachedActorState {
                     .context("SQLite state has no durable head")?,
             )
         };
-        state.sqlite = self.sqlite.state();
         Ok(SqliteSnapshot {
             txid: self.sqlite.txid(),
             parent,
             files,
         })
-    }
-
-    fn state(&self) -> Option<Arc<ActorState>> {
-        Some(self.state.clone().unwrap_or_else(|| {
-            Arc::new(ActorState {
-                sqlite: self.sqlite.state(),
-            })
-        }))
     }
 
     fn set_completion(

@@ -8,6 +8,19 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+function field(
+    name: string,
+    persistence: Persistence,
+    options: Partial<{
+        private: boolean
+        visibility: "private" | "protected"
+        emittable: boolean
+        resource: boolean
+    }> = {}
+) {
+    return { name, persistence, private: false, visibility: undefined, emittable: false, resource: false, ...options }
+}
+
 test("atomic methods can update ordinary persisted properties", () => {
     const result = analyze(`import { Actor, Atomic, Persisted } from "./sdk.js"
         export class Counter extends Actor {
@@ -33,8 +46,8 @@ test("private actor resources infer ephemeral fields, including subclasses and a
         {
             actorName: "Room",
             fields: [
-                { name: "agent", persistence: Persistence.Ephemeral, visibility: "private" },
-                { name: "#other", persistence: Persistence.Ephemeral, private: true }
+                field("agent", Persistence.Ephemeral, { visibility: "private", resource: true }),
+                field("#other", Persistence.Ephemeral, { private: true, resource: true })
             ]
         }
     ])
@@ -148,9 +161,9 @@ test("retains state visibility and stacked emission annotations", () => {
         }`)
     assert.deepEqual(result.diagnostics, [])
     assert.deepEqual(result.schemas[0]?.fields, [
-        { name: "messages", persistence: Persistence.Persisted, emittable: true },
-        { name: "secret", persistence: Persistence.Persisted, visibility: "private" },
-        { name: "internal", persistence: Persistence.Persisted, visibility: "protected" }
+        field("messages", Persistence.Persisted, { emittable: true }),
+        field("secret", Persistence.Persisted, { visibility: "private" }),
+        field("internal", Persistence.Persisted, { visibility: "protected" })
     ])
 })
 
@@ -252,9 +265,9 @@ test("checks source actors and returns persistence schemas without generating fi
             {
                 actorName: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                    { name: "cache", persistence: Persistence.Ephemeral },
-                    { name: "callback", persistence: Persistence.Ephemeral }
+                    field("count", Persistence.Persisted, { visibility: "private" }),
+                    field("cache", Persistence.Ephemeral),
+                    field("callback", Persistence.Ephemeral)
                 ]
             }
         ])
@@ -357,9 +370,9 @@ test("checks private and optional computed fields on re-exported actors", async 
             {
                 actorName: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                    { name: "label", persistence: Persistence.Persisted },
-                    { name: "cache", persistence: Persistence.Ephemeral }
+                    field("count", Persistence.Persisted, { visibility: "private" }),
+                    field("label", Persistence.Persisted),
+                    field("cache", Persistence.Ephemeral)
                 ]
             }
         ])
@@ -390,9 +403,9 @@ test("resolves actor and decorator aliases through re-exports and namespaces", (
         {
             actorName: "Counter",
             fields: [
-                { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                { name: "cache", persistence: Persistence.Ephemeral },
-                { name: "#resource", persistence: Persistence.Ephemeral, private: true }
+                field("count", Persistence.Persisted, { visibility: "private" }),
+                field("cache", Persistence.Ephemeral),
+                field("#resource", Persistence.Ephemeral, { private: true })
             ]
         }
     ])
@@ -415,9 +428,7 @@ test("discovers actors alongside unrelated runtime and type exports", () => {
         result.diagnostics.map(diagnostic => diagnostic.messageText),
         []
     )
-    assert.deepEqual(result.schemas, [
-        { actorName: "Counter", fields: [{ name: "count", persistence: Persistence.Persisted }] }
-    ])
+    assert.deepEqual(result.schemas, [{ actorName: "Counter", fields: [field("count", Persistence.Persisted)] }])
 })
 
 test("requires at least one actor even when the entrypoint exports other values or types", () => {

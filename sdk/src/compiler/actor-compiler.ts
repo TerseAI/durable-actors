@@ -11,6 +11,7 @@ import { readAtomicity, validateAtomicity } from "./features/atomicity.js"
 import { readCompute, validateCompute } from "./features/compute.js"
 import { readInterleave, validateInterleave } from "./features/interleave.js"
 import { validatePersistence } from "./features/persistence.js"
+import { readResource } from "./features/resource.js"
 import { readEmission, readPersistence } from "./fieldParsing.js"
 import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
@@ -26,7 +27,6 @@ import type {
     ParsedActor,
     SdkSymbols
 } from "./types.js"
-import { readResource } from "./features/resource.js"
 
 class ActorCompiler {
     constructor(
@@ -308,7 +308,12 @@ function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbol
     return { annotations, diagnostics }
 }
 
-function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: SdkSymbols, checker: ts.TypeChecker): DecoratorResult {
+function readDecorator(
+    symbol: ts.Symbol | undefined,
+    use: DecoratorUse,
+    sdk: SdkSymbols,
+    checker: ts.TypeChecker
+): DecoratorResult {
     if (symbol === undefined) return { annotations: [], diagnostics: [] }
     switch (symbol) {
         case sdk.Persisted:
@@ -365,16 +370,18 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
     const atomic = exports.find(symbol => symbol.name === "Atomic")
     const interleave = exports.find(symbol => symbol.name === "Interleave")
     const compute = exports.find(symbol => symbol.name === "Compute")
+    const resource = exports.find(symbol => symbol.name === "Resource")
+    const actorResource = exports.find(symbol => symbol.name === "ActorResource")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
-        Resource: resolve("Resource"),
-        ActorResource: resolve("ActorResource"),
         ...(atomic === undefined ? {} : { Atomic: canonicalSymbol(checker, atomic) }),
         ...(compute === undefined ? {} : { Compute: canonicalSymbol(checker, compute) }),
-        ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) })
+        ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) }),
+        ...(resource === undefined ? {} : { Resource: canonicalSymbol(checker, resource) }),
+        ...(actorResource === undefined ? {} : { ActorResource: canonicalSymbol(checker, actorResource) })
     }
 }
 

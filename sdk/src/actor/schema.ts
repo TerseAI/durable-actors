@@ -12,10 +12,10 @@ enum Persistence {
 interface ActorFieldSchema {
     readonly name: string
     readonly persistence: Persistence
-    readonly private: boolean
+    readonly private?: boolean
     readonly visibility?: "private" | "protected"
-    readonly emittable: boolean
-    readonly resource: boolean
+    readonly emittable?: boolean
+    readonly resource?: boolean
 }
 
 interface ActorSchema {

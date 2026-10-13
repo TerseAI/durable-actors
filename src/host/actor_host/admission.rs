@@ -4,9 +4,12 @@ use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnord
 
 use super::*;
 use crate::actor::{
-    ActorInterleavedOutcome, ActorMethodInvocation, ActorMethodOutcome, ActorSocketOutcome,
+    ActorDatabase, ActorInterleavedOutcome, ActorMethodInvocation, ActorMethodOutcome,
+    ActorSocketOutcome, DatabaseCall, DatabaseResult,
 };
-use crate::host::actor_runtime::{CommitOrigin, PreparedActivation, PreparedInvocation};
+use crate::host::actor_runtime::{
+    CommitOrigin, DatabaseReply, PreparedActivation, PreparedInvocation,
+};
 
 type InvocationExecution = Result<ActorMethodOutcome>;
 enum Execution {
@@ -26,13 +29,14 @@ pub(super) async fn run(
     mut requests: mpsc::UnboundedReceiver<ActorRequest>,
     completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
-    mut admission: watch::Receiver<()>,
-    mut checkpoints: mpsc::UnboundedReceiver<Checkpoint>,
+    mut admission: Option<watch::Receiver<()>>,
 ) {
+    let (database, mut calls) = mpsc::unbounded_channel();
     let mut mailbox = Mailbox {
         object,
         runtime,
         completed,
+        database,
         running: FuturesUnordered::new(),
         active: HashMap::new(),
         ready: BTreeMap::new(),
@@ -43,16 +47,16 @@ pub(super) async fn run(
         hydrating: false,
     };
     let mut open = true;
-    loop {
+    while open || !mailbox.running.is_empty() {
         tokio::select! {
             biased;
             Some((id, request, result)) = mailbox.running.next(), if !mailbox.running.is_empty() => {
                 if !mailbox.executed(id, request, result).await { return; }
             }
-            Some(checkpoint) = checkpoints.recv() => {
-                if !mailbox.checkpoint(checkpoint).await { return; }
+            Some(call) = calls.recv() => {
+                if !mailbox.database(call).await { return; }
             }
-            permission = admission.changed(), if mailbox.blocked_on.is_some() && !mailbox.hydrating => {
+            permission = admitted(&mut admission), if mailbox.blocked_on.is_some() && !mailbox.hydrating => {
                 if permission.is_err() { return; }
                 mailbox.interleaved = true;
                 mailbox.blocked_on = None;
@@ -61,13 +65,23 @@ pub(super) async fn run(
                 Some(request) => {
                     let accepting = *accepting.borrow();
                     // A completed invocation may have left an unused permission.
-                    admission.borrow_and_update();
+                    if let Some(admission) = &mut admission {
+                        admission.borrow_and_update();
+                    }
                     if !mailbox.admit(request, accepting).await { return; }
                 }
                 None => open = false,
             },
-            else => return,
         }
+    }
+}
+
+async fn admitted(
+    admission: &mut Option<watch::Receiver<()>>,
+) -> Result<(), watch::error::RecvError> {
+    match admission {
+        Some(admission) => admission.changed().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -75,21 +89,57 @@ struct Mailbox {
     object: ActorStorageKey,
     runtime: ActorRuntime,
     completed: mpsc::Sender<ActorCompletion>,
+    database: mpsc::UnboundedSender<DatabaseRequest>,
     running: FuturesUnordered<BoxFuture<'static, Completion>>,
-    ready: BTreeMap<u64, (u64, ActorRequest, ActorInterleavedOutcome)>,
-    active: HashMap<
-        String,
-        (
-            ActorInvocation,
-            u64,
-            super::super::actor_runtime::CommitOrigin,
-        ),
-    >,
+    ready: BTreeMap<u64, ReadyCompletion>,
+    active: HashMap<u64, ActiveRequest>,
     next_invocation: u64,
     blocked_on: Option<u64>,
     interleaved: bool,
     hydrating: bool,
     next_sequence: u64,
+}
+
+struct ActiveRequest {
+    invocation: ActorInvocation,
+    owner_epoch: u64,
+    origin: CommitOrigin,
+    committed: Option<u64>,
+}
+
+struct ReadyCompletion {
+    id: u64,
+    request: ActorRequest,
+    outcome: ActorInterleavedOutcome,
+    committed: Option<u64>,
+}
+
+struct DatabaseRequest {
+    invocation: u64,
+    call: DatabaseCall,
+    reply: oneshot::Sender<Result<DatabaseResult>>,
+}
+
+struct MailboxDatabase {
+    invocation: u64,
+    sender: mpsc::UnboundedSender<DatabaseRequest>,
+}
+
+#[async_trait::async_trait]
+impl ActorDatabase for MailboxDatabase {
+    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult> {
+        let (reply, result) = oneshot::channel();
+        self.sender
+            .send(DatabaseRequest {
+                invocation: self.invocation,
+                call,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("actor mailbox stopped"))?;
+        result
+            .await
+            .context("actor mailbox stopped before the database call completed")?
+    }
 }
 
 impl Mailbox {
@@ -105,7 +155,7 @@ impl Mailbox {
             return self.activate(request).await;
         }
         let invocation = request.operation.invocation().into_owned();
-        let state = match self
+        match self
             .runtime
             .prepare_invocation(
                 &invocation,
@@ -115,29 +165,20 @@ impl Mailbox {
             )
             .await
         {
-            Ok(PreparedInvocation::Execute(state)) => state,
+            Ok(PreparedInvocation::Execute) => {}
             Ok(PreparedInvocation::Completed(result)) => {
                 self.finish(request, Ok(result)).await;
                 return true;
             }
             Err(error) => return self.stop(request, error).await,
         };
-        self.active.insert(
-            invocation.request_id.clone(),
-            (
-                invocation,
-                request.owner_epoch,
-                request.operation.commit_origin(),
-            ),
-        );
+        let origin = request.operation.commit_origin();
+        let (id, database) = self.track(invocation, request.owner_epoch, origin);
         let executor = self.runtime.executor();
-        self.next_invocation += 1;
-        let id = self.next_invocation;
-        self.blocked_on = Some(id);
         self.running.push(
             async move {
                 let result =
-                    Execution::Invocation(execute(&*executor, &request.operation, state).await);
+                    Execution::Invocation(execute(&*executor, &request.operation, database).await);
                 (id, request, result)
             }
             .boxed(),
@@ -145,18 +186,67 @@ impl Mailbox {
         true
     }
 
-    async fn checkpoint(&mut self, checkpoint: Checkpoint) -> bool {
-        let result = match self.active.get(&checkpoint.write.request_id) {
-            Some((invocation, epoch, origin)) => {
-                self.runtime
-                    .checkpoint(invocation, *epoch, &checkpoint.write, origin.clone())
-                    .await
-            }
-            None => Err(anyhow::anyhow!("checkpoint has no active invocation")),
+    fn track(
+        &mut self,
+        invocation: ActorInvocation,
+        owner_epoch: u64,
+        origin: CommitOrigin,
+    ) -> (u64, Arc<dyn ActorDatabase>) {
+        self.next_invocation += 1;
+        let id = self.next_invocation;
+        self.blocked_on = Some(id);
+        self.active.insert(
+            id,
+            ActiveRequest {
+                invocation,
+                owner_epoch,
+                origin,
+                committed: None,
+            },
+        );
+        let database = Arc::new(MailboxDatabase {
+            invocation: id,
+            sender: self.database.clone(),
+        });
+        (id, database)
+    }
+
+    async fn database(&mut self, request: DatabaseRequest) -> bool {
+        let Mailbox {
+            active, runtime, ..
+        } = self;
+        let Some(entry) = active.get_mut(&request.invocation) else {
+            let _ = request.reply.send(Err(anyhow::anyhow!(
+                "database call has no active invocation"
+            )));
+            return true;
         };
-        let success = result.is_ok();
-        let _ = checkpoint.reply.send(result);
-        success
+        let reply = runtime
+            .database_call(
+                &entry.invocation,
+                entry.owner_epoch,
+                entry.origin.clone(),
+                request.call,
+            )
+            .await;
+        match reply {
+            Ok(DatabaseReply::Executed { result, committed }) => {
+                entry.committed = committed.or(entry.committed);
+                let _ = request.reply.send(Ok(result));
+                true
+            }
+            Ok(DatabaseReply::Rejected(error)) => {
+                let _ = request.reply.send(Err(error));
+                true
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), actor = %self.object, "actor database write could not be confirmed");
+                let _ = request.reply.send(Err(anyhow::anyhow!(
+                    "actor database write could not be confirmed"
+                )));
+                false
+            }
+        }
     }
 
     async fn activate(&mut self, mut request: ActorRequest) -> bool {
@@ -173,32 +263,24 @@ impl Mailbox {
             Ok(prepared) => prepared,
             Err(error) => return self.complete_activation(request, reply, Err(error)).await,
         };
-        let (activation, state) = match prepared {
+        let activation = match prepared {
             PreparedActivation::Completed(activation) => {
                 return self
                     .complete_activation(request, reply, Ok(activation))
                     .await;
             }
-            PreparedActivation::Hydrate { activation, state } => (activation, state),
+            PreparedActivation::Hydrate { activation } => activation,
         };
 
         let invocation = request.operation.invocation().into_owned();
-        self.active.insert(
-            invocation.request_id.clone(),
-            (
-                invocation.clone(),
-                activation.owner_epoch,
-                CommitOrigin::default(),
-            ),
-        );
-        let executor = self.runtime.executor();
-        self.next_invocation += 1;
-        let id = self.next_invocation;
-        self.blocked_on = Some(id);
+        let request_id = invocation.request_id.clone();
+        let (id, database) =
+            self.track(invocation, activation.owner_epoch, CommitOrigin::default());
         self.hydrating = true;
+        let executor = self.runtime.executor();
         self.running.push(
             async move {
-                let result = executor.hydrate(actor, state, invocation.request_id).await;
+                let result = executor.hydrate(actor, request_id, database).await;
                 (
                     id,
                     request,
@@ -215,6 +297,7 @@ impl Mailbox {
     }
 
     async fn executed(&mut self, id: u64, mut request: ActorRequest, result: Execution) -> bool {
+        let committed = self.active.remove(&id).and_then(|active| active.committed);
         let result = match result {
             Execution::Activation {
                 activation,
@@ -236,7 +319,15 @@ impl Mailbox {
                     .stop(request, anyhow::anyhow!("actor snapshot sequence repeated"))
                     .await;
             }
-            self.ready.insert(outcome.sequence, (id, request, outcome));
+            self.ready.insert(
+                outcome.sequence,
+                ReadyCompletion {
+                    id,
+                    request,
+                    outcome,
+                    committed,
+                },
+            );
             return self.commit_ready().await;
         }
         if self.interleaved {
@@ -279,6 +370,7 @@ impl Mailbox {
                     &invocation,
                     request.owner_epoch,
                     result,
+                    committed,
                     request.operation.commit_origin(),
                     &mut request.tracker,
                 )
@@ -309,7 +401,13 @@ impl Mailbox {
     }
 
     async fn commit_ready(&mut self) -> bool {
-        while let Some((id, mut request, outcome)) = self.ready.remove(&self.next_sequence) {
+        while let Some(ready) = self.ready.remove(&self.next_sequence) {
+            let ReadyCompletion {
+                id,
+                mut request,
+                outcome,
+                committed,
+            } = ready;
             let invocation = request.operation.invocation().into_owned();
             let result = self
                 .runtime
@@ -317,6 +415,7 @@ impl Mailbox {
                     &invocation,
                     request.owner_epoch,
                     outcome,
+                    committed,
                     request.operation.commit_origin(),
                     &mut request.tracker,
                 )
@@ -358,8 +457,6 @@ impl Mailbox {
     }
 
     async fn finish(&mut self, mut request: ActorRequest, result: Result<ActorExecutionResult>) {
-        self.active
-            .remove(&request.operation.invocation().request_id);
         request.tracker.state_version(self.runtime.state_version());
         request.tracker.complete(&result);
         ActorRuntime::log_invocation(
@@ -382,33 +479,29 @@ impl Mailbox {
 async fn execute(
     executor: &dyn ActorExecutor,
     operation: &ActorOperation,
-    state: Option<Arc<crate::actor::ActorState>>,
+    database: Arc<dyn ActorDatabase>,
 ) -> InvocationExecution {
     match operation {
         ActorOperation::Method(invocation) => {
             executor
-                .invoke_shared(
+                .invoke(
                     ActorMethodInvocation {
                         request_id: invocation.request_id.clone(),
                         actor: invocation.actor.clone(),
                         method: invocation.method.clone(),
                         args: invocation.args.clone(),
                     },
-                    state,
+                    database,
                 )
                 .await
         }
         ActorOperation::Socket(invocation) => Ok(
-            match executor
-                .handle_socket_shared(invocation.clone(), state)
-                .await?
-            {
+            match executor.handle_socket(invocation.clone(), database).await? {
                 ActorSocketOutcome::Interleaved(outcome) => {
                     ActorMethodOutcome::Interleaved(outcome)
                 }
-                ActorSocketOutcome::Handled { state, effects } => ActorMethodOutcome::Completed {
+                ActorSocketOutcome::Handled { effects } => ActorMethodOutcome::Completed {
                     result: serde_json::Value::Null,
-                    state,
                     effects,
                 },
                 ActorSocketOutcome::Failed(failure) => ActorMethodOutcome::Failed(failure),

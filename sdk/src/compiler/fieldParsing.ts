@@ -1,46 +1,60 @@
-import { definitionDiagnostic } from "./actor-compiler.js";
-import { ActorFieldSchema, DecoratorResult, DecoratorUse, ParsedActor, ParsedMember, AnnotationKind, Persistence } from "./types.js"
 import ts from "typescript"
+
+import { definitionDiagnostic } from "./actor-compiler.js"
+import { ActorFieldSchema, AnnotationKind, DecoratorResult, DecoratorUse, ParsedMember, Persistence } from "./types.js"
 
 export type FieldValidation = { readonly field: ActorFieldSchema } | { readonly diagnostics: readonly ts.Diagnostic[] }
 
 export function validateField(actorName: string, member: ParsedMember): FieldValidation {
-    if (!ts.isPropertyDeclaration(member.node)) 
-        return { diagnostics: [] }
+    if (!ts.isPropertyDeclaration(member.node)) return { diagnostics: [] }
 
     const node = member.node
     const nodeName = fieldName(node.name)
 
     if (nodeName === undefined)
-        return { diagnostics: [definitionDiagnostic(node.name, `actor field ${actorName}.${node.name.getText()} must have a literal string name`)] }
+        return {
+            diagnostics: [
+                definitionDiagnostic(
+                    node.name,
+                    `actor field ${actorName}.${node.name.getText()} must have a literal string name`
+                )
+            ]
+        }
 
     if (fieldDenyList.includes(nodeName))
         return { diagnostics: [definitionDiagnostic(node.name, `actor field ${nodeName} is reserved.`)] }
 
-    if (member.diagnostics.length > 0) 
-        return { diagnostics: [...member.diagnostics] }
+    if (member.diagnostics.length > 0) return { diagnostics: [...member.diagnostics] }
 
     const annotations = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Persistence)
     const emission = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Emission)
     const resource = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Resource)
+    const isResource = resource.length === 1 || (resource.length === 0 && member.resource)
 
     const persistence = annotations.length === 0 ? Persistence.Ephemeral : annotations[0]?.mode
-    
-    const isPersistenceValid = (persistence !== undefined && annotations.length === 1) || (resource.length === 1)
-    const isEmissionValid = emission.length <= 1
-    const isResourceValid = resource.length === 0 ||
-        (resource.length === 1 && persistence !== Persistence.Persisted && emission.length === 0)
 
-    
+    const isPersistenceValid = (persistence !== undefined && annotations.length === 1) || isResource
+    const isEmissionValid = emission.length <= 1 && (emission.length === 0 || persistence === Persistence.Persisted)
+    const isResourceValid =
+        resource.length <= 1 && (!isResource || (persistence !== Persistence.Persisted && emission.length === 0))
+
     if (!isPersistenceValid) {
         return {
-            diagnostics: [definitionDiagnostic(node.name, `actor field ${actorName}.${node.name.getText()} must declare exactly one of @Persisted or @Ephemeral`)]
+            diagnostics: [
+                definitionDiagnostic(
+                    node.name,
+                    `actor field ${actorName}.${node.name.getText()} must declare exactly one of @Persisted or @Ephemeral`,
+                    annotations.map(annotation => annotation.node)
+                )
+            ]
         }
     }
-    
+
     if (!isEmissionValid) {
         return {
-            diagnostics: [definitionDiagnostic(node, "@Emittable requires a public @Persisted field and cannot be repeated")]
+            diagnostics: [
+                definitionDiagnostic(node, "@Emittable requires a public @Persisted field and cannot be repeated")
+            ]
         }
     }
 
@@ -51,7 +65,7 @@ export function validateField(actorName: string, member: ParsedMember): FieldVal
     }
 
     // if the field is a resource, it must be ephemeral
-    const finalPersistence = resource.length === 0 ? persistence : Persistence.Ephemeral
+    const finalPersistence = isResource ? Persistence.Ephemeral : persistence
 
     const isPrivate = hasModifier(node, ts.SyntaxKind.PrivateKeyword)
     const isProtected = hasModifier(node, ts.SyntaxKind.ProtectedKeyword)
@@ -62,7 +76,7 @@ export function validateField(actorName: string, member: ParsedMember): FieldVal
         private: ts.isPrivateIdentifier(node.name),
         visibility: isPrivate ? "private" : isProtected ? "protected" : undefined,
         emittable: emission.length === 1,
-        resource: resource.length === 1,
+        resource: isResource
     }
 
     return { field }
@@ -108,15 +122,11 @@ export function readEmission(use: DecoratorUse): DecoratorResult {
 
 function fieldName(name: ts.PropertyName): string | undefined {
     const isLiteralName =
-        ts.isIdentifier(name) ||
-        ts.isPrivateIdentifier(name) ||
-        ts.isStringLiteral(name) ||
-        ts.isNumericLiteral(name)
+        ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)
     if (isLiteralName) return name.text
 
     const isComputedLiteralName =
-        ts.isComputedPropertyName(name) &&
-        (ts.isStringLiteral(name.expression) || ts.isNumericLiteral(name.expression))
+        ts.isComputedPropertyName(name) && (ts.isStringLiteral(name.expression) || ts.isNumericLiteral(name.expression))
     if (isComputedLiteralName) return name.expression.text
 }
 

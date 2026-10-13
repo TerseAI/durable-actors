@@ -60,6 +60,7 @@ interface DecoratorResult {
 
 interface ParsedMember extends DecoratorResult {
     readonly node: ts.ClassElement
+    readonly resource: boolean
 }
 
 interface ParsedActor extends DecoratorResult {
