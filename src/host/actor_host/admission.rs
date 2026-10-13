@@ -6,9 +6,18 @@ use super::*;
 use crate::actor::{
     ActorInterleavedOutcome, ActorMethodInvocation, ActorMethodOutcome, ActorSocketOutcome,
 };
-use crate::host::actor_runtime::PreparedInvocation;
+use crate::host::actor_runtime::{CommitOrigin, PreparedActivation, PreparedInvocation};
 
-type Execution = Result<ActorMethodOutcome>;
+type InvocationExecution = Result<ActorMethodOutcome>;
+enum Execution {
+    Invocation(InvocationExecution),
+    Activation {
+        activation: ActorActivation,
+        reply: oneshot::Sender<Result<ActorActivation>>,
+        result: Result<()>,
+    },
+}
+
 type Completion = (u64, ActorRequest, Execution);
 
 pub(super) async fn run(
@@ -31,6 +40,7 @@ pub(super) async fn run(
         next_invocation: 0,
         blocked_on: None,
         interleaved: false,
+        hydrating: false,
     };
     let mut open = true;
     loop {
@@ -42,7 +52,7 @@ pub(super) async fn run(
             Some(checkpoint) = checkpoints.recv() => {
                 if !mailbox.checkpoint(checkpoint).await { return; }
             }
-            permission = admission.changed(), if mailbox.blocked_on.is_some() => {
+            permission = admission.changed(), if mailbox.blocked_on.is_some() && !mailbox.hydrating => {
                 if permission.is_err() { return; }
                 mailbox.interleaved = true;
                 mailbox.blocked_on = None;
@@ -78,6 +88,7 @@ struct Mailbox {
     next_invocation: u64,
     blocked_on: Option<u64>,
     interleaved: bool,
+    hydrating: bool,
     next_sequence: u64,
 }
 
@@ -125,7 +136,8 @@ impl Mailbox {
         self.blocked_on = Some(id);
         self.running.push(
             async move {
-                let result = execute(&*executor, &request.operation, state).await;
+                let result =
+                    Execution::Invocation(execute(&*executor, &request.operation, state).await);
                 (id, request, result)
             }
             .boxed(),
@@ -151,27 +163,72 @@ impl Mailbox {
         let ActorOperation::Activate { actor, reply } = request.operation else {
             unreachable!()
         };
-        let result = self.runtime.activate_actor(&actor).await;
-        let valid = result.is_ok();
-        let _ = reply.send(result);
         request.operation = ActorOperation::Method(ActorInvocation {
-            actor,
+            actor: actor.clone(),
             request_id: "activate".into(),
             method: "activate".into(),
             args: vec![],
         });
-        self.finish(
-            request,
-            Ok(ActorExecutionResult::Completed {
-                result: serde_json::Value::Null,
-                effects: vec![],
-            }),
-        )
-        .await;
-        valid
+        let prepared = match self.runtime.prepare_activation(&actor).await {
+            Ok(prepared) => prepared,
+            Err(error) => return self.complete_activation(request, reply, Err(error)).await,
+        };
+        let (activation, state) = match prepared {
+            PreparedActivation::Completed(activation) => {
+                return self
+                    .complete_activation(request, reply, Ok(activation))
+                    .await;
+            }
+            PreparedActivation::Hydrate { activation, state } => (activation, state),
+        };
+
+        let invocation = request.operation.invocation().into_owned();
+        self.active.insert(
+            invocation.request_id.clone(),
+            (
+                invocation.clone(),
+                activation.owner_epoch,
+                CommitOrigin::default(),
+            ),
+        );
+        let executor = self.runtime.executor();
+        self.next_invocation += 1;
+        let id = self.next_invocation;
+        self.blocked_on = Some(id);
+        self.hydrating = true;
+        self.running.push(
+            async move {
+                let result = executor.hydrate(actor, state, invocation.request_id).await;
+                (
+                    id,
+                    request,
+                    Execution::Activation {
+                        activation,
+                        reply,
+                        result,
+                    },
+                )
+            }
+            .boxed(),
+        );
+        true
     }
 
     async fn executed(&mut self, id: u64, mut request: ActorRequest, result: Execution) -> bool {
+        let result = match result {
+            Execution::Activation {
+                activation,
+                reply,
+                result,
+            } => {
+                self.hydrating = false;
+                let result = self.runtime.finish_activation(activation, result);
+                let valid = self.complete_activation(request, reply, result).await;
+                self.release(id);
+                return valid;
+            }
+            Execution::Invocation(result) => result,
+        };
         if let Ok(ActorMethodOutcome::Interleaved(outcome)) = result {
             self.interleaved = true;
             if outcome.sequence < self.next_sequence || self.ready.contains_key(&outcome.sequence) {
@@ -230,6 +287,25 @@ impl Mailbox {
         }
         self.release(id);
         true
+    }
+
+    async fn complete_activation(
+        &mut self,
+        request: ActorRequest,
+        reply: oneshot::Sender<Result<ActorActivation>>,
+        result: Result<ActorActivation>,
+    ) -> bool {
+        let valid = result.is_ok();
+        let _ = reply.send(result);
+        self.finish(
+            request,
+            Ok(ActorExecutionResult::Completed {
+                result: serde_json::Value::Null,
+                effects: vec![],
+            }),
+        )
+        .await;
+        valid
     }
 
     async fn commit_ready(&mut self) -> bool {
@@ -307,7 +383,7 @@ async fn execute(
     executor: &dyn ActorExecutor,
     operation: &ActorOperation,
     state: Option<Arc<crate::actor::ActorState>>,
-) -> Execution {
+) -> InvocationExecution {
     match operation {
         ActorOperation::Method(invocation) => {
             executor

@@ -51,6 +51,7 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
             Some(Arc::new(ActorState {
                 sqlite: crate::actor::SqliteState::position(41),
             })),
+            "activate".into(),
         )
         .await?;
     peer.await??;

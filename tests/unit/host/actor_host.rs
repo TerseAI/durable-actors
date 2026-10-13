@@ -979,6 +979,143 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
 }
 
 #[tokio::test]
+async fn activation_services_sqlite_checkpoints_during_hydration() -> Result<()> {
+    use crate::state_transport::{SqlitePersistenceMode, SqliteWrite, SqliteWriter};
+
+    struct HydratingExecutor {
+        admission: watch::Sender<()>,
+        checkpoints: mpsc::UnboundedSender<(ActorState, oneshot::Sender<()>)>,
+        started: mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait]
+    impl ActorExecutor for HydratingExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+
+        fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+            Some(self.admission.subscribe())
+        }
+
+        async fn hydrate(
+            &self,
+            _: ActorKey,
+            state: Option<Arc<ActorState>>,
+            request_id: String,
+        ) -> Result<()> {
+            assert_eq!(request_id, "activate");
+            let state = write_fields(state.as_deref(), json!({"resumed": true})).await?;
+            let (reply, acknowledged) = oneshot::channel();
+            self.admission.send_replace(());
+            self.checkpoints.send((state, reply))?;
+            acknowledged.await?;
+            Ok(())
+        }
+
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            _: Option<&ActorState>,
+        ) -> Result<ActorMethodOutcome> {
+            self.started.send(invocation.request_id)?;
+            Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
+                code: "actor_method_failed".into(),
+                message: "finished".into(),
+            }))
+        }
+    }
+
+    let (checkpoints, mut captured) = mpsc::unbounded_channel();
+    let (started, mut invocations) = mpsc::unbounded_channel();
+    let state = Arc::new(FakeStateTransport::default());
+    let actor = ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "one".into(),
+    };
+    let host = Arc::new(ActorHost::new(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host".into(),
+        },
+        Arc::new(HydratingExecutor {
+            admission: watch::channel(()).0,
+            checkpoints,
+            started,
+        }),
+        Arc::new(FakeAuthority::default()),
+        state.clone(),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    ));
+
+    let caller = host.clone();
+    let activating_actor = actor.clone();
+    let activating = tokio::spawn(async move { caller.activate_actor(activating_actor).await });
+    let (sqlite, acknowledged) = tokio::time::timeout(Duration::from_secs(1), captured.recv())
+        .await?
+        .context("hydration did not request persistence")?;
+    let caller = host.clone();
+    let invocation_actor = actor.clone();
+    let invoked = tokio::spawn(async move {
+        caller
+            .invoke_actor(
+                ActorInvocation {
+                    request_id: "during-hydration".into(),
+                    actor: invocation_actor,
+                    method: "read".into(),
+                    args: vec![],
+                },
+                7,
+                HostState::Warm,
+                0.0,
+            )
+            .await
+            .0
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), invocations.recv())
+            .await
+            .is_err()
+    );
+    let persisted = tokio::time::timeout(
+        Duration::from_secs(1),
+        host.persist_sqlite(&SqliteWrite {
+            request_id: "activate".into(),
+            actor,
+            path: sqlite.sqlite.path.clone().unwrap().into(),
+            mode: SqlitePersistenceMode::DurableWrite,
+            txid: Some(sqlite.sqlite.txid),
+        }),
+    )
+    .await??;
+    assert_eq!(persisted.state_version, Some(1));
+    acknowledged.send(()).unwrap();
+
+    let activation = activating.await??;
+    assert_eq!(activation.owner_epoch, 7);
+    assert_eq!(activation.state_version, 1);
+    let snapshots = state.writes.lock().unwrap();
+    assert_eq!(snapshots.len(), 1);
+    let snapshot = StateSnapshot::decode(&snapshots[0])?;
+    assert_eq!(snapshot.request_id, "activate");
+    assert!(snapshot.completion.is_none());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), invocations.recv())
+            .await?
+            .as_deref(),
+        Some("during-hydration")
+    );
+    assert!(matches!(
+        invoked.await??,
+        ActorExecutionResult::Failed { failure } if failure.code == "actor_error"
+    ));
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_write_ticket()
 -> Result<()> {
     let snapshot = StateSnapshot::new(

@@ -190,7 +190,12 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>, _request_id: String) -> Result<()> {
+    async fn hydrate(
+        &self,
+        _actor: ActorKey,
+        _state: Option<Arc<ActorState>>,
+        _request_id: String,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -417,7 +422,12 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>, request_id: String) -> Result<()> {
+    async fn hydrate(
+        &self,
+        actor: ActorKey,
+        state: Option<Arc<ActorState>>,
+        request_id: String,
+    ) -> Result<()> {
         match self
             .exchange(
                 ExecutorCommand::Hydrate(ActorHydration { actor, request_id }),
@@ -575,7 +585,7 @@ impl JsActorExecutor {
         let residency = Arc::new(Mutex::new(None));
         let (changes, _) = watch::channel(());
         let (admission, _) = watch::channel(());
-        
+
         let executor = Arc::new(Self {
             changes: changes.clone(),
             residency: residency.clone(),
@@ -585,18 +595,17 @@ impl JsActorExecutor {
         });
 
         let task = tokio::spawn(async move {
-            let result = run_executor_connection(
-                reader, writer, incoming, residency, changes, admission,
-            )
-            .await;
-        
+            let result =
+                run_executor_connection(reader, writer, incoming, residency, changes, admission)
+                    .await;
+
             if let Err(error) = &result {
                 tracing::error!(
                     error = %format!("{error:#}"),
                     "executor connection failed"
                 );
             }
-        
+
             result
         });
 

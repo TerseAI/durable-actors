@@ -299,9 +299,25 @@ impl ActorRuntime {
         &mut self,
         actor: &crate::actor::ActorKey,
     ) -> Result<ActorActivation> {
+        match self.prepare_activation(actor).await? {
+            PreparedActivation::Completed(activation) => Ok(activation),
+            PreparedActivation::Hydrate { activation, state } => {
+                let result = self
+                    .executor
+                    .hydrate(actor.clone(), state, "activate".to_string())
+                    .await;
+                self.finish_activation(activation, result)
+            }
+        }
+    }
+
+    pub(super) async fn prepare_activation(
+        &mut self,
+        actor: &crate::actor::ActorKey,
+    ) -> Result<PreparedActivation> {
         self.storage.ensure_authority()?;
         if let Some(activation) = &self.activation {
-            return Ok(activation.clone());
+            return Ok(PreparedActivation::Completed(activation.clone()));
         }
         let mut activation = self.storage.acquire_actor(actor, &self.endpoint.id).await?;
         if self.cached_state.is_none() {
@@ -325,14 +341,28 @@ impl ActorRuntime {
             };
             self.cached_state = Some(cached);
         }
-        self.executor
-            .hydrate(
-                actor.clone(),
-                self.cached_state.as_ref().and_then(CachedActorState::state),
-                "activate".to_string(),
-            )
-            .await?;
+        Ok(PreparedActivation::Hydrate {
+            activation,
+            state: self.cached_state.as_ref().and_then(CachedActorState::state),
+        })
+    }
+
+    pub(super) fn finish_activation(
+        &mut self,
+        mut activation: ActorActivation,
+        result: Result<()>,
+    ) -> Result<ActorActivation> {
+        result?;
         self.storage.ensure_authority()?;
+        let cached = self
+            .cached_state
+            .as_ref()
+            .context("activation has no cached state")?;
+        ensure!(
+            cached.owner_epoch == activation.owner_epoch,
+            "activation ownership changed"
+        );
+        activation.state_version = cached.state_version;
         self.activation = Some(activation.clone());
         Ok(activation)
     }
@@ -1050,6 +1080,14 @@ pub(super) fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'sta
         crate::actor::ActorSocketEvent::Message { .. } => "onMessage",
         crate::actor::ActorSocketEvent::Disconnect { .. } => "onDisconnect",
     }
+}
+
+pub(super) enum PreparedActivation {
+    Completed(ActorActivation),
+    Hydrate {
+        activation: ActorActivation,
+        state: Option<Arc<ActorState>>,
+    },
 }
 
 pub(super) enum PreparedInvocation {
