@@ -69,8 +69,8 @@ class ActorRuntime {
         })
     }
 
-    close(): void {
-        this.shutdown()
+    async close(): Promise<void> {
+        await this.shutdown()
         this.reset()
     }
 
