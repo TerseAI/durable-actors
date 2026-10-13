@@ -21,6 +21,7 @@ import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventC
 import { SqliteCaptureError } from "./sqlite.js"
 import type { ActorDatabaseStorage } from "./sqlite.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
+import { ActorResource } from "../actor/resource.js"
 
 class ActorRuntime {
     private instance: AnyActor | undefined
@@ -53,7 +54,23 @@ class ActorRuntime {
         return operation
     }
 
+    async shutdown(): Promise<void> {
+        if (this.instance === undefined) return
+
+        const fields = this.definition.state.fields
+            .filter(field => field.resource)
+            .reverse()
+
+        await runWithActorDatabase(this.instance, "immediate", async () => {
+            for (const field of fields) {
+                const resource = Reflect.get(this.instance!, field.name) as ActorResource
+                await resource.onGracefulShutdown({ db: this.database })
+            }
+        })
+    }
+
     close(): void {
+        this.shutdown()
         this.reset()
     }
 
@@ -63,7 +80,7 @@ class ActorRuntime {
         if (this.fatal !== undefined) return this.fatal
         try {
             if (command.type === "hydrate") {
-                const prepared = this.prepare(command)
+                const prepared = await this.prepare(command)
                 return prepared instanceof Actor ? { type: "hydrated" } : prepared
             }
             return await (command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command))
@@ -84,7 +101,7 @@ class ActorRuntime {
     }
 
     private async invoke(command: InvokeCommand): Promise<ActorExecutorReply> {
-        const prepared = this.prepare(command)
+        const prepared = await this.prepare(command)
         if (!(prepared instanceof Actor)) return prepared
         const instance = prepared
         if (!this.definition.methods.has(command.method)) {
@@ -140,7 +157,7 @@ class ActorRuntime {
     }
 
     private async handleSocketEvent(command: WebSocketEventCommand): Promise<ActorExecutorReply> {
-        const prepared = this.prepare(command)
+        const prepared = await this.prepare(command)
         if (!(prepared instanceof Actor)) return prepared
         const instance = prepared
         const methodName = lifecycleMethod(command)
@@ -200,7 +217,7 @@ class ActorRuntime {
         if (this.definition.state.interleaveMethods?.includes(method)) this.allowNextInvocation()
     }
 
-    private prepare(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): AnyActor | ActorExecutorReply {
+    private async prepare(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): Promise<AnyActor | ActorExecutorReply> {
         const identity = command.actor
         if (identity.actor_name !== this.definition.actorName) {
             return failedReply(
@@ -217,7 +234,7 @@ class ActorRuntime {
         if (this.instance !== undefined) return this.instance
         if (command.resident_only) return { type: "state_required" }
         this.database.restore(command.sqlite)
-        return this.createInstance(identity, this.database.fields())
+        return await this.createInstance(identity, this.database.fields())
     }
 
     private complete(operation: () => Promise<ActorExecutorReply>): Promise<ActorExecutorReply> {
@@ -252,7 +269,7 @@ class ActorRuntime {
         this.identity = undefined
     }
 
-    private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
+    private async createInstance(identity: ActorIdentity, state: JsonValue | null): Promise<AnyActor> {
         const instance = constructWithActorDatabase(
             this.database,
             () => Reflect.construct(this.definition.actorClass, []) as AnyActor
@@ -265,6 +282,16 @@ class ActorRuntime {
         if (this.interleaved) this.lastCompletedState = this.database.fields()
         this.identity = { ...identity }
         this.instance = instance
+
+
+        const resources = this.definition.state.fields.filter(field => field.resource)
+        await runWithActorDatabase(instance, "immediate", async () => {
+            for (const field of resources) {
+                const resource = Reflect.get(instance, field.name) as ActorResource
+                await resource.onResume({ db: this.database })
+            }
+        })
+
         return instance
     }
 }
