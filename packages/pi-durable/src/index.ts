@@ -1,6 +1,5 @@
 import { AssistantEntry, Harness, HarnessOptions } from "@earendil-works/pi-durable"
-import { ActorResource, ActorResourceContext } from "durable-actors"
-import type { Actor } from "durable-actors"
+import type { Actor, ActorResource, ActorResourceContext } from "durable-actors"
 
 import { ActorStorage } from "./storage.js"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"

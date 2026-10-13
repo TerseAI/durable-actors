@@ -1,4 +1,4 @@
-import type { ActorDatabase } from "durable-actors"
+import type { ActorDatabase } from "./database.js"
 
 export interface ActorResourceContext {
     db: ActorDatabase

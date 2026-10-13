@@ -42,6 +42,12 @@ pub struct ActorMethodEviction {
     pub actor: ActorKey,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ActorHydration {
+    pub actor: ActorKey,
+    pub request_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActorSocketConnection {
     pub id: String,
@@ -184,7 +190,7 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
+    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>, _request_id: String) -> Result<()> {
         Ok(())
     }
 
@@ -411,10 +417,10 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
+    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>, request_id: String) -> Result<()> {
         match self
             .exchange(
-                ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
+                ExecutorCommand::Hydrate(ActorHydration { actor, request_id }),
                 state,
             )
             .await?
@@ -569,6 +575,7 @@ impl JsActorExecutor {
         let residency = Arc::new(Mutex::new(None));
         let (changes, _) = watch::channel(());
         let (admission, _) = watch::channel(());
+        
         let executor = Arc::new(Self {
             changes: changes.clone(),
             residency: residency.clone(),
@@ -576,9 +583,23 @@ impl JsActorExecutor {
             admission: admission.clone(),
             commands,
         });
-        let task = tokio::spawn(run_executor_connection(
-            reader, writer, incoming, residency, changes, admission,
-        ));
+
+        let task = tokio::spawn(async move {
+            let result = run_executor_connection(
+                reader, writer, incoming, residency, changes, admission,
+            )
+            .await;
+        
+            if let Err(error) = &result {
+                tracing::error!(
+                    error = %format!("{error:#}"),
+                    "executor connection failed"
+                );
+            }
+        
+            result
+        });
+
         (executor, task)
     }
 
@@ -825,6 +846,7 @@ impl ExecutorDriver {
         let request_id = match &pending.command {
             ExecutorCommand::Invoke(invocation) => &invocation.request_id,
             ExecutorCommand::WebsocketEvent(invocation) => &invocation.request_id,
+            ExecutorCommand::Hydrate(hydration) => &hydration.request_id,
             _ => anyhow::bail!("SQLite persistence requires an invocation"),
         };
         ensure!(
@@ -1095,7 +1117,8 @@ impl ExecutorCommand {
         match self {
             Self::Invoke(invocation) => &invocation.actor,
             Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Evict(eviction) | Self::Hydrate(eviction) => &eviction.actor,
+            Self::Evict(eviction) => &eviction.actor,
+            Self::Hydrate(hydration) => &hydration.actor,
         }
     }
 }
@@ -1236,7 +1259,7 @@ enum ActorExecutorClientMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorCommand {
-    Hydrate(ActorMethodEviction),
+    Hydrate(ActorHydration),
     Invoke(ActorMethodInvocation),
     WebsocketEvent(ActorSocketInvocation),
     Evict(ActorMethodEviction),
