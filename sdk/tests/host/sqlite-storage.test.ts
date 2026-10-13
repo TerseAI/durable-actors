@@ -128,3 +128,54 @@ test("exec rejects multiple statements before applying writes and accepts trigge
     assert.equal(row!.value, ";")
     assert.equal(row!["a;b"], 1)
 })
+
+test("alarm slot replaces its timestamp and survives restoration", async context => {
+    const database = new SqliteActorDatabase()
+    const restored = new SqliteActorDatabase()
+    const afterDeletion = new SqliteActorDatabase()
+    const source = await seed()
+
+    context.after(() => {
+        database.close()
+        restored.close()
+        afterDeletion.close()
+    })
+
+    database.restore(source)
+    assert.equal(database.getAlarm(), null)
+
+    database.setAlarm(1_000)
+    assert.equal(database.getAlarm(), 1_000)
+
+    database.setAlarm(2_000)
+    assert.equal(database.getAlarm(), 2_000)
+
+    const snapshot = await database.snapshot()
+    const recovered = await recover(source, snapshot)
+
+    restored.restore(recovered)
+    assert.equal(restored.getAlarm(), 2_000)
+
+    restored.deleteAlarm()
+    assert.equal(restored.getAlarm(), null)
+
+    const deletedSnapshot = await restored.snapshot()
+    const recoveredDeletion = await recover(recovered, deletedSnapshot)
+
+    afterDeletion.restore(recoveredDeletion)
+    assert.equal(afterDeletion.getAlarm(), null)
+})
+
+test("alarm mutations roll back with SQLite", async context => {
+    const database = new SqliteActorDatabase()
+    context.after(() => database.close())
+    database.restore(await seed())
+    database.setAlarm(1_000)
+    await database.snapshot()
+    database.setAlarm(2_000)
+    database.rollback()
+    assert.equal(database.getAlarm(), 1_000)
+    database.deleteAlarm()
+    database.rollback()
+    assert.equal(database.getAlarm(), 1_000)
+})

@@ -1,7 +1,8 @@
 import { ActorDefinitionError } from "../errors.js"
 
-import { isActorInvocation } from "./database.js"
+import { ActorAlarm, ActorAlarmStorage } from "./alarm.js"
 import type { ActorDatabase, SqliteValue } from "./database.js"
+import { isActorInvocation } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 
 declare const actorContextBrand: unique symbol
@@ -15,15 +16,17 @@ class RuntimeActorContext implements ActorContext {
     readonly actorId: string
     readonly persistedFields = new Map<string, PropertyDescriptor>()
     readonly #database: ActorDatabase | undefined
+    readonly #alarm: ActorAlarm | undefined
     #actor: object | undefined
     #constructing = false
 
-    private constructor(actorId: string, database?: ActorDatabase) {
+    private constructor(actorId: string, database?: ActorDatabase & ActorAlarmStorage) {
         this.actorId = validateActorComponent("actor ID", actorId)
         this.#database = database && this.guard(database)
+        this.#alarm = database && this.guardAlarm(database)
     }
 
-    static runtime(actorId: string, database: ActorDatabase): RuntimeActorContext {
+    static runtime(actorId: string, database: ActorDatabase & ActorAlarmStorage): RuntimeActorContext {
         return new RuntimeActorContext(actorId, database)
     }
 
@@ -56,6 +59,12 @@ class RuntimeActorContext implements ActorContext {
         return this.#database
     }
 
+    get alarm(): ActorAlarm {
+        if (this.#alarm === undefined)
+            throw new ActorDefinitionError("actor alarm is unavailable outside the actor runtime")
+        return this.#alarm
+    }
+
     assertAccess(): void {
         if (this.#constructing || (this.#actor !== undefined && isActorInvocation(this.#actor))) return
         throw new ActorDefinitionError("actor database is unavailable outside its invocation")
@@ -66,6 +75,23 @@ class RuntimeActorContext implements ActorContext {
             exec: <Row extends object>(sql: string, ...bindings: SqliteValue[]): Row[] => {
                 this.assertAccess()
                 return database.exec<Row>(sql, ...bindings)
+            }
+        }
+    }
+
+    private guardAlarm(alarm: ActorAlarmStorage): ActorAlarm {
+        return {
+            get: () => {
+                this.assertAccess()
+                return alarm.getAlarm()
+            },
+            set: timestampMs => {
+                this.assertAccess()
+                alarm.setAlarm(timestampMs)
+            },
+            delete: () => {
+                this.assertAccess()
+                alarm.deleteAlarm()
             }
         }
     }

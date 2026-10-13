@@ -1,7 +1,8 @@
 import { createRequire } from "node:module"
 
-import { actorDatabaseMode } from "../actor/database.js"
+import type { ActorAlarmStorage } from "../actor/alarm.js"
 import type { ActorDatabase, SqliteValue } from "../actor/database.js"
+import { actorDatabaseMode } from "../actor/database.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
 interface SqliteState {
@@ -13,7 +14,7 @@ type SqliteCommitter = () => Promise<number>
 
 class SqliteCaptureError extends Error {}
 
-interface ActorDatabaseStorage extends ActorDatabase {
+interface ActorDatabaseStorage extends ActorDatabase, ActorAlarmStorage {
     fields(): JsonObject
     initializeFields(fields: JsonObject): void
     persistField(name: string, value: JsonValue | undefined): void
@@ -117,6 +118,28 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         }
     }
 
+    getAlarm(): number | null {
+        this.alarmDatabase()
+        const [row] = this.execute("SELECT timestamp FROM __terse_alarm") as { timestamp: number }[]
+        return row?.timestamp ?? null
+    }
+
+    setAlarm(timestampMs: number): void {
+        this.updateAlarm(timestampMs)
+    }
+
+    deleteAlarm(): void {
+        this.updateAlarm(null)
+    }
+
+    private updateAlarm(timestampMs: number | null): void {
+        this.alarmDatabase()
+        this.execute(
+            "INSERT INTO __terse_alarm (singleton, timestamp, generation) VALUES (1, ?, 1) ON CONFLICT(singleton) DO UPDATE SET timestamp=excluded.timestamp, generation=__terse_alarm.generation + 1",
+            timestampMs
+        )
+    }
+
     private execute(sql: string, ...bindings: SqliteValue[]): object[] {
         const database = this.open()
         const statement = database.prepare(sql)
@@ -157,6 +180,15 @@ class SqliteActorDatabase implements ActorDatabaseStorage {
         if (!database.isTransaction) database.exec("BEGIN IMMEDIATE")
         database.exec(
             "CREATE TABLE IF NOT EXISTS __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))"
+        )
+        return database
+    }
+
+    private alarmDatabase(): SqliteConnection {
+        const database = this.open()
+        if (!database.isTransaction) database.exec("BEGIN IMMEDIATE")
+        database.exec(
+            "CREATE TABLE IF NOT EXISTS __terse_alarm (singleton INTEGER PRIMARY KEY CHECK(SINGLETON = 1), timestamp INTEGER, generation INTEGER NOT NULL)"
         )
         return database
     }
@@ -246,4 +278,4 @@ function withoutComments(sql: string): string {
 }
 
 export { SqliteActorDatabase, SqliteCaptureError }
-export type { ActorDatabaseStorage, SqliteState, SqliteCommitter }
+export type { ActorDatabaseStorage, SqliteCommitter, SqliteState }

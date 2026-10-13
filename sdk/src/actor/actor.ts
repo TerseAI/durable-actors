@@ -2,15 +2,16 @@ import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
-import { RuntimeActorContext } from "./context.js"
+import { ActorAlarm } from "./alarm.js"
 import type { ActorContext } from "./context.js"
+import { RuntimeActorContext } from "./context.js"
 import type { ActorDatabase } from "./database.js"
 import { validateActorComponent } from "./identity.js"
 import type { ActorSchema } from "./schema.js"
-import { actorConnectionCount, actorConnections, broadcastActor, setActorAutoResponse } from "./socket.js"
 import type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage } from "./socket.js"
-import { outgoingMessage, socketMetadata } from "./socketValidation.js"
+import { actorConnectionCount, actorConnections, broadcastActor, setActorAutoResponse } from "./socket.js"
 import type { ActorSchemas } from "./socketValidation.js"
+import { outgoingMessage, socketMetadata } from "./socketValidation.js"
 
 declare const actorTypes: unique symbol
 
@@ -57,6 +58,10 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     /** Actor-local SQLite, available from field initializers. Changes commit after a successful invocation. */
     get db(): ActorDatabase {
         return this.#context.database
+    }
+
+    get alarm(): ActorAlarm {
+        return this.#context.alarm
     }
 
     /**
