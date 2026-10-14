@@ -1,6 +1,7 @@
-import ts from "typescript";
-import { AnnotationKind, DecoratorResult, DecoratorUse, SdkSymbols } from "../types.js";
-import { definitionDiagnostic } from "../actor-compiler.js";
+import ts from "typescript"
+
+import { definitionDiagnostic } from "../actor-compiler.js"
+import { AnnotationKind, DecoratorResult, DecoratorUse, SdkSymbols } from "../types.js"
 
 function readResource(use: DecoratorUse, sdk: SdkSymbols, checker: ts.TypeChecker): DecoratorResult {
     if (sdk.ActorResource === undefined) {
@@ -11,7 +12,10 @@ function readResource(use: DecoratorUse, sdk: SdkSymbols, checker: ts.TypeChecke
     const resourceType = checker.getDeclaredTypeOfSymbol(sdk.ActorResource)
 
     if (!checker.isTypeAssignableTo(fieldType, resourceType)) {
-        return { annotations: [], diagnostics: [definitionDiagnostic(use.node, "@Resource fields must implement ActorResource")] }
+        return {
+            annotations: [],
+            diagnostics: [definitionDiagnostic(use.node, "@Resource fields must implement ActorResource")]
+        }
     }
 
     return { annotations: [{ kind: AnnotationKind.Resource, node: use.node }], diagnostics: [] }

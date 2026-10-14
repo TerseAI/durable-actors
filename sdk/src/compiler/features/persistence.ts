@@ -1,7 +1,8 @@
 import ts from "typescript"
+
 import { definitionDiagnostic } from "../actor-compiler.js"
+import { hasModifier, validateField } from "../fieldParsing.js"
 import type { ActorFieldSchema, ParsedActor } from "../types.js"
-import { validateField, hasModifier } from "../fieldParsing.js"
 
 function validatePersistence(actor: ParsedActor) {
     const fields: ActorFieldSchema[] = []

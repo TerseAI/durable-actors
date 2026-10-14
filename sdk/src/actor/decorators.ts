@@ -1,4 +1,5 @@
 import { ActorDefinitionError } from "../errors.js"
+
 import { ActorResource } from "./resource.js"
 
 /** Marks a method for whole-call transactions. Currently all non-interleaved calls use this behavior. */
@@ -35,7 +36,10 @@ function Emittable(_value: undefined, context: ClassFieldDecoratorContext): void
 }
 
 /** Marks a property as being a Resource. Includes them in Actor Lifecycle */
-function Resource<This, Value extends ActorResource>(_value: undefined, context: ClassFieldDecoratorContext<This, Value>): void {
+function Resource<This, Value extends ActorResource>(
+    _value: undefined,
+    context: ClassFieldDecoratorContext<This, Value>
+): void {
     validateField("Resource", context)
 }
 

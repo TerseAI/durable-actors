@@ -446,6 +446,19 @@ test("checks class decorators and entrypoint exports", () => {
     }
 })
 
+function field(
+    name: string,
+    persistence: Persistence,
+    options: Partial<{
+        private: boolean
+        visibility: "private" | "protected"
+        emittable: boolean
+        resource: boolean
+    }> = {}
+) {
+    return { name, persistence, private: false, visibility: undefined, emittable: false, resource: false, ...options }
+}
+
 async function createProject() {
     const root = await mkdtemp(path.join(os.tmpdir(), "actor-compiler-"))
     await mkdir(path.join(root, "src"))
