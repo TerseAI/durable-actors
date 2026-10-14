@@ -54,6 +54,7 @@ class ActorRuntime {
         return operation
     }
 
+<<<<<<< HEAD
     async shutdown(): Promise<void> {
         if (this.instance === undefined) return
 
@@ -67,8 +68,9 @@ class ActorRuntime {
         })
     }
 
+=======
+>>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
     async close(): Promise<void> {
-        await this.shutdown()
         this.reset()
     }
 
@@ -280,6 +282,7 @@ class ActorRuntime {
         this.identity = { ...identity }
         this.instance = instance
 
+<<<<<<< HEAD
         const resources = this.definition.state.fields.filter(field => field.resource)
         await runWithActorDatabase(instance, "immediate", async () => {
             for (const field of resources) {
@@ -287,6 +290,8 @@ class ActorRuntime {
                 await resource.onResume({ db: this.database })
             }
         })
+=======
+>>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
 
         return instance
     }

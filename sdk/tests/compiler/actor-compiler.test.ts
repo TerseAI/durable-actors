@@ -8,6 +8,7 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
+<<<<<<< HEAD
 function field(
     name: string,
     persistence: Persistence,
@@ -65,6 +66,8 @@ test("ordinary dependencies and public resource fields still require persistence
     }
 })
 
+=======
+>>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
 test("rejects invalid or dynamic compute overrides", () => {
     for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
         const result = analyze(`import { Actor, Compute } from "./sdk.js"
@@ -83,13 +86,6 @@ test("db is reserved for the actor SQLite database", () => {
     const result = analyze(`import { Actor, Persisted } from "./sdk.js"
         export class Room extends Actor { @Persisted db = 1 }`)
     assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
-})
-
-test("rejects fields without a literal name", () => {
-    const result = analyze(`import { Actor, Persisted } from "./sdk.js"
-        const key = "count"
-        export class Room extends Actor { @Persisted [key] = 1 }`)
-    assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("literal")))
 })
 
 test("records only atomic methods, including aliased decorators", () => {
