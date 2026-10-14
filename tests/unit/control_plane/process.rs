@@ -60,6 +60,22 @@ fn parses_the_minimal_storage_configuration() -> Result<()> {
 }
 
 #[test]
+fn alarm_poll_interval_is_configurable_and_positive() -> Result<()> {
+    let mut values = process_environment();
+    let parse = |values: &HashMap<&str, &str>| {
+        ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
+    };
+    assert_eq!(parse(&values)?.alarm_poll_interval, Duration::from_millis(100));
+    values.insert("DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS", "250");
+    assert_eq!(parse(&values)?.alarm_poll_interval, Duration::from_millis(250));
+    for invalid in ["0", "-1", "1.5", "not-a-number"] {
+        values.insert("DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS", invalid);
+        assert!(parse(&values).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn pool_capacity_is_configurable_and_validated() -> Result<()> {
     let mut values = process_environment();
     let parse = |values: &HashMap<&str, &str>| {

@@ -12,6 +12,8 @@ use crate::{actor::ActorKey, postgres::PostgresDatabase};
 
 use super::ControlPlaneService;
 
+pub(super) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 #[derive(Clone)]
 pub(super) struct ClaimedAlarm {
     pub actor: ActorKey,
@@ -30,17 +32,23 @@ pub(super) trait AlarmStore: Send + Sync {
 pub(super) fn start(
     service: ControlPlaneService,
     store: Arc<dyn AlarmStore>,
+    poll_interval: Duration,
     stop: CancellationToken,
 ) {
-    tokio::spawn(run(service, store, stop));
+    tokio::spawn(run(service, store, poll_interval, stop));
 }
 
-async fn run(service: ControlPlaneService, store: Arc<dyn AlarmStore>, stop: CancellationToken) {
+async fn run(
+    service: ControlPlaneService,
+    store: Arc<dyn AlarmStore>,
+    poll_interval: Duration,
+    stop: CancellationToken,
+) {
     let client = reqwest::Client::new();
     loop {
         tokio::select! {
             _ = stop.cancelled() => return,
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            _ = tokio::time::sleep(poll_interval) => {}
         }
         let now_ms = match crate::clock::Clock::now_ms(&crate::clock::SystemClock)
             .and_then(|value| i64::try_from(value).context("alarm clock overflow"))

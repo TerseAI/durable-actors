@@ -253,6 +253,8 @@ class Reminder(Actor):
 
 `self.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `None`. An alarm callback must delete the alarm or replace it with its next timestamp. `AsyncActor` provides the same API with `await self.alarm.get()`, `set()`, and `delete()`.
 
+Alarm timestamps retain millisecond precision, but the control plane checks for due alarms every 100 milliseconds by default. Polling can therefore add up to roughly one polling interval of delay, with routing, dispatch, backlog, and failures adding more. Deployments can configure the interval with `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS`. Alarms do not provide an exact execution-time guarantee.
+
 ## Interleaving calls
 
 An actor runs one call at a time by default. Python methods run in a worker thread, and an `@interleave` method does not hold the actor while it runs: other calls can start at any point during it, not only while it waits on I/O. Protect state that overlapping calls share, for example with a `threading.Lock` in an `ephemeral()` field.

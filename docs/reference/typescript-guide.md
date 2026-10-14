@@ -218,6 +218,8 @@ export class Reminder extends Actor {
 
 `this.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `null`. An alarm callback must delete the alarm or replace it with its next timestamp.
 
+Alarm timestamps retain millisecond precision, but the control plane checks for due alarms every 100 milliseconds by default. Polling can therefore add up to roughly one polling interval of delay, with routing, dispatch, backlog, and failures adding more. Deployments can configure the interval with `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS`. Alarms do not provide an exact execution-time guarantee.
+
 ## Interleaving calls
 
 An actor runs one call at a time, and a call holds the actor until it finishes, including across an `await`. `@Interleave` lets other calls run while that method awaits.

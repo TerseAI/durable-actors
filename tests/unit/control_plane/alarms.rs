@@ -8,6 +8,11 @@ fn actor() -> ActorKey {
     }
 }
 
+#[test]
+fn default_poll_interval_is_100_milliseconds() {
+    assert_eq!(DEFAULT_POLL_INTERVAL, Duration::from_millis(100));
+}
+
 #[tokio::test]
 async fn memory_store_claims_due_alarms_once() -> Result<()> {
     let store = MemoryAlarmStore::default();

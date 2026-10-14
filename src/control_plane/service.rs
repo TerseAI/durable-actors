@@ -97,8 +97,12 @@ impl ControlPlaneService {
         self
     }
 
-    pub(crate) fn start_alarm_scheduler(&self, stop: tokio_util::sync::CancellationToken) {
-        super::alarms::start(self.clone(), self.alarms.clone(), stop);
+    pub(crate) fn start_alarm_scheduler(
+        &self,
+        poll_interval: std::time::Duration,
+        stop: tokio_util::sync::CancellationToken,
+    ) {
+        super::alarms::start(self.clone(), self.alarms.clone(), poll_interval, stop);
     }
 
     pub(crate) fn with_socket_event_sink(
