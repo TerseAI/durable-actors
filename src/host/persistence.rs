@@ -101,7 +101,11 @@ impl SnapshotWriter for HostWriter {
     async fn write_snapshot(&self, plan: &WritePlan, bytes: bytes::Bytes) -> Result<StateWrite> {
         self.storage.ensure_authority()?;
         let attempt = self.storage.stop.clone().drop_guard();
+        let snapshot = crate::state_log::StateSnapshot::decode(&bytes)?;
         let result = self.storage.runtime.write_snapshot(plan, bytes).await?;
+        self.storage
+            .update_alarm(snapshot.state_version, snapshot.alarm_timestamp_ms)
+            .await?;
         self.storage.ensure_authority()?;
         attempt.disarm();
         Ok(result)

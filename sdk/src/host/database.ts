@@ -27,7 +27,7 @@ type DatabaseCall =
 type DatabaseResult =
     | { readonly type: "rows"; readonly columns: string[]; readonly rows: DatabaseValue[][] }
     | { readonly type: "fields"; readonly fields: JsonObject }
-    | { readonly type: "alarm"; readonly timestamp_ms: number | null; readonly generation: number }
+    | { readonly type: "alarm"; readonly timestamp_ms: number | null }
     | { readonly type: "done" }
 
 type DatabaseTransport = (call: DatabaseCall) => DatabaseResult
@@ -54,7 +54,7 @@ class DatabaseProxy implements ActorDatabase, ActorAlarmStorage {
     getAlarmState(): ActorAlarmState {
         const result = this.transport({ op: "alarm" })
         if (result.type !== "alarm") throw unexpected(result)
-        return { timestampMs: result.timestamp_ms, generation: result.generation }
+        return { timestampMs: result.timestamp_ms }
     }
 
     setAlarm(timestampMs: number): void {

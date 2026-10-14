@@ -12,6 +12,10 @@ pub(crate) enum ControlPlaneCommand {
     },
     RefreshStorageAccess,
     InventoryChanged,
+    UpdateAlarm {
+        state_version: u64,
+        timestamp_ms: Option<i64>,
+    },
     RequestTraces {
         traces: Vec<crate::request_traces::RequestTrace>,
         dropped: u64,

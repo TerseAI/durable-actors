@@ -187,7 +187,6 @@ pub enum DatabaseResult {
     },
     Alarm {
         timestamp_ms: Option<i64>,
-        generation: u64,
     },
     Done,
 }

@@ -73,7 +73,7 @@ class AlarmProbe extends Actor {
 
 const definition = registerActorClass(AlarmProbe, {
     actorName: "AlarmProbe",
-    atomicMethods: ["failAfterAtomicSet"],
+    atomicMethods: ["failAfterAtomicSet", "onAlarm"],
     fields: [{ name: "deliveries", persistence: Persistence.Persisted }]
 })
 
@@ -186,7 +186,7 @@ test("delivers alarms to onAlarm", async context => {
         await runtime.close()
         host.close()
     })
-    assertReply(await runtime.handle(alarmCommand()), { type: "alarm_handled", effects: [] })
+    assertReply(await actorInvoker(runtime)("onAlarm"), { type: "invoked", result: null })
     assertReply(await actorInvoker(runtime)("readDeliveries"), { type: "invoked", result: 1 })
 })
 
@@ -197,13 +197,13 @@ test("failed alarm callbacks roll back and can be retried", async context => {
         host.close()
     })
     failNextAlarm = true
-    assertReply(await runtime.handle(alarmCommand()), {
+    assertReply(await actorInvoker(runtime)("onAlarm"), {
         type: "failed",
-        code: "actor_alarm_failed",
+        code: "actor_method_failed",
         message: "alarm failure"
     })
     assertReply(await actorInvoker(runtime)("readDeliveries"), { type: "invoked", result: 0 })
-    assertReply(await runtime.handle(alarmCommand()), { type: "alarm_handled", effects: [] })
+    assertReply(await actorInvoker(runtime)("onAlarm"), { type: "invoked", result: null })
     assertReply(await actorInvoker(runtime)("readDeliveries"), { type: "invoked", result: 1 })
 })
 
@@ -214,7 +214,7 @@ test("alarm callbacks can schedule their next alarm", async context => {
         host.close()
     })
     nextAlarm = 5_000
-    assertReply(await runtime.handle(alarmCommand()), { type: "alarm_handled", effects: [] })
+    assertReply(await actorInvoker(runtime)("onAlarm"), { type: "invoked", result: null })
     assertReply(await actorInvoker(runtime)("readAlarm"), { type: "invoked", result: 5_000 })
 })
 
@@ -231,22 +231,11 @@ test("alarm callbacks serialize with ordinary invocations", async context => {
     })
     const invocation = actorInvoker(runtime)("hold")
     await started
-    const alarm = runtime.handle(alarmCommand())
+    const alarm = actorInvoker(runtime)("onAlarm")
     await Promise.resolve()
     assert.deepEqual(executionOrder, ["invoke:start"])
     releaseInvocation?.()
     await invocation
-    assertReply(await alarm, { type: "alarm_handled", effects: [] })
+    assertReply(await alarm, { type: "invoked", result: null })
     assert.deepEqual(executionOrder, ["invoke:start", "invoke:end", "alarm"])
 })
-
-function alarmCommand() {
-    return {
-        type: "alarm" as const,
-        actor: {
-            project_id: "test",
-            actor_name: "AlarmProbe",
-            actor_id: "one"
-        }
-    }
-}

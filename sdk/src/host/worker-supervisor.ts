@@ -299,7 +299,6 @@ class ActorWorkerSupervisor {
             case "hydrate":
             case "invoke":
             case "websocket_event":
-            case "alarm":
                 try {
                     if (this.actorNames === undefined) await this.ready()
                     return await this.execute(command, allowNextInvocation, database, publish, connections)
@@ -379,10 +378,7 @@ class ActorWorkerSupervisor {
         }
         const base = actor.sequenceBase
         return actor.execute(command, allowNextInvocation, database, publish, connections).then(reply => {
-            if (
-                (reply.type === "invoked" || reply.type === "websocket_handled" || reply.type === "alarm_handled") &&
-                reply.sequence !== undefined
-            ) {
+            if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
                 const sequence = base + reply.sequence
                 this.lastSequence = Math.max(this.lastSequence, sequence)
                 return { ...reply, sequence }
@@ -447,7 +443,6 @@ class ResidentActorWorker {
             ![
                 "actor_method_failed",
                 "actor_socket_failed",
-                "actor_alarm_failed",
                 "method_not_found",
                 "method_not_callable"
             ].includes(reply.code)

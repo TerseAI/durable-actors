@@ -13,6 +13,44 @@ use super::public_api::{
 };
 use crate::actor::ActorInvocation;
 
+pub(super) async fn invoke_alarm(
+    service: &super::ControlPlaneService,
+    client: &reqwest::Client,
+    alarm: &super::alarms::ClaimedAlarm,
+) -> bool {
+    let started = tokio::time::Instant::now();
+    let target = match service
+        .resolve_actor_route(&alarm.actor, None, None, None)
+        .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(%error, actor = %alarm.actor.storage_key(), "could not route alarm");
+            return false;
+        }
+    };
+    let invocation = ActorInvocation {
+        actor: alarm.actor.clone(),
+        request_id: format!("alarm-{}", alarm.state_version),
+        method: "onAlarm".into(),
+        args: vec![],
+    };
+    let outcome = dispatch(
+        client,
+        &target.route,
+        &target.token,
+        target.owner_epoch,
+        &invocation,
+        target.host_state,
+        started.elapsed().as_secs_f64() * 1000.0,
+    )
+    .await;
+    match outcome {
+        Ok(outcome) => matches!(outcome["type"].as_str(), Some("completed" | "failed")),
+        Err(_) => false,
+    }
+}
+
 pub(super) async fn invoke(
     State(state): State<PublicApiState>,
     Path(path): Path<ActorPath>,

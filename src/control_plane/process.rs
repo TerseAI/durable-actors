@@ -197,9 +197,9 @@ async fn control_plane_routes(
         config.sandbox_provider,
         &issuer,
         runtime_access.clone(),
-        database,
+        database.clone(),
         registry.clone(),
-        stop,
+        stop.clone(),
     )
     .await?;
     let socket_events = config
@@ -217,11 +217,13 @@ async fn control_plane_routes(
         provisioner,
     )
     .with_runtime_access(runtime_access)
+    .with_alarm_store(Arc::new(super::alarms::PostgresAlarmStore::new(database)))
     .with_traces(traces)
     .with_socket_event_sink(socket_events);
     service.changes = changes;
     service.gateway = Some(gateway);
     service.region = config.region;
+    service.start_alarm_scheduler(stop);
     let inventory = Arc::new(super::socket_inventory::GatewayInventoryReader::new(
         storage.clone(),
         service.gateway.as_ref().unwrap().connections.clone(),

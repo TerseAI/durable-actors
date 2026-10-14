@@ -44,11 +44,6 @@ pub struct ActorMethodEviction {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ActorAlarmInvocation {
-    pub actor: ActorKey,
-}
-
-#[derive(Debug, Serialize)]
 pub struct ActorHydration {
     pub actor: ActorKey,
     pub request_id: String,
@@ -178,15 +173,6 @@ pub struct ActorInterleavedOutcome {
     pub effects: Vec<ActorSocketEffect>,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum ActorAlarmOutcome {
-    Handled {
-        sequence: Option<u64>,
-        effects: Vec<ActorSocketEffect>,
-    },
-    Failed(ActorInvocationFailure),
-}
-
 #[async_trait]
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_name: &str) -> bool;
@@ -226,17 +212,6 @@ pub trait ActorExecutor: Send + Sync {
         Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
             code: "socket_not_supported".into(),
             message: "actor executor does not support sockets".into(),
-        }))
-    }
-
-    async fn handle_alarm(
-        &self,
-        _invocation: ActorAlarmInvocation,
-        _database: Arc<dyn ActorDatabase>,
-    ) -> Result<ActorAlarmOutcome> {
-        Ok(ActorAlarmOutcome::Failed(ActorInvocationFailure {
-            code: "alarm_not_supported".into(),
-            message: "actor executor does not support alarms".into(),
         }))
     }
 
@@ -523,28 +498,6 @@ impl ActorExecutor for JsActorExecutor {
                 anyhow::bail!("actor executor rejected eviction ({code}): {message}")
             }
             reply => anyhow::bail!("unexpected actor eviction reply: {reply:?}"),
-        }
-    }
-
-    async fn handle_alarm(
-        &self,
-        invocation: ActorAlarmInvocation,
-        database: Arc<dyn ActorDatabase>,
-    ) -> Result<ActorAlarmOutcome> {
-        match self
-            .exchange(ExecutorCommand::Alarm(invocation), Some(database))
-            .await?
-        {
-            ExecutorReply::AlarmHandled { sequence, effects } => {
-                Ok(ActorAlarmOutcome::Handled { sequence, effects })
-            }
-            ExecutorReply::Failed { code, message } => {
-                Ok(ActorAlarmOutcome::Failed(ActorInvocationFailure {
-                    code,
-                    message,
-                }))
-            }
-            reply => anyhow::bail!("unexpected actor alarm reply: {reply:?}"),
         }
     }
 }
@@ -988,7 +941,6 @@ impl ExecutorCommand {
             Self::WebsocketEvent(invocation) => &invocation.actor,
             Self::Hydrate(hydration) => &hydration.actor,
             Self::Evict(eviction) => &eviction.actor,
-            Self::Alarm(alarm) => &alarm.actor,
         }
     }
 }
@@ -1119,7 +1071,6 @@ enum ExecutorCommand {
     Invoke(ActorMethodInvocation),
     WebsocketEvent(ActorSocketInvocation),
     Evict(ActorMethodEviction),
-    Alarm(ActorAlarmInvocation),
 }
 
 #[derive(Debug, Deserialize)]
@@ -1143,12 +1094,6 @@ enum ExecutorReply {
         message: String,
     },
     Evicted,
-    AlarmHandled {
-        #[serde(default)]
-        sequence: Option<u64>,
-        #[serde(default)]
-        effects: Vec<ActorSocketEffect>,
-    },
 }
 
 #[cfg(test)]

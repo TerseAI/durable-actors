@@ -136,11 +136,10 @@ export class HostDatabase {
 
     private alarm(): DatabaseResult {
         this.ensureAlarmTable()
-        const row = this.connection.prepare("SELECT timestamp, generation FROM __terse_alarm WHERE singleton = 1").get()
+        const row = this.connection.prepare("SELECT timestamp FROM __terse_alarm WHERE singleton = 1").get()
         return {
             type: "alarm",
-            timestamp_ms: row == null || row.timestamp === null ? null : Number(row.timestamp),
-            generation: row == null ? 0 : Number(row.generation)
+            timestamp_ms: row == null || row.timestamp === null ? null : Number(row.timestamp)
         }
     }
 
@@ -148,14 +147,14 @@ export class HostDatabase {
         this.ensureAlarmTable()
         this.connection
             .prepare(
-                "INSERT INTO __terse_alarm (singleton, timestamp, generation) VALUES (1, ?, 1) ON CONFLICT(singleton) DO UPDATE SET timestamp = excluded.timestamp, generation = __terse_alarm.generation + 1"
+                "INSERT INTO __terse_alarm (singleton, timestamp) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET timestamp = excluded.timestamp"
             )
             .run(timestampMs)
     }
 
     private ensureAlarmTable(): void {
         this.connection.exec(
-            "CREATE TABLE IF NOT EXISTS __terse_alarm (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), timestamp INTEGER, generation INTEGER NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS __terse_alarm (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), timestamp INTEGER)"
         )
     }
 

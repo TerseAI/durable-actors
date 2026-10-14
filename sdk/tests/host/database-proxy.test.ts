@@ -53,17 +53,17 @@ test("immediate mode asks the host to commit each write", async () => {
     host.close()
 })
 
-test("alarm mutations persist generations and roll back atomically", async () => {
+test("alarm mutations roll back atomically", async () => {
     const host = new HostDatabase()
     const database = new DatabaseProxy(host.call)
-    assert.deepEqual(database.getAlarmState(), { timestampMs: null, generation: 0 })
+    assert.deepEqual(database.getAlarmState(), { timestampMs: null })
     await runWithActorDatabase({}, "immediate", async () => database.setAlarm(1_000))
-    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000, generation: 1 })
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000 })
     await runWithActorDatabase({}, "atomic", async () => database.setAlarm(2_000))
     database.rollback()
-    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000, generation: 1 })
+    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000 })
     await runWithActorDatabase({}, "immediate", async () => database.deleteAlarm())
-    assert.deepEqual(database.getAlarmState(), { timestampMs: null, generation: 2 })
+    assert.deepEqual(database.getAlarmState(), { timestampMs: null })
     host.close()
 })
 

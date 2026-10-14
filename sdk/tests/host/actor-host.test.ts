@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
-import { createServer } from "node:net"
 import type { Socket } from "node:net"
+import { createServer } from "node:net"
 import { createInterface } from "node:readline"
 import { before, test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -178,6 +178,10 @@ test("the actor session carries only owned execution commands", async t => {
             message_id: 4,
             reply: { type: "evicted" }
         })
+
+        invoke(5, "onAlarm", [])
+        assertSessionReply(await next(), 5, { type: "invoked", result: null })
+        assert.deepEqual(database.fields(), { count: 6 })
 
         customerSocket.end()
         await session.waitUntilDisconnected()

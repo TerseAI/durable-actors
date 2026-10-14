@@ -28,28 +28,35 @@ const ALLOWED_PRAGMAS: [&str; 10] = [
     "user_version",
 ];
 
-pub(crate) struct SqliteDatabase {
-    engine: Arc<Mutex<Engine>>,
+pub(crate) struct AsyncSqliteDatabase {
+    database: Arc<Mutex<SqliteDatabase>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Executed {
     pub result: DatabaseResult,
     pub committed: bool,
+    pub alarm: AlarmStateUpdate,
 }
 
-impl SqliteDatabase {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AlarmStateUpdate {
+    Unchanged,
+    Current(Option<i64>),
+}
+
+impl AsyncSqliteDatabase {
     pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        let engine = tokio::task::spawn_blocking(move || Engine::open(path)).await??;
+        let database = tokio::task::spawn_blocking(move || SqliteDatabase::open(path)).await??;
         Ok(Self {
-            engine: Arc::new(Mutex::new(engine)),
+            database: Arc::new(Mutex::new(database)),
         })
     }
 
     pub(crate) async fn call(&self, call: DatabaseCall) -> Result<Executed> {
-        let engine = self.engine.clone();
+        let database = self.database.clone();
         tokio::task::spawn_blocking(move || {
-            engine
+            database
                 .lock()
                 .map_err(|_| anyhow!("actor database is poisoned"))?
                 .call(call)
@@ -61,17 +68,21 @@ impl SqliteDatabase {
 #[derive(Clone, Copy, PartialEq)]
 struct ChangeToken(u64, i64, i64);
 
-struct Engine {
+struct SqliteDatabase {
     connection: Connection,
     synced: ChangeToken,
 }
 
-impl Engine {
+impl SqliteDatabase {
     fn open(path: PathBuf) -> Result<Self> {
         let connection = Connection::open(path)?;
         connection.execute_batch(
             "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL",
+            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL;
+            CREATE TABLE IF NOT EXISTS __terse_alarm (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                timestamp INTEGER
+            )",
         )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         anyhow::ensure!(check == "ok", "invalid actor SQLite database");
@@ -81,6 +92,12 @@ impl Engine {
 
     fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
         let immediate = call.immediate();
+        let refresh_alarm = matches!(call, DatabaseCall::Rollback);
+        let alarm_update = match &call {
+            DatabaseCall::SetAlarm { timestamp_ms, .. } => Some(Some(*timestamp_ms)),
+            DatabaseCall::DeleteAlarm { .. } => Some(None),
+            _ => None,
+        };
         let before = token(&self.connection)?;
         let result = match call {
             DatabaseCall::Commit => {
@@ -88,17 +105,30 @@ impl Engine {
                 return Ok(Executed {
                     result: DatabaseResult::Done,
                     committed,
+                    alarm: AlarmStateUpdate::Unchanged,
                 });
             }
             DatabaseCall::Rollback => self.rollback()?,
             DatabaseCall::Fields => self.fields()?,
+            DatabaseCall::Alarm => self.alarm()?,
             call => {
                 self.begin()?;
                 self.write(call)?
             }
         };
         let committed = immediate && token(&self.connection)? != before && self.commit()?;
-        Ok(Executed { result, committed })
+        let alarm = match &result {
+            DatabaseResult::Alarm { timestamp_ms } => AlarmStateUpdate::Current(*timestamp_ms),
+            _ if refresh_alarm => AlarmStateUpdate::Current(self.alarm_timestamp()?),
+            _ => alarm_update
+                .map(AlarmStateUpdate::Current)
+                .unwrap_or(AlarmStateUpdate::Unchanged),
+        };
+        Ok(Executed {
+            result,
+            committed,
+            alarm,
+        })
     }
 
     fn write(&self, call: DatabaseCall) -> Result<DatabaseResult> {
@@ -108,10 +138,12 @@ impl Engine {
             DatabaseCall::PersistField { name, value, .. } => self.persist(&name, &value)?,
             DatabaseCall::DeleteField { name, .. } => self.delete(&name)?,
             DatabaseCall::ReplaceFields { fields } => self.replace(&fields)?,
-            DatabaseCall::Alarm => return self.alarm(),
             DatabaseCall::SetAlarm { timestamp_ms, .. } => self.update_alarm(Some(timestamp_ms))?,
             DatabaseCall::DeleteAlarm { .. } => self.update_alarm(None)?,
-            DatabaseCall::Fields | DatabaseCall::Commit | DatabaseCall::Rollback => {
+            DatabaseCall::Fields
+            | DatabaseCall::Alarm
+            | DatabaseCall::Commit
+            | DatabaseCall::Rollback => {
                 unreachable!("read and lifecycle calls are not writes")
             }
         }
@@ -212,42 +244,28 @@ impl Engine {
     }
 
     fn alarm(&self) -> Result<DatabaseResult> {
-        self.ensure_alarm_table()?;
-        let state = self
-            .connection
-            .query_row(
-                "SELECT timestamp, generation FROM __terse_alarm WHERE singleton = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()?;
-        let (timestamp_ms, generation) = state.unwrap_or((None, 0));
-        let generation = u64::try_from(generation).context("actor alarm generation is negative")?;
         Ok(DatabaseResult::Alarm {
-            timestamp_ms,
-            generation,
+            timestamp_ms: self.alarm_timestamp()?,
         })
     }
 
-    fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()> {
-        self.ensure_alarm_table()?;
-        self.connection.execute(
-            "INSERT INTO __terse_alarm (singleton, timestamp, generation) VALUES (1, ?, 1)
-            ON CONFLICT(singleton) DO UPDATE SET timestamp = excluded.timestamp,
-            generation = __terse_alarm.generation + 1",
-            [timestamp_ms],
-        )?;
-        Ok(())
+    fn alarm_timestamp(&self) -> Result<Option<i64>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT timestamp FROM __terse_alarm WHERE singleton = 1",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
     }
 
-    fn ensure_alarm_table(&self) -> Result<()> {
+    fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()> {
         self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS __terse_alarm (
-                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                timestamp INTEGER,
-                generation INTEGER NOT NULL
-            )",
-            [],
+            "INSERT INTO __terse_alarm (singleton, timestamp) VALUES (1, ?)
+            ON CONFLICT(singleton) DO UPDATE SET timestamp = excluded.timestamp",
+            [timestamp_ms],
         )?;
         Ok(())
     }

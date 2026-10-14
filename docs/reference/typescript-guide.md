@@ -195,6 +195,29 @@ socket.addEventListener("message", event => {
 })
 ```
 
+## Scheduling an alarm
+
+Each actor has one durable alarm. Setting it again replaces the previous timestamp. When the timestamp is due, the runtime wakes the actor and runs `onAlarm`.
+
+```typescript
+import { Actor, Persisted } from "durable-actors"
+
+export class Reminder extends Actor {
+    @Persisted private sent = false
+
+    async schedule(delayMs: number): Promise<void> {
+        this.alarm.set(Date.now() + delayMs)
+    }
+
+    async onAlarm(): Promise<void> {
+        this.alarm.delete()
+        this.sent = true
+    }
+}
+```
+
+`this.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `null`. An alarm callback must delete the alarm or replace it with its next timestamp.
+
 ## Interleaving calls
 
 An actor runs one call at a time, and a call holds the actor until it finishes, including across an `await`. `@Interleave` lets other calls run while that method awaits.

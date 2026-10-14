@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 mod session;
 mod sqlite;
-use session::DatabaseSession;
+use session::ResidentDatabase;
 
 #[async_trait]
 pub(crate) trait ActorStorage: Send + Sync {
@@ -105,7 +105,12 @@ impl HostDatabase {
         let version = Arc::new(AtomicU64::new(0));
         let stopped = CancellationToken::new();
         let service = DatabaseService {
-            session: DatabaseSession::new(endpoint, storage.clone(), writer, replication),
+            endpoint,
+            storage: storage.clone(),
+            state: writer,
+            replication,
+            cached_state: None,
+            activation: None,
             version: version.clone(),
             stopped: stopped.clone(),
             ready: BTreeMap::new(),
@@ -337,7 +342,12 @@ struct PendingCompletion {
 }
 
 struct DatabaseService {
-    session: DatabaseSession,
+    endpoint: HostEndpoint,
+    storage: Arc<dyn ActorStorage>,
+    state: Arc<dyn crate::state_transport::SnapshotWriter>,
+    replication: Arc<dyn Replicator>,
+    cached_state: Option<ResidentDatabase>,
+    activation: Option<ActorActivation>,
     version: Arc<AtomicU64>,
     stopped: CancellationToken,
     ready: BTreeMap<u64, PendingCompletion>,
@@ -357,7 +367,7 @@ impl DatabaseService {
                 return;
             }
             self.version
-                .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+                .store(self.state_version().unwrap_or(0), Ordering::Release);
         }
     }
 
@@ -370,25 +380,24 @@ impl DatabaseService {
             } => {
                 let mut timings = DatabaseTimings::default();
                 let result = self
-                    .session
                     .prepare_invocation(&scope.invocation, scope.owner_epoch, replay, &mut timings)
                     .await;
                 let _ = reply.send((result, timings));
             }
             Command::Call { scope, call, reply } => return self.call(scope, call, reply).await,
             Command::Activate { actor, reply } => {
-                let _ = reply.send(self.session.prepare_activation(&actor).await);
+                let _ = reply.send(self.prepare_activation(&actor).await);
             }
             Command::Hydrated {
                 activation,
                 result,
                 reply,
             } => {
-                let _ = reply.send(self.session.finish_activation(activation, result));
+                let _ = reply.send(self.finish_activation(activation, result));
             }
-            Command::Complete(completion) => return self.complete(completion).await,
+            Command::Complete(completion) => return self.complete_pending(completion).await,
             Command::Reset { reply } => {
-                self.session.reset();
+                self.reset();
                 let _ = reply.send(());
             }
         }
@@ -408,7 +417,6 @@ impl DatabaseService {
             return true;
         }
         let result = self
-            .session
             .database_call(
                 &scope.invocation,
                 scope.owner_epoch,
@@ -422,7 +430,7 @@ impl DatabaseService {
                     scope.committed.store(txid, Ordering::Release);
                 }
                 self.version
-                    .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+                    .store(self.state_version().unwrap_or(0), Ordering::Release);
                 let _ = reply.send(Ok(result));
                 true
             }
@@ -441,7 +449,7 @@ impl DatabaseService {
         }
     }
 
-    async fn complete(&mut self, completion: PendingCompletion) -> bool {
+    async fn complete_pending(&mut self, completion: PendingCompletion) -> bool {
         let Some(sequence) = completion.sequence else {
             self.publish(completion).await;
             return true;
@@ -468,7 +476,6 @@ impl DatabaseService {
         let mut origin = scope.origin.clone();
         origin.interleaved = completion.sequence.is_some();
         let result = self
-            .session
             .complete(
                 &scope.invocation,
                 scope.owner_epoch,
@@ -479,7 +486,7 @@ impl DatabaseService {
             .await;
         let success = result.is_ok();
         self.version
-            .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+            .store(self.state_version().unwrap_or(0), Ordering::Release);
         let _ = completion.reply.send(result);
         success
     }

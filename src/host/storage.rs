@@ -127,6 +127,18 @@ impl HostStorage {
             .context("activation lease missing")
     }
 
+    pub(super) async fn update_alarm(
+        &self,
+        state_version: u64,
+        timestamp_ms: Option<i64>,
+    ) -> Result<()> {
+        self.ensure_authority()?;
+        self.observer
+            .update_alarm(state_version, timestamp_ms)
+            .await?;
+        self.ensure_authority()
+    }
+
     pub(super) async fn finish(&self, deadline: tokio::time::Instant) -> Result<()> {
         let started = Instant::now();
         let actor = self.actor.as_ref().context("host actor identity missing")?;

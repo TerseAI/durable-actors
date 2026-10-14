@@ -1,19 +1,19 @@
 use super::*;
 use serde_json::json;
 
-async fn database() -> Result<(tempfile::TempDir, SqliteDatabase)> {
+async fn database() -> Result<(tempfile::TempDir, AsyncSqliteDatabase)> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("actor.sqlite");
     rusqlite::Connection::open(&path)?.execute_batch(
         "PRAGMA journal_mode=WAL;
         CREATE TABLE __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))",
     )?;
-    let database = SqliteDatabase::open(path).await?;
+    let database = AsyncSqliteDatabase::open(path).await?;
     Ok((directory, database))
 }
 
 async fn exec(
-    database: &SqliteDatabase,
+    database: &AsyncSqliteDatabase,
     sql: &str,
     bindings: Vec<SqlValue>,
     immediate: bool,
@@ -31,7 +31,7 @@ fn raw(value: serde_json::Value) -> Box<serde_json::value::RawValue> {
     serde_json::value::RawValue::from_string(value.to_string()).unwrap()
 }
 
-async fn fields(database: &SqliteDatabase) -> Result<serde_json::Value> {
+async fn fields(database: &AsyncSqliteDatabase) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(database.call(DatabaseCall::Fields).await?.result)?["fields"].clone())
 }
 
@@ -221,44 +221,50 @@ async fn rollback_discards_uncommitted_sql_and_fields() -> Result<()> {
 }
 
 #[tokio::test]
-async fn alarm_mutations_persist_generations_and_roll_back() -> Result<()> {
+async fn alarm_mutations_persist_and_roll_back() -> Result<()> {
     let (_directory, database) = database().await?;
     let initial = database.call(DatabaseCall::Alarm).await?;
     assert_eq!(
         serde_json::to_value(initial.result)?,
-        json!({"type": "alarm", "timestamp_ms": null, "generation": 0})
+        json!({"type": "alarm", "timestamp_ms": null})
     );
-    assert!(
-        database
-            .call(DatabaseCall::SetAlarm {
-                timestamp_ms: 1_000,
-                immediate: true,
-            })
-            .await?
-            .committed
-    );
-    database
+    let set = database
+        .call(DatabaseCall::SetAlarm {
+            timestamp_ms: 1_000,
+            immediate: true,
+        })
+        .await?;
+    assert!(set.committed);
+    assert!(matches!(set.alarm, AlarmStateUpdate::Current(Some(1_000))));
+    let replaced = database
         .call(DatabaseCall::SetAlarm {
             timestamp_ms: 2_000,
             immediate: false,
         })
         .await?;
-    database.call(DatabaseCall::Rollback).await?;
+    assert!(matches!(
+        replaced.alarm,
+        AlarmStateUpdate::Current(Some(2_000))
+    ));
+    let rolled_back = database.call(DatabaseCall::Rollback).await?;
+    assert!(matches!(
+        rolled_back.alarm,
+        AlarmStateUpdate::Current(Some(1_000))
+    ));
     let restored = database.call(DatabaseCall::Alarm).await?;
     assert_eq!(
         serde_json::to_value(restored.result)?,
-        json!({"type": "alarm", "timestamp_ms": 1_000, "generation": 1})
+        json!({"type": "alarm", "timestamp_ms": 1_000})
     );
-    assert!(
-        database
-            .call(DatabaseCall::DeleteAlarm { immediate: true })
-            .await?
-            .committed
-    );
+    let deleted = database
+        .call(DatabaseCall::DeleteAlarm { immediate: true })
+        .await?;
+    assert!(deleted.committed);
+    assert!(matches!(deleted.alarm, AlarmStateUpdate::Current(None)));
     let deleted = database.call(DatabaseCall::Alarm).await?;
     assert_eq!(
         serde_json::to_value(deleted.result)?,
-        json!({"type": "alarm", "timestamp_ms": null, "generation": 2})
+        json!({"type": "alarm", "timestamp_ms": null})
     );
     Ok(())
 }

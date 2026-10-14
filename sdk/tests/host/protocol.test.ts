@@ -26,7 +26,7 @@ test("parses database results", () => {
             }
         },
         { result: { type: "fields", fields: { count: 1 } } },
-        { result: { type: "alarm", timestamp_ms: 1_000, generation: 2 } },
+        { result: { type: "alarm", timestamp_ms: 1_000 } },
         { result: { type: "done" } },
         { error: "storage rejected write" }
     ]) {
@@ -46,20 +46,4 @@ test("rejects ambiguous or malformed database results", () => {
             ActorProtocolError
         )
     }
-})
-
-test("parses alarm commands", () => {
-    const message = {
-        type: "command",
-        message_id: 1,
-        command: {
-            type: "alarm",
-            actor: {
-                project_id: "default",
-                actor_name: "counter",
-                actor_id: "counter-1"
-            }
-        }
-    }
-    assert.deepEqual(parseActorSessionServerMessage(JSON.stringify(message)), message)
 })

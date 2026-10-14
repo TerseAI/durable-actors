@@ -5,6 +5,7 @@ use serde_json::Value;
 pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<StateSnapshot> {
     let legacy: LegacySnapshot = serde_json::from_slice(bytes)?;
     Ok(StateSnapshot {
+        alarm_timestamp_ms: None,
         attribution: legacy.attribution,
         state_version: legacy.state_version,
         owner_epoch: legacy.owner_epoch,

@@ -10,7 +10,6 @@ interface ActorAlarm {
 
 interface ActorAlarmState {
     readonly timestampMs: number | null
-    readonly generation: number
 }
 
 interface ActorAlarmStorage {

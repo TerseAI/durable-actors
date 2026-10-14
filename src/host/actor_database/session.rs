@@ -1,45 +1,21 @@
 use super::{
-    ActorActivation, ActorStorage, CommitOrigin, DatabaseReply, DatabaseTimings,
-    PreparedActivation, PreparedInvocation, sqlite::SqliteDatabase,
+    ActorActivation, CommitOrigin, DatabaseReply, DatabaseService, DatabaseTimings,
+    PreparedActivation, PreparedInvocation,
+    sqlite::{AlarmStateUpdate, AsyncSqliteDatabase},
 };
-use crate::host::HostEndpoint;
 use crate::{
     actor::{ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall},
-    litestream::{Replicator, storage::SqliteCapture},
+    litestream::storage::SqliteCapture,
     request_tracking::RequestStage,
     state_log::{SqliteSnapshot, StateSnapshot},
     storage::{SnapshotRef, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 use tracing::{info, warn};
 
-pub(super) struct DatabaseSession {
-    endpoint: HostEndpoint,
-    storage: Arc<dyn ActorStorage>,
-    state: Arc<dyn crate::state_transport::SnapshotWriter>,
-    replication: Arc<dyn Replicator>,
-    cached_state: Option<ResidentDatabase>,
-    activation: Option<ActorActivation>,
-}
-
-impl DatabaseSession {
-    pub(super) fn new(
-        endpoint: HostEndpoint,
-        storage: Arc<dyn ActorStorage>,
-        state: Arc<dyn crate::state_transport::SnapshotWriter>,
-        replication: Arc<dyn Replicator>,
-    ) -> Self {
-        Self {
-            endpoint,
-            storage,
-            state,
-            replication,
-            cached_state: None,
-            activation: None,
-        }
-    }
+impl DatabaseService {
     pub(super) fn state_version(&self) -> Option<u64> {
         self.cached_state
             .as_ref()
@@ -129,6 +105,9 @@ impl DatabaseSession {
             Ok(executed) => executed,
             Err(error) => return Ok(DatabaseReply::Rejected(error)),
         };
+        if let AlarmStateUpdate::Current(timestamp_ms) = executed.alarm {
+            cached.alarm_timestamp_ms = timestamp_ms;
+        }
         if executed.committed {
             cached.synced = self.replication.sync(&cached.sqlite.path()).await?;
         }
@@ -409,6 +388,7 @@ impl DatabaseSession {
         );
         timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
         let mut snapshot = StateSnapshot {
+            alarm_timestamp_ms: cached.alarm_timestamp_ms,
             state_version: next_version,
             owner_epoch,
             request_id: invocation.request_id.clone(),
@@ -555,8 +535,9 @@ impl DatabaseSession {
     }
 }
 
-struct ResidentDatabase {
-    database: SqliteDatabase,
+pub(super) struct ResidentDatabase {
+    database: AsyncSqliteDatabase,
+    alarm_timestamp_ms: Option<i64>,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
@@ -578,8 +559,14 @@ struct PendingStateCommit {
 
 impl ResidentDatabase {
     async fn open(owner_epoch: u64, sqlite: SqliteCapture) -> Result<Self> {
+        let database = AsyncSqliteDatabase::open(sqlite.path()).await?;
+        let alarm_timestamp_ms = match database.call(DatabaseCall::Alarm).await?.result {
+            crate::actor::DatabaseResult::Alarm { timestamp_ms } => timestamp_ms,
+            _ => unreachable!("alarm query returned another database result"),
+        };
         Ok(Self {
-            database: SqliteDatabase::open(sqlite.path()).await?,
+            database,
+            alarm_timestamp_ms,
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,

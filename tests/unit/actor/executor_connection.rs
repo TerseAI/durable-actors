@@ -391,26 +391,6 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
         }
     );
 
-    let alarm_outcome = executor
-        .handle_alarm(
-            ActorAlarmInvocation {
-                actor: ActorKey {
-                    project_id: "default".into(),
-                    actor_name: "counter".into(),
-                    actor_id: "counter-1".into(),
-                },
-            },
-            actor_database::unused(),
-        )
-        .await?;
-    assert_eq!(
-        alarm_outcome,
-        ActorAlarmOutcome::Handled {
-            sequence: None,
-            effects: vec![],
-        }
-    );
-
     shutdown.cancel();
     connection_task.await??;
     customer.await??;
@@ -714,32 +694,6 @@ async fn run_incrementing_customer(socket: PathBuf) -> Result<()> {
                     "connection_id": "socket-1",
                     "message": { "type": "text", "data": "ready" }
                 }]
-            }
-        }),
-    )
-    .await?;
-
-    let alarm = read_json_line(&mut reader).await?;
-    let alarm_id = alarm["message_id"].as_u64().context("alarm message ID")?;
-    assert_eq!(
-        alarm["command"],
-        json!({
-            "type": "alarm",
-            "actor": {
-                "project_id": "default",
-                "actor_name": "counter",
-                "actor_id": "counter-1"
-            }
-        })
-    );
-    write_json_line(
-        &mut writer,
-        &json!({
-            "type": "reply",
-            "message_id": alarm_id,
-            "reply": {
-                "type": "alarm_handled",
-                "effects": []
             }
         }),
     )

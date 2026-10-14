@@ -40,8 +40,7 @@ const databaseResultSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("fields"), fields: z.record(z.string(), jsonValueSchema) }),
     z.object({
         type: z.literal("alarm"),
-        timestamp_ms: z.number().int().safe().nullable(),
-        generation: z.number().int().nonnegative().safe()
+        timestamp_ms: z.number().int().safe().nullable()
     }),
     z.object({ type: z.literal("done") })
 ])
@@ -72,17 +71,11 @@ const hydrateCommandSchema = z.object({
     actor: actorIdentitySchema
 })
 
-const alarmCommandSchema = z.object({
-    type: z.literal("alarm"),
-    actor: actorIdentitySchema
-})
-
 const executorCommandSchema = z.discriminatedUnion("type", [
     invokeCommandSchema,
     websocketEventCommandSchema,
     evictCommandSchema,
-    hydrateCommandSchema,
-    alarmCommandSchema
+    hydrateCommandSchema
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
@@ -116,16 +109,14 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
 type HydrateCommand = z.infer<typeof hydrateCommandSchema>
 type InvokeCommand = z.infer<typeof invokeCommandSchema>
 type EvictCommand = z.infer<typeof evictCommandSchema>
-type AlarmCommand = z.infer<typeof alarmCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
-type ActorWorkerCommand = InvokeCommand | WebSocketEventCommand | HydrateCommand | AlarmCommand
+type ActorWorkerCommand = InvokeCommand | WebSocketEventCommand | HydrateCommand
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
     | InvokedReply
     | WebSocketHandledReply
     | FailedReply
     | EvictedReply
-    | AlarmHandledReply
     | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
     | { readonly type: "database_call"; readonly message_id: number; readonly call: DatabaseCall }
@@ -169,12 +160,6 @@ interface FailedReply {
 
 interface EvictedReply {
     readonly type: "evicted"
-}
-
-interface AlarmHandledReply {
-    readonly type: "alarm_handled"
-    readonly sequence?: number
-    readonly effects: readonly SocketEffect[]
 }
 
 interface ActorWorkerData {
@@ -225,7 +210,6 @@ export type {
     ActorWorkerCommand,
     ActorWorkerMessage,
     ActorWorkerRequest,
-    AlarmCommand,
     EvictCommand,
     HydrateCommand,
     InvokeCommand,
