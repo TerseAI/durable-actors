@@ -5,10 +5,8 @@ import type { DatabaseCall, DatabaseResult } from "./database.js"
 import type {
     ActorExecutorCommand,
     ActorExecutorReply,
-    ActorWorkerData,
-    HydrateCommand,
-    InvokeCommand,
-    WebSocketEventCommand
+    ActorWorkerCommand,
+    ActorWorkerData
 } from "./protocol.js"
 import type { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
@@ -54,7 +52,7 @@ interface ActorWorkerHandle {
     readonly state: ActorWorkerState
     ready(): Promise<readonly string[]>
     execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        command: ActorWorkerCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,

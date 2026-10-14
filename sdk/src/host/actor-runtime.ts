@@ -20,7 +20,13 @@ import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { DatabaseProxy } from "./database.js"
 import { DatabaseCommitError } from "./database.js"
 import { bindPersistedFields, isPersistedField } from "./persisted-fields.js"
-import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
+import type {
+    ActorExecutorReply,
+    ActorWorkerCommand,
+    AlarmCommand,
+    InvokeCommand,
+    WebSocketEventCommand
+} from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
@@ -46,10 +52,11 @@ class ActorRuntime {
         this.schemas = { ...definition.schemas, contract: definition.state.contract }
     }
 
-    async handle(command: InvokeCommand | WebSocketEventCommand | HydrateCommand): Promise<ActorExecutorReply> {
+    async handle(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
         if (command.type === "hydrate") return this.execute(command)
-        const method = command.type === "invoke" ? command.method : lifecycleMethod(command)
-        const interleave = this.definition.state.interleaveMethods?.includes(method) ?? false
+        const method =
+            command.type === "alarm" ? undefined : command.type === "invoke" ? command.method : lifecycleMethod(command)
+        const interleave = method !== undefined && (this.definition.state.interleaveMethods?.includes(method) ?? false)
         const operation = this.serial.then(() => this.execute(command))
         if (!interleave) this.serial = operation.catch(() => undefined)
         return operation
@@ -73,16 +80,16 @@ class ActorRuntime {
         })
     }
 
-    private async execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand
-    ): Promise<ActorExecutorReply> {
+    private async execute(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
         if (this.fatal !== undefined) return this.fatal
         try {
             if (command.type === "hydrate") {
                 const prepared = await this.prepare(command)
                 return prepared instanceof Actor ? { type: "hydrated" } : prepared
             }
-            return await (command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command))
+            if (command.type === "invoke") return await this.invoke(command)
+            if (command.type === "websocket_event") return await this.handleSocketEvent(command)
+            return await this.handleAlarm(command)
         } catch (error) {
             this.reset()
             const failure = failedReply("invalid_actor_state", errorMessage(error))
@@ -120,7 +127,7 @@ class ActorRuntime {
         const before = this.database.fields()
         try {
             this.admitNext(command.method)
-            const operation = await runWithActorSockets(
+            const execution = await runWithActorSockets(
                 instance,
                 this.connections,
                 async () =>
@@ -132,12 +139,14 @@ class ActorRuntime {
                 this.publish,
                 this.schemas
             )
-            const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
-            return await this.complete(async () => {
+            const result: JsonValue = execution.value === undefined ? null : cloneJson(execution.value, "actor result")
+
+            return await this.completeInOrder(async () => {
                 validateActorState(instance, this.definition.state)
                 const state = this.database.fields()
-                const effects = [...operation.effects, ...this.stateUpdates(before, state)]
+                const effects = [...execution.effects, ...this.stateUpdates(before, state)]
                 this.database.commit()
+
                 return {
                     type: "invoked",
                     result,
@@ -164,7 +173,7 @@ class ActorRuntime {
         const before = this.database.fields()
         try {
             this.admitNext(methodName)
-            const operation = await runWithActorSockets(
+            const execution = await runWithActorSockets(
                 instance,
                 this.connections,
                 async scope => {
@@ -184,11 +193,12 @@ class ActorRuntime {
                 this.schemas,
                 command.connections
             )
-            return await this.complete(async () => {
+
+            return await this.completeInOrder(async () => {
                 validateActorState(instance, this.definition.state)
                 const state = this.database.fields()
                 const effects = [
-                    ...operation.effects,
+                    ...execution.effects,
                     ...this.stateUpdates(
                         before,
                         state,
@@ -196,6 +206,7 @@ class ActorRuntime {
                     )
                 ]
                 this.database.commit()
+
                 return {
                     type: "websocket_handled",
                     ...this.completionOrder(),
@@ -212,13 +223,59 @@ class ActorRuntime {
         }
     }
 
+    private async handleAlarm(command: AlarmCommand): Promise<ActorExecutorReply> {
+        const prepared = await this.prepare(command)
+        if (!(prepared instanceof Actor)) return prepared
+        const instance = prepared
+        const method: unknown = Reflect.get(instance, "onAlarm")
+        const before = this.database.fields()
+        try {
+            const execution = await runWithActorSockets(
+                instance,
+                this.connections,
+                async () => {
+                    if (method === undefined) return
+                    if (typeof method !== "function")
+                        throw new ActorProtocolError(
+                            `actor lifecycle hook ${this.definition.actorName}.onAlarm is not callable`
+                        )
+                    await runWithActorDatabase(
+                        instance,
+                        "atomic",
+                        async () => Reflect.apply(method, instance, []) as Promise<unknown>
+                    )
+                },
+                this.publish,
+                this.schemas
+            )
+
+            return await this.completeInOrder(async () => {
+                validateActorState(instance, this.definition.state)
+                const state = this.database.fields()
+                const effects = [...execution.effects, ...this.stateUpdates(before, state)]
+                this.database.commit()
+
+                return {
+                    type: "alarm_handled",
+                    ...this.completionOrder(),
+                    effects
+                }
+            })
+        } catch (error) {
+            if (error instanceof DatabaseCommitError) {
+                this.fatal = failedReply("actor_database_failed", errorMessage(error))
+                return this.fatal
+            }
+            await this.restoreInstance(command.actor)
+            return failedReply("actor_alarm_failed", errorMessage(error))
+        }
+    }
+
     private admitNext(method: string): void {
         if (this.definition.state.interleaveMethods?.includes(method)) this.allowNextInvocation()
     }
 
-    private async prepare(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand
-    ): Promise<AnyActor | ActorExecutorReply> {
+    private async prepare(command: ActorWorkerCommand): Promise<AnyActor | ActorExecutorReply> {
         const identity = command.actor
         if (identity.actor_name !== this.definition.actorName) {
             return failedReply(
@@ -236,7 +293,7 @@ class ActorRuntime {
         return await this.createInstance(identity, this.database.fields())
     }
 
-    private complete(operation: () => Promise<ActorExecutorReply>): Promise<ActorExecutorReply> {
+    private completeInOrder(operation: () => Promise<ActorExecutorReply>): Promise<ActorExecutorReply> {
         const completed = this.completion.then(async () => {
             if (this.fatal !== undefined) return this.fatal
             try {
@@ -308,20 +365,6 @@ function socketEffects(
             )
         }
     ]
-}
-
-function publicState(state: JsonObject, schema: ActorSchema): JsonObject {
-    return Object.fromEntries(
-        schema.fields
-            .filter(
-                field =>
-                    field.persistence === Persistence.Persisted &&
-                    !field.private &&
-                    !field.visibility &&
-                    Object.hasOwn(state, field.name)
-            )
-            .map(field => [field.name, state[field.name]])
-    )
 }
 
 function stateUpdates(before: JsonObject, after: JsonObject, schema: ActorSchema, except?: string): SocketEffect[] {

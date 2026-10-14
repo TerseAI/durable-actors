@@ -47,3 +47,19 @@ test("rejects ambiguous or malformed database results", () => {
         )
     }
 })
+
+test("parses alarm commands", () => {
+    const message = {
+        type: "command",
+        message_id: 1,
+        command: {
+            type: "alarm",
+            actor: {
+                project_id: "default",
+                actor_name: "counter",
+                actor_id: "counter-1"
+            }
+        }
+    }
+    assert.deepEqual(parseActorSessionServerMessage(JSON.stringify(message)), message)
+})

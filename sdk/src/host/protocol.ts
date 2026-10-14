@@ -72,11 +72,17 @@ const hydrateCommandSchema = z.object({
     actor: actorIdentitySchema
 })
 
+const alarmCommandSchema = z.object({
+    type: z.literal("alarm"),
+    actor: actorIdentitySchema
+})
+
 const executorCommandSchema = z.discriminatedUnion("type", [
     invokeCommandSchema,
     websocketEventCommandSchema,
     evictCommandSchema,
-    hydrateCommandSchema
+    hydrateCommandSchema,
+    alarmCommandSchema
 ])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
@@ -110,10 +116,17 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
 type HydrateCommand = z.infer<typeof hydrateCommandSchema>
 type InvokeCommand = z.infer<typeof invokeCommandSchema>
 type EvictCommand = z.infer<typeof evictCommandSchema>
+type AlarmCommand = z.infer<typeof alarmCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
+type ActorWorkerCommand = InvokeCommand | WebSocketEventCommand | HydrateCommand | AlarmCommand
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
-    InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
+    | InvokedReply
+    | WebSocketHandledReply
+    | FailedReply
+    | EvictedReply
+    | AlarmHandledReply
+    | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
     | { readonly type: "database_call"; readonly message_id: number; readonly call: DatabaseCall }
     | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }
@@ -158,6 +171,12 @@ interface EvictedReply {
     readonly type: "evicted"
 }
 
+interface AlarmHandledReply {
+    readonly type: "alarm_handled"
+    readonly sequence?: number
+    readonly effects: readonly SocketEffect[]
+}
+
 interface ActorWorkerData {
     readonly moduleUrl: string
     readonly environment?: Readonly<Record<string, string>>
@@ -168,7 +187,7 @@ type ActorWorkerRequest =
     | {
           readonly type: "execute"
           readonly messageId: number
-          readonly command: InvokeCommand | WebSocketEventCommand | HydrateCommand
+          readonly command: ActorWorkerCommand
       }
     | { readonly type: "socket_effects_published"; readonly messageId: number; readonly error?: string }
     | {
@@ -203,8 +222,10 @@ export type {
     ActorSessionClientMessage,
     ActorSessionServerMessage,
     ActorWorkerData,
+    ActorWorkerCommand,
     ActorWorkerMessage,
     ActorWorkerRequest,
+    AlarmCommand,
     EvictCommand,
     HydrateCommand,
     InvokeCommand,

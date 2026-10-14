@@ -2,25 +2,22 @@ import { Worker } from "node:worker_threads"
 
 import type { ActorIdentity } from "../actor/identity.js"
 import { actorKey } from "../actor/identity.js"
-import type { SocketQuery } from "../actor/socketProtocol.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { SocketEffect, SocketQuery } from "../actor/socketProtocol.js"
 import { errorMessage } from "../errors.js"
 
-import { completeDatabaseCall } from "./database-bridge.js"
 import type { DatabaseRequest } from "./database-bridge.js"
+import { completeDatabaseCall } from "./database-bridge.js"
 import type { DatabaseCall } from "./database.js"
-import { failedReply } from "./protocol.js"
 import type {
     ActorExecutorCommand,
     ActorExecutorReply,
+    ActorWorkerCommand,
     ActorWorkerData,
     ActorWorkerMessage,
     ActorWorkerRequest,
-    EvictCommand,
-    HydrateCommand,
-    InvokeCommand,
-    WebSocketEventCommand
+    EvictCommand
 } from "./protocol.js"
+import { failedReply } from "./protocol.js"
 import type {
     ActorWorkerFactory,
     ActorWorkerHandle,
@@ -153,7 +150,7 @@ class ActorWorker implements ActorWorkerHandle {
     }
 
     async execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        command: ActorWorkerCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
@@ -302,6 +299,7 @@ class ActorWorkerSupervisor {
             case "hydrate":
             case "invoke":
             case "websocket_event":
+            case "alarm":
                 try {
                     if (this.actorNames === undefined) await this.ready()
                     return await this.execute(command, allowNextInvocation, database, publish, connections)
@@ -353,7 +351,7 @@ class ActorWorkerSupervisor {
     }
 
     private execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        command: ActorWorkerCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
@@ -381,7 +379,10 @@ class ActorWorkerSupervisor {
         }
         const base = actor.sequenceBase
         return actor.execute(command, allowNextInvocation, database, publish, connections).then(reply => {
-            if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
+            if (
+                (reply.type === "invoked" || reply.type === "websocket_handled" || reply.type === "alarm_handled") &&
+                reply.sequence !== undefined
+            ) {
                 const sequence = base + reply.sequence
                 this.lastSequence = Math.max(this.lastSequence, sequence)
                 return { ...reply, sequence }
@@ -421,7 +422,7 @@ class ResidentActorWorker {
     }
 
     async execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        command: ActorWorkerCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
@@ -443,9 +444,13 @@ class ResidentActorWorker {
             return failedReply("actor_worker_terminated", "resident actor was terminated during invocation")
         if (
             reply.type === "failed" &&
-            !["actor_method_failed", "actor_socket_failed", "method_not_found", "method_not_callable"].includes(
-                reply.code
-            )
+            ![
+                "actor_method_failed",
+                "actor_socket_failed",
+                "actor_alarm_failed",
+                "method_not_found",
+                "method_not_callable"
+            ].includes(reply.code)
         ) {
             worker.terminate("actor invocation failed")
             this.worker = undefined
