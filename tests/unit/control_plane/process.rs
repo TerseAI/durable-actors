@@ -65,9 +65,15 @@ fn alarm_poll_interval_is_configurable_and_positive() -> Result<()> {
     let parse = |values: &HashMap<&str, &str>| {
         ControlPlaneProcessConfig::from_lookup(|name| values.get(name).map(|value| (*value).into()))
     };
-    assert_eq!(parse(&values)?.alarm_poll_interval, Duration::from_millis(100));
+    assert_eq!(
+        parse(&values)?.alarm_poll_interval,
+        Duration::from_millis(100)
+    );
     values.insert("DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS", "250");
-    assert_eq!(parse(&values)?.alarm_poll_interval, Duration::from_millis(250));
+    assert_eq!(
+        parse(&values)?.alarm_poll_interval,
+        Duration::from_millis(250)
+    );
     for invalid in ["0", "-1", "1.5", "not-a-number"] {
         values.insert("DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS", invalid);
         assert!(parse(&values).is_err());
