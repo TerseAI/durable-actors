@@ -63,16 +63,16 @@ impl ControlPlaneClient {
         }
     }
 
-    pub(crate) async fn update_alarm(
-        &self,
-        state_version: u64,
-        timestamp_ms: Option<i64>,
-    ) -> Result<()> {
+    pub(crate) async fn get_alarm(&self) -> Result<Option<i64>> {
+        match self.execute(ControlPlaneCommand::GetAlarm).await? {
+            ControlPlaneCommandReply::Alarm { timestamp_ms } => Ok(timestamp_ms),
+            _ => anyhow::bail!("unexpected alarm response"),
+        }
+    }
+
+    pub(crate) async fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()> {
         match self
-            .execute(ControlPlaneCommand::UpdateAlarm {
-                state_version,
-                timestamp_ms,
-            })
+            .execute(ControlPlaneCommand::UpdateAlarm { timestamp_ms })
             .await?
         {
             ControlPlaneCommandReply::Unit => Ok(()),

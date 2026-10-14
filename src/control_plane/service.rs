@@ -477,14 +477,14 @@ impl ControlPlaneService {
                     .await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
-            ControlPlaneCommand::UpdateAlarm {
-                state_version,
-                timestamp_ms,
-            } => {
+            ControlPlaneCommand::GetAlarm => {
                 self.require_active_host(principal).await?;
-                self.alarms
-                    .update(&principal.actor, state_version, timestamp_ms)
-                    .await?;
+                let timestamp_ms = self.alarms.get(&principal.actor).await?;
+                Ok(ControlPlaneCommandReply::Alarm { timestamp_ms })
+            }
+            ControlPlaneCommand::UpdateAlarm { timestamp_ms } => {
+                self.require_active_host(principal).await?;
+                self.alarms.update(&principal.actor, timestamp_ms).await?;
                 Ok(ControlPlaneCommandReply::Unit)
             }
             ControlPlaneCommand::InventoryChanged => {

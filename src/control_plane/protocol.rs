@@ -12,8 +12,8 @@ pub(crate) enum ControlPlaneCommand {
     },
     RefreshStorageAccess,
     InventoryChanged,
+    GetAlarm,
     UpdateAlarm {
-        state_version: u64,
         timestamp_ms: Option<i64>,
     },
     RequestTraces {
@@ -31,6 +31,9 @@ pub(crate) enum ControlPlaneCommandReply {
     StorageAccess {
         token: Option<crate::bucket::access::StorageToken>,
         replacement_token: String,
+    },
+    Alarm {
+        timestamp_ms: Option<i64>,
     },
     Unit,
 }

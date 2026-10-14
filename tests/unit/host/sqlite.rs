@@ -221,55 +221,6 @@ async fn rollback_discards_uncommitted_sql_and_fields() -> Result<()> {
 }
 
 #[tokio::test]
-async fn alarm_mutations_persist_and_roll_back() -> Result<()> {
-    let (_directory, database) = database().await?;
-    let initial = database.call(DatabaseCall::Alarm).await?;
-    assert_eq!(
-        serde_json::to_value(initial.result)?,
-        json!({"type": "alarm", "timestamp_ms": null})
-    );
-    let set = database
-        .call(DatabaseCall::SetAlarm {
-            timestamp_ms: 1_000,
-            immediate: true,
-        })
-        .await?;
-    assert!(set.committed);
-    assert!(matches!(set.alarm, AlarmStateUpdate::Current(Some(1_000))));
-    let replaced = database
-        .call(DatabaseCall::SetAlarm {
-            timestamp_ms: 2_000,
-            immediate: false,
-        })
-        .await?;
-    assert!(matches!(
-        replaced.alarm,
-        AlarmStateUpdate::Current(Some(2_000))
-    ));
-    let rolled_back = database.call(DatabaseCall::Rollback).await?;
-    assert!(matches!(
-        rolled_back.alarm,
-        AlarmStateUpdate::Current(Some(1_000))
-    ));
-    let restored = database.call(DatabaseCall::Alarm).await?;
-    assert_eq!(
-        serde_json::to_value(restored.result)?,
-        json!({"type": "alarm", "timestamp_ms": 1_000})
-    );
-    let deleted = database
-        .call(DatabaseCall::DeleteAlarm { immediate: true })
-        .await?;
-    assert!(deleted.committed);
-    assert!(matches!(deleted.alarm, AlarmStateUpdate::Current(None)));
-    let deleted = database.call(DatabaseCall::Alarm).await?;
-    assert_eq!(
-        serde_json::to_value(deleted.result)?,
-        json!({"type": "alarm", "timestamp_ms": null})
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn fields_preserve_json_text_and_replacement_removes_missing_names() -> Result<()> {
     let (_directory, database) = database().await?;
     database

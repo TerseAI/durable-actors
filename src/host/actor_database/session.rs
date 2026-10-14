@@ -1,10 +1,11 @@
 use super::{
     ActorActivation, CommitOrigin, DatabaseReply, DatabaseService, DatabaseTimings,
-    PreparedActivation, PreparedInvocation,
-    sqlite::{AlarmStateUpdate, AsyncSqliteDatabase},
+    PreparedActivation, PreparedInvocation, sqlite::AsyncSqliteDatabase,
 };
 use crate::{
-    actor::{ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall},
+    actor::{
+        ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall, DatabaseResult,
+    },
     litestream::storage::SqliteCapture,
     request_tracking::RequestStage,
     state_log::{SqliteSnapshot, StateSnapshot},
@@ -99,15 +100,36 @@ impl DatabaseService {
             cached.owner_epoch == owner_epoch,
             "database call ownership changed"
         );
+        match &call {
+            DatabaseCall::Alarm => {
+                let timestamp_ms = self.storage.get_alarm().await?;
+                return Ok(DatabaseReply::Executed {
+                    result: DatabaseResult::Alarm { timestamp_ms },
+                    committed: None,
+                });
+            }
+            DatabaseCall::SetAlarm { timestamp_ms, .. } => {
+                self.storage.update_alarm(Some(*timestamp_ms)).await?;
+                return Ok(DatabaseReply::Executed {
+                    result: DatabaseResult::Done,
+                    committed: None,
+                });
+            }
+            DatabaseCall::DeleteAlarm { .. } => {
+                self.storage.update_alarm(None).await?;
+                return Ok(DatabaseReply::Executed {
+                    result: DatabaseResult::Done,
+                    committed: None,
+                });
+            }
+            _ => {}
+        }
         let immediate = call.immediate();
         let commit = matches!(call, DatabaseCall::Commit);
         let executed = match cached.database.call(call).await {
             Ok(executed) => executed,
             Err(error) => return Ok(DatabaseReply::Rejected(error)),
         };
-        if let AlarmStateUpdate::Current(timestamp_ms) = executed.alarm {
-            cached.alarm_timestamp_ms = timestamp_ms;
-        }
         if executed.committed {
             cached.synced = self.replication.sync(&cached.sqlite.path()).await?;
         }
@@ -388,7 +410,6 @@ impl DatabaseService {
         );
         timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
         let mut snapshot = StateSnapshot {
-            alarm_timestamp_ms: cached.alarm_timestamp_ms,
             state_version: next_version,
             owner_epoch,
             request_id: invocation.request_id.clone(),
@@ -537,7 +558,6 @@ impl DatabaseService {
 
 pub(super) struct ResidentDatabase {
     database: AsyncSqliteDatabase,
-    alarm_timestamp_ms: Option<i64>,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
@@ -560,13 +580,8 @@ struct PendingStateCommit {
 impl ResidentDatabase {
     async fn open(owner_epoch: u64, sqlite: SqliteCapture) -> Result<Self> {
         let database = AsyncSqliteDatabase::open(sqlite.path()).await?;
-        let alarm_timestamp_ms = match database.call(DatabaseCall::Alarm).await?.result {
-            crate::actor::DatabaseResult::Alarm { timestamp_ms } => timestamp_ms,
-            _ => unreachable!("alarm query returned another database result"),
-        };
         Ok(Self {
             database,
-            alarm_timestamp_ms,
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,

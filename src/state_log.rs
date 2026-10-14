@@ -10,8 +10,6 @@ mod legacy;
 pub struct StateSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<StateAttribution>,
-    #[serde(default)]
-    pub alarm_timestamp_ms: Option<i64>,
     pub state_version: u64,
     pub owner_epoch: u64,
     pub request_id: String,
@@ -88,7 +86,6 @@ impl StateSnapshot {
     ) -> Result<Self> {
         let snapshot = Self {
             attribution: None,
-            alarm_timestamp_ms: None,
             state_version,
             owner_epoch,
             request_id,

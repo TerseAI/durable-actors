@@ -1,7 +1,7 @@
 use crate::actor::{DatabaseCall, DatabaseResult, SqlValue};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{
-    Connection, OptionalExtension, ToSql,
+    Connection, ToSql,
     hooks::{AuthAction, AuthContext, Authorization},
     types::{ToSqlOutput, ValueRef},
 };
@@ -36,13 +36,6 @@ pub(crate) struct AsyncSqliteDatabase {
 pub(crate) struct Executed {
     pub result: DatabaseResult,
     pub committed: bool,
-    pub alarm: AlarmStateUpdate,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum AlarmStateUpdate {
-    Unchanged,
-    Current(Option<i64>),
 }
 
 impl AsyncSqliteDatabase {
@@ -78,11 +71,7 @@ impl SqliteDatabase {
         let connection = Connection::open(path)?;
         connection.execute_batch(
             "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL;
-            CREATE TABLE IF NOT EXISTS __terse_alarm (
-                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                timestamp INTEGER
-            )",
+            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL;",
         )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         anyhow::ensure!(check == "ok", "invalid actor SQLite database");
@@ -92,12 +81,6 @@ impl SqliteDatabase {
 
     fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
         let immediate = call.immediate();
-        let refresh_alarm = matches!(call, DatabaseCall::Rollback);
-        let alarm_update = match &call {
-            DatabaseCall::SetAlarm { timestamp_ms, .. } => Some(Some(*timestamp_ms)),
-            DatabaseCall::DeleteAlarm { .. } => Some(None),
-            _ => None,
-        };
         let before = token(&self.connection)?;
         let result = match call {
             DatabaseCall::Commit => {
@@ -105,30 +88,22 @@ impl SqliteDatabase {
                 return Ok(Executed {
                     result: DatabaseResult::Done,
                     committed,
-                    alarm: AlarmStateUpdate::Unchanged,
                 });
             }
             DatabaseCall::Rollback => self.rollback()?,
             DatabaseCall::Fields => self.fields()?,
-            DatabaseCall::Alarm => self.alarm()?,
+            DatabaseCall::Alarm
+            | DatabaseCall::SetAlarm { .. }
+            | DatabaseCall::DeleteAlarm { .. } => {
+                unreachable!("alarm calls are handled by the control plane")
+            }
             call => {
                 self.begin()?;
                 self.write(call)?
             }
         };
         let committed = immediate && token(&self.connection)? != before && self.commit()?;
-        let alarm = match &result {
-            DatabaseResult::Alarm { timestamp_ms } => AlarmStateUpdate::Current(*timestamp_ms),
-            _ if refresh_alarm => AlarmStateUpdate::Current(self.alarm_timestamp()?),
-            _ => alarm_update
-                .map(AlarmStateUpdate::Current)
-                .unwrap_or(AlarmStateUpdate::Unchanged),
-        };
-        Ok(Executed {
-            result,
-            committed,
-            alarm,
-        })
+        Ok(Executed { result, committed })
     }
 
     fn write(&self, call: DatabaseCall) -> Result<DatabaseResult> {
@@ -138,10 +113,10 @@ impl SqliteDatabase {
             DatabaseCall::PersistField { name, value, .. } => self.persist(&name, &value)?,
             DatabaseCall::DeleteField { name, .. } => self.delete(&name)?,
             DatabaseCall::ReplaceFields { fields } => self.replace(&fields)?,
-            DatabaseCall::SetAlarm { timestamp_ms, .. } => self.update_alarm(Some(timestamp_ms))?,
-            DatabaseCall::DeleteAlarm { .. } => self.update_alarm(None)?,
             DatabaseCall::Fields
             | DatabaseCall::Alarm
+            | DatabaseCall::SetAlarm { .. }
+            | DatabaseCall::DeleteAlarm { .. }
             | DatabaseCall::Commit
             | DatabaseCall::Rollback => {
                 unreachable!("read and lifecycle calls are not writes")
@@ -239,33 +214,6 @@ impl SqliteDatabase {
         self.connection.execute(
             "DELETE FROM __terse_fields WHERE name NOT IN (SELECT value FROM json_each(?))",
             [serde_json::to_string(&fields.keys().collect::<Vec<_>>())?],
-        )?;
-        Ok(())
-    }
-
-    fn alarm(&self) -> Result<DatabaseResult> {
-        Ok(DatabaseResult::Alarm {
-            timestamp_ms: self.alarm_timestamp()?,
-        })
-    }
-
-    fn alarm_timestamp(&self) -> Result<Option<i64>> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT timestamp FROM __terse_alarm WHERE singleton = 1",
-                [],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .optional()?
-            .flatten())
-    }
-
-    fn update_alarm(&self, timestamp_ms: Option<i64>) -> Result<()> {
-        self.connection.execute(
-            "INSERT INTO __terse_alarm (singleton, timestamp) VALUES (1, ?)
-            ON CONFLICT(singleton) DO UPDATE SET timestamp = excluded.timestamp",
-            [timestamp_ms],
         )?;
         Ok(())
     }

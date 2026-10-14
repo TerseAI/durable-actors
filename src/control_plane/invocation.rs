@@ -31,7 +31,7 @@ pub(super) async fn invoke_alarm(
     };
     let invocation = ActorInvocation {
         actor: alarm.actor.clone(),
-        request_id: format!("alarm-{}", alarm.state_version),
+        request_id: format!("alarm-{}", alarm.revision),
         method: "onAlarm".into(),
         args: vec![],
     };

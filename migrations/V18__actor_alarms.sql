@@ -2,7 +2,7 @@ CREATE TABLE durable_actors_alarm (
     project_id TEXT NOT NULL,
     actor_name TEXT NOT NULL,
     actor_id TEXT NOT NULL,
-    state_version BIGINT NOT NULL,
+    revision BIGINT NOT NULL,
     timestamp_ms BIGINT,
     PRIMARY KEY (project_id, actor_name, actor_id)
 );
