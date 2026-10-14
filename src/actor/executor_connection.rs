@@ -43,6 +43,12 @@ pub struct ActorMethodEviction {
     pub actor: ActorKey,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ActorHydration {
+    pub actor: ActorKey,
+    pub request_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActorSocketConnection {
     pub id: String,
@@ -175,16 +181,12 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-<<<<<<< HEAD
     async fn hydrate(
         &self,
         _actor: ActorKey,
         _request_id: String,
         _database: Arc<dyn ActorDatabase>,
     ) -> Result<()> {
-=======
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
         Ok(())
     }
 
@@ -391,7 +393,6 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-<<<<<<< HEAD
     async fn hydrate(
         &self,
         actor: ActorKey,
@@ -402,13 +403,6 @@ impl ActorExecutor for JsActorExecutor {
             .exchange(
                 ExecutorCommand::Hydrate(ActorHydration { actor, request_id }),
                 Some(database),
-=======
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
-        match self
-            .exchange(
-                ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
-                state,
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
             )
             .await?
         {
@@ -763,43 +757,9 @@ impl ExecutorDriver {
     fn call_database(&mut self, message_id: u64, call: DatabaseCall) -> Result<()> {
         let database = self
             .pending
-<<<<<<< HEAD
             .get(&message_id)
             .context("database call has no active invocation")?
             .database
-=======
-            .get_mut(&message_id)
-            .context("SQLite persistence has no active invocation")?;
-        let request_id = match &pending.command {
-            ExecutorCommand::Invoke(invocation) => &invocation.request_id,
-            ExecutorCommand::WebsocketEvent(invocation) => &invocation.request_id,
-            _ => anyhow::bail!("SQLite persistence requires an invocation"),
-        };
-        ensure!(
-            !pending.persistence_failed && !self.persistence_ids.contains(&message_id),
-            "SQLite persistence is failed or already pending"
-        );
-        ensure!(
-            pending
-                .last_persistence_id
-                .is_none_or(|previous| commit_id > previous),
-            "SQLite persistence request ID repeated"
-        );
-        let path = pending
-            .state
-            .as_ref()
-            .and_then(|state| state.sqlite.path.as_ref())
-            .context("invocation has no registered SQLite database")?;
-        let write = SqliteWrite {
-            request_id: request_id.clone(),
-            actor: pending.command.actor().clone(),
-            path: path.into(),
-            mode,
-            txid,
-        };
-        let persistence = self
-            .persistence
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
             .clone()
             .context("command has no actor database")?;
         ensure!(
@@ -991,7 +951,8 @@ impl ExecutorCommand {
         match self {
             Self::Invoke(invocation) => &invocation.actor,
             Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Evict(eviction) | Self::Hydrate(eviction) => &eviction.actor,
+            Self::Hydrate(hydration) => &hydration.actor,
+            Self::Evict(eviction) => &eviction.actor,
         }
     }
 }
@@ -1118,7 +1079,7 @@ enum ActorExecutorClientMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorCommand {
-    Hydrate(ActorMethodEviction),
+    Hydrate(ActorHydration),
     Invoke(ActorMethodInvocation),
     WebsocketEvent(ActorSocketInvocation),
     Evict(ActorMethodEviction),

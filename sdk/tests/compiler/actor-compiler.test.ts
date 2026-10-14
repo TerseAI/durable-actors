@@ -8,66 +8,6 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
-<<<<<<< HEAD
-function field(
-    name: string,
-    persistence: Persistence,
-    options: Partial<{
-        private: boolean
-        visibility: "private" | "protected"
-        emittable: boolean
-        resource: boolean
-    }> = {}
-) {
-    return { name, persistence, private: false, visibility: undefined, emittable: false, resource: false, ...options }
-}
-
-test("atomic methods can update ordinary persisted properties", () => {
-    const result = analyze(`import { Actor, Atomic, Persisted } from "./sdk.js"
-        export class Counter extends Actor {
-            @Persisted count = 0
-            @Atomic async increment() { this.count += 1 }
-        }`)
-    assert.deepEqual(result.diagnostics, [])
-    assert.equal(result.schemas[0]?.fields[0]?.persistence, Persistence.Persisted)
-    assert.deepEqual(result.schemas[0]?.atomicMethods, ["increment"])
-})
-
-test("private actor resources infer ephemeral fields, including subclasses and aliases", () => {
-    const result = analyze(`import { Actor, ActorResource as Resource } from "./sdk.js"
-        class Agent extends Resource {}
-        class WrappedAgent extends Agent {}
-        export class Room extends Actor {
-            private agent = new WrappedAgent()
-            #other = new Agent()
-            async prompt() { return "hello" }
-        }`)
-    assert.deepEqual(result.diagnostics, [])
-    assert.deepEqual(result.schemas, [
-        {
-            actorName: "Room",
-            fields: [
-                field("agent", Persistence.Ephemeral, { visibility: "private", resource: true }),
-                field("#other", Persistence.Ephemeral, { private: true, resource: true })
-            ]
-        }
-    ])
-})
-
-test("ordinary dependencies and public resource fields still require persistence annotations", () => {
-    for (const field of ["agent = new Resource()", "private agent = new Other()", "private count = 0"]) {
-        const result = analyze(`import { Actor, ActorResource as Resource } from "./sdk.js"
-            class Other {}
-            export class Room extends Actor { ${field} }`)
-        assert.ok(
-            result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("@Persisted or @Ephemeral")),
-            field
-        )
-    }
-})
-
-=======
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
 test("rejects invalid or dynamic compute overrides", () => {
     for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
         const result = analyze(`import { Actor, Compute } from "./sdk.js"

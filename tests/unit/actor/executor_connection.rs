@@ -32,6 +32,16 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         );
         write_json_line(
             &mut socket,
+            &json!({"type":"database_call","message_id":hydrate["message_id"],
+                "call":{"op":"persist_field","name":"resumed","value":true,"immediate":true}}),
+        )
+        .await?;
+        let persisted = read_json_line(&mut socket).await?;
+        assert_eq!(persisted["type"], "database_result");
+        assert_eq!(persisted["message_id"], hydrate["message_id"]);
+        assert_eq!(persisted["result"], json!({"type":"done"}));
+        write_json_line(
+            &mut socket,
             &json!({"type":"reply","message_id":hydrate["message_id"],"reply":{"type":"hydrated"}}),
         )
         .await?;
@@ -45,6 +55,12 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
         )
         .await?;
     connection.mark_ready(None, None).await?;
+    let (requested, mut requests) = mpsc::unbounded_channel();
+    let database = Arc::new(actor_database::DelayedDatabase {
+        requested,
+        release: Arc::new(tokio::sync::Semaphore::new(1)),
+        fail: false,
+    });
     connection
         .executor()
         .hydrate(
@@ -54,9 +70,14 @@ async fn generic_executor_connects_before_code_and_hydrates_after_assignment() -
                 actor_id: "one".into(),
             },
             "activate".into(),
-            actor_database::unused(),
+            database,
         )
         .await?;
+    assert!(matches!(
+        requests.try_recv()?,
+        DatabaseCall::PersistField { name, value, immediate: true }
+            if name == "resumed" && value.get() == "true"
+    ));
     peer.await??;
     Ok(())
 }

@@ -3,24 +3,23 @@ import { isDeepStrictEqual } from "node:util"
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
 import { constructWithActorDatabase, runWithActorDatabase } from "../actor/database.js"
-import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
-import { ActorResource } from "../actor/resource.js"
-import { Persistence } from "../actor/schema.js"
+import { actorKey } from "../actor/identity.js"
 import type { ActorSchema } from "../actor/schema.js"
+import { Persistence } from "../actor/schema.js"
 import type { ActorSocketScope } from "../actor/socket.js"
 import { decodeSocketMessage, runWithActorSockets } from "../actor/socket.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import type { ActorSchemas } from "../actor/socketValidation.js"
 import { ActorDefinitionError, ActorProtocolError, ActorSerializationError, errorMessage } from "../errors.js"
-import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
+import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 
-import { DatabaseCommitError } from "./database.js"
 import type { DatabaseProxy } from "./database.js"
+import { DatabaseCommitError } from "./database.js"
 import { bindPersistedFields, isPersistedField } from "./persisted-fields.js"
-import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
+import { failedReply } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 
 class ActorRuntime {
@@ -54,22 +53,6 @@ class ActorRuntime {
         return operation
     }
 
-<<<<<<< HEAD
-    async shutdown(): Promise<void> {
-        if (this.instance === undefined) return
-
-        const fields = this.definition.state.fields.filter(field => field.resource).reverse()
-
-        await runWithActorDatabase(this.instance, "immediate", async () => {
-            for (const field of fields) {
-                const resource = Reflect.get(this.instance!, field.name) as ActorResource
-                await resource.onGracefulShutdown({ db: this.database })
-            }
-        })
-    }
-
-=======
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
     async close(): Promise<void> {
         this.reset()
     }
@@ -281,17 +264,6 @@ class ActorRuntime {
         if (this.interleaved) this.lastCompletedState = this.database.fields()
         this.identity = { ...identity }
         this.instance = instance
-
-<<<<<<< HEAD
-        const resources = this.definition.state.fields.filter(field => field.resource)
-        await runWithActorDatabase(instance, "immediate", async () => {
-            for (const field of resources) {
-                const resource = Reflect.get(instance, field.name) as ActorResource
-                await resource.onResume({ db: this.database })
-            }
-        })
-=======
->>>>>>> a266ad69e2a65de6ca34113bb31ba2e3ec2d7b72
 
         return instance
     }
