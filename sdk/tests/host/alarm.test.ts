@@ -3,9 +3,8 @@ import { test } from "node:test"
 
 import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import type { ActorAlarm } from "../../src/index.js"
-import type { SqliteState } from "../fixtures/actor-runtime.js"
-import { ActorRuntime } from "../fixtures/actor-runtime.js"
-import { seed } from "../fixtures/litestream.js"
+import { ActorRuntime, DatabaseProxy } from "../fixtures/actor-runtime.js"
+import { HostDatabase } from "../fixtures/host-database.js"
 import { assertReply } from "../fixtures/reply.js"
 
 let escapedAlarm: ActorAlarm
@@ -44,7 +43,7 @@ const definition = registerActorClass(AlarmProbe, {
     fields: []
 })
 
-function actorInvoker(runtime: ActorRuntime, sqlite: SqliteState) {
+function actorInvoker(runtime: ActorRuntime) {
     return (method: string, args: number[] = []) =>
         runtime.handle({
             type: "invoke",
@@ -55,16 +54,17 @@ function actorInvoker(runtime: ActorRuntime, sqlite: SqliteState) {
                 actor_id: "one"
             },
             method,
-            args,
-            sqlite
+            args
         })
 }
 
 test("actors can read, replace, and delete their alarm", async context => {
-    const runtime = new ActorRuntime(definition, () => {})
-    context.after(() => runtime.close())
-    const sqlite = await seed()
-    const invoke = actorInvoker(runtime, sqlite)
+    const { runtime, host } = createRuntime()
+    context.after(async () => {
+        await runtime.close()
+        host.close()
+    })
+    const invoke = actorInvoker(runtime)
     assertReply(await invoke("readAlarm"), {
         type: "invoked",
         result: null
@@ -82,7 +82,6 @@ test("actors can read, replace, and delete their alarm", async context => {
         result: null
     })
 
-    // test non-atomic method, error sets the alarm anyway
     assertReply(await invoke("setAlarm", [2_000]), {
         type: "invoked",
         result: 2_000
@@ -97,7 +96,6 @@ test("actors can read, replace, and delete their alarm", async context => {
         result: 3_000
     })
 
-    // test atomic method, error does not set the alarm
     assertReply(await invoke("setAlarm", [2_000]), {
         type: "invoked",
         result: 2_000
@@ -114,9 +112,12 @@ test("actors can read, replace, and delete their alarm", async context => {
 })
 
 test("alarm timestamps must be safe integers", async context => {
-    const runtime = new ActorRuntime(definition, () => {})
-    context.after(() => runtime.close())
-    const invoke = actorInvoker(runtime, await seed())
+    const { runtime, host } = createRuntime()
+    context.after(async () => {
+        await runtime.close()
+        host.close()
+    })
+    const invoke = actorInvoker(runtime)
     for (const timestamp of [NaN, Infinity, -Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
         assertReply(await invoke("setAlarm", [timestamp]), {
             type: "failed",
@@ -127,11 +128,20 @@ test("alarm timestamps must be safe integers", async context => {
 })
 
 test("alarm handles expire after their invocation", async context => {
-    const runtime = new ActorRuntime(definition, () => {})
-    context.after(() => runtime.close())
-    const invoke = actorInvoker(runtime, await seed())
+    const { runtime, host } = createRuntime()
+    context.after(async () => {
+        await runtime.close()
+        host.close()
+    })
+    const invoke = actorInvoker(runtime)
     assertReply(await invoke("escapeAlarm"), { type: "invoked", result: null })
     assert.throws(() => escapedAlarm.get(), /outside its invocation/)
     assert.throws(() => escapedAlarm.set(1_000), /outside its invocation/)
     assert.throws(() => escapedAlarm.delete(), /outside its invocation/)
 })
+
+function createRuntime() {
+    const host = new HostDatabase()
+    const runtime = new ActorRuntime(definition, () => {}, undefined, undefined, new DatabaseProxy(host.call))
+    return { runtime, host }
+}

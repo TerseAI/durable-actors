@@ -39,6 +39,7 @@ interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming,
 /**
  * Base class for durable actors. Extend directly; explicit constructors must pass their `ActorContext` to `super`.
  * Application methods must be async; instance fields require `@Persisted` or `@Ephemeral`.
+ * Initialized private `ActorResource` fields are implicitly ephemeral.
  * @typeParam Metadata - Connection metadata supplied by the backend.
  * @typeParam Incoming - Application messages received by the actor.
  * @typeParam Outgoing - Application messages sent by the actor.
