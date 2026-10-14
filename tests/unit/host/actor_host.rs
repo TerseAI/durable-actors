@@ -19,6 +19,7 @@ use serde_json::json;
 
 use super::*;
 use crate::actor::ActorKey;
+use crate::host::actor_database::ActorStorage;
 
 struct EmptySocketPublisher;
 
@@ -36,6 +37,18 @@ struct IncrementingExecutor {
 #[path = "../../fixtures/host_sqlite.rs"]
 mod sqlite;
 use sqlite::{exec, fields, persist_fields, replication, write_fields};
+
+fn create_host(
+    endpoint: HostEndpoint,
+    executor: Arc<dyn ActorExecutor>,
+    storage: Arc<dyn ActorStorage>,
+    writer: Arc<dyn crate::state_transport::SnapshotWriter>,
+    publisher: Arc<dyn ActorSocketPublisher>,
+    replication: Arc<dyn crate::litestream::Replicator>,
+) -> ActorHost {
+    let database = HostDatabase::new(endpoint.clone(), storage, writer, replication);
+    ActorHost::new(endpoint, executor, database, publisher)
+}
 
 type RestoredDatabase = (Value, Vec<Vec<SqlValue>>);
 
@@ -97,7 +110,7 @@ async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()>
         id: super::super::HostId::new("host-1"),
         route: "http://host.invalid/".into(),
     };
-    let host = ActorHost::new(
+    let host = create_host(
         endpoint.clone(),
         executor.clone(),
         Arc::new(FakeAuthority::default()),
@@ -144,7 +157,7 @@ async fn commits_fields_and_sql_and_recovers_them_at_one_version() -> Result<()>
             )
         })
         .collect();
-    let restored = ActorHost::new(
+    let restored = create_host(
         endpoint,
         executor.clone(),
         Arc::new(FakeAuthority {
@@ -178,7 +191,7 @@ async fn ordinary_methods_execute_and_commit_without_a_socket_gateway() -> Resul
         invocations: AtomicU64::new(0),
     });
     let state = Arc::new(FakeStateTransport::default());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -303,7 +316,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
     if fail_write {
         state.failures.store(1, Ordering::SeqCst);
     }
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -412,7 +425,7 @@ async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Re
         release_background: Default::default(),
         release_ordinary: Default::default(),
     });
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -505,7 +518,7 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
         evictions: AtomicUsize::new(0),
     });
     let state = Arc::new(FakeStateTransport::default());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -598,7 +611,7 @@ async fn controlled_host() -> (
 ) {
     let (started, receiver) = tokio::sync::mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -651,6 +664,149 @@ async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_sta
 }
 
 #[tokio::test]
+async fn interleaved_actors_replay_durable_results_without_reexecution() -> Result<()> {
+    struct Executor(AtomicU64);
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            let sequence = self.0.fetch_add(1, Ordering::Relaxed) + 1;
+            write_fields(&*database, json!({"count": sequence})).await?;
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence,
+                    result: json!(sequence),
+                    effects: vec![],
+                },
+            ))
+        }
+    }
+    let executor = Arc::new(Executor(AtomicU64::new(0)));
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+    assert_eq!(invoke(&host, "first").await?, completed(1));
+    assert_eq!(invoke(&host, "first").await?, completed(1));
+    assert_eq!(executor.0.load(Ordering::Relaxed), 1);
+    assert_eq!(invoke(&host, "second").await?, completed(2));
+    host.drain(Duration::from_secs(1)).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn interleaved_admission_continues_while_database_publication_is_pending() -> Result<()> {
+    struct Executor {
+        admission: watch::Sender<()>,
+        immediate: bool,
+    }
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        fn invocation_admission(&self) -> Option<watch::Receiver<()>> {
+            Some(self.admission.subscribe())
+        }
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            let sequence = if invocation.request_id == "first" {
+                1
+            } else {
+                2
+            };
+            persist_fields(&*database, json!({"count": sequence}), self.immediate).await?;
+            database.call(DatabaseCall::Commit).await?;
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence,
+                    result: json!(sequence),
+                    effects: vec![],
+                },
+            ))
+        }
+    }
+
+    for immediate in [false, true] {
+        let (started, mut saving) = mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let executor = Arc::new(Executor {
+            admission: watch::channel(()).0,
+            immediate,
+        });
+        let host = Arc::new(create_host(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            executor.clone(),
+            Arc::new(FakeAuthority::default()),
+            Arc::new(FakeStateTransport {
+                paused_commit: Some((started, release.clone())),
+                ..Default::default()
+            }),
+            Arc::new(EmptySocketPublisher),
+            replication().await,
+        ));
+        let caller = host.clone();
+        let first = tokio::spawn(async move { invoke(&caller, "first").await });
+        tokio::time::timeout(Duration::from_secs(2), saving.recv())
+            .await?
+            .unwrap();
+        let mut queues = host.queues().changes();
+        let caller = host.clone();
+        let second = tokio::spawn(async move { invoke(&caller, "second").await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while queues.borrow_and_update().is_empty() {
+                queues.changed().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        executor.admission.send_replace(());
+        let admitted = tokio::time::timeout(Duration::from_secs(1), async {
+            while !queues.borrow_and_update().is_empty() {
+                queues.changed().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        assert!(!first.is_finished(), "write acknowledged before storage");
+        release.add_permits(1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), first).await???,
+            completed(1)
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), second).await???,
+            completed(2)
+        );
+        assert!(
+            admitted.is_ok(),
+            "pending database publication blocked mailbox admission (immediate={immediate})"
+        );
+        host.drain(Duration::from_secs(1)).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Result<()> {
     let (commit_started, mut committing) = mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -660,7 +816,7 @@ async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Resu
         ..Default::default()
     });
     let executor = Arc::new(SerialAdmissionExecutor::new());
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -927,7 +1083,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host".into(),
@@ -1023,7 +1179,7 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
         actor_name: "Counter".into(),
         actor_id: "one".into(),
     };
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host".into(),
@@ -1114,7 +1270,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
         actor_name: "Counter".into(),
         actor_id: "restored".into(),
     };
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host"),
             route: "http://host".into(),
@@ -1318,7 +1474,7 @@ async fn cold_actors_load_the_current_head_instead_of_a_cached_route_snapshot() 
         ..Default::default()
     });
     let state = Arc::new(FakeStateTransport::default());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1370,7 +1526,7 @@ async fn read_only_results_are_withheld_if_the_lease_expires_during_execution() 
         ..Default::default()
     });
     let state = Arc::new(FakeStateTransport::default());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1396,7 +1552,7 @@ async fn write_results_are_withheld_if_the_lease_expires_during_persistence() ->
             paused_commit: Some((commit_started, release.clone())),
             ..Default::default()
         });
-        let host = Arc::new(ActorHost::new(
+        let host = Arc::new(create_host(
             HostEndpoint {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),
@@ -1439,7 +1595,7 @@ async fn epoch_snapshot_proofs_commit_locally_and_retry_an_ambiguous_write() -> 
     let executor = Arc::new(IncrementingExecutor {
         invocations: AtomicU64::new(0),
     });
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1471,7 +1627,7 @@ async fn durable_snapshot_commits_locally_before_success() -> Result<()> {
     let state = Arc::new(FakeStateTransport {
         ..Default::default()
     });
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1496,7 +1652,7 @@ async fn resident_actor_uses_immutable_snapshots_and_replays_the_last_request() 
     let executor = Arc::new(IncrementingExecutor {
         invocations: AtomicU64::new(0),
     });
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1534,7 +1690,7 @@ async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Re
     let state = Arc::new(FakeStateTransport::default());
     state.failures.store(1, Ordering::SeqCst);
     let executor = Arc::new(SerialAdmissionExecutor::new());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1561,7 +1717,7 @@ async fn retries_an_ambiguous_commit_without_executing_the_request_twice() -> Re
 
 #[tokio::test]
 async fn preserves_executor_resource_exhaustion() -> Result<()> {
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1584,7 +1740,7 @@ async fn preserves_executor_resource_exhaustion() -> Result<()> {
 async fn invalid_socket_effects_do_not_commit_actor_state() -> Result<()> {
     let authority = Arc::new(FakeAuthority::default());
     let state = Arc::new(FakeStateTransport::default());
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1655,7 +1811,7 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
         state: state.clone(),
         values: Mutex::new(vec![]),
     });
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1700,7 +1856,7 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
     let executor = Arc::new(IncrementingExecutor {
         invocations: AtomicU64::new(0),
     });
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1811,7 +1967,7 @@ async fn immediate_writes_wait_for_durability_and_share_atomic_versions() -> Res
         paused_commit: Some((started, release.clone())),
         ..Default::default()
     });
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1885,7 +2041,7 @@ async fn failed_immediate_write_stops_the_actor_without_acknowledging_the_write(
         failures: AtomicUsize::new(1),
         ..Default::default()
     });
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -1949,7 +2105,7 @@ async fn delayed_interleaved_completion_cannot_rewind_an_immediate_write() -> Re
     }
     let (captured, mut captures) = mpsc::unbounded_channel();
     let writes = Arc::new(FakeStateTransport::default());
-    let host = Arc::new(ActorHost::new(
+    let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -2012,7 +2168,7 @@ async fn database_handles_expire_with_their_invocation() -> Result<()> {
         }
     }
     let executor = Arc::new(Executor(Mutex::new(None)));
-    let host = ActorHost::new(
+    let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
             route: "http://host.invalid/".into(),
@@ -2100,7 +2256,7 @@ async fn restored_request_only_returns_a_saved_result_when_completion_is_present
         let executor = Arc::new(IncrementingExecutor {
             invocations: AtomicU64::new(0),
         });
-        let host = ActorHost::new(
+        let host = create_host(
             HostEndpoint {
                 id: super::super::HostId::new("host-1"),
                 route: "http://host.invalid/".into(),

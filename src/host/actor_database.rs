@@ -1,363 +1,486 @@
-use crate::actor::{DatabaseCall, DatabaseResult, SqlValue};
-use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{
-    Connection, ToSql,
-    hooks::{AuthAction, AuthContext, Authorization},
-    types::{ToSqlOutput, ValueRef},
+use super::HostEndpoint;
+use crate::{
+    actor::{ActorDatabase, ActorExecutionResult, ActorInvocation, DatabaseCall, DatabaseResult},
+    litestream::Replicator,
+    request_tracking::{RequestStage, RequestTracker},
+    state_log::SqliteSnapshot,
+    storage::WritePlan,
 };
-use serde_json::value::RawValue;
+use anyhow::{Context, Result, ensure};
+use async_trait::async_trait;
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Instant,
 };
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+mod session;
+mod sqlite;
+use session::DatabaseSession;
 
-const TRANSACTIONS: &str = "actor invocations own SQLite transactions and database files";
-const RESERVED: &str = "SQLite runtime table names are reserved";
-const PRAGMAS: &str = "this SQLite pragma is managed by the actor runtime";
-const ALLOWED_PRAGMAS: [&str; 10] = [
-    "table_info",
-    "table_xinfo",
-    "index_info",
-    "index_xinfo",
-    "index_list",
-    "foreign_key_list",
-    "foreign_key_check",
-    "integrity_check",
-    "quick_check",
-    "user_version",
-];
+#[async_trait]
+pub(crate) trait ActorStorage: Send + Sync {
+    async fn acquire_actor(
+        &self,
+        _actor: &crate::actor::ActorKey,
+        _host: &super::HostId,
+    ) -> Result<ActorActivation>;
 
-pub(crate) struct HostDatabase {
-    engine: Arc<Mutex<Engine>>,
+    async fn verify_actor_ownership(
+        &self,
+        actor: &crate::actor::ActorKey,
+        host: &super::HostId,
+        epoch: u64,
+    ) -> Result<()>;
+
+    async fn load_actor_state(
+        &self,
+        _actor: &crate::actor::ActorKey,
+        _host: &super::HostId,
+        _epoch: u64,
+    ) -> Result<(u64, bytes::Bytes)>;
+    async fn read_sqlite(
+        &self,
+        actor: &crate::actor::ActorKey,
+        bytes: &[u8],
+    ) -> Result<SqliteSnapshot>;
+    fn ensure_authority(&self) -> Result<()>;
+    async fn prepare_state_write(
+        &self,
+        actor: &crate::actor::ActorKey,
+        host_id: &super::HostId,
+        owner_epoch: u64,
+        expected_version: u64,
+    ) -> Result<WritePlan>;
 }
 
-#[derive(Debug)]
-pub(crate) struct Executed {
-    pub result: DatabaseResult,
-    pub committed: bool,
+#[derive(Clone, Debug)]
+pub(crate) struct ActorActivation {
+    pub owner_epoch: u64,
+    pub state_version: u64,
+    pub state: Option<bytes::Bytes>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct CommitOrigin {
+    pub connection_id: Option<String>,
+    pub interleaved: bool,
+}
+
+impl CommitOrigin {
+    pub(super) fn socket(event: &crate::actor::ActorSocketEvent) -> Self {
+        use crate::actor::ActorSocketEvent;
+        let connection = match event {
+            ActorSocketEvent::Connect { connection }
+            | ActorSocketEvent::Disconnect { connection, .. } => &connection.id,
+            ActorSocketEvent::Message { connection_id, .. } => connection_id,
+        };
+        Self {
+            connection_id: Some(connection.clone()),
+            interleaved: false,
+        }
+    }
+}
+
+pub(crate) struct HostDatabase {
+    commands: mpsc::Sender<Command>,
+    version: Arc<AtomicU64>,
+    pub(super) stopped: CancellationToken,
+    storage: Arc<dyn ActorStorage>,
 }
 
 impl HostDatabase {
-    pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        let engine = tokio::task::spawn_blocking(move || Engine::open(path)).await??;
-        Ok(Self {
-            engine: Arc::new(Mutex::new(engine)),
-        })
-    }
-
-    pub(crate) async fn call(&self, call: DatabaseCall) -> Result<Executed> {
-        let engine = self.engine.clone();
-        tokio::task::spawn_blocking(move || {
-            engine
-                .lock()
-                .map_err(|_| anyhow!("actor database is poisoned"))?
-                .call(call)
-        })
-        .await?
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct ChangeToken(u64, i64, i64);
-
-struct Engine {
-    connection: Connection,
-    synced: ChangeToken,
-}
-
-impl Engine {
-    fn open(path: PathBuf) -> Result<Self> {
-        let connection = Connection::open(path)?;
-        connection.execute_batch(
-            "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL",
-        )?;
-        let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-        anyhow::ensure!(check == "ok", "invalid actor SQLite database");
-        let synced = token(&connection)?;
-        Ok(Self { connection, synced })
-    }
-
-    fn call(&mut self, call: DatabaseCall) -> Result<Executed> {
-        let immediate = call.immediate();
-        let before = token(&self.connection)?;
-        let result = match call {
-            DatabaseCall::Commit => {
-                let committed = self.commit()?;
-                return Ok(Executed {
-                    result: DatabaseResult::Done,
-                    committed,
-                });
-            }
-            DatabaseCall::Rollback => self.rollback()?,
-            DatabaseCall::Fields => self.fields()?,
-            call => {
-                self.begin()?;
-                self.write(call)?
-            }
+    pub(crate) fn new(
+        endpoint: HostEndpoint,
+        storage: Arc<dyn ActorStorage>,
+        writer: Arc<dyn crate::state_transport::SnapshotWriter>,
+        replication: Arc<dyn Replicator>,
+    ) -> Arc<Self> {
+        let (commands, incoming) = mpsc::channel(64);
+        let version = Arc::new(AtomicU64::new(0));
+        let stopped = CancellationToken::new();
+        let service = DatabaseService {
+            session: DatabaseSession::new(endpoint, storage.clone(), writer, replication),
+            version: version.clone(),
+            stopped: stopped.clone(),
+            ready: BTreeMap::new(),
+            next_sequence: 1,
         };
-        let committed = immediate && token(&self.connection)? != before && self.commit()?;
-        Ok(Executed { result, committed })
+        tokio::spawn(service.run(incoming));
+        Arc::new(Self {
+            commands,
+            version,
+            stopped,
+            storage,
+        })
     }
 
-    fn write(&self, call: DatabaseCall) -> Result<DatabaseResult> {
-        match call {
-            DatabaseCall::Exec { sql, bindings, .. } => return self.exec(&sql, &bindings),
-            DatabaseCall::InitializeFields { fields } => self.initialize(&fields)?,
-            DatabaseCall::PersistField { name, value, .. } => self.persist(&name, &value)?,
-            DatabaseCall::DeleteField { name, .. } => self.delete(&name)?,
-            DatabaseCall::ReplaceFields { fields } => self.replace(&fields)?,
-            DatabaseCall::Fields | DatabaseCall::Commit | DatabaseCall::Rollback => {
-                unreachable!("read and lifecycle calls are not writes")
-            }
-        }
-        Ok(DatabaseResult::Done)
+    pub(super) fn invocation(
+        self: &Arc<Self>,
+        invocation: ActorInvocation,
+        owner_epoch: u64,
+        origin: CommitOrigin,
+    ) -> Arc<DatabaseInvocation> {
+        Arc::new(DatabaseInvocation {
+            database: self.clone(),
+            scope: Arc::new(InvocationScope {
+                invocation,
+                owner_epoch,
+                origin,
+                committed: AtomicU64::new(0),
+                active: AtomicBool::new(true),
+            }),
+        })
     }
 
-    fn exec(&self, sql: &str, bindings: &[SqlValue]) -> Result<DatabaseResult> {
-        let mut statement = self.prepare_actor_statement(sql)?;
-        let columns = statement
-            .column_names()
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
-        let mut query = statement.query(rusqlite::params_from_iter(bindings))?;
-        let mut rows = Vec::new();
-        while let Some(row) = query.next()? {
-            rows.push(
-                (0..columns.len())
-                    .map(|index| row.get_ref(index).map(SqlValue::from))
-                    .collect::<rusqlite::Result<_>>()?,
-            );
-        }
-        Ok(DatabaseResult::Rows { columns, rows })
+    pub(super) fn state_version(&self) -> Option<u64> {
+        let version = self.version.load(Ordering::Acquire);
+        (version > 0).then_some(version)
     }
 
-    fn prepare_actor_statement(&self, sql: &str) -> Result<rusqlite::Statement<'_>> {
-        let denied = Arc::new(Mutex::new(None));
-        self.connection
-            .authorizer(Some(authorize(denied.clone())))?;
-        let prepared = self.connection.prepare(sql);
-        self.connection
-            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
-        if let Some(reason) = denied
-            .lock()
-            .map_err(|_| anyhow!("authorizer poisoned"))?
-            .take()
-        {
-            bail!(reason);
-        }
-        match prepared {
-            Err(rusqlite::Error::MultipleStatement) => {
-                bail!("actor database exec accepts one SQL statement")
-            }
-            prepared => Ok(prepared?),
-        }
+    pub(super) fn ensure_authority(&self) -> Result<()> {
+        self.storage.ensure_authority()
     }
 
-    fn fields(&self) -> Result<DatabaseResult> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT name, value FROM __terse_fields")?;
-        let fields = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .map(|row| {
-                let (name, value) = row?;
-                Ok((name, RawValue::from_string(value)?))
+    pub(super) async fn activate(
+        &self,
+        actor: crate::actor::ActorKey,
+    ) -> Result<PreparedActivation> {
+        let (reply, result) = oneshot::channel();
+        self.send(Command::Activate { actor, reply }).await?;
+        result
+            .await
+            .context("database service stopped during activation")?
+    }
+
+    pub(super) async fn hydrated(
+        &self,
+        activation: ActorActivation,
+        result: Result<()>,
+    ) -> Result<ActorActivation> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Hydrated {
+            activation,
+            result,
+            reply,
+        })
+        .await?;
+        response
+            .await
+            .context("database service stopped during hydration")?
+    }
+
+    pub(super) async fn reset(&self) -> Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.send(Command::Reset { reply }).await?;
+        result
+            .await
+            .context("database service stopped during eviction")
+    }
+
+    async fn send(&self, command: Command) -> Result<()> {
+        ensure!(!self.stopped.is_cancelled(), "database service stopped");
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| anyhow::anyhow!("database service stopped"))
+    }
+}
+
+pub(super) struct DatabaseInvocation {
+    database: Arc<HostDatabase>,
+    scope: Arc<InvocationScope>,
+}
+
+impl DatabaseInvocation {
+    pub(super) async fn prepare(
+        &self,
+        replay: bool,
+        tracker: &mut RequestTracker,
+    ) -> Result<PreparedInvocation> {
+        let (reply, result) = oneshot::channel();
+        self.database
+            .send(Command::Prepare {
+                scope: self.scope.clone(),
+                replay,
+                reply,
             })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        Ok(DatabaseResult::Fields { fields })
-    }
-
-    fn initialize(&self, fields: &BTreeMap<String, Box<RawValue>>) -> Result<()> {
-        let mut statement = self.connection.prepare(
-            "INSERT INTO __terse_fields (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
-        )?;
-        for (name, value) in fields {
-            statement.execute((name, value.get()))?;
+            .await?;
+        let (result, timings) = result
+            .await
+            .context("database service stopped while preparing invocation")?;
+        for (stage, at) in timings.0 {
+            tracker.mark_at(stage, at);
         }
-        Ok(())
+        result
     }
 
-    fn persist(&self, name: &str, value: &RawValue) -> Result<()> {
-        self.connection.execute(
-            "INSERT INTO __terse_fields (name, value) VALUES (?, ?)
-            ON CONFLICT(name) DO UPDATE SET value = excluded.value WHERE value <> excluded.value",
-            (name, value.get()),
-        )?;
-        Ok(())
+    pub(super) fn close(&self) {
+        self.scope.active.store(false, Ordering::Release);
     }
 
-    fn delete(&self, name: &str) -> Result<()> {
-        self.connection
-            .execute("DELETE FROM __terse_fields WHERE name = ?", [name])?;
-        Ok(())
-    }
-
-    fn replace(&self, fields: &BTreeMap<String, Box<RawValue>>) -> Result<()> {
-        for (name, value) in fields {
-            self.persist(name, value)?;
-        }
-        self.connection.execute(
-            "DELETE FROM __terse_fields WHERE name NOT IN (SELECT value FROM json_each(?))",
-            [serde_json::to_string(&fields.keys().collect::<Vec<_>>())?],
-        )?;
-        Ok(())
-    }
-
-    fn begin(&self) -> Result<()> {
-        if self.connection.is_autocommit() {
-            self.connection
-                .execute_batch("BEGIN IMMEDIATE")
-                .context("failed to begin actor transaction")?;
-        }
-        Ok(())
-    }
-
-    fn commit(&mut self) -> Result<bool> {
-        if !self.connection.is_autocommit() {
-            self.connection.execute_batch("COMMIT")?;
-        }
-        let current = token(&self.connection)?;
-        let changed = current != self.synced;
-        self.synced = current;
-        Ok(changed)
-    }
-
-    fn rollback(&mut self) -> Result<DatabaseResult> {
-        if !self.connection.is_autocommit() {
-            self.connection.execute_batch("ROLLBACK")?;
-        }
-        self.synced = token(&self.connection)?;
-        Ok(DatabaseResult::Done)
+    pub(super) async fn complete(&self, result: Value, sequence: Option<u64>) -> Result<u64> {
+        self.close();
+        let (reply, response) = oneshot::channel();
+        self.database
+            .send(Command::Complete(PendingCompletion {
+                scope: self.scope.clone(),
+                result,
+                sequence,
+                reply,
+            }))
+            .await?;
+        response
+            .await
+            .context("database service stopped before durable completion")?
     }
 }
 
-fn token(connection: &Connection) -> Result<ChangeToken> {
-    Ok(ChangeToken(
-        connection.total_changes(),
-        connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?,
-        connection.query_row("PRAGMA user_version", [], |row| row.get(0))?,
-    ))
+#[async_trait]
+impl ActorDatabase for DatabaseInvocation {
+    async fn call(&self, call: DatabaseCall) -> Result<DatabaseResult> {
+        ensure!(
+            self.scope.active.load(Ordering::Acquire),
+            "database call has no active invocation"
+        );
+        let (reply, result) = oneshot::channel();
+        self.database
+            .send(Command::Call {
+                scope: self.scope.clone(),
+                call,
+                reply,
+            })
+            .await?;
+        result
+            .await
+            .context("database service stopped before database call completed")?
+    }
 }
 
-fn authorize(
-    denied: Arc<Mutex<Option<&'static str>>>,
-) -> impl for<'r> FnMut(AuthContext<'r>) -> Authorization + Send + 'static {
-    move |context| match denial(&context.action) {
-        Some(reason) => {
-            if let Ok(mut denied) = denied.lock() {
-                denied.get_or_insert(reason);
+struct InvocationScope {
+    invocation: ActorInvocation,
+    owner_epoch: u64,
+    origin: CommitOrigin,
+    committed: AtomicU64,
+    active: AtomicBool,
+}
+
+#[derive(Default)]
+struct DatabaseTimings(Vec<(RequestStage, Instant)>);
+impl DatabaseTimings {
+    fn mark(&mut self, stage: RequestStage) {
+        self.0.push((stage, Instant::now()));
+    }
+}
+
+pub(super) enum PreparedActivation {
+    Completed(ActorActivation),
+    Hydrate { activation: ActorActivation },
+}
+pub(super) enum PreparedInvocation {
+    Execute,
+    Completed(ActorExecutionResult),
+}
+enum DatabaseReply {
+    Executed {
+        result: DatabaseResult,
+        committed: Option<u64>,
+    },
+    Rejected(anyhow::Error),
+}
+
+#[derive(Debug)]
+pub(super) struct PublicationError;
+impl std::fmt::Display for PublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("actor state publication could not be confirmed")
+    }
+}
+impl std::error::Error for PublicationError {}
+
+enum Command {
+    Prepare {
+        scope: Arc<InvocationScope>,
+        replay: bool,
+        reply: oneshot::Sender<(Result<PreparedInvocation>, DatabaseTimings)>,
+    },
+    Call {
+        scope: Arc<InvocationScope>,
+        call: DatabaseCall,
+        reply: oneshot::Sender<Result<DatabaseResult>>,
+    },
+    Activate {
+        actor: crate::actor::ActorKey,
+        reply: oneshot::Sender<Result<PreparedActivation>>,
+    },
+    Hydrated {
+        activation: ActorActivation,
+        result: Result<()>,
+        reply: oneshot::Sender<Result<ActorActivation>>,
+    },
+    Complete(PendingCompletion),
+    Reset {
+        reply: oneshot::Sender<()>,
+    },
+}
+
+struct PendingCompletion {
+    scope: Arc<InvocationScope>,
+    result: Value,
+    sequence: Option<u64>,
+    reply: oneshot::Sender<Result<u64>>,
+}
+
+struct DatabaseService {
+    session: DatabaseSession,
+    version: Arc<AtomicU64>,
+    stopped: CancellationToken,
+    ready: BTreeMap<u64, PendingCompletion>,
+    next_sequence: u64,
+}
+
+impl DatabaseService {
+    async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+        let _stopped = self.stopped.clone().drop_guard();
+        loop {
+            let command = tokio::select! {
+                biased;
+                _ = self.stopped.cancelled() => return,
+                command = commands.recv() => match command { Some(command) => command, None => return },
+            };
+            if !self.handle(command).await {
+                return;
             }
-            Authorization::Deny
-        }
-        None => Authorization::Allow,
-    }
-}
-
-fn denial(action: &AuthAction<'_>) -> Option<&'static str> {
-    match action {
-        AuthAction::Transaction { .. }
-        | AuthAction::Savepoint { .. }
-        | AuthAction::Attach { .. }
-        | AuthAction::Detach { .. } => Some(TRANSACTIONS),
-        AuthAction::Pragma { pragma_name, .. }
-            if !ALLOWED_PRAGMAS.contains(&pragma_name.to_ascii_lowercase().as_str()) =>
-        {
-            Some(PRAGMAS)
-        }
-        action if names(action).into_iter().any(reserved) => Some(RESERVED),
-        _ => None,
-    }
-}
-
-fn names<'a>(action: &AuthAction<'a>) -> Vec<&'a str> {
-    use AuthAction::*;
-    match *action {
-        CreateIndex {
-            index_name,
-            table_name,
-        }
-        | CreateTempIndex {
-            index_name,
-            table_name,
-        }
-        | DropIndex {
-            index_name,
-            table_name,
-        }
-        | DropTempIndex {
-            index_name,
-            table_name,
-        } => vec![index_name, table_name],
-        CreateTrigger {
-            trigger_name,
-            table_name,
-        }
-        | CreateTempTrigger {
-            trigger_name,
-            table_name,
-        }
-        | DropTrigger {
-            trigger_name,
-            table_name,
-        }
-        | DropTempTrigger {
-            trigger_name,
-            table_name,
-        } => vec![trigger_name, table_name],
-        CreateView { view_name }
-        | CreateTempView { view_name }
-        | DropView { view_name }
-        | DropTempView { view_name } => vec![view_name],
-        CreateTable { table_name }
-        | CreateTempTable { table_name }
-        | DropTable { table_name }
-        | DropTempTable { table_name }
-        | Delete { table_name }
-        | Insert { table_name }
-        | Analyze { table_name }
-        | Read { table_name, .. }
-        | Update { table_name, .. }
-        | AlterTable { table_name, .. }
-        | CreateVtable { table_name, .. }
-        | DropVtable { table_name, .. } => vec![table_name],
-        _ => vec![],
-    }
-}
-
-fn reserved(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.starts_with("__terse_") || name.starts_with("_litestream_")
-}
-
-impl ToSql for SqlValue {
-    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::Borrowed(match self {
-            Self::Null => ValueRef::Null,
-            Self::Integer(value) => ValueRef::Integer(*value),
-            Self::Real(value) => ValueRef::Real(*value),
-            Self::Text(value) => ValueRef::Text(value.as_bytes()),
-            Self::Blob(value) => ValueRef::Blob(value),
-        }))
-    }
-}
-
-impl From<ValueRef<'_>> for SqlValue {
-    fn from(value: ValueRef<'_>) -> Self {
-        match value {
-            ValueRef::Null => Self::Null,
-            ValueRef::Integer(value) => Self::Integer(value),
-            ValueRef::Real(value) => Self::Real(value),
-            ValueRef::Text(value) => Self::Text(String::from_utf8_lossy(value).into_owned()),
-            ValueRef::Blob(value) => Self::Blob(value.to_vec()),
+            self.version
+                .store(self.session.state_version().unwrap_or(0), Ordering::Release);
         }
     }
-}
 
-#[cfg(test)]
-#[path = "../../tests/unit/host/actor_database.rs"]
-mod tests;
+    async fn handle(&mut self, command: Command) -> bool {
+        match command {
+            Command::Prepare {
+                scope,
+                replay,
+                reply,
+            } => {
+                let mut timings = DatabaseTimings::default();
+                let result = self
+                    .session
+                    .prepare_invocation(&scope.invocation, scope.owner_epoch, replay, &mut timings)
+                    .await;
+                let _ = reply.send((result, timings));
+            }
+            Command::Call { scope, call, reply } => return self.call(scope, call, reply).await,
+            Command::Activate { actor, reply } => {
+                let _ = reply.send(self.session.prepare_activation(&actor).await);
+            }
+            Command::Hydrated {
+                activation,
+                result,
+                reply,
+            } => {
+                let _ = reply.send(self.session.finish_activation(activation, result));
+            }
+            Command::Complete(completion) => return self.complete(completion).await,
+            Command::Reset { reply } => {
+                self.session.reset();
+                let _ = reply.send(());
+            }
+        }
+        true
+    }
+
+    async fn call(
+        &mut self,
+        scope: Arc<InvocationScope>,
+        call: DatabaseCall,
+        reply: oneshot::Sender<Result<DatabaseResult>>,
+    ) -> bool {
+        if !scope.active.load(Ordering::Acquire) {
+            let _ = reply.send(Err(anyhow::anyhow!(
+                "database call has no active invocation"
+            )));
+            return true;
+        }
+        let result = self
+            .session
+            .database_call(
+                &scope.invocation,
+                scope.owner_epoch,
+                scope.origin.clone(),
+                call,
+            )
+            .await;
+        match result {
+            Ok(DatabaseReply::Executed { result, committed }) => {
+                if let Some(txid) = committed {
+                    scope.committed.store(txid, Ordering::Release);
+                }
+                self.version
+                    .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+                let _ = reply.send(Ok(result));
+                true
+            }
+            Ok(DatabaseReply::Rejected(error)) => {
+                let _ = reply.send(Err(error));
+                true
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "actor database write could not be confirmed");
+                self.stopped.cancel();
+                let _ = reply.send(Err(anyhow::anyhow!(
+                    "actor database write could not be confirmed"
+                )));
+                false
+            }
+        }
+    }
+
+    async fn complete(&mut self, completion: PendingCompletion) -> bool {
+        let Some(sequence) = completion.sequence else {
+            self.publish(completion).await;
+            return true;
+        };
+        if sequence < self.next_sequence || self.ready.contains_key(&sequence) {
+            let _ = completion
+                .reply
+                .send(Err(anyhow::anyhow!("actor completion sequence repeated")));
+            return false;
+        }
+        self.ready.insert(sequence, completion);
+        while let Some(completion) = self.ready.remove(&self.next_sequence) {
+            if !self.publish(completion).await {
+                return false;
+            }
+            self.next_sequence += 1;
+        }
+        true
+    }
+
+    async fn publish(&mut self, completion: PendingCompletion) -> bool {
+        let scope = completion.scope;
+        let txid = scope.committed.load(Ordering::Acquire);
+        let mut origin = scope.origin.clone();
+        origin.interleaved = completion.sequence.is_some();
+        let result = self
+            .session
+            .complete(
+                &scope.invocation,
+                scope.owner_epoch,
+                completion.result,
+                (txid > 0).then_some(txid),
+                origin,
+            )
+            .await;
+        let success = result.is_ok();
+        self.version
+            .store(self.session.state_version().unwrap_or(0), Ordering::Release);
+        let _ = completion.reply.send(result);
+        success
+    }
+}

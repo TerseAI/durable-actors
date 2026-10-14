@@ -689,16 +689,21 @@ impl Stack {
         ));
         let replication = Arc::new(crate::litestream::Litestream::default());
         let (child, connection) = start_worker(directory.path()).await?;
-        let host = Arc::new(ActorHost::new(
-            HostEndpoint {
-                id: host_id.clone(),
-                route: host_route.clone(),
-            },
-            connection.executor(),
+        let endpoint = HostEndpoint {
+            id: host_id.clone(),
+            route: host_route.clone(),
+        };
+        let database = crate::host::HostDatabase::new(
+            endpoint.clone(),
             storage.clone(),
             storage.runtime.clone(),
-            local_sockets.clone(),
             replication.clone(),
+        );
+        let host = Arc::new(ActorHost::new(
+            endpoint,
+            connection.executor(),
+            database,
+            local_sockets.clone(),
         ));
         connection
             .mark_ready(

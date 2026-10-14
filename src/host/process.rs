@@ -449,14 +449,14 @@ async fn prepare_actor_host(
         control_plane.clone(),
     ));
     let persistence = super::persistence::ActorPersistence::new(storage.clone());
+    let database =
+        super::HostDatabase::new(endpoint.clone(), storage.clone(), persistence, replication);
     let host = Arc::new(
         ActorHost::new(
             endpoint,
             executor_connection.executor(),
-            storage.clone(),
-            persistence.clone(),
+            database,
             sockets.clone(),
-            replication,
         )
         .with_traces(crate::request_traces::TraceSender::start(
             control_plane.clone(),

@@ -24,11 +24,13 @@ use crate::{
 
 use super::{
     HostEndpoint,
-    actor_runtime::{ActorActivation, ActorRuntime, ActorStorage, socket_event_name},
+    actor_database::{ActorActivation, HostDatabase},
     queues::{ActorQueues, WaitingRequest},
 };
 
 mod admission;
+mod execution;
+use execution::{log_invocation, socket_event_name};
 
 const HOST_COMMAND_CAPACITY: usize = 256;
 
@@ -61,10 +63,8 @@ impl ActorHost {
         endpoint: HostEndpoint,
 
         executor: Arc<dyn ActorExecutor>,
-        storage: Arc<dyn ActorStorage>,
-        state: Arc<dyn crate::state_transport::SnapshotWriter>,
+        database: Arc<HostDatabase>,
         publisher: Arc<dyn ActorSocketPublisher>,
-        replication: Arc<dyn crate::litestream::Replicator>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
         let (activity_tx, activity) = watch::channel(ActorActivity::default());
@@ -73,10 +73,8 @@ impl ActorHost {
         let dispatcher = HostDispatcher::new(
             endpoint.clone(),
             executor,
-            storage,
-            state,
+            database,
             publisher,
-            replication,
             (activity_tx, stopped_tx),
             queues.clone(),
         );
@@ -248,10 +246,8 @@ struct HostDispatcher {
     endpoint: HostEndpoint,
 
     executor: Arc<dyn ActorExecutor>,
-    storage: Arc<dyn ActorStorage>,
-    state: Arc<dyn crate::state_transport::SnapshotWriter>,
+    database: Arc<HostDatabase>,
     publisher: Arc<dyn ActorSocketPublisher>,
-    replication: Arc<dyn crate::litestream::Replicator>,
     mailbox: Option<ActorMailbox>,
     identity: Option<ActorStorageKey>,
     tasks: JoinSet<()>,
@@ -268,10 +264,8 @@ impl HostDispatcher {
         endpoint: HostEndpoint,
 
         executor: Arc<dyn ActorExecutor>,
-        storage: Arc<dyn ActorStorage>,
-        state: Arc<dyn crate::state_transport::SnapshotWriter>,
+        database: Arc<HostDatabase>,
         publisher: Arc<dyn ActorSocketPublisher>,
-        replication: Arc<dyn crate::litestream::Replicator>,
         status: (watch::Sender<ActorActivity>, watch::Sender<bool>),
         queues: ActorQueues,
     ) -> Self {
@@ -280,10 +274,8 @@ impl HostDispatcher {
             last_active,
             endpoint,
             executor,
-            storage,
-            state,
+            database,
             publisher,
-            replication,
             mailbox: None,
             identity: None,
             tasks: JoinSet::new(),
@@ -378,19 +370,14 @@ impl HostDispatcher {
     }
 
     fn start_actor(&mut self, actor: ActorKey, completed: mpsc::Sender<ActorCompletion>) {
-        let runtime = ActorRuntime::new(
-            self.endpoint.clone(),
-            self.executor.clone(),
-            self.storage.clone(),
-            self.state.clone(),
-            self.publisher.clone(),
-            self.replication.clone(),
-        );
         let (sender, requests) = mpsc::unbounded_channel();
         let admission = self.executor.invocation_admission();
         let task = self.tasks.spawn(admission::run(
-            actor.storage_key(),
-            runtime,
+            actor,
+            self.endpoint.clone(),
+            self.executor.clone(),
+            self.database.clone(),
+            self.publisher.clone(),
             requests,
             completed,
             self.accepting.subscribe(),
@@ -478,7 +465,7 @@ struct ActorCompletion {
 impl ActorRequest {
     fn finish(mut self, endpoint: &HostEndpoint, result: Result<ActorExecutionResult>) {
         self.tracker.complete(&result);
-        ActorRuntime::log_invocation(
+        log_invocation(
             endpoint,
             &self.operation.invocation(),
             self.tracker.completion(),
@@ -498,12 +485,12 @@ enum ActorOperation {
 }
 
 impl ActorOperation {
-    fn commit_origin(&self) -> super::actor_runtime::CommitOrigin {
+    fn commit_origin(&self) -> super::actor_database::CommitOrigin {
         match self {
             Self::Socket(invocation) => {
-                super::actor_runtime::CommitOrigin::socket(&invocation.event)
+                super::actor_database::CommitOrigin::socket(&invocation.event)
             }
-            _ => super::actor_runtime::CommitOrigin::default(),
+            _ => super::actor_database::CommitOrigin::default(),
         }
     }
 

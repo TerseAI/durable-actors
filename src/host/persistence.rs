@@ -1,4 +1,4 @@
-use super::{actor_runtime::ActorStorage, storage::HostStorage};
+use super::{actor_database::ActorStorage, storage::HostStorage};
 use crate::{
     state_transport::{SnapshotWriter, StateWrite},
     storage::WritePlan,

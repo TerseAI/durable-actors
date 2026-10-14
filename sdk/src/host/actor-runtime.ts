@@ -21,6 +21,7 @@ import { bindPersistedFields, isPersistedField } from "./persisted-fields.js"
 import type { ActorExecutorReply, HydrateCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
+import { ActorResource } from "../actor/resource.js"
 
 class ActorRuntime {
     private instance: AnyActor | undefined
@@ -54,7 +55,23 @@ class ActorRuntime {
     }
 
     async close(): Promise<void> {
+        await this.shutdown()
         this.reset()
+    }
+
+    async shutdown(): Promise<void> {
+        if (this.instance === undefined) return
+    
+        const fields = this.definition.state.fields
+            .filter(field => field.resource)
+            .reverse()
+    
+        await runWithActorDatabase(this.instance, "immediate", async () => {
+            for (const field of fields) {
+                const resource = Reflect.get(this.instance!, field.name) as ActorResource
+                await resource.onGracefulShutdown({ db: this.database })
+            }
+        })
     }
 
     private async execute(
@@ -265,6 +282,13 @@ class ActorRuntime {
         this.identity = { ...identity }
         this.instance = instance
 
+        const resources = this.definition.state.fields.filter(field => field.resource)
+        await runWithActorDatabase(instance, "immediate", async () => {
+            for (const field of resources) {
+                const resource = Reflect.get(instance, field.name) as ActorResource
+                await resource.onResume({ db: this.database })
+            }
+        })
         return instance
     }
 }
