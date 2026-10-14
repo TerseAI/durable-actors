@@ -12,11 +12,10 @@ export class PiAgent extends Actor {
     @Resource private readonly agent = new DurablePiAgent({
         models,
         registry,
-        model: { provider: "openai", modelId: "gpt-6-sol" },
     })
 
     async prompt(text: string): Promise<string> {
-        const response = await this.agent.prompt(text)
+        const response = await this.agent.prompt(text, { provider: "openai", modelId: "gpt-6-sol" })
         return response
     }
 }

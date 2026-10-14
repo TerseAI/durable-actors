@@ -7,11 +7,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
 
 const context = BACKGROUND_CONTEXT;
 
-export type DurablePiAgentOptions = HarnessOptions & { readonly model: ModelRef }
-
 export class DurablePiAgent implements ActorResource {
     private _harness?: Harness
-    private readonly options: DurablePiAgentOptions
+    private readonly options: HarnessOptions
 
 
     get harness(): Harness {
@@ -21,12 +19,13 @@ export class DurablePiAgent implements ActorResource {
         return this._harness
     }
 
-    constructor(options: DurablePiAgentOptions) {
+    constructor(options: HarnessOptions) {
         this.options = options
     }
 
-    async prompt(text: string): Promise<string> {
+    async prompt(text: string, model: ModelRef): Promise<string> {
          const root = await this.harness.root(context)
+         await root.configure({ model }, context)
 
          const job = {
             type: "input",
@@ -55,8 +54,6 @@ export class DurablePiAgent implements ActorResource {
 
     async onResume({ db }: ActorResourceContext): Promise<void> {
         this._harness = await Harness.open(new ActorStorage(db), this.options, context)
-        const root = await this._harness.root(context)
-        await root.configure({ model: this.options.model }, context)
         this._harness.resume();
     }
 
