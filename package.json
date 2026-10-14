@@ -32,7 +32,8 @@
         "sdk",
         "packages/*",
         "examples/*",
-        "examples/*/*"
+        "examples/persistence/*",
+        "examples/pi/*"
     ],
     "engines": {
         "bun": ">=1.4.2"
