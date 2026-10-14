@@ -7,52 +7,50 @@ import { DurablePiAgent } from "@durable-actors/pi-durable"
 import { createModels } from "@earendil-works/pi-ai"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
 import { createRegistry } from "@earendil-works/pi-durable"
-import { Actor } from "durable-actors"
+import { Actor, Resource } from "durable-actors"
 
 const models = createModels()
 models.setProvider(openaiProvider())
 const registry = createRegistry()
 
 export class PiAgent extends Actor {
-    private agent = new DurablePiAgent(this, {
+    @Resource private readonly agent = new DurablePiAgent({
         models,
         registry,
-        model: { provider: "openai", modelId: "gpt-5-mini" }
+        model: { provider: "openai", modelId: "gpt-6-sol" }
     })
 
     async prompt(text: string): Promise<string> {
-        const result = await this.agent.prompt(text)
-        return result.text
+        return this.agent.prompt(text)
     }
 }
 ```
 
-`models`, `registry`, and `model` are required. Install your extensions and tools in the registry before prompting. The private `DurablePiAgent` field is an `ActorResource`, so the actor compiler treats it as ephemeral. Pi's conversation is persisted separately in the actor's SQLite database.
+`models`, `registry`, and `model` are required. Install your extensions and tools in the registry before prompting. Mark the private `DurablePiAgent` field with `@Resource` so the actor runtime manages its lifecycle. Pi's conversation is persisted separately in the actor's SQLite database.
 
-Construction does not access storage. Each `prompt()` opens the harness, submits input, waits for a completed answer, returns `{ text }`, and closes the harness. Failed prompts reject with Pi's reason and error detail. A subsequent prompt restores the same root conversation and resumes pending work.
+Construction does not access storage. `onResume()` opens the harness, restores the root conversation, configures the supplied model, and resumes pending work. Each `prompt()` submits input, waits for a completed answer, and returns its text without changing the conversation's model. Failed prompts reject with Pi's reason and error detail. `onGracefulShutdown()` closes the harness.
 
 ## Native Pi access
 
-`agent.session` exposes `PiSession`. Use `run()` inside an actor method to work directly with Pi's native `harness`, root `conversation`, and Chord `context`:
+`agent.harness` exposes Pi's native harness while the resource is resumed. Use it inside an actor method with a Chord context:
 
 ```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
+
 async reset(): Promise<void> {
-    await this.agent.session.run(({ conversation, context }) =>
-        conversation.reset(undefined, context)
-    )
+    const root = await this.agent.harness.root(BACKGROUND_CONTEXT)
+    await root.reset(undefined, BACKGROUND_CONTEXT)
 }
 
 async usage() {
-    return this.agent.session.run(({ harness, context }) =>
-        harness.usage(context)
-    )
+    return this.agent.harness.usage(BACKGROUND_CONTEXT)
 }
 ```
 
-The callback can use Pi's APIs for configuration, documents, tools, watches, additional conversations, and tasks directly. Await its work within the callback: the harness closes when the callback finishes, including when it throws. Keep native handles and watches inside that scope. `prompt()` uses the same lifecycle internally.
+Use Pi's APIs for configuration, documents, tools, watches, additional conversations, and tasks directly. Keep native handles and watches within the resource's lifecycle.
 
 Adapter options extend Pi's native `HarnessOptions`, adding the required `model`. Pass `env`, `settings`, `conversationCreated`, and `onReport` directly. Register integration tools, including Pi-compatible Composio tools, in the supplied Pi registry; they use Pi's normal tool execution without an adapter protocol. Built-in filesystem tools can use an execution environment supplied through `env`.
 
-Use one agent per actor and ordinary serialized actor methods. Run session callbacks sequentially. This initial adapter replays an append-only commit log into Pi's `MemoryStorage` on each operation, so memory and reopen time grow with history. It does not schedule background wakeups. Native watches and events are available inside `run()`; the `prompt()` convenience returns completed text.
+Use one agent per actor and ordinary serialized actor methods. This initial adapter replays an append-only commit log into Pi's `MemoryStorage` when the resource resumes, so memory and reopen time grow with history. It does not schedule background wakeups. Native watches and events are available through the harness; the `prompt()` convenience returns completed text.
 
 See the [actor and CLI example](../../examples/pi/README.md). This package is under development in this workspace and has not been published.

@@ -30,15 +30,15 @@ bun run start send "Remember that my name is Alice."
 bun run start send "What is my name?"
 ```
 
-Restart the runtime and ask again to check persistence. The example uses OpenAI's `gpt-5-mini`; change `model` in [PiAgent](src/actors.ts) to select another model. The runtime uses port `7104`.
+Restart the runtime and ask again to check persistence. The example uses OpenAI's `gpt-6-sol`; change `model` in [PiAgent](src/actors.ts) to select another model. The runtime uses port `7104`.
 
 ## Storage
 
-[PiAgent](src/actors.ts) creates `new DurablePiAgent(this, { models, registry, model })` and returns `result.text` from `agent.prompt()`. The [adapter](../../../packages/pi-durable/README.md) owns storage, opens and closes the harness per prompt, and restores Pi's transcript and task state from actor-local SQLite. Its private actor field is implicitly ephemeral; no decorator is needed.
+[PiAgent](src/actors.ts) creates `new DurablePiAgent({ models, registry, model })` and returns the text from `agent.prompt()`. The [adapter](../../../packages/pi-durable/README.md) owns storage, restores Pi's transcript and task state from actor-local SQLite during `onResume()`, and configures the supplied model before resuming pending work. Its private actor field uses `@Resource` so the runtime resumes it and closes it during graceful shutdown.
 
-For native Pi operations and integrations, use `agent.session.run(({ harness, conversation, context }) => ...)` inside an actor method. Adapter options also accept Pi's native harness options, and integration tools belong in the supplied registry.
+For native Pi operations and integrations, use `agent.harness` with a Chord context inside an actor method. Adapter options also accept Pi's native harness options, and integration tools belong in the supplied registry.
 
-This first version keeps the whole commit log in memory and replays it per call. Prompts run serially; this example has no tools or streaming. An interrupted prompt needs a subsequent call to reopen the harness and resume pending work.
+This first version keeps the whole commit log in memory and replays it when the resource resumes. Prompts run serially; this example has no tools or streaming. Pending work resumes with the resource after a restart.
 
 ## Checks
 

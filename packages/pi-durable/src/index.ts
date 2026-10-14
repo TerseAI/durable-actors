@@ -1,5 +1,5 @@
 import { contentText } from "@earendil-works/pi-ai"
-import { AssistantEntry, Harness, HarnessOptions } from "@earendil-works/pi-durable"
+import { AssistantEntry, Harness, type HarnessOptions, type ModelRef } from "@earendil-works/pi-durable"
 import type { Actor, ActorResource, ActorResourceContext } from "durable-actors"
 
 import { ActorStorage } from "./storage.js"
@@ -7,9 +7,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
 
 const context = BACKGROUND_CONTEXT;
 
+export type DurablePiAgentOptions = HarnessOptions & { readonly model: ModelRef }
+
 export class DurablePiAgent implements ActorResource {
     private _harness?: Harness
-    private readonly HarnessOptions: HarnessOptions
+    private readonly options: DurablePiAgentOptions
 
 
     get harness(): Harness {
@@ -19,13 +21,12 @@ export class DurablePiAgent implements ActorResource {
         return this._harness
     }
 
-    constructor(options: HarnessOptions) {
-        this.HarnessOptions = options
+    constructor(options: DurablePiAgentOptions) {
+        this.options = options
     }
 
     async prompt(text: string): Promise<string> {
          const root = await this.harness.root(context)
-         await root.configure({ model: { provider: "openai", modelId: "gpt-6-sol" } }, context)
 
          const job = {
             type: "input",
@@ -53,7 +54,9 @@ export class DurablePiAgent implements ActorResource {
     }
 
     async onResume({ db }: ActorResourceContext): Promise<void> {
-        this._harness = await Harness.open(new ActorStorage(db), this.HarnessOptions, context)
+        this._harness = await Harness.open(new ActorStorage(db), this.options, context)
+        const root = await this._harness.root(context)
+        await root.configure({ model: this.options.model }, context)
         this._harness.resume();
     }
 

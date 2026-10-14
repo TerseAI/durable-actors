@@ -12,6 +12,7 @@ export class PiAgent extends Actor {
     @Resource private readonly agent = new DurablePiAgent({
         models,
         registry,
+        model: { provider: "openai", modelId: "gpt-6-sol" },
     })
 
     async prompt(text: string): Promise<string> {
