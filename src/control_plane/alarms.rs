@@ -94,21 +94,16 @@ impl AlarmStore for PostgresAlarmStore {
         timestamp_ms: Option<i64>,
     ) -> Result<()> {
         let state_version = i64::try_from(state_version).context("alarm state version overflow")?;
-        let actor_key = actor.storage_key();
         self.database
             .execute(
                 "INSERT INTO durable_actors_alarm (
-                    actor_key, project_id, actor_name, actor_id, state_version, timestamp_ms
-                 ) VALUES ($1, $2, $3, $4, $5, $6)
-                 ON CONFLICT (actor_key) DO UPDATE SET
-                    project_id = EXCLUDED.project_id,
-                    actor_name = EXCLUDED.actor_name,
-                    actor_id = EXCLUDED.actor_id,
+                    project_id, actor_name, actor_id, state_version, timestamp_ms
+                 ) VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (project_id, actor_name, actor_id) DO UPDATE SET
                     state_version = EXCLUDED.state_version,
                     timestamp_ms = EXCLUDED.timestamp_ms
                  WHERE EXCLUDED.state_version > durable_actors_alarm.state_version",
                 &[
-                    &actor_key.as_str(),
                     &actor.project_id,
                     &actor.actor_name,
                     &actor.actor_id,
@@ -125,7 +120,7 @@ impl AlarmStore for PostgresAlarmStore {
             .database
             .query_opt(
                 "WITH due AS (
-                    SELECT actor_key, timestamp_ms
+                    SELECT project_id, actor_name, actor_id, timestamp_ms
                     FROM durable_actors_alarm
                     WHERE timestamp_ms <= $1
                     ORDER BY timestamp_ms
@@ -135,7 +130,9 @@ impl AlarmStore for PostgresAlarmStore {
                  UPDATE durable_actors_alarm AS alarm
                  SET timestamp_ms = NULL
                  FROM due
-                 WHERE alarm.actor_key = due.actor_key
+                 WHERE alarm.project_id = due.project_id
+                   AND alarm.actor_name = due.actor_name
+                   AND alarm.actor_id = due.actor_id
                  RETURNING alarm.project_id, alarm.actor_name, alarm.actor_id,
                            alarm.state_version, due.timestamp_ms",
                 &[&now_ms],
@@ -159,13 +156,19 @@ impl AlarmStore for PostgresAlarmStore {
     async fn restore(&self, alarm: &ClaimedAlarm) -> Result<()> {
         let state_version =
             i64::try_from(alarm.state_version).context("alarm state version overflow")?;
-        let actor_key = alarm.actor.storage_key();
         self.database
             .execute(
                 "UPDATE durable_actors_alarm
-                 SET timestamp_ms = $2
-                 WHERE actor_key = $1 AND state_version = $3 AND timestamp_ms IS NULL",
-                &[&actor_key.as_str(), &alarm.timestamp_ms, &state_version],
+                 SET timestamp_ms = $4
+                 WHERE project_id = $1 AND actor_name = $2 AND actor_id = $3
+                   AND state_version = $5 AND timestamp_ms IS NULL",
+                &[
+                    &alarm.actor.project_id,
+                    &alarm.actor.actor_name,
+                    &alarm.actor.actor_id,
+                    &alarm.timestamp_ms,
+                    &state_version,
+                ],
             )
             .await?;
         Ok(())
@@ -174,11 +177,10 @@ impl AlarmStore for PostgresAlarmStore {
 
 #[derive(Default)]
 pub(super) struct MemoryAlarmStore {
-    alarms: Mutex<HashMap<String, MemoryAlarm>>,
+    alarms: Mutex<HashMap<ActorKey, MemoryAlarm>>,
 }
 
 struct MemoryAlarm {
-    actor: ActorKey,
     state_version: u64,
     timestamp_ms: Option<i64>,
 }
@@ -192,17 +194,15 @@ impl AlarmStore for MemoryAlarmStore {
         timestamp_ms: Option<i64>,
     ) -> Result<()> {
         let mut alarms = self.alarms.lock().unwrap();
-        let key = actor.storage_key().to_string();
         if alarms
-            .get(&key)
+            .get(actor)
             .is_some_and(|current| current.state_version >= state_version)
         {
             return Ok(());
         }
         alarms.insert(
-            key,
+            actor.clone(),
             MemoryAlarm {
-                actor: actor.clone(),
                 state_version,
                 timestamp_ms,
             },
@@ -212,7 +212,7 @@ impl AlarmStore for MemoryAlarmStore {
 
     async fn claim_due(&self, now_ms: i64) -> Result<Option<ClaimedAlarm>> {
         let mut alarms = self.alarms.lock().unwrap();
-        let Some((_, alarm)) = alarms
+        let Some((actor, alarm)) = alarms
             .iter_mut()
             .filter(|(_, alarm)| {
                 alarm
@@ -225,7 +225,7 @@ impl AlarmStore for MemoryAlarmStore {
         };
         let timestamp_ms = alarm.timestamp_ms.take().unwrap();
         Ok(Some(ClaimedAlarm {
-            actor: alarm.actor.clone(),
+            actor: actor.clone(),
             state_version: alarm.state_version,
             timestamp_ms,
         }))
@@ -233,7 +233,7 @@ impl AlarmStore for MemoryAlarmStore {
 
     async fn restore(&self, alarm: &ClaimedAlarm) -> Result<()> {
         let mut alarms = self.alarms.lock().unwrap();
-        let Some(current) = alarms.get_mut(&alarm.actor.storage_key().to_string()) else {
+        let Some(current) = alarms.get_mut(&alarm.actor) else {
             return Ok(());
         };
         if current.state_version == alarm.state_version && current.timestamp_ms.is_none() {

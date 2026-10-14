@@ -98,6 +98,98 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_alarm_lifecycle_uses_the_normal_invocation_path():
+    class Reminder(Actor):
+        fired: bool = persisted(False)
+
+        def schedule(self, timestamp_ms: int) -> int | None:
+            self.alarm.set(timestamp_ms)
+            return self.alarm.get()
+
+        def on_alarm(self) -> None:
+            self.alarm.delete()
+            self.fired = True
+
+        def state(self) -> tuple[bool, int | None]:
+            return self.fired, self.alarm.get()
+
+    runtime = ActorRuntime(Reminder, Effects())
+    actor = {**ACTOR, "actor_name": "Reminder"}
+    assert (await runtime.handle(command("schedule", [1_000], actor=actor)))["result"] == 1_000
+
+    delivered = await runtime.handle(command("onAlarm", actor=actor))
+    assert delivered == {"type": "invoked", "result": None}
+    assert (await runtime.handle(command("state", actor=actor)))["result"] == [True, None]
+
+
+async def test_async_actors_can_schedule_and_handle_alarms():
+    class Reminder(AsyncActor):
+        fired: bool = persisted(False)
+
+        async def schedule(self, timestamp_ms: int) -> None:
+            await self.alarm.set(timestamp_ms)
+
+        async def on_alarm(self) -> None:
+            await self.alarm.delete()
+            self.fired = True
+
+        async def fired_at(self) -> tuple[bool, int | None]:
+            return self.fired, await self.alarm.get()
+
+    runtime = ActorRuntime(Reminder, Effects())
+    actor = {**ACTOR, "actor_name": "Reminder"}
+    await runtime.handle(command("schedule", [1_000], actor=actor))
+    await runtime.handle(command("onAlarm", actor=actor))
+    assert (await runtime.handle(command("fired_at", actor=actor)))["result"] == [True, None]
+
+
+async def test_alarm_timestamps_must_be_safe_integers():
+    class Reminder(Actor):
+        def schedule(self, timestamp_ms: int) -> None:
+            self.alarm.set(timestamp_ms)
+
+    runtime = ActorRuntime(Reminder, Effects())
+    actor = {**ACTOR, "actor_name": "Reminder"}
+    reply = await runtime.handle(command("schedule", [2**53], actor=actor))
+    assert reply["type"] == "failed"
+    assert "safe integer" in reply["message"]
+
+
+async def test_failed_alarm_callbacks_roll_back_alarm_changes():
+    class Reminder(Actor):
+        def schedule(self) -> None:
+            self.alarm.set(1_000)
+
+        def on_alarm(self) -> None:
+            self.alarm.delete()
+            raise RuntimeError("retry")
+
+        def scheduled_at(self) -> int | None:
+            return self.alarm.get()
+
+    runtime = ActorRuntime(Reminder, Effects())
+    actor = {**ACTOR, "actor_name": "Reminder"}
+    await runtime.handle(command("schedule", actor=actor))
+    assert (await runtime.handle(command("onAlarm", actor=actor)))["type"] == "failed"
+    assert (await runtime.handle(command("scheduled_at", actor=actor)))["result"] == 1_000
+
+
+async def test_alarm_handles_expire_after_their_invocation():
+    escaped = []
+
+    class Reminder(Actor):
+        def schedule(self) -> None:
+            self.alarm.set(1_000)
+            escaped.append(self.alarm)
+
+    runtime = ActorRuntime(Reminder, Effects())
+    actor = {**ACTOR, "actor_name": "Reminder"}
+    await runtime.handle(command("schedule", actor=actor))
+
+    with pytest.raises(RuntimeError, match="outside its invocation"):
+        escaped[0].get()
+
+
 async def test_replaced_and_evicted_instances_are_released():
     runtime = ActorRuntime(Counter, Effects())
     instances = []
