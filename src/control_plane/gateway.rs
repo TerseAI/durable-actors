@@ -54,7 +54,9 @@ impl Gateway {
             .invocation
             .context("invocation capability missing")?;
         ensure!(
-            capability.actor == *actor && capability.owner_epoch == epoch,
+            principal.actor == *actor
+                && capability.actor == *actor
+                && capability.owner_epoch == epoch,
             "invocation target mismatch"
         );
         Ok(backend_origin(&capability.route)?.to_string())
