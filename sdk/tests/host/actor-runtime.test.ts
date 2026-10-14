@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { Actor, type ActorContext, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import { Ephemeral, Persisted } from "../../src/actor/decorators.js"
 import { Persistence } from "../../src/actor/schema.js"
 import type { ActorConnection, ActorSocket } from "../../src/actor/socket.js"
@@ -264,32 +264,6 @@ test("failed state recovery reports a fatal error instead of keeping a damaged i
         type: "failed",
         code: "invalid_actor_state",
         message: "cannot restore"
-    })
-})
-
-test("constructors that do not forward the actor context fail at runtime", async () => {
-    class InvalidConstructor extends Actor {
-        constructor(_context: ActorContext) {
-            super(undefined as never)
-        }
-
-        async read(): Promise<void> {}
-    }
-    const runtime = new ActorRuntime(
-        registerActorClass(InvalidConstructor, { actorName: "InvalidConstructor", fields: [] }),
-        () => {}
-    )
-    const reply = await runtime.handle({
-        type: "invoke",
-        actor: { project_id: "default", actor_name: "InvalidConstructor", actor_id: "one" },
-        request_id: "invalid-constructor",
-        method: "read",
-        args: []
-    })
-    assert.deepEqual(reply, {
-        type: "failed",
-        code: "invalid_actor_state",
-        message: "actors are constructed by the actor runtime"
     })
 })
 

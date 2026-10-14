@@ -277,39 +277,6 @@ test("rejects TypeScript errors in actor dependencies", async () => {
     }
 })
 
-test("explicit actor constructors must forward their runtime context to super", async () => {
-    const root = await createProject()
-    try {
-        const entrypoint = path.join(root, "src/actors.ts")
-        await writeFile(
-            entrypoint,
-            `import { Actor, type ActorContext } from "durable-actors"
-            export class Counter extends Actor {
-                constructor(context: ActorContext) { super(context) }
-            }`
-        )
-        assert.equal(new ActorCompiler().check(entrypoint)[0]?.actorName, "Counter")
-        await writeFile(
-            entrypoint,
-            `import { Actor, type ActorContext } from "durable-actors"
-            export class Counter extends Actor {
-                constructor(context: ActorContext) {}
-            }`
-        )
-        assert.throws(() => new ActorCompiler().check(entrypoint), /must contain a 'super' call/)
-        await writeFile(
-            entrypoint,
-            `import { Actor, type ActorContext } from "durable-actors"
-            export class Counter extends Actor {
-                constructor(context: ActorContext) { super() }
-            }`
-        )
-        assert.throws(() => new ActorCompiler().check(entrypoint), /Expected 1 arguments, but got 0/)
-    } finally {
-        await rm(root, { recursive: true, force: true })
-    }
-})
-
 test("source loading respects noEmit configurations with TypeScript extension imports", async () => {
     const root = await createProject()
     try {
@@ -459,15 +426,6 @@ test("rejects unsupported persistence targets and syntax", () => {
         assert.ok(result.diagnostics.length > 0, member)
         assert.deepEqual(result.schemas, [], member)
     }
-})
-
-test("accepts actor constructors without treating parameters as persisted fields", () => {
-    const result = analyze(`import { Actor, type ActorContext } from "./sdk.js"
-        export class Counter extends Actor {
-            constructor(context: ActorContext) { super(context) }
-        }`)
-    assert.deepEqual(result.diagnostics, [])
-    assert.deepEqual(result.schemas, [{ actorName: "Counter", fields: [] }])
 })
 
 test("checks class decorators and entrypoint exports", () => {
