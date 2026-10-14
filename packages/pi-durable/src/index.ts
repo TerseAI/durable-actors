@@ -1,3 +1,4 @@
+import { contentText } from "@earendil-works/pi-ai"
 import { AssistantEntry, Harness, HarnessOptions } from "@earendil-works/pi-durable"
 import type { Actor, ActorResource, ActorResourceContext } from "durable-actors"
 
@@ -48,7 +49,7 @@ export class DurablePiAgent implements ActorResource {
         if (answer.model === undefined)
             throw new Error("The Pi model did not provide an answer")
 
-        return answer.model[0].content.toString()
+        return contentText(answer.model[0].content)
     }
 
     async onResume({ db }: ActorResourceContext): Promise<void> {
