@@ -24,6 +24,7 @@ export class DurablePiAgent implements ActorResource {
 
     async prompt(text: string): Promise<string> {
          const root = await this.harness.root(context)
+         await root.configure({ model: { provider: "openai", modelId: "gpt-6-sol" } }, context)
 
          const job = {
             type: "input",
