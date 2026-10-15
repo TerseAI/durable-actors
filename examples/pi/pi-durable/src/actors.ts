@@ -29,29 +29,34 @@ export class PiAgent extends Actor<null, string, ChatEvent> {
 
     @Interleave
     async prompt(text: string): Promise<string> {
-        console.log("prompt", text);
 
         const stream = await watchEvents(this.agent.harness,this.agent.root.id, context)
-
-        stream.start(async (events) => {
+        this.broadcast({ type: "start", prompt: text })
+        await stream.start(async (events) => {
             for (const event of events) {
                 switch (event.type) {
                     case "message_update":
                         for (const change of event.changes) {
-                            if (change.type === "text_delta") this.broadcast({ type: "delta", text: change.delta })
+                            if (change.type === "text_delta")  {
+                                this.broadcast({ type: "delta", text: change.delta });
+                            }
                         }
-                    case "message_end":
-                        this.broadcast({ type: "done" });
+                        break;
                 }
             }
         })
 
         const response = await this.agent.prompt(text)
+        this.broadcast({ type: "done" });
+
         return response
     }
 
     async reset() {
         await this.agent.root.reset(undefined, context)
+        const { messages } = await this.agent.root.context(context)
+        const messages2 = Array.from(messages);
+        this.broadcast({ type: "history", messages: chatMessages(messages2) });
     }
 
     async ringGoesInMountDoom() {
