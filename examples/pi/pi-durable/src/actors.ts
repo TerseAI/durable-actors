@@ -3,7 +3,8 @@ import { contentText, createModels, JsonValue, Message } from "@earendil-works/p
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
 import { createRegistry, watchEvents } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Actor, Resource, Interleave, ActorSocket } from "durable-actors"
+import { Actor, Resource, Interleave, ActorSocket, ActorResource, ActorResourceContext, ActorDatabase } from "durable-actors"
+import { ModalClient, Sandbox } from "modal";
 
 const models = createModels()
 models.setProvider(openaiProvider())
@@ -21,11 +22,13 @@ export type ChatMessage =
   | { role: "assistant"; content: string };
 
 export class PiAgent extends Actor<null, string, ChatEvent> {
-    @Resource private readonly agent = new DurablePiAgent({
+    @Resource private readonly agent = new DurablePiAgent(this.db, {
         models,
         registry,
         agent: { model: { provider: "openai", modelId: "gpt-6-sol" } },
     })
+
+    @Resource private sanbdox = new ModalSandbox(this.db)
 
     @Interleave
     async prompt(text: string): Promise<string> {
@@ -76,4 +79,63 @@ function chatMessages(messages: readonly Message[]): ChatMessage[] {
             ? [{ role: message.role, content: contentText(message.content) }]
             : []
     )
+}
+
+const APP_NAME = "pi-durable-sandboxes"
+const WORKSPACE = "/workspace"
+const IMAGE = "node:22"
+const PORTS = [3000]
+
+type SandboxRow = { sandbox_id: string | null; workspace_image_id: string | null }
+
+
+class ModalSandbox implements ActorResource {
+    private modal: ModalClient;
+    private _sandbox: Sandbox | undefined;
+
+    get sandbox(): Sandbox {
+        if (this._sandbox === undefined) {
+            throw new Error("Sandbox not created")
+        }
+        return this._sandbox
+    }
+
+    constructor(private readonly db: ActorDatabase) {
+        this.modal = new ModalClient({
+            tokenId: process.env.MODAL_TOKEN_ID,
+            tokenSecret: process.env.MODAL_TOKEN_SECRET,
+        });
+
+        this.db.exec("CREATE TABLE IF NOT EXISTS modal_sandbox (id INTEGER PRIMARY KEY CHECK (id = 1), sandbox_id TEXT, workspace_image_id TEXT)")
+    }
+
+    private async reattach(sandboxId: string | null): Promise<Sandbox | undefined> {
+        if (sandboxId === null) return undefined
+        
+        const sandbox = await this.modal.sandboxes.fromId(sandboxId)
+        return (await sandbox.poll()) === null ? sandbox : undefined
+    }
+
+    private async createSandbox(): Promise<Sandbox> {
+        const app = await this.modal.apps.fromName(APP_NAME, { createIfMissing: true })
+        return this.modal.sandboxes.create(app, this.modal.images.fromRegistry(IMAGE), {
+            encryptedPorts: [...PORTS],
+            timeoutMs: 10000,
+            idleTimeoutMs: 10000,
+        })
+    }
+
+    async onResume(): Promise<void> {
+        const [row] = this.db.exec<SandboxRow>("SELECT sandbox_id, workspace_image_id FROM modal_sandbox")
+
+        if (row.sandbox_id === null) {
+           this._sandbox = await this.createSandbox()
+        }
+
+        return Promise.resolve();
+    }
+
+    onGracefulShutdown(): Promise<void> {
+        return Promise.resolve();
+    }
 }

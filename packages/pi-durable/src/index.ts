@@ -1,6 +1,6 @@
 import { contentText } from "@earendil-works/pi-ai"
 import { AgentChange, AssistantEntry, Conversation, Harness, type HarnessOptions, type ModelRef } from "@earendil-works/pi-durable"
-import type { Actor, ActorResource, ActorResourceContext } from "durable-actors"
+import type { Actor, ActorDatabase, ActorResource, ActorResourceContext } from "durable-actors"
 
 import { ActorStorage } from "./storage.js"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
@@ -29,7 +29,7 @@ export class DurablePiAgent implements ActorResource {
         return this._root
     }
 
-    constructor(private readonly options: DurablePiAgentOptions) {}
+    constructor(private readonly db: ActorDatabase, private readonly options: DurablePiAgentOptions) {}
 
     async prompt(text: string): Promise<string> {
          const job = {
@@ -57,8 +57,8 @@ export class DurablePiAgent implements ActorResource {
         return contentText(answer.model[0].content)
     }
 
-    async onResume({ db }: ActorResourceContext): Promise<void> {
-        this._harness = await Harness.open(new ActorStorage(db), this.options, context)
+    async onResume(): Promise<void> {
+        this._harness = await Harness.open(new ActorStorage(this.db), this.options, context)
         this._root = await this.harness.root(context)
         await this.root.configure(
             { model: this.options.agent.model },
@@ -67,7 +67,7 @@ export class DurablePiAgent implements ActorResource {
         this._harness.resume();
     }
 
-    async onGracefulShutdown({ db }: ActorResourceContext): Promise<void> {
+    async onGracefulShutdown(): Promise<void> {
         if (this.harness === undefined) return
         await this.harness.close(context)
         this._harness = undefined
