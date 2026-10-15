@@ -309,6 +309,7 @@ async fn prepare_actor_host(
     let host = Arc::new(
         ActorHost::new(
             endpoint,
+            assignment.actor.clone(),
             executor_connection.executor(),
             database,
             sockets.clone(),

@@ -38,6 +38,14 @@ struct IncrementingExecutor {
 mod sqlite;
 use sqlite::{exec, fields, persist_fields, replication, write_fields};
 
+fn counter() -> ActorKey {
+    ActorKey {
+        project_id: "default".into(),
+        actor_name: "Counter".into(),
+        actor_id: "counter-1".into(),
+    }
+}
+
 fn create_host(
     endpoint: HostEndpoint,
     executor: Arc<dyn ActorExecutor>,
@@ -47,7 +55,7 @@ fn create_host(
     replication: Arc<dyn crate::litestream::Replicator>,
 ) -> ActorHost {
     let database = HostDatabase::new(endpoint.clone(), storage, writer, replication);
-    ActorHost::new(endpoint, executor, database, publisher)
+    ActorHost::new(endpoint, counter(), executor, database, publisher)
 }
 
 type RestoredDatabase = (Value, Vec<Vec<SqlValue>>);
@@ -1078,11 +1086,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
     let authority = Arc::new(FakeAuthority {
         ..Default::default()
     });
-    let actor = ActorKey {
-        project_id: "default".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-    };
+    let actor = counter();
     let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
@@ -1174,11 +1178,7 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
     let (hydrated, mut captured) = mpsc::unbounded_channel();
     let (started, mut invocations) = mpsc::unbounded_channel();
     let state = Arc::new(FakeStateTransport::default());
-    let actor = ActorKey {
-        project_id: "default".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-    };
+    let actor = counter();
     let host = Arc::new(create_host(
         HostEndpoint {
             id: super::super::HostId::new("host-1"),
@@ -1265,11 +1265,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
         ..Default::default()
     });
     let transport = Arc::new(FakeStateTransport::default());
-    let actor = ActorKey {
-        project_id: "default".into(),
-        actor_name: "Counter".into(),
-        actor_id: "restored".into(),
-    };
+    let actor = counter();
     let host = create_host(
         HostEndpoint {
             id: super::super::HostId::new("host"),

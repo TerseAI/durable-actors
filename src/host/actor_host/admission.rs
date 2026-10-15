@@ -10,18 +10,16 @@ pub(super) async fn run(
     database: Arc<HostDatabase>,
     publisher: Arc<dyn ActorSocketPublisher>,
     mut requests: mpsc::UnboundedReceiver<ActorRequest>,
-    completed: mpsc::Sender<ActorCompletion>,
     accepting: watch::Receiver<bool>,
-    mut admission: Option<watch::Receiver<()>>,
 ) {
     let stopped = database.stopped.clone();
+    let mut admission = executor.invocation_admission();
     let mut mailbox = Mailbox {
         actor,
         endpoint,
         executor,
         database,
         publisher,
-        completed,
         running: FuturesUnordered::new(),
         next_invocation: 0,
         blocked_on: None,
@@ -45,7 +43,7 @@ pub(super) async fn run(
                 Some(request) => {
                     if let Some(admission) = &mut admission { admission.borrow_and_update(); }
                     let accepting = *accepting.borrow();
-                    mailbox.admit(request, accepting).await;
+                    mailbox.admit(request, accepting);
                 }
                 None => open = false,
             },
@@ -68,7 +66,6 @@ struct Mailbox {
     executor: Arc<dyn ActorExecutor>,
     database: Arc<HostDatabase>,
     publisher: Arc<dyn ActorSocketPublisher>,
-    completed: mpsc::Sender<ActorCompletion>,
     running: FuturesUnordered<BoxFuture<'static, Completion>>,
     next_invocation: u64,
     blocked_on: Option<u64>,
@@ -77,10 +74,9 @@ struct Mailbox {
 }
 
 impl Mailbox {
-    async fn admit(&mut self, mut request: ActorRequest, accepting: bool) {
+    fn admit(&mut self, mut request: ActorRequest, accepting: bool) {
         if !accepting && !request.operation.is_disconnect() {
-            self.finish(request, Ok(ActorExecutionResult::HostUnavailable))
-                .await;
+            request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
             return;
         }
         drop(request.waiting.take());
@@ -127,16 +123,15 @@ impl Mailbox {
         self.interleaved |= interleaved;
         if stop || unexpected || self.database.stopped.is_cancelled() {
             self.evict().await;
-            self.finish(
-                request,
+            request.finish(
+                &self.endpoint,
                 Ok(ActorExecutionResult::Failed {
                     failure: ActorInvocationFailure::outcome_unknown_after_execution(),
                 }),
-            )
-            .await;
+            );
             return false;
         }
-        self.finish(request, result).await;
+        request.finish(&self.endpoint, result);
         if self.blocked_on == Some(id) {
             self.blocked_on = None;
         }
@@ -153,23 +148,5 @@ impl Mailbox {
         {
             tracing::warn!(%error, "failed to evict stopped actor");
         }
-    }
-
-    async fn finish(&mut self, mut request: ActorRequest, result: Result<ActorExecutionResult>) {
-        request.tracker.complete(&result);
-        log_invocation(
-            &self.endpoint,
-            &request.operation.invocation(),
-            request.tracker.completion(),
-            &result,
-        );
-        let _ = self
-            .completed
-            .send(ActorCompletion {
-                object: self.actor.storage_key(),
-                reply: request.reply,
-                result,
-            })
-            .await;
     }
 }

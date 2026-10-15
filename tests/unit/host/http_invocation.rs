@@ -8,6 +8,7 @@ use crate::{
 };
 use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use tokio::task::JoinSet;
 
 #[tokio::test]
 async fn invocation_response_reuses_observability_timings() -> Result<()> {

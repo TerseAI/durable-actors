@@ -3,23 +3,19 @@ use crate::request_tracking::HostState;
 use crate::request_tracking::{RequestMetadata, RequestObserver, RequestTracker};
 use std::{
     borrow::Cow,
+    panic::AssertUnwindSafe,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
-use tokio::{
-    sync::{mpsc, oneshot, watch},
-    task::{Id, JoinError, JoinSet},
-};
+use futures_util::FutureExt;
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::error;
 
-use crate::{
-    actor::{
-        ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure, ActorKey,
-        ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher,
-    },
-    actor_state::ActorStorageKey,
+use crate::actor::{
+    ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure, ActorKey,
+    ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher,
 };
 
 use super::{
@@ -32,14 +28,15 @@ mod admission;
 mod execution;
 use execution::{log_invocation, socket_event_name};
 
-const HOST_COMMAND_CAPACITY: usize = 256;
-
 pub(crate) struct ActorHost {
     traces: Option<TraceSender>,
     queues: ActorQueues,
     endpoint: HostEndpoint,
-    commands: mpsc::Sender<HostCommand>,
-    activity: watch::Receiver<ActorActivity>,
+    actor: ActorKey,
+    executor: Arc<dyn ActorExecutor>,
+    mailbox: mpsc::UnboundedSender<ActorRequest>,
+    activity: watch::Sender<ActorActivity>,
+    accepting: watch::Sender<bool>,
     stopped: watch::Receiver<bool>,
 }
 
@@ -61,30 +58,36 @@ impl Default for ActorActivity {
 impl ActorHost {
     pub(crate) fn new(
         endpoint: HostEndpoint,
-
+        actor: ActorKey,
         executor: Arc<dyn ActorExecutor>,
         database: Arc<HostDatabase>,
         publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
-        let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
-        let (activity_tx, activity) = watch::channel(ActorActivity::default());
+        let activity = watch::channel(ActorActivity::default()).0;
+        let accepting = watch::channel(true).0;
         let (stopped_tx, stopped) = watch::channel(false);
-        let queues = ActorQueues::new();
-        let dispatcher = HostDispatcher::new(
-            endpoint.clone(),
-            executor,
-            database,
-            publisher,
-            (activity_tx, stopped_tx),
-            queues.clone(),
+        let (mailbox, requests) = mpsc::unbounded_channel();
+        spawn_mailbox(
+            admission::run(
+                actor.clone(),
+                endpoint.clone(),
+                executor.clone(),
+                database,
+                publisher,
+                requests,
+                accepting.subscribe(),
+            ),
+            stopped_tx,
         );
-        tokio::spawn(dispatcher.run(incoming));
         Self {
             traces: None,
-            queues,
+            queues: ActorQueues::new(),
             endpoint,
-            commands,
+            actor,
+            executor,
+            mailbox,
             activity,
+            accepting,
             stopped,
         }
     }
@@ -94,7 +97,7 @@ impl ActorHost {
     }
 
     pub(super) fn activity(&self) -> watch::Receiver<ActorActivity> {
-        self.activity.clone()
+        self.activity.subscribe()
     }
 
     pub(crate) fn stopped(&self) -> watch::Receiver<bool> {
@@ -154,17 +157,12 @@ impl ActorHost {
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
-        tokio::time::timeout(timeout, async {
-            let (reply, done) = oneshot::channel();
-            self.commands
-                .send(HostCommand::Drain(reply))
-                .await
-                .context("actor dispatcher stopped")?;
-            done.await
-                .context("actor dispatcher stopped while draining")
-        })
-        .await
-        .context("actor invocations did not drain before shutdown")?
+        self.accepting.send_replace(false);
+        let mut activity = self.activity.subscribe();
+        tokio::time::timeout(timeout, activity.wait_for(|activity| activity.active == 0))
+            .await
+            .context("actor invocations did not drain before shutdown")??;
+        Ok(())
     }
 
     async fn submit(
@@ -188,26 +186,21 @@ impl ActorHost {
         let (reply, result) = oneshot::channel();
         let (tracker, timing) =
             RequestTracker::new(started, host_state, routing_ms, self.observer(&operation));
-        let request = ActorRequest {
+        self.admit(ActorRequest {
             tracker,
             waiting: None,
             operation,
             owner_epoch,
-
-            reply,
-        };
-        let outcome = match self
-            .commands
-            .send(HostCommand::Invoke(Box::new(request)))
-            .await
-        {
-            Ok(()) => result.await.unwrap_or_else(|_| {
-                Ok(ActorExecutionResult::Failed {
-                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-                })
-            }),
-            Err(_) => Err(anyhow::anyhow!("actor dispatcher stopped")),
-        };
+            reply: ActorReply {
+                sender: reply,
+                in_flight: InFlight::new(self.activity.clone()),
+            },
+        });
+        let outcome = result.await.unwrap_or_else(|_| {
+            Ok(ActorExecutionResult::Failed {
+                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+            })
+        });
         let timing = timing.await.ok();
         (outcome, timing)
     }
@@ -239,112 +232,26 @@ impl ActorHost {
             metadata,
         )))
     }
-}
 
-struct HostDispatcher {
-    last_active: tokio::time::Instant,
-    endpoint: HostEndpoint,
-
-    executor: Arc<dyn ActorExecutor>,
-    database: Arc<HostDatabase>,
-    publisher: Arc<dyn ActorSocketPublisher>,
-    mailbox: Option<ActorMailbox>,
-    identity: Option<ActorStorageKey>,
-    tasks: JoinSet<()>,
-    accepting: watch::Sender<bool>,
-    activity: watch::Sender<ActorActivity>,
-    stopped: watch::Sender<bool>,
-    active: usize,
-    queues: ActorQueues,
-    drained: Vec<oneshot::Sender<()>>,
-}
-
-impl HostDispatcher {
-    fn new(
-        endpoint: HostEndpoint,
-
-        executor: Arc<dyn ActorExecutor>,
-        database: Arc<HostDatabase>,
-        publisher: Arc<dyn ActorSocketPublisher>,
-        status: (watch::Sender<ActorActivity>, watch::Sender<bool>),
-        queues: ActorQueues,
-    ) -> Self {
-        let last_active = status.0.borrow().last_active;
-        Self {
-            last_active,
-            endpoint,
-            executor,
-            database,
-            publisher,
-            mailbox: None,
-            identity: None,
-            tasks: JoinSet::new(),
-            accepting: watch::channel(true).0,
-            activity: status.0,
-            stopped: status.1,
-            active: 0,
-            queues,
-            drained: Vec::new(),
-        }
-    }
-
-    async fn run(mut self, mut commands: mpsc::Receiver<HostCommand>) {
-        let (completed, mut completions) = mpsc::channel(HOST_COMMAND_CAPACITY);
-        loop {
-            tokio::select! {
-                biased;
-                Some(completion) = completions.recv() => self.complete(completion),
-                Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
-                command = commands.recv() => match command {
-                    Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
-                    Some(HostCommand::Drain(reply)) => {
-                        self.accepting.send_replace(false);
-                        self.drained.retain(|waiter| !waiter.is_closed());
-                        self.drained.push(reply);
-                        self.publish_activity();
-                    }
-                    None => return,
-                },
-            }
-        }
-    }
-
-    fn admit(&mut self, mut request: ActorRequest, completed: &mpsc::Sender<ActorCompletion>) {
+    fn admit(&self, mut request: ActorRequest) {
         if let Some(result) = self.validate(&request) {
             request.finish(&self.endpoint, result);
             return;
         }
-        let object = request.operation.actor().storage_key();
-        if self
-            .identity
-            .as_ref()
-            .is_some_and(|identity| *identity != object)
-        {
+        if request.operation.actor() != &self.actor {
             request.finish(&self.endpoint, Ok(ActorExecutionResult::Reroute));
             return;
         }
-        self.identity.get_or_insert_with(|| object.clone());
-        if self.mailbox.is_none() {
-            self.start_actor(request.operation.actor().clone(), completed.clone());
-        }
-        let mailbox = self.mailbox.as_mut().expect("actor mailbox created");
         if !matches!(&request.operation, ActorOperation::Activate { .. }) {
             request.waiting = Some(self.queues.enqueue(
                 request.operation.actor(),
                 request.operation.invocation().method.clone(),
             ));
         }
-        match mailbox.sender.send(request) {
-            Ok(()) => {
-                mailbox.admitted += 1;
-                self.active += 1;
-                self.publish_activity();
-            }
-            Err(error) => {
-                error
-                    .0
-                    .finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
-            }
+        if let Err(error) = self.mailbox.send(request) {
+            error
+                .0
+                .finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
         }
     }
 
@@ -368,83 +275,16 @@ impl HostDispatcher {
         }
         None
     }
-
-    fn start_actor(&mut self, actor: ActorKey, completed: mpsc::Sender<ActorCompletion>) {
-        let (sender, requests) = mpsc::unbounded_channel();
-        let admission = self.executor.invocation_admission();
-        let task = self.tasks.spawn(admission::run(
-            actor,
-            self.endpoint.clone(),
-            self.executor.clone(),
-            self.database.clone(),
-            self.publisher.clone(),
-            requests,
-            completed,
-            self.accepting.subscribe(),
-            admission,
-        ));
-        self.mailbox = Some(ActorMailbox {
-            sender,
-            admitted: 0,
-            task_id: task.id(),
-        });
-    }
-
-    fn complete(&mut self, completion: ActorCompletion) {
-        debug_assert_eq!(self.identity.as_ref(), Some(&completion.object));
-        let mailbox = self.mailbox.as_mut().expect("completed actor mailbox");
-        // A stopped task's remaining admissions may already have been released.
-        if mailbox.admitted > 0 {
-            mailbox.admitted -= 1;
-            self.active -= 1;
-        }
-        self.last_active = tokio::time::Instant::now();
-        self.publish_activity();
-        let _ = completion.reply.send(completion.result);
-    }
-
-    fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
-        let id = match result {
-            Ok((id, ())) => id,
-            Err(error) => {
-                error!(error = %error, "actor task stopped unexpectedly");
-                error.id()
-            }
-        };
-        if let Some(mailbox) = self
-            .mailbox
-            .as_mut()
-            .filter(|mailbox| mailbox.task_id == id)
-        {
-            self.active -= mailbox.admitted;
-            mailbox.admitted = 0;
-        }
-        self.stopped.send_replace(true);
-        self.publish_activity();
-    }
-
-    fn publish_activity(&mut self) {
-        self.activity.send_replace(ActorActivity {
-            active: self.active,
-            last_active: self.last_active,
-        });
-        if self.active == 0 {
-            for waiter in self.drained.drain(..) {
-                let _ = waiter.send(());
-            }
-        }
-    }
 }
 
-enum HostCommand {
-    Invoke(Box<ActorRequest>),
-    Drain(oneshot::Sender<()>),
-}
-
-struct ActorMailbox {
-    sender: mpsc::UnboundedSender<ActorRequest>,
-    admitted: usize,
-    task_id: Id,
+fn spawn_mailbox(mailbox: impl Future<Output = ()> + Send + 'static, stopped: watch::Sender<bool>) {
+    // Runs in the mailbox's task so `stopped` flips without waiting for another task to be scheduled.
+    tokio::spawn(async move {
+        if AssertUnwindSafe(mailbox).catch_unwind().await.is_err() {
+            error!("actor mailbox panicked");
+        }
+        stopped.send_replace(true);
+    });
 }
 
 struct ActorRequest {
@@ -452,14 +292,37 @@ struct ActorRequest {
     tracker: RequestTracker,
     operation: ActorOperation,
     owner_epoch: u64,
-
-    reply: oneshot::Sender<Result<ActorExecutionResult>>,
+    reply: ActorReply,
 }
 
-struct ActorCompletion {
-    object: ActorStorageKey,
-    reply: oneshot::Sender<Result<ActorExecutionResult>>,
-    result: Result<ActorExecutionResult>,
+struct ActorReply {
+    sender: oneshot::Sender<Result<ActorExecutionResult>>,
+    in_flight: InFlight,
+}
+
+impl ActorReply {
+    fn send(self, result: Result<ActorExecutionResult>) {
+        drop(self.in_flight);
+        let _ = self.sender.send(result);
+    }
+}
+
+struct InFlight(watch::Sender<ActorActivity>);
+
+impl InFlight {
+    fn new(activity: watch::Sender<ActorActivity>) -> Self {
+        activity.send_modify(|activity| activity.active += 1);
+        Self(activity)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.send_modify(|activity| {
+            activity.active -= 1;
+            activity.last_active = tokio::time::Instant::now();
+        });
+    }
 }
 
 impl ActorRequest {
@@ -471,7 +334,7 @@ impl ActorRequest {
             self.tracker.completion(),
             &result,
         );
-        let _ = self.reply.send(result);
+        self.reply.send(result);
     }
 }
 

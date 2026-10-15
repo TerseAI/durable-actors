@@ -701,6 +701,7 @@ impl Stack {
         );
         let host = Arc::new(ActorHost::new(
             endpoint,
+            actor.clone(),
             connection.executor(),
             database,
             local_sockets.clone(),
