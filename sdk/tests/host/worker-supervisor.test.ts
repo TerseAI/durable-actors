@@ -18,6 +18,51 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
+test("worker eviction runs onSleep and restores the persisted shutdown writes", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("SleepingWorker")
+    const file = path.join(root, "src/actors.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class SleepingWorker extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                this.sleeps += 1
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`
+    )
+    const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: await buildConsumer(root) })
+    try {
+        const actor = { project_id: "default", actor_name: "SleepingWorker", actor_id: "one" }
+        assert.equal(
+            (
+                await handle(
+                    supervisor,
+                    { type: "invoke", request_id: "read", actor, method: "read", args: [] },
+                    () => {}
+                )
+            ).type,
+            "invoked"
+        )
+        await handle(supervisor, { type: "evict", actor }, () => {})
+        assert.equal(hostDatabase(supervisor).fields().sleeps, 1)
+        const restored = await handle(
+            supervisor,
+            { type: "invoke", request_id: "read-again", actor, method: "read", args: [] },
+            () => {}
+        )
+        assert.equal(restored.type, "invoked")
+        if (restored.type !== "invoked") return
+        assert.equal(restored.result, 1)
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("worker eviction restores fields and SQL from the host database", { timeout: 30000 }, async context => {
     const root = await createTypeScriptConsumer("SqliteWorker")
     const file = path.join(root, "src/actors.ts")

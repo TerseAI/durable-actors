@@ -98,6 +98,88 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_on_wake_runs_once_per_activation_and_survives_failed_calls():
+    class Probe(Actor):
+        wakes: int = persisted(0)
+
+        def on_wake(self) -> None:
+            assert self.id == "one"
+            self.db.exec("CREATE TABLE IF NOT EXISTS wakes (n INTEGER)")
+            self.wakes += 1
+            self.db.exec("INSERT INTO wakes (n) VALUES (?)", self.wakes)
+
+        def snapshot(self) -> dict[str, int]:
+            rows = self.db.exec("SELECT count(*) AS n FROM wakes")
+            return {"wakes": self.wakes, "wake_rows": rows[0]["n"]}
+
+        def fail(self) -> None:
+            raise ValueError("failed")
+
+    actor = {**ACTOR, "actor_name": "Probe"}
+    runtime = ActorRuntime(Probe, Effects())
+    assert (await runtime.handle(command("snapshot", actor=actor)))["result"] == {
+        "wakes": 1,
+        "wake_rows": 1,
+    }
+    assert (await runtime.handle(command("snapshot", actor=actor)))["result"] == {
+        "wakes": 1,
+        "wake_rows": 1,
+    }
+    assert (await runtime.handle(command("fail", actor=actor)))["type"] == "failed"
+    assert (await runtime.handle(command("snapshot", actor=actor)))["result"] == {
+        "wakes": 1,
+        "wake_rows": 1,
+    }
+
+
+async def test_on_sleep_persists_before_eviction():
+    class Probe(Actor):
+        asleep: bool = persisted(False)
+
+        def on_sleep(self) -> None:
+            self.asleep = True
+            self.db.exec("CREATE TABLE IF NOT EXISTS sleeps (n INTEGER)")
+            self.db.exec("INSERT INTO sleeps (n) VALUES (1)")
+
+        def ping(self) -> bool:
+            return self.asleep
+
+        def sleep_rows(self) -> int:
+            return self.db.exec("SELECT count(*) AS n FROM sleeps")[0]["n"]
+
+    actor = {**ACTOR, "actor_name": "Probe"}
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("ping", actor=actor)))["result"] is False
+    assert await runtime.handle({"type": "evict", "actor": actor}) == {"type": "evicted"}
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("ping", actor=actor)))["result"] is True
+    assert (await restored.handle(command("sleep_rows", actor=actor)))["result"] == 1
+
+
+async def test_async_on_wake_and_on_sleep_run_on_the_event_loop():
+    class Probe(AsyncActor):
+        wakes: int = persisted(0)
+        asleep: bool = persisted(False)
+
+        async def on_wake(self) -> None:
+            self.wakes += 1
+
+        async def on_sleep(self) -> None:
+            self.asleep = True
+
+        async def snapshot(self) -> tuple[int, bool]:
+            return self.wakes, self.asleep
+
+    actor = {**ACTOR, "actor_name": "Probe"}
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("snapshot", actor=actor)))["result"] == [1, False]
+    await runtime.handle({"type": "evict", "actor": actor})
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("snapshot", actor=actor)))["result"] == [2, True]
+
+
 async def test_alarm_lifecycle_uses_the_normal_invocation_path():
     class Reminder(Actor):
         fired: bool = persisted(False)

@@ -39,7 +39,7 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
                 throw new ActorDefinitionError(`${label}: callable fields must be declared as async methods`)
             continue
         }
-        if (name === "onAlarm") {
+        if (["onAlarm", "onWake", "onSleep"].includes(name)) {
             validateAlarmLifecycle(label, member)
             continue
         }

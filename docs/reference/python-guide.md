@@ -250,6 +250,29 @@ class Reminder(Actor):
         self.sent = True
 ```
 
+## Activation and shutdown
+
+`on_wake` runs once after the worker constructs an actor instance and restores `persisted()` fields. `on_sleep` runs during graceful eviction. Field and SQLite writes from either hook commit if the hook returns successfully. Failed method calls reconstruct the in-memory instance from rolled-back state without running `on_wake` again.
+
+```python
+import time
+
+from durable_actors import Actor, persisted
+
+
+class Session(Actor):
+    activations: int = persisted(0)
+    stopped_at: int | None = persisted(None)
+
+    def on_wake(self) -> None:
+        self.activations += 1
+
+    def on_sleep(self) -> None:
+        self.stopped_at = time.time_ns() // 1_000_000
+```
+
+Use these hooks for cache warmup, counters, or last-seen timestamps. Socket broadcasts from them are not delivered. Async actors define `async def on_wake` and `async def on_sleep`.
+
 ## Interleaving calls
 
 An actor runs one call at a time by default. Python methods run in a worker thread, and an `@interleave` method does not hold the actor while it runs: other calls can start at any point during it, not only while it waits on I/O. Protect state that overlapping calls share, for example with a `threading.Lock` in an `ephemeral()` field.
