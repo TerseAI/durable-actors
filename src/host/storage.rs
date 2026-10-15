@@ -94,10 +94,7 @@ impl HostStorage {
         })
     }
 
-    pub(crate) async fn install_code(
-        &self,
-        artifact: &crate::artifacts::ArtifactManifest,
-    ) -> Result<()> {
+    pub(crate) async fn install_code(&self, artifact: &crate::bundle::ActorBundle) -> Result<()> {
         artifact
             .install(
                 std::path::Path::new("/customer"),

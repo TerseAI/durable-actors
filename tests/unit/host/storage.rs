@@ -389,7 +389,7 @@ impl crate::bucket::SnapshotStore for DelayedFinish {
 
 #[tokio::test(start_paused = true)]
 async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Result<()> {
-    use crate::{bucket::PersistenceConfig, placement::ObjectPlacementStore};
+    use crate::{bucket::SnapshotStoreConfig, placement::ObjectPlacementStore};
     for (fail, stall) in [(false, false), (true, false), (false, true)] {
         let bucket = Arc::new(MemoryBucket::default());
         let delayed = Arc::new(DelayedFinish {
@@ -401,7 +401,7 @@ async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Resul
         let mut storage = host_storage(bucket.clone()).await?;
         storage.runtime = Arc::new(
             RuntimeStorage::new(bucket, Arc::new(SystemClock))?
-                .with_persistence(PersistenceConfig::Local, delayed.clone())?,
+                .with_persistence(SnapshotStoreConfig::Local, delayed.clone())?,
         );
         let storage = Arc::new(storage);
         let request = HostLeaseRequest {

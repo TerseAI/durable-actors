@@ -96,7 +96,7 @@ pub async fn serve_spare(shutdown: impl Future<Output = ()> + Send + 'static) ->
         "customer entrypoint must be a compiled module under /customer"
     );
     ensure!(
-        crate::artifacts::ActorRuntime::from_entrypoint(&entrypoint)? == runtime,
+        crate::bundle::ActorRuntime::from_entrypoint(&entrypoint)? == runtime,
         "actor artifact does not match the prewarmed executor runtime"
     );
     let warm = WarmHost {

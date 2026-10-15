@@ -197,9 +197,9 @@ fn values() -> HashMap<String, String> {
 
 #[test]
 fn host_decodes_pinned_code_artifact_before_assignment() -> Result<()> {
-    let manifest = crate::artifacts::ArtifactManifest {
+    let manifest = crate::bundle::ActorBundle {
         bucket: "customer-code".into(),
-        files: vec![crate::artifacts::ArtifactFile {
+        files: vec![crate::bundle::BundleFile {
             path: "actors.mjs".into(),
             object: "artifacts/test".into(),
             generation: 7,

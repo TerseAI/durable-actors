@@ -15,7 +15,7 @@ use tracing::{error, info};
 
 use crate::{
     actor::{ActorExecutorConnection, ActorExecutorListener},
-    artifacts::ActorRuntime,
+    bundle::ActorRuntime,
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
     host::http::ActorHostHttpService,
@@ -33,7 +33,7 @@ const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
     runtime_config: crate::bucket::access::HostStorageConfig,
-    artifact: Option<crate::artifacts::ArtifactManifest>,
+    artifact: Option<crate::bundle::ActorBundle>,
     customer_environment: std::collections::HashMap<String, String>,
     pub(super) actor: Option<crate::actor::ActorKey>,
     new_actor: bool,
@@ -301,7 +301,7 @@ impl ActorHostConfig {
                 .transpose()?
                 .unwrap_or_default(),
             artifact: get("DURABLE_ACTORS_CODE_ARTIFACT")
-                .map(|value| crate::artifacts::ArtifactManifest::decode(&value))
+                .map(|value| crate::bundle::ActorBundle::decode(&value))
                 .transpose()?,
             runtime_config,
             control_plane_url,
