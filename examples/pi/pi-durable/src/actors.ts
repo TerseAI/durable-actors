@@ -29,9 +29,9 @@ export class PiAgent extends Actor<null, string, ChatEvent> {
 
     @Interleave
     async prompt(text: string): Promise<string> {
-
         const stream = await watchEvents(this.agent.harness,this.agent.root.id, context)
         this.broadcast({ type: "start", prompt: text })
+
         await stream.start(async (events) => {
             for (const event of events) {
                 switch (event.type) {
