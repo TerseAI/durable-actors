@@ -1,22 +1,47 @@
 use super::{
-    ActorActivation, CommitOrigin, DatabaseReply, DatabaseService, DatabaseTimings,
-    PreparedActivation, PreparedInvocation, sqlite::AsyncSqliteDatabase,
+    ActorActivation, ActorStorage, CommitOrigin, DatabaseReply, DatabaseTimings,
+    PreparedActivation, PreparedInvocation, sqlite::SqliteDatabase,
 };
+use crate::host::HostEndpoint;
 use crate::{
     actor::{
         ActorExecutionResult, ActorInvocation, ActorInvocationFailure, DatabaseCall, DatabaseResult,
     },
-    litestream::storage::SqliteCapture,
+    litestream::{Replicator, storage::SqliteCapture},
     request_tracking::RequestStage,
     state_log::{SqliteSnapshot, StateSnapshot},
     storage::{SnapshotRef, WritePlan},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use tracing::{info, warn};
 
-impl DatabaseService {
+pub(super) struct DatabaseSession {
+    endpoint: HostEndpoint,
+    storage: Arc<dyn ActorStorage>,
+    state: Arc<dyn crate::state_transport::SnapshotWriter>,
+    replication: Arc<dyn Replicator>,
+    cached_state: Option<ResidentDatabase>,
+    activation: Option<ActorActivation>,
+}
+
+impl DatabaseSession {
+    pub(super) fn new(
+        endpoint: HostEndpoint,
+        storage: Arc<dyn ActorStorage>,
+        state: Arc<dyn crate::state_transport::SnapshotWriter>,
+        replication: Arc<dyn Replicator>,
+    ) -> Self {
+        Self {
+            endpoint,
+            storage,
+            state,
+            replication,
+            cached_state: None,
+            activation: None,
+        }
+    }
     pub(super) fn state_version(&self) -> Option<u64> {
         self.cached_state
             .as_ref()
@@ -556,8 +581,8 @@ impl DatabaseService {
     }
 }
 
-pub(super) struct ResidentDatabase {
-    database: AsyncSqliteDatabase,
+struct ResidentDatabase {
+    database: SqliteDatabase,
     sqlite: SqliteCapture,
     sqlite_head: Option<SnapshotRef>,
     owner_epoch: u64,
@@ -579,9 +604,8 @@ struct PendingStateCommit {
 
 impl ResidentDatabase {
     async fn open(owner_epoch: u64, sqlite: SqliteCapture) -> Result<Self> {
-        let database = AsyncSqliteDatabase::open(sqlite.path()).await?;
         Ok(Self {
-            database,
+            database: SqliteDatabase::open(sqlite.path()).await?,
             synced: sqlite.txid(),
             sqlite,
             sqlite_head: None,

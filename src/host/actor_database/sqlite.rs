@@ -28,8 +28,8 @@ const ALLOWED_PRAGMAS: [&str; 10] = [
     "user_version",
 ];
 
-pub(crate) struct AsyncSqliteDatabase {
-    database: Arc<Mutex<SqliteDatabase>>,
+pub(crate) struct SqliteDatabase {
+    engine: Arc<Mutex<Engine>>,
 }
 
 #[derive(Debug)]
@@ -38,18 +38,18 @@ pub(crate) struct Executed {
     pub committed: bool,
 }
 
-impl AsyncSqliteDatabase {
+impl SqliteDatabase {
     pub(crate) async fn open(path: PathBuf) -> Result<Self> {
-        let database = tokio::task::spawn_blocking(move || SqliteDatabase::open(path)).await??;
+        let engine = tokio::task::spawn_blocking(move || Engine::open(path)).await??;
         Ok(Self {
-            database: Arc::new(Mutex::new(database)),
+            engine: Arc::new(Mutex::new(engine)),
         })
     }
 
     pub(crate) async fn call(&self, call: DatabaseCall) -> Result<Executed> {
-        let database = self.database.clone();
+        let engine = self.engine.clone();
         tokio::task::spawn_blocking(move || {
-            database
+            engine
                 .lock()
                 .map_err(|_| anyhow!("actor database is poisoned"))?
                 .call(call)
@@ -61,17 +61,17 @@ impl AsyncSqliteDatabase {
 #[derive(Clone, Copy, PartialEq)]
 struct ChangeToken(u64, i64, i64);
 
-struct SqliteDatabase {
+struct Engine {
     connection: Connection,
     synced: ChangeToken,
 }
 
-impl SqliteDatabase {
+impl Engine {
     fn open(path: PathBuf) -> Result<Self> {
         let connection = Connection::open(path)?;
         connection.execute_batch(
             "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL;",
+            PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL",
         )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         anyhow::ensure!(check == "ok", "invalid actor SQLite database");

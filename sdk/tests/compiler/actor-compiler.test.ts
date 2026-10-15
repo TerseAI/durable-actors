@@ -509,7 +509,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
         Object.entries({
             "actors.ts": source,
             "sdk.ts": `export interface ActorContext { readonly actorContext: unique symbol }
-            export abstract class Actor { protected constructor(context: ActorContext) {}
+            export abstract class Actor { protected constructor(context: ActorContext) {} }
             export abstract class ActorResource { private readonly actorResource!: void }
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}

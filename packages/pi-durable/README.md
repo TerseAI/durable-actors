@@ -16,19 +16,18 @@ const registry = createRegistry()
 export class PiAgent extends Actor {
     @Resource private readonly agent = new DurablePiAgent({
         models,
-        registry,
-        model: { provider: "openai", modelId: "gpt-6-sol" }
+        registry
     })
 
     async prompt(text: string): Promise<string> {
-        return this.agent.prompt(text)
+        return this.agent.prompt(text, { provider: "openai", modelId: "gpt-6-sol" })
     }
 }
 ```
 
-`models`, `registry`, and `model` are required. Install your extensions and tools in the registry before prompting. Mark the private `DurablePiAgent` field with `@Resource` so the actor runtime manages its lifecycle. Pi's conversation is persisted separately in the actor's SQLite database.
+The constructor requires `models` and `registry`. Each `prompt(text, model)` call requires Pi's native `ModelRef` to select its model. Install your extensions and tools in the registry before prompting. Mark the private `DurablePiAgent` field with `@Resource` so the actor runtime manages its lifecycle. Pi's conversation is persisted separately in the actor's SQLite database.
 
-Construction does not access storage. `onResume()` opens the harness, restores the root conversation, configures the supplied model, and resumes pending work. Each `prompt()` submits input, waits for a completed answer, and returns its text without changing the conversation's model. Failed prompts reject with Pi's reason and error detail. `onGracefulShutdown()` closes the harness.
+Construction does not access storage. `onResume()` opens the harness and resumes pending work using the persisted conversation configuration. Each `prompt()` configures the root conversation with the supplied model, submits input, waits for a completed answer, and returns its text. Failed prompts reject with Pi's reason and error detail. `onGracefulShutdown()` closes the harness.
 
 ## Native Pi access
 
@@ -49,7 +48,7 @@ async usage() {
 
 Use Pi's APIs for configuration, documents, tools, watches, additional conversations, and tasks directly. Keep native handles and watches within the resource's lifecycle.
 
-Adapter options extend Pi's native `HarnessOptions`, adding the required `model`. Pass `env`, `settings`, `conversationCreated`, and `onReport` directly. Register integration tools, including Pi-compatible Composio tools, in the supplied Pi registry; they use Pi's normal tool execution without an adapter protocol. Built-in filesystem tools can use an execution environment supplied through `env`.
+The constructor accepts Pi's native `HarnessOptions`. Pass `env`, `settings`, `conversationCreated`, and `onReport` directly. Register integration tools, including Pi-compatible Composio tools, in the supplied Pi registry; they use Pi's normal tool execution without an adapter protocol. Built-in filesystem tools can use an execution environment supplied through `env`.
 
 Use one agent per actor and ordinary serialized actor methods. This initial adapter replays an append-only commit log into Pi's `MemoryStorage` when the resource resumes, so memory and reopen time grow with history. It does not schedule background wakeups. Native watches and events are available through the harness; the `prompt()` convenience returns completed text.
 

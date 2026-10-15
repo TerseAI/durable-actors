@@ -2,12 +2,7 @@ import type { ActorIdentity } from "../actor/identity.js"
 import type { SocketEffect, SocketSource } from "../actor/socketProtocol.js"
 
 import type { DatabaseCall, DatabaseResult } from "./database.js"
-import type {
-    ActorExecutorCommand,
-    ActorExecutorReply,
-    ActorWorkerCommand,
-    ActorWorkerData
-} from "./protocol.js"
+import type { ActorExecutorCommand, ActorExecutorReply, ActorWorkerCommand, ActorWorkerData } from "./protocol.js"
 import type { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
 interface ActorHostSettings {

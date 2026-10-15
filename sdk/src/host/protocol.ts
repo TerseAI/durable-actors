@@ -113,11 +113,7 @@ type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
 type ActorWorkerCommand = InvokeCommand | WebSocketEventCommand | HydrateCommand
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
-    | InvokedReply
-    | WebSocketHandledReply
-    | FailedReply
-    | EvictedReply
-    | { readonly type: "hydrated" }
+    InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
     | { readonly type: "database_call"; readonly message_id: number; readonly call: DatabaseCall }
     | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }

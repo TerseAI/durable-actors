@@ -20,12 +20,7 @@ import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { DatabaseProxy } from "./database.js"
 import { DatabaseCommitError } from "./database.js"
 import { bindPersistedFields, isPersistedField } from "./persisted-fields.js"
-import type {
-    ActorExecutorReply,
-    ActorWorkerCommand,
-    InvokeCommand,
-    WebSocketEventCommand
-} from "./protocol.js"
+import type { ActorExecutorReply, ActorWorkerCommand, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type { SocketPublisher, SocketSource } from "./types.js"
 

@@ -1,19 +1,19 @@
 use super::*;
 use serde_json::json;
 
-async fn database() -> Result<(tempfile::TempDir, AsyncSqliteDatabase)> {
+async fn database() -> Result<(tempfile::TempDir, SqliteDatabase)> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("actor.sqlite");
     rusqlite::Connection::open(&path)?.execute_batch(
         "PRAGMA journal_mode=WAL;
         CREATE TABLE __terse_fields (name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))",
     )?;
-    let database = AsyncSqliteDatabase::open(path).await?;
+    let database = SqliteDatabase::open(path).await?;
     Ok((directory, database))
 }
 
 async fn exec(
-    database: &AsyncSqliteDatabase,
+    database: &SqliteDatabase,
     sql: &str,
     bindings: Vec<SqlValue>,
     immediate: bool,
@@ -31,7 +31,7 @@ fn raw(value: serde_json::Value) -> Box<serde_json::value::RawValue> {
     serde_json::value::RawValue::from_string(value.to_string()).unwrap()
 }
 
-async fn fields(database: &AsyncSqliteDatabase) -> Result<serde_json::Value> {
+async fn fields(database: &SqliteDatabase) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(database.call(DatabaseCall::Fields).await?.result)?["fields"].clone())
 }
 

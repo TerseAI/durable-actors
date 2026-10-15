@@ -440,12 +440,9 @@ class ResidentActorWorker {
             return failedReply("actor_worker_terminated", "resident actor was terminated during invocation")
         if (
             reply.type === "failed" &&
-            ![
-                "actor_method_failed",
-                "actor_socket_failed",
-                "method_not_found",
-                "method_not_callable"
-            ].includes(reply.code)
+            !["actor_method_failed", "actor_socket_failed", "method_not_found", "method_not_callable"].includes(
+                reply.code
+            )
         ) {
             worker.terminate("actor invocation failed")
             this.worker = undefined
