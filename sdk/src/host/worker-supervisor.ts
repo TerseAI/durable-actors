@@ -268,6 +268,7 @@ class ActorWorkerSupervisor {
     private closed = false
     private actorNames: readonly string[] | undefined
     private lastSequence = 0
+    private inFlight = 0
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
@@ -306,7 +307,7 @@ class ActorWorkerSupervisor {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
             case "evict":
-                return this.evict(command)
+                return this.evict(command, allowNextInvocation, database)
             default:
                 throw command satisfies never
         }
@@ -377,19 +378,38 @@ class ActorWorkerSupervisor {
             this.resident = actor
         }
         const base = actor.sequenceBase
-        return actor.execute(command, allowNextInvocation, database, publish, connections).then(reply => {
-            if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
-                const sequence = base + reply.sequence
-                this.lastSequence = Math.max(this.lastSequence, sequence)
-                return { ...reply, sequence }
-            }
-            return reply
-        })
+        this.inFlight += 1
+        return actor
+            .execute(command, allowNextInvocation, database, publish, connections)
+            .then(reply => {
+                if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
+                    const sequence = base + reply.sequence
+                    this.lastSequence = Math.max(this.lastSequence, sequence)
+                    return { ...reply, sequence }
+                }
+                return reply
+            })
+            .finally(() => {
+                this.inFlight -= 1
+            })
     }
 
-    private evict(_command: EvictCommand): ActorExecutorReply {
-        this.resident?.terminate("resident actor was evicted by the Rust host")
+    private async evict(
+        command: EvictCommand,
+        allowNextInvocation: () => void,
+        database: DatabaseRequester
+    ): Promise<ActorExecutorReply> {
+        const actor = this.resident
+        if (actor === undefined) return { type: "evicted" }
+        if (this.inFlight === 0) {
+            try {
+                await actor.execute({ type: "evict", actor: command.actor }, allowNextInvocation, database)
+            } catch {
+                // Terminate even when onSleep or worker shutdown fails.
+            }
+        }
         this.resident = undefined
+        actor.terminate("resident actor was evicted by the Rust host")
         return { type: "evicted" }
     }
 

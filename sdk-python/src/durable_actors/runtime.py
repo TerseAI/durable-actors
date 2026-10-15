@@ -8,7 +8,9 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any
 
+from .actor import Actor
 from .actor_base import ActorBase
+from .async_actor import AsyncActor
 from .contract import Document, Method, decode, describe_actor, encode
 from .database import RuntimeActorContext, actor_database_invocation
 from .socket import Effects, SocketScope, scope_context
@@ -62,8 +64,11 @@ class ActorRuntime:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        self.instance = None
-        self.fatal = None
+        try:
+            await self.run_hook("on_sleep")
+        finally:
+            self.instance = None
+            self.fatal = None
         return {"type": "evicted"}
 
     async def run(self, command: Document) -> Document:
@@ -98,7 +103,9 @@ class ActorRuntime:
         if self.instance is None:
             try:
                 self.restore(await self.database.fields())
+                await self.run_hook("on_wake")
             except Exception as error:
+                self.instance = None
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
@@ -224,6 +231,36 @@ class ActorRuntime:
                 )
         return effects
 
+    async def run_hook(self, name: str) -> None:
+        instance = self.instance
+        if instance is None or not hook_overridden(instance, name):
+            return
+        identity = self.identity
+        assert identity is not None
+        method = getattr(instance, name)
+        scope = SocketScope(
+            instance,
+            identity["actor_id"],
+            self.definition.socket_types,
+            self.effects,
+            None,
+            False,
+        )
+        token = scope_context.set(scope)
+        try:
+            await invoke_handler(scope, method)
+            async with self.completion:
+                state = self.snapshot()
+                await self.database.replace_fields(state)
+                await self.database.commit()
+                self.last_state = state
+        except Exception:
+            await self.database.rollback()
+            raise
+        finally:
+            scope.active = False
+            scope_context.reset(token)
+
     def restore(self, state: Any) -> None:
         instance = self.definition.actor(RuntimeActorContext(self.database))
         if state is not None:
@@ -258,6 +295,13 @@ async def invoke_handler(
                 scope.cancel()
                 raise
         return await run_in_thread(partial(handler, *args, **kwargs), scope.cancel)
+
+
+def hook_overridden(instance: object, name: str) -> bool:
+    for cls in type(instance).__mro__:
+        if name in vars(cls) and cls not in {Actor, AsyncActor, ActorBase}:
+            return True
+    return False
 
 
 def bind_arguments(method: Method, values: list[Any]) -> inspect.BoundArguments:

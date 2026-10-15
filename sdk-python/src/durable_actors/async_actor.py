@@ -58,6 +58,14 @@ class AsyncActor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
         """Handle a due alarm. It is cleared afterward unless this hook sets a new one."""
         pass
 
+    async def on_wake(self) -> None:
+        """Run once after this worker constructs the instance and restores persisted fields."""
+        pass
+
+    async def on_sleep(self) -> None:
+        """Run during graceful eviction before the instance is discarded."""
+        pass
+
     async def get_connections(
         self, tag: Tag | None = None
     ) -> list[ActorSocket[Metadata, Outgoing, Tag]]:

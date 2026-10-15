@@ -215,6 +215,29 @@ export class Reminder extends Actor {
 }
 ```
 
+## Activation and shutdown
+
+`onWake` runs once after the worker constructs an actor instance and restores `@Persisted` fields. `onSleep` runs during graceful eviction or worker shutdown. Field and SQLite writes from either hook commit if the hook returns successfully. Failed method calls reconstruct the in-memory instance from rolled-back state without running `onWake` again.
+
+```typescript
+import { Actor, Persisted } from "durable-actors"
+
+export class Session extends Actor {
+    @Persisted activations = 0
+    @Persisted stoppedAt: number | null = null
+
+    async onWake(): Promise<void> {
+        this.activations += 1
+    }
+
+    async onSleep(): Promise<void> {
+        this.stoppedAt = Date.now()
+    }
+}
+```
+
+Use these hooks for cache warmup, counters, or last-seen timestamps. Socket broadcasts from them are not delivered.
+
 ## Interleaving calls
 
 An actor runs one call at a time, and a call holds the actor until it finishes, including across an `await`. `@Interleave` lets other calls run while that method awaits.

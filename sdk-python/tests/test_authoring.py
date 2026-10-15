@@ -50,6 +50,21 @@ def test_alarm_lifecycle_is_not_published_as_an_rpc():
     assert [method["name"] for method in methods] == ["schedule"]
 
 
+def test_wake_and_sleep_hooks_are_not_published_as_rpcs():
+    class Probe(Actor):
+        def on_wake(self) -> None:
+            pass
+
+        def on_sleep(self) -> None:
+            pass
+
+        def ping(self) -> None:
+            pass
+
+    methods = public_contract([Probe])["actors"][0]["rpc"]["methods"]
+    assert [method["name"] for method in methods] == ["ping"]
+
+
 def test_mutable_defaults_are_per_actor():
     left, right = Chat(), Chat()
     left.messages.append(Message(text="hello", role="user"))
