@@ -124,6 +124,7 @@
       "name": "durable-actors-example-pi-durable",
       "dependencies": {
         "@durable-actors/pi-durable": "workspace:*",
+        "@earendil-works/chord": "1.1.0",
         "@earendil-works/pi-ai": "1.1.0",
         "@earendil-works/pi-durable": "1.1.0",
         "durable-actors": "workspace:*",

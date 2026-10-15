@@ -1,5 +1,5 @@
 import { contentText } from "@earendil-works/pi-ai"
-import { AssistantEntry, Harness, type HarnessOptions, type ModelRef } from "@earendil-works/pi-durable"
+import { AgentChange, AssistantEntry, Conversation, Harness, type HarnessOptions, type ModelRef } from "@earendil-works/pi-durable"
 import type { Actor, ActorResource, ActorResourceContext } from "durable-actors"
 
 import { ActorStorage } from "./storage.js"
@@ -7,10 +7,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
 
 const context = BACKGROUND_CONTEXT;
 
+export type DurablePiAgentOptions = HarnessOptions & {
+    readonly agent: AgentChange & { readonly model: ModelRef }
+}
+
 export class DurablePiAgent implements ActorResource {
     private _harness?: Harness
-    private readonly options: HarnessOptions
-
+    private _root?: Conversation
 
     get harness(): Harness {
         if (!this._harness) {
@@ -19,20 +22,22 @@ export class DurablePiAgent implements ActorResource {
         return this._harness
     }
 
-    constructor(options: HarnessOptions) {
-        this.options = options
+    get root(): Conversation {
+        if (!this._root) {
+            throw new Error("DurablePiAgent has not resumed")
+        }
+        return this._root
     }
 
-    async prompt(text: string, model: ModelRef): Promise<string> {
-         const root = await this.harness.root(context)
-         await root.configure({ model }, context)
+    constructor(private readonly options: DurablePiAgentOptions) {}
 
+    async prompt(text: string): Promise<string> {
          const job = {
             type: "input",
             content: text,
         } as const;
         
-        const submission = await root.submit(job, context);
+        const submission = await this.root.submit(job, context);
         const settled = await submission.wait(context);
 
         if (settled.status === "unanswered") 
@@ -41,7 +46,7 @@ export class DurablePiAgent implements ActorResource {
         if (settled.status !== "done" || settled.type !== "input")
             throw new Error(`Pi did not answer: ${settled.reason}`)
 
-        const answer = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+        const answer = await this.root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 
         if (answer === undefined)
             throw new Error("Pi did not answer")
@@ -54,6 +59,7 @@ export class DurablePiAgent implements ActorResource {
 
     async onResume({ db }: ActorResourceContext): Promise<void> {
         this._harness = await Harness.open(new ActorStorage(db), this.options, context)
+        this._root = await this.harness.root(context)
         this._harness.resume();
     }
 
