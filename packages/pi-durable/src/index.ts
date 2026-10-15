@@ -60,6 +60,10 @@ export class DurablePiAgent implements ActorResource {
     async onResume({ db }: ActorResourceContext): Promise<void> {
         this._harness = await Harness.open(new ActorStorage(db), this.options, context)
         this._root = await this.harness.root(context)
+        await this.root.configure(
+            { model: this.options.agent.model },
+            context,
+        )
         this._harness.resume();
     }
 
