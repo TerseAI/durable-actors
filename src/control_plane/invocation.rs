@@ -1,9 +1,5 @@
-<<<<<<< Updated upstream
-use crate::request_tracking::HostState;
-use anyhow::Context;
-=======
 use crate::{request_tracking::HostState, sockets::operations::SocketOperation};
->>>>>>> Stashed changes
+use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
