@@ -32,7 +32,7 @@ interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming,
         reason: string,
         wasClean: boolean
     ): Promise<void>
-    /** Runs when the actor's scheduled alarm becomes due. Delete or replace the alarm in this callback. */
+    /** Runs when the actor's scheduled alarm becomes due. The alarm is cleared afterward unless this callback sets a new one. */
     onAlarm?(): Promise<void>
 }
 

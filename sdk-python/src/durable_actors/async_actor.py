@@ -55,7 +55,7 @@ class AsyncActor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
         pass
 
     async def on_alarm(self) -> None:
-        """Handle a due alarm. Delete it or replace it with the next timestamp."""
+        """Handle a due alarm. It is cleared afterward unless this hook sets a new one."""
         pass
 
     async def get_connections(

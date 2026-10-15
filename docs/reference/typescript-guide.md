@@ -210,13 +210,12 @@ export class Reminder extends Actor {
     }
 
     async onAlarm(): Promise<void> {
-        this.alarm.delete()
         this.sent = true
     }
 }
 ```
 
-`this.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `null`. An alarm callback must delete the alarm or replace it with its next timestamp.
+`this.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `null`. When `onAlarm` returns or throws, the runtime clears the alarm unless the callback scheduled a new one. A callback that throws is not retried, so a recurring alarm should handle its own errors. If the runtime cannot reach the actor, it tries up to three times with exponential backoff before dropping the alarm. Delivery is at least once: a delivery interrupted by a control-plane restart runs again about five minutes later, so `onAlarm` should be safe to repeat.
 
 Alarm timestamps retain millisecond precision, but the control plane checks for due alarms every 100 milliseconds by default. Polling can therefore add up to roughly one polling interval of delay, with routing, dispatch, backlog, and failures adding more. Deployments can configure the interval with `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS`. Alarms do not provide an exact execution-time guarantee.
 

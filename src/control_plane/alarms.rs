@@ -6,18 +6,25 @@ use std::{
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use backon::{ExponentialBuilder, Retryable};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::{actor::ActorKey, postgres::PostgresDatabase};
+use crate::{actor::ActorKey, clock::Clock, postgres::PostgresDatabase};
 
 use super::ControlPlaneService;
 
 pub(super) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-pub(super) const DEFAULT_BATCH_SIZE: usize = 100;
+pub(super) const MAX_IN_FLIGHT: usize = 100;
+pub(super) const MAX_ATTEMPTS: usize = 3;
+pub(super) const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
+pub(super) const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
+// A live delivery must finish before its claim expires, or another poll delivers it concurrently.
+pub(super) const QUEUED_TIMEOUT: Duration = Duration::from_secs(300);
 pub(super) const ALARM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ALARM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct ClaimedAlarm {
     pub actor: ActorKey,
     pub revision: u64,
@@ -27,19 +34,21 @@ pub(super) struct ClaimedAlarm {
 pub(super) trait AlarmStore: Send + Sync {
     async fn get(&self, actor: &ActorKey) -> Result<Option<i64>>;
     async fn update(&self, actor: &ActorKey, timestamp_ms: Option<i64>) -> Result<()>;
-    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>>;
+    async fn claim_due(
+        &self,
+        now_ms: i64,
+        expired_before_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ClaimedAlarm>>;
+    async fn finish(&self, alarm: &ClaimedAlarm) -> Result<()>;
+}
+
+#[async_trait]
+pub(super) trait AlarmDelivery: Send + Sync {
+    async fn attempt(&self, alarm: &ClaimedAlarm) -> Result<()>;
 }
 
 pub(super) fn start(
-    service: ControlPlaneService,
-    store: Arc<dyn AlarmStore>,
-    poll_interval: Duration,
-    stop: CancellationToken,
-) {
-    tokio::spawn(run(service, store, poll_interval, stop));
-}
-
-async fn run(
     service: ControlPlaneService,
     store: Arc<dyn AlarmStore>,
     poll_interval: Duration,
@@ -50,36 +59,96 @@ async fn run(
         .timeout(ALARM_REQUEST_TIMEOUT)
         .build()
         .expect("alarm invocation HTTP client");
+    let delivery = Arc::new(InvocationDelivery { service, client });
+    tokio::spawn(run(store, delivery, poll_interval, stop));
+}
+
+async fn run(
+    store: Arc<dyn AlarmStore>,
+    delivery: Arc<dyn AlarmDelivery>,
+    poll_interval: Duration,
+    stop: CancellationToken,
+) {
+    let slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let mut tasks = JoinSet::new();
     loop {
         tokio::select! {
             _ = stop.cancelled() => return,
             _ = tokio::time::sleep(poll_interval) => {}
         }
-        let now_ms = match crate::clock::Clock::now_ms(&crate::clock::SystemClock)
-            .and_then(|value| i64::try_from(value).context("alarm clock overflow"))
-        {
-            Ok(now_ms) => now_ms,
-            Err(error) => {
-                tracing::warn!(%error, "could not read alarm clock");
-                continue;
-            }
-        };
-        loop {
-            let alarms = match store.claim_due(now_ms, DEFAULT_BATCH_SIZE).await {
-                Ok(alarms) if alarms.is_empty() => break,
-                Ok(alarms) => alarms,
-                Err(error) => {
-                    tracing::warn!(%error, "could not claim due alarm");
-                    break;
-                }
-            };
-            futures_util::future::join_all(
-                alarms
-                    .iter()
-                    .map(|alarm| super::invocation::invoke_alarm(&service, &client, alarm)),
-            )
-            .await;
+        while tasks.try_join_next().is_some() {}
+        for alarm in claim(&*store, slots.available_permits()).await {
+            let slot = slots
+                .clone()
+                .try_acquire_owned()
+                .expect("alarm claims stay within free slots");
+            let (store, delivery) = (store.clone(), delivery.clone());
+            tasks.spawn(async move {
+                deliver(&*store, &*delivery, &alarm).await;
+                drop(slot);
+            });
         }
+    }
+}
+
+async fn claim(store: &dyn AlarmStore, limit: usize) -> Vec<ClaimedAlarm> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    match claim_due(store, limit).await {
+        Ok(alarms) => alarms,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "could not claim due alarms");
+            Vec::new()
+        }
+    }
+}
+
+async fn claim_due(store: &dyn AlarmStore, limit: usize) -> Result<Vec<ClaimedAlarm>> {
+    let now_ms =
+        i64::try_from(crate::clock::SystemClock.now_ms()?).context("alarm clock overflow")?;
+    let queued_timeout_ms = i64::try_from(QUEUED_TIMEOUT.as_millis())?;
+    store
+        .claim_due(now_ms, now_ms.saturating_sub(queued_timeout_ms), limit)
+        .await
+}
+
+async fn deliver(store: &dyn AlarmStore, delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) {
+    let actor = alarm.actor.storage_key();
+    if let Err(error) = attempt_with_retries(delivery, alarm).await {
+        tracing::warn!(error = %format!("{error:#}"), %actor, "alarm abandoned after retries");
+    }
+    if let Err(error) = store.finish(alarm).await {
+        tracing::warn!(error = %format!("{error:#}"), %actor, "could not finish alarm");
+    }
+}
+
+async fn attempt_with_retries(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) -> Result<()> {
+    (|| attempt(delivery, alarm))
+        .retry(
+            ExponentialBuilder::default()
+                .with_min_delay(MIN_RETRY_DELAY)
+                .with_max_times(MAX_ATTEMPTS - 1)
+                .with_jitter(),
+        )
+        .await
+}
+
+async fn attempt(delivery: &dyn AlarmDelivery, alarm: &ClaimedAlarm) -> Result<()> {
+    tokio::time::timeout(ATTEMPT_TIMEOUT, delivery.attempt(alarm))
+        .await
+        .context("alarm attempt timed out")?
+}
+
+struct InvocationDelivery {
+    service: ControlPlaneService,
+    client: reqwest::Client,
+}
+
+#[async_trait]
+impl AlarmDelivery for InvocationDelivery {
+    async fn attempt(&self, alarm: &ClaimedAlarm) -> Result<()> {
+        super::invocation::invoke_alarm(&self.service, &self.client, alarm).await
     }
 }
 
@@ -116,7 +185,8 @@ impl AlarmStore for PostgresAlarmStore {
                  ) VALUES ($1, $2, $3, 1, $4)
                  ON CONFLICT (project_id, actor_name, actor_id) DO UPDATE SET
                     revision = durable_actors_alarm.revision + 1,
-                    timestamp_ms = EXCLUDED.timestamp_ms",
+                    timestamp_ms = EXCLUDED.timestamp_ms,
+                    queued_at_ms = NULL",
                 &[
                     &actor.project_id,
                     &actor.actor_name,
@@ -128,7 +198,12 @@ impl AlarmStore for PostgresAlarmStore {
         Ok(())
     }
 
-    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>> {
+    async fn claim_due(
+        &self,
+        now_ms: i64,
+        expired_before_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ClaimedAlarm>> {
         let limit = i64::try_from(limit).context("alarm batch size overflow")?;
         let client = self.database.connection().await?;
         let statement = client
@@ -137,11 +212,13 @@ impl AlarmStore for PostgresAlarmStore {
                     SELECT project_id, actor_name, actor_id
                     FROM durable_actors_alarm
                     WHERE timestamp_ms <= $1
-                    LIMIT $2
+                      AND (queued_at_ms IS NULL OR queued_at_ms <= $2)
+                    ORDER BY timestamp_ms
+                    LIMIT $3
                     FOR UPDATE SKIP LOCKED
                  )
                  UPDATE durable_actors_alarm AS alarm
-                 SET timestamp_ms = NULL
+                 SET queued_at_ms = $1
                  FROM due
                  WHERE alarm.project_id = due.project_id
                    AND alarm.actor_name = due.actor_name
@@ -151,7 +228,7 @@ impl AlarmStore for PostgresAlarmStore {
             )
             .await?;
         client
-            .query(&statement, &[&now_ms, &limit])
+            .query(&statement, &[&now_ms, &expired_before_ms, &limit])
             .await?
             .into_iter()
             .map(|row| {
@@ -167,6 +244,25 @@ impl AlarmStore for PostgresAlarmStore {
             })
             .collect()
     }
+
+    async fn finish(&self, alarm: &ClaimedAlarm) -> Result<()> {
+        let revision = i64::try_from(alarm.revision).context("alarm revision overflow")?;
+        self.database
+            .execute(
+                "UPDATE durable_actors_alarm
+                 SET timestamp_ms = NULL, queued_at_ms = NULL
+                 WHERE project_id = $1 AND actor_name = $2 AND actor_id = $3
+                   AND revision = $4",
+                &[
+                    &alarm.actor.project_id,
+                    &alarm.actor.actor_name,
+                    &alarm.actor.actor_id,
+                    &revision,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -177,6 +273,7 @@ pub(super) struct MemoryAlarmStore {
 struct MemoryAlarm {
     revision: u64,
     timestamp_ms: Option<i64>,
+    queued_at_ms: Option<i64>,
 }
 
 #[async_trait]
@@ -204,33 +301,52 @@ impl AlarmStore for MemoryAlarmStore {
             MemoryAlarm {
                 revision,
                 timestamp_ms,
+                queued_at_ms: None,
             },
         );
         Ok(())
     }
 
-    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>> {
+    async fn claim_due(
+        &self,
+        now_ms: i64,
+        expired_before_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<ClaimedAlarm>> {
         let mut alarms = self.alarms.lock().unwrap();
-        let due = alarms
+        let mut due = alarms
             .iter()
             .filter_map(|(actor, alarm)| {
+                let timestamp_ms = alarm.timestamp_ms.filter(|&due_ms| due_ms <= now_ms)?;
                 alarm
-                    .timestamp_ms
-                    .is_some_and(|timestamp_ms| timestamp_ms <= now_ms)
-                    .then(|| actor.clone())
+                    .queued_at_ms
+                    .is_none_or(|queued_at_ms| queued_at_ms <= expired_before_ms)
+                    .then(|| (timestamp_ms, actor.clone()))
             })
-            .take(limit)
             .collect::<Vec<_>>();
-        let mut claimed = Vec::with_capacity(due.len());
-        for actor in due {
-            let alarm = alarms.get_mut(&actor).expect("selected alarm disappeared");
-            alarm.timestamp_ms = None;
-            claimed.push(ClaimedAlarm {
-                actor,
-                revision: alarm.revision,
-            });
+        due.sort_by_key(|(timestamp_ms, _)| *timestamp_ms);
+        Ok(due
+            .into_iter()
+            .take(limit)
+            .map(|(_, actor)| {
+                let alarm = alarms.get_mut(&actor).expect("selected alarm disappeared");
+                alarm.queued_at_ms = Some(now_ms);
+                ClaimedAlarm {
+                    actor,
+                    revision: alarm.revision,
+                }
+            })
+            .collect())
+    }
+
+    async fn finish(&self, alarm: &ClaimedAlarm) -> Result<()> {
+        if let Some(current) = self.alarms.lock().unwrap().get_mut(&alarm.actor)
+            && current.revision == alarm.revision
+        {
+            current.timestamp_ms = None;
+            current.queued_at_ms = None;
         }
-        Ok(claimed)
+        Ok(())
     }
 }
 

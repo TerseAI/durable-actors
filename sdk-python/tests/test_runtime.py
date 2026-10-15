@@ -143,6 +143,17 @@ async def test_async_actors_can_schedule_and_handle_alarms():
     assert (await runtime.handle(command("fired_at", actor=actor)))["result"] == [True, None]
 
 
+@pytest.mark.parametrize("base", [Actor, AsyncActor])
+async def test_actors_without_an_alarm_hook_ignore_due_alarms(base):
+    class WithoutAlarmHook(base):
+        pass
+
+    runtime = ActorRuntime(WithoutAlarmHook, Effects())
+    actor = {**ACTOR, "actor_name": "WithoutAlarmHook"}
+    delivered = await runtime.handle(command("onAlarm", actor=actor))
+    assert delivered == {"type": "invoked", "result": None}
+
+
 async def test_alarm_timestamps_must_be_safe_integers():
     class Reminder(Actor):
         def schedule(self, timestamp_ms: int) -> None:

@@ -174,11 +174,31 @@ test("alarm handles expire after their invocation", async context => {
     assert.throws(() => escapedAlarm.delete(), /outside its invocation/)
 })
 
-function createRuntime() {
+function createRuntime(actor = definition) {
     const host = new HostDatabase()
-    const runtime = new ActorRuntime(definition, () => {}, undefined, undefined, new DatabaseProxy(host.call))
+    const runtime = new ActorRuntime(actor, () => {}, undefined, undefined, new DatabaseProxy(host.call))
     return { runtime, host }
 }
+
+class WithoutAlarmHook extends Actor {}
+
+test("actors without onAlarm ignore due alarms", async context => {
+    const { runtime, host } = createRuntime(
+        registerActorClass(WithoutAlarmHook, { actorName: "WithoutAlarmHook", fields: [] })
+    )
+    context.after(async () => {
+        await runtime.close()
+        host.close()
+    })
+    const reply = await runtime.handle({
+        type: "invoke",
+        request_id: "onAlarm",
+        actor: { project_id: "test", actor_name: "WithoutAlarmHook", actor_id: "one" },
+        method: "onAlarm",
+        args: []
+    })
+    assertReply(reply, { type: "invoked", result: null })
+})
 
 test("delivers alarms to onAlarm", async context => {
     const { runtime, host } = createRuntime()

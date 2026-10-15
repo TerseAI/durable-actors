@@ -108,7 +108,8 @@ class ActorRuntime {
                 `actor method ${this.definition.actorName}.${command.method} was not found`
             )
         }
-        const method: unknown = Reflect.get(instance, command.method)
+        const method: unknown =
+            Reflect.get(instance, command.method) ?? (command.method === "onAlarm" ? ignoreAlarm : undefined)
         if (typeof method !== "function") {
             return failedReply(
                 "method_not_callable",
@@ -339,6 +340,8 @@ function emittableFields(schema: ActorSchema) {
 function connectionWasRejected(connectionId: string, effects: readonly SocketEffect[]): boolean {
     return effects.some(effect => effect.type === "reject" && effect.connection_id === connectionId)
 }
+
+async function ignoreAlarm(): Promise<void> {}
 
 function lifecycleMethod(command: WebSocketEventCommand): "onConnect" | "onMessage" | "onDisconnect" {
     switch (command.event.type) {

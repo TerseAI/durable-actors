@@ -1,4 +1,5 @@
 use crate::request_tracking::HostState;
+use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -17,18 +18,12 @@ pub(super) async fn invoke_alarm(
     service: &super::ControlPlaneService,
     client: &reqwest::Client,
     alarm: &super::alarms::ClaimedAlarm,
-) -> bool {
+) -> anyhow::Result<()> {
     let started = tokio::time::Instant::now();
-    let target = match service
+    let target = service
         .resolve_actor_route(&alarm.actor, None, None, None)
         .await
-    {
-        Ok(target) => target,
-        Err(error) => {
-            tracing::warn!(%error, actor = %alarm.actor.storage_key(), "could not route alarm");
-            return false;
-        }
-    };
+        .context("could not route alarm")?;
     let invocation = ActorInvocation {
         actor: alarm.actor.clone(),
         request_id: format!("alarm-{}", alarm.revision),
@@ -44,10 +39,11 @@ pub(super) async fn invoke_alarm(
         target.host_state,
         started.elapsed().as_secs_f64() * 1000.0,
     )
-    .await;
-    match outcome {
-        Ok(outcome) => matches!(outcome["type"].as_str(), Some("completed" | "failed")),
-        Err(_) => false,
+    .await
+    .map_err(|_| anyhow::anyhow!("alarm outcome could not be confirmed"))?;
+    match outcome["type"].as_str() {
+        Some("completed" | "failed") => Ok(()),
+        _ => anyhow::bail!("alarm was not executed: {outcome}"),
     }
 }
 

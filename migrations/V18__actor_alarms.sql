@@ -4,6 +4,7 @@ CREATE TABLE durable_actors_alarm (
     actor_id TEXT NOT NULL,
     revision BIGINT NOT NULL,
     timestamp_ms BIGINT,
+    queued_at_ms BIGINT,
     PRIMARY KEY (project_id, actor_name, actor_id)
 );
 

@@ -90,7 +90,7 @@ class Actor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
         pass
 
     def on_alarm(self) -> None:
-        """Handle a due alarm. Delete it or replace it with the next timestamp."""
+        """Handle a due alarm. It is cleared afterward unless this hook sets a new one."""
         pass
 
     def get_connections(self, tag: Tag | None = None) -> list[ActorSocket[Metadata, Outgoing, Tag]]:
