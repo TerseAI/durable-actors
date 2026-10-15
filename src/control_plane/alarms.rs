@@ -13,20 +13,21 @@ use crate::{actor::ActorKey, postgres::PostgresDatabase};
 use super::ControlPlaneService;
 
 pub(super) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub(super) const DEFAULT_BATCH_SIZE: usize = 100;
+pub(super) const ALARM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const ALARM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(super) struct ClaimedAlarm {
     pub actor: ActorKey,
     pub revision: u64,
-    timestamp_ms: i64,
 }
 
 #[async_trait]
 pub(super) trait AlarmStore: Send + Sync {
     async fn get(&self, actor: &ActorKey) -> Result<Option<i64>>;
     async fn update(&self, actor: &ActorKey, timestamp_ms: Option<i64>) -> Result<()>;
-    async fn claim_due(&self, now_ms: i64) -> Result<Option<ClaimedAlarm>>;
-    async fn restore(&self, alarm: &ClaimedAlarm) -> Result<()>;
+    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>>;
 }
 
 pub(super) fn start(
@@ -44,7 +45,11 @@ async fn run(
     poll_interval: Duration,
     stop: CancellationToken,
 ) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(ALARM_CONNECT_TIMEOUT)
+        .timeout(ALARM_REQUEST_TIMEOUT)
+        .build()
+        .expect("alarm invocation HTTP client");
     loop {
         tokio::select! {
             _ = stop.cancelled() => return,
@@ -60,21 +65,20 @@ async fn run(
             }
         };
         loop {
-            let alarm = match store.claim_due(now_ms).await {
-                Ok(Some(alarm)) => alarm,
-                Ok(None) => break,
+            let alarms = match store.claim_due(now_ms, DEFAULT_BATCH_SIZE).await {
+                Ok(alarms) if alarms.is_empty() => break,
+                Ok(alarms) => alarms,
                 Err(error) => {
                     tracing::warn!(%error, "could not claim due alarm");
                     break;
                 }
             };
-            if super::invocation::invoke_alarm(&service, &client, &alarm).await {
-                continue;
-            }
-            if let Err(error) = store.restore(&alarm).await {
-                tracing::warn!(%error, "could not restore undelivered alarm");
-            }
-            break;
+            futures_util::future::join_all(
+                alarms
+                    .iter()
+                    .map(|alarm| super::invocation::invoke_alarm(&service, &client, alarm)),
+            )
+            .await;
         }
     }
 }
@@ -124,16 +128,16 @@ impl AlarmStore for PostgresAlarmStore {
         Ok(())
     }
 
-    async fn claim_due(&self, now_ms: i64) -> Result<Option<ClaimedAlarm>> {
-        let Some(row) = self
-            .database
-            .query_opt(
+    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>> {
+        let limit = i64::try_from(limit).context("alarm batch size overflow")?;
+        let client = self.database.connection().await?;
+        let statement = client
+            .prepare_cached(
                 "WITH due AS (
-                    SELECT project_id, actor_name, actor_id, timestamp_ms
+                    SELECT project_id, actor_name, actor_id
                     FROM durable_actors_alarm
                     WHERE timestamp_ms <= $1
-                    ORDER BY timestamp_ms
-                    LIMIT 1
+                    LIMIT $2
                     FOR UPDATE SKIP LOCKED
                  )
                  UPDATE durable_actors_alarm AS alarm
@@ -143,43 +147,25 @@ impl AlarmStore for PostgresAlarmStore {
                    AND alarm.actor_name = due.actor_name
                    AND alarm.actor_id = due.actor_id
                  RETURNING alarm.project_id, alarm.actor_name, alarm.actor_id,
-                           alarm.revision, due.timestamp_ms",
-                &[&now_ms],
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let revision: i64 = row.get("revision");
-        Ok(Some(ClaimedAlarm {
-            actor: ActorKey {
-                project_id: row.get("project_id"),
-                actor_name: row.get("actor_name"),
-                actor_id: row.get("actor_id"),
-            },
-            revision: u64::try_from(revision).context("negative alarm revision")?,
-            timestamp_ms: row.get("timestamp_ms"),
-        }))
-    }
-
-    async fn restore(&self, alarm: &ClaimedAlarm) -> Result<()> {
-        let revision = i64::try_from(alarm.revision).context("alarm revision overflow")?;
-        self.database
-            .execute(
-                "UPDATE durable_actors_alarm
-                 SET timestamp_ms = $4
-                 WHERE project_id = $1 AND actor_name = $2 AND actor_id = $3
-                   AND revision = $5 AND timestamp_ms IS NULL",
-                &[
-                    &alarm.actor.project_id,
-                    &alarm.actor.actor_name,
-                    &alarm.actor.actor_id,
-                    &alarm.timestamp_ms,
-                    &revision,
-                ],
+                           alarm.revision",
             )
             .await?;
-        Ok(())
+        client
+            .query(&statement, &[&now_ms, &limit])
+            .await?
+            .into_iter()
+            .map(|row| {
+                let revision: i64 = row.get("revision");
+                Ok(ClaimedAlarm {
+                    actor: ActorKey {
+                        project_id: row.get("project_id"),
+                        actor_name: row.get("actor_name"),
+                        actor_id: row.get("actor_id"),
+                    },
+                    revision: u64::try_from(revision).context("negative alarm revision")?,
+                })
+            })
+            .collect()
     }
 }
 
@@ -223,36 +209,28 @@ impl AlarmStore for MemoryAlarmStore {
         Ok(())
     }
 
-    async fn claim_due(&self, now_ms: i64) -> Result<Option<ClaimedAlarm>> {
+    async fn claim_due(&self, now_ms: i64, limit: usize) -> Result<Vec<ClaimedAlarm>> {
         let mut alarms = self.alarms.lock().unwrap();
-        let Some((actor, alarm)) = alarms
-            .iter_mut()
-            .filter(|(_, alarm)| {
+        let due = alarms
+            .iter()
+            .filter_map(|(actor, alarm)| {
                 alarm
                     .timestamp_ms
-                    .is_some_and(|timestamp| timestamp <= now_ms)
+                    .is_some_and(|timestamp_ms| timestamp_ms <= now_ms)
+                    .then(|| actor.clone())
             })
-            .min_by_key(|(_, alarm)| alarm.timestamp_ms)
-        else {
-            return Ok(None);
-        };
-        let timestamp_ms = alarm.timestamp_ms.take().unwrap();
-        Ok(Some(ClaimedAlarm {
-            actor: actor.clone(),
-            revision: alarm.revision,
-            timestamp_ms,
-        }))
-    }
-
-    async fn restore(&self, alarm: &ClaimedAlarm) -> Result<()> {
-        let mut alarms = self.alarms.lock().unwrap();
-        let Some(current) = alarms.get_mut(&alarm.actor) else {
-            return Ok(());
-        };
-        if current.revision == alarm.revision && current.timestamp_ms.is_none() {
-            current.timestamp_ms = Some(alarm.timestamp_ms);
+            .take(limit)
+            .collect::<Vec<_>>();
+        let mut claimed = Vec::with_capacity(due.len());
+        for actor in due {
+            let alarm = alarms.get_mut(&actor).expect("selected alarm disappeared");
+            alarm.timestamp_ms = None;
+            claimed.push(ClaimedAlarm {
+                actor,
+                revision: alarm.revision,
+            });
         }
-        Ok(())
+        Ok(claimed)
     }
 }
 
