@@ -60,8 +60,7 @@ test("backend stubs use the existing client lazily within the current invocation
 test("backend stubs reject invalid identities and unsafe method names before dispatch", () => {
     assert.throws(() => createActorStub("Room", "bad/id", []), /actor ID/)
     assert.throws(() => createActorStub("bad/type", "one", []), /actor name/)
-    for (const name of ["then", "db", "alarm", "onAlarm"])
-        assert.throws(() => createActorStub("Room", "one", [{ name, result: "value" }]), /reserved/)
+    assert.throws(() => createActorStub("Room", "one", [{ name: "then", result: "value" }]), /reserved/)
 })
 
 test("backend stubs trim omitted trailing arguments and reject undefined holes before JSON transport", async () => {

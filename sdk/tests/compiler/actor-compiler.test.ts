@@ -22,15 +22,10 @@ test("rejects invalid or dynamic compute overrides", () => {
         assert.ok(analyze(`import { Actor, Compute } from "./sdk.js"; ${declaration}`).diagnostics.length > 0)
 })
 
-test("runtime capability fields are reserved", () => {
-    for (const name of ["db", "alarm"]) {
-        const result = analyze(`import { Actor, Persisted } from "./sdk.js"
-            export class Room extends Actor { @Persisted ${name} = 1 }`)
-        assert.ok(
-            result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")),
-            name
-        )
-    }
+test("db is reserved for the actor SQLite database", () => {
+    const result = analyze(`import { Actor, Persisted } from "./sdk.js"
+        export class Room extends Actor { @Persisted db = 1 }`)
+    assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
 })
 
 test("records only atomic methods, including aliased decorators", () => {

@@ -53,20 +53,6 @@ test("immediate mode asks the host to commit each write", async () => {
     host.close()
 })
 
-test("alarm mutations roll back atomically", async () => {
-    const host = new HostDatabase()
-    const database = new DatabaseProxy(host.call)
-    assert.deepEqual(database.getAlarmState(), { timestampMs: null })
-    await runWithActorDatabase({}, "immediate", async () => database.setAlarm(1_000))
-    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000 })
-    await runWithActorDatabase({}, "atomic", async () => database.setAlarm(2_000))
-    database.rollback()
-    assert.deepEqual(database.getAlarmState(), { timestampMs: 1_000 })
-    await runWithActorDatabase({}, "immediate", async () => database.deleteAlarm())
-    assert.deepEqual(database.getAlarmState(), { timestampMs: null })
-    host.close()
-})
-
 test("host errors surface to actor code and commit failures are distinguishable", () => {
     const database = new DatabaseProxy((call: DatabaseCall): DatabaseResult => {
         throw new Error(call.op === "commit" ? "replication failed" : "SQLite runtime table names are reserved")

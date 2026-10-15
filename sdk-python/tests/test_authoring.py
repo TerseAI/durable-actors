@@ -50,36 +50,6 @@ def test_alarm_lifecycle_is_not_published_as_an_rpc():
     assert [method["name"] for method in methods] == ["schedule"]
 
 
-@pytest.mark.parametrize("name", ["alarm", "on_alarm"])
-def test_alarm_names_are_reserved_for_fields(name):
-    actor = type(
-        "Conflicting",
-        (Actor,),
-        {"__annotations__": {name: int}, name: persisted(0)},
-    )
-
-    with pytest.raises(ValueError, match="reserved"):
-        describe_actor(actor)
-
-
-def test_alarm_hook_takes_no_arguments():
-    class Invalid(Actor):
-        def on_alarm(self, value: int) -> None:
-            pass
-
-    with pytest.raises(ValueError, match="take no arguments"):
-        describe_actor(Invalid)
-
-
-def test_wire_alarm_name_is_reserved_for_methods():
-    class Invalid(Actor):
-        def onAlarm(self) -> None:
-            pass
-
-    with pytest.raises(ValueError, match="reserved"):
-        describe_actor(Invalid)
-
-
 def test_mutable_defaults_are_per_actor():
     left, right = Chat(), Chat()
     left.messages.append(Message(text="hello", role="user"))

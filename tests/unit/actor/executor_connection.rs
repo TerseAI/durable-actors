@@ -390,7 +390,6 @@ async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
             }],
         }
     );
-
     shutdown.cancel();
     connection_task.await??;
     customer.await??;

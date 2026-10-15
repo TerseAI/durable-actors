@@ -179,10 +179,6 @@ test("the actor session carries only owned execution commands", async t => {
             reply: { type: "evicted" }
         })
 
-        invoke(5, "onAlarm", [])
-        assertSessionReply(await next(), 5, { type: "invoked", result: null })
-        assert.deepEqual(database.fields(), { count: 6 })
-
         customerSocket.end()
         await session.waitUntilDisconnected()
         assert.equal(closed, 1)

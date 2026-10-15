@@ -51,10 +51,6 @@ class SessionCounter extends Actor {
             void performance.now()
         }
     }
-
-    async onAlarm(): Promise<void> {
-        this.count++
-    }
 }
 
 export { SessionCounter }

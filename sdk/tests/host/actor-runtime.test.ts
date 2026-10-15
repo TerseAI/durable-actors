@@ -226,7 +226,6 @@ test("ephemeral caches survive resident calls and reset after atomic failure or 
     assertReply(await restored.handle(command), expected)
 })
 
-// help me understand this test
 test("failed state recovery reports a fatal error instead of keeping a damaged instance", async () => {
     let rejectConstruction = false
     const restore = () => {

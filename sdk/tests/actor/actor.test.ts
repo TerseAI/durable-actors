@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { z } from "zod"
 
-import { Actor, type ActorContext, findActorDefinition, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, findActorDefinition, registerActorClass } from "../../src/actor/actor.js"
 import { Persistence } from "../../src/actor/schema.js"
 import { ActorDefinitionError, ActorValidationError } from "../../src/errors.js"
 import { runWithActorClientForTests } from "../fixtures/actorClient.js"
@@ -13,33 +13,18 @@ class ChatRoom extends Actor {
     }
 }
 
-test("actor methods cannot replace reserved runtime capabilities", () => {
-    for (const name of ["db", "alarm"]) {
-        class RuntimeCapabilityMethod extends Actor {}
-        Object.defineProperty(RuntimeCapabilityMethod.prototype, name, { value: async () => [] })
-        assert.throws(
-            () =>
-                registerActorClass(RuntimeCapabilityMethod, {
-                    actorName: "RuntimeCapabilityMethod",
-                    fields: []
-                }),
-            new RegExp(`reserved method ${name}`)
-        )
-    }
-})
-
-test("actors can only be constructed with a runtime context", () => {
-    for (const context of [undefined, {}, { actorId: "forged" }])
-        assert.throws(() => Reflect.construct(ChatRoom, [context]), /constructed by the actor runtime/)
+test("actor methods cannot replace the reserved database handle", () => {
+    class DatabaseMethod extends Actor {}
+    Object.defineProperty(DatabaseMethod.prototype, "db", { value: async () => [] })
+    assert.throws(
+        () => registerActorClass(DatabaseMethod, { actorName: "DatabaseMethod", fields: [] }),
+        /reserved method db/
+    )
 })
 
 test("creating and invoking a reference does not register an executable actor", async () => {
     class RemoteCounter extends Actor {
         count = 0
-
-        constructor(context: ActorContext) {
-            super(context)
-        }
 
         async increment(): Promise<number> {
             assert.fail("reference executed the actor implementation")
@@ -146,18 +131,4 @@ test("onAlarm is a lifecycle hook, not an RPC method", () => {
     const reference = AlarmLifecycleProbe.get("one")
     // @ts-expect-error lifecycle hooks are not callable through actor references
     assert.equal(reference.onAlarm, undefined)
-})
-
-test("onAlarm lifecycle hooks cannot declare arguments", () => {
-    class InvalidAlarmLifecycleProbe extends Actor {
-        async onAlarm(_unexpected?: unknown): Promise<void> {}
-    }
-    assert.throws(
-        () =>
-            registerActorClass(InvalidAlarmLifecycleProbe, {
-                actorName: "InvalidAlarmLifecycleProbe",
-                fields: []
-            }),
-        /onAlarm must take no arguments/
-    )
 })

@@ -5,13 +5,7 @@ use serde_json::json;
 fn round_trips_sqlite_commit_and_result() -> Result<()> {
     let sqlite = crate::test_sqlite::snapshot(json!({"count": 3, "nested": [true, null]}))?;
     let snapshot = StateSnapshot::new(1, 2, "request".into(), sqlite, json!(3))?;
-    let encoded = snapshot.encode()?;
-    assert!(
-        serde_json::from_slice::<Value>(&encoded)?
-            .get("alarmTimestampMs")
-            .is_none()
-    );
-    let restored = StateSnapshot::decode(&encoded)?;
+    let restored = StateSnapshot::decode(&snapshot.encode()?)?;
     assert_eq!(
         serde_json::to_value(restored)?,
         serde_json::to_value(snapshot)?

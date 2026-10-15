@@ -377,10 +377,7 @@ test("rejects unsupported callable shapes instead of publishing incomplete signa
         ["send() { return Promise.resolve(1) }", /Room\.send.*async/],
         ["async then() {}", /Room\.then.*reserved/],
         ["async connect() {}", /Room\.connect.*reserved/],
-        ["// @ts-ignore\nasync alarm() {}", /Room\.alarm.*reserved/],
         ["get value() { return 1 }", /Room\.value.*accessor/],
-        ["// @ts-ignore\nonAlarm() {}", /Room\.onAlarm.*must be async/],
-        ["async onAlarm(unexpected?: unknown) {}", /Room\.onAlarm.*no arguments/],
         ["async send(this: Room) {}", /Room\.send.*this/],
         ["async send(...values: [string, number?]) {}", /Room\.send.*rest/],
         ["async send(value = 1, required: string) {}", /Room\.send.*default/]

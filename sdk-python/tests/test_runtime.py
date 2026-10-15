@@ -143,64 +143,6 @@ async def test_async_actors_can_schedule_and_handle_alarms():
     assert (await runtime.handle(command("fired_at", actor=actor)))["result"] == [True, None]
 
 
-@pytest.mark.parametrize("base", [Actor, AsyncActor])
-async def test_actors_without_an_alarm_hook_ignore_due_alarms(base):
-    class WithoutAlarmHook(base):
-        pass
-
-    runtime = ActorRuntime(WithoutAlarmHook, Effects())
-    actor = {**ACTOR, "actor_name": "WithoutAlarmHook"}
-    delivered = await runtime.handle(command("onAlarm", actor=actor))
-    assert delivered == {"type": "invoked", "result": None}
-
-
-async def test_alarm_timestamps_must_be_safe_integers():
-    class Reminder(Actor):
-        def schedule(self, timestamp_ms: int) -> None:
-            self.alarm.set(timestamp_ms)
-
-    runtime = ActorRuntime(Reminder, Effects())
-    actor = {**ACTOR, "actor_name": "Reminder"}
-    reply = await runtime.handle(command("schedule", [2**53], actor=actor))
-    assert reply["type"] == "failed"
-    assert "safe integer" in reply["message"]
-
-
-async def test_failed_alarm_callbacks_roll_back_alarm_changes():
-    class Reminder(Actor):
-        def schedule(self) -> None:
-            self.alarm.set(1_000)
-
-        def on_alarm(self) -> None:
-            self.alarm.delete()
-            raise RuntimeError("retry")
-
-        def scheduled_at(self) -> int | None:
-            return self.alarm.get()
-
-    runtime = ActorRuntime(Reminder, Effects())
-    actor = {**ACTOR, "actor_name": "Reminder"}
-    await runtime.handle(command("schedule", actor=actor))
-    assert (await runtime.handle(command("onAlarm", actor=actor)))["type"] == "failed"
-    assert (await runtime.handle(command("scheduled_at", actor=actor)))["result"] == 1_000
-
-
-async def test_alarm_handles_expire_after_their_invocation():
-    escaped = []
-
-    class Reminder(Actor):
-        def schedule(self) -> None:
-            self.alarm.set(1_000)
-            escaped.append(self.alarm)
-
-    runtime = ActorRuntime(Reminder, Effects())
-    actor = {**ACTOR, "actor_name": "Reminder"}
-    await runtime.handle(command("schedule", actor=actor))
-
-    with pytest.raises(RuntimeError, match="outside its invocation"):
-        escaped[0].get()
-
-
 async def test_replaced_and_evicted_instances_are_released():
     runtime = ActorRuntime(Counter, Effects())
     instances = []

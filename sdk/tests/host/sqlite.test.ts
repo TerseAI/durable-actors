@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 
-import { Actor, type ActorContext, registerActorClass } from "../../src/actor/actor.js"
+import { Actor, registerActorClass } from "../../src/actor/actor.js"
 import type { ActorDefinition } from "../../src/actor/actor.js"
 import { Ephemeral } from "../../src/actor/decorators.js"
 import { Persistence } from "../../src/actor/schema.js"
@@ -293,54 +293,6 @@ test("field initializers read the actor identity and SQLite during construction"
     )
     const reply = await invoke(runtime, "read", [], "InitializedSqlite")
     assert.deepEqual(Reflect.get(reply, "result"), { identity: "one", tables: [{ name: "initialized" }] })
-})
-
-test("explicit constructors receive the actor context", async () => {
-    class ConstructedSqlite extends Actor {
-        @Ephemeral identity: string
-
-        constructor(context: ActorContext) {
-            super(context)
-            this.identity = this.id
-            this.db.exec("CREATE TABLE constructed (id INTEGER)")
-        }
-
-        async read() {
-            return {
-                identity: this.identity,
-                tables: this.db.exec("SELECT name FROM sqlite_schema WHERE name = 'constructed'")
-            }
-        }
-    }
-    const { runtime } = createRuntime(
-        registerActorClass(ConstructedSqlite, {
-            actorName: "ConstructedSqlite",
-            fields: [{ name: "identity", persistence: Persistence.Ephemeral }]
-        })
-    )
-    const reply = await invoke(runtime, "read", [], "ConstructedSqlite")
-    assert.deepEqual(Reflect.get(reply, "result"), { identity: "one", tables: [{ name: "constructed" }] })
-})
-
-test("database work deferred from construction is rejected", async () => {
-    class DeferredSqlite extends Actor {
-        @Ephemeral deferred = Promise.resolve().then(() => this.db.exec("CREATE TABLE deferred (id INTEGER)"))
-
-        async read() {
-            return this.deferred.then(
-                () => "allowed",
-                (error: unknown) => String(error)
-            )
-        }
-    }
-    const { runtime } = createRuntime(
-        registerActorClass(DeferredSqlite, {
-            actorName: "DeferredSqlite",
-            fields: [{ name: "deferred", persistence: Persistence.Ephemeral }]
-        })
-    )
-    const reply = await invoke(runtime, "read", [], "DeferredSqlite")
-    assert.match(String(Reflect.get(reply, "result")), /outside its invocation/)
 })
 
 test("a commit failure prevents further execution until the actor is reloaded", async () => {

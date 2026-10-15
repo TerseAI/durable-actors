@@ -232,7 +232,7 @@ with account.connect(actors.BankAccount.Metadata(user_id="ada")) as socket:
 
 ## Scheduling an alarm
 
-Each actor has one durable alarm. Setting it again replaces the previous timestamp. When the timestamp is due, the runtime wakes the actor and runs `on_alarm`.
+Each actor has one alarm. Setting it again replaces the previous timestamp. When the timestamp is due, the runtime wakes the actor and runs `on_alarm`.
 
 ```python
 import time
@@ -249,10 +249,6 @@ class Reminder(Actor):
     def on_alarm(self) -> None:
         self.sent = True
 ```
-
-`self.alarm.get()` returns the scheduled Unix timestamp in milliseconds, or `None`. When `on_alarm` returns or raises, the runtime clears the alarm unless the callback scheduled a new one. A callback that raises is not retried, so a recurring alarm should handle its own errors. If the runtime cannot reach the actor, it tries up to three times with exponential backoff before dropping the alarm. Delivery is at least once: a delivery interrupted by a control-plane restart runs again about five minutes later, so `on_alarm` should be safe to repeat. `AsyncActor` provides the same API with `await self.alarm.get()`, `set()`, and `delete()`.
-
-Alarm timestamps retain millisecond precision, but the control plane checks for due alarms every 100 milliseconds by default. Polling can therefore add up to roughly one polling interval of delay, with routing, dispatch, backlog, and failures adding more. Deployments can configure the interval with `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS`. Alarms do not provide an exact execution-time guarantee.
 
 ## Interleaving calls
 
