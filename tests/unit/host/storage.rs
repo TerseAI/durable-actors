@@ -180,11 +180,11 @@ async fn host_storage(bucket: Arc<MemoryBucket>) -> Result<HostStorage> {
         host,
         session: "session".into(),
         region: "us-east".into(),
-        actor: Some(ActorKey {
+        actor: ActorKey {
             project_id: "default".into(),
             actor_name: "Counter".into(),
             actor_id: "one".into(),
-        }),
+        },
         new_actor: true,
         owner_hint: None,
         activation: Mutex::new(None),
@@ -206,7 +206,7 @@ async fn persistence_failure_fences_the_host_and_requests_replacement() -> Resul
             duration_ms: 30_000,
         })
         .await?;
-    let actor = storage.actor.as_ref().unwrap();
+    let actor = &storage.actor;
     let plan = storage
         .prepare_state_write(actor, &storage.host, 1, 0)
         .await?;
@@ -281,7 +281,7 @@ async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePl
         })
         .await?;
     let plan = storage
-        .prepare_state_write(storage.actor.as_ref().unwrap(), &storage.host, 1, 0)
+        .prepare_state_write(&storage.actor, &storage.host, 1, 0)
         .await?;
     let bytes = StateSnapshot::new(
         1,
@@ -297,7 +297,7 @@ async fn pending_write() -> Result<(Arc<MemoryBucket>, Arc<HostStorage>, WritePl
 #[tokio::test]
 async fn socket_authorization_checks_persisted_ownership_without_reading_snapshots() -> Result<()> {
     let (bucket, storage, _, _) = pending_write().await?;
-    let actor = storage.actor.as_ref().unwrap();
+    let actor = &storage.actor;
     let sockets = crate::host::sockets::HostSockets::new(
         storage.clone(),
         Arc::new(crate::sockets::SocketRegistry::default()),
@@ -428,7 +428,7 @@ async fn storage_drain_renews_ownership_and_only_seals_archived_state() -> Resul
         assert!(storage.register(&request).await.is_err());
         let (_, hint) = storage
             .runtime
-            .get_owner_with_hint(&storage.actor.as_ref().unwrap().storage_key())
+            .get_owner_with_hint(&storage.actor.storage_key())
             .await?;
         let record = serde_json::to_value(hint.unwrap())?;
         assert_eq!(record["record"]["sealed"], !fail && !stall);
@@ -467,7 +467,7 @@ async fn shutdown_releases_ownership_while_a_renewal_is_stuck() -> Result<()> {
     assert!(renewing.await?.is_err());
     let (_, hint) = storage
         .runtime
-        .get_owner_with_hint(&storage.actor.as_ref().unwrap().storage_key())
+        .get_owner_with_hint(&storage.actor.storage_key())
         .await?;
     let record = serde_json::to_value(hint.unwrap())?;
     assert_eq!(record["record"]["lease"]["expires_at_ms"], 0);

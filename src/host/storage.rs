@@ -32,7 +32,7 @@ pub(crate) struct HostStorage {
     host: HostId,
     session: String,
     region: String,
-    actor: Option<ActorKey>,
+    actor: ActorKey,
     new_actor: bool,
     owner_hint: Option<crate::bucket::OwnershipHint>,
     activation: Mutex<Option<ActorActivation>>,
@@ -49,7 +49,7 @@ impl HostStorage {
         client: Arc<ControlPlaneClient>,
         stop: CancellationToken,
         warm: Option<WarmGcs>,
-        actor: Option<ActorKey>,
+        actor: ActorKey,
     ) -> Result<Self> {
         let credentials = HostCredentials::new(config.token, client.clone(), stop.clone());
         let (authority, clients): (Arc<dyn Bucket>, _) = match config.bucket {
@@ -72,7 +72,7 @@ impl HostStorage {
                 &config.persistence,
                 clients,
                 stop.clone(),
-                actor.as_ref(),
+                Some(&actor),
             )?);
             runtime = runtime.with_persistence(config.persistence, snapshots)?;
         }
@@ -139,7 +139,7 @@ impl HostStorage {
 
     pub(super) async fn finish(&self, deadline: tokio::time::Instant) -> Result<()> {
         let started = Instant::now();
-        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let actor = &self.actor;
         let drain_deadline = deadline - Duration::from_secs(3);
         let completed = tokio::time::timeout_at(
             drain_deadline,
@@ -194,10 +194,7 @@ impl HostStorage {
 
     fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
         actor.validate()?;
-        ensure!(
-            self.actor.as_ref().is_none_or(|bound| bound == actor),
-            "actor identity mismatch"
-        );
+        ensure!(self.actor == *actor, "actor identity mismatch");
         ensure!(*host == self.host, "host storage scope mismatch");
         self.ensure_authority()
     }
@@ -354,7 +351,7 @@ impl HostLeaseRegistry for HostStorage {
         let _renewal = self.renewal.lock().await;
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
-        let actor = self.actor.as_ref().context("host actor identity missing")?;
+        let actor = &self.actor;
         ensure!(
             residents.is_none_or(
                 |actors| actors.len() <= 1 && actors.iter().all(|candidate| candidate == actor)

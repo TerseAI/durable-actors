@@ -669,7 +669,7 @@ impl Stack {
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
                 None,
-                Some(actor.clone()),
+                actor.clone(),
             )
             .await?
             .with_activation(true, None),
