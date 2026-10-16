@@ -387,13 +387,17 @@ class ActorWorkerSupervisor {
         })
     }
 
-    private async evict(command: EvictCommand, allowNextInvocation: () => void, database: DatabaseRequester): Promise<ActorExecutorReply> {
+    private async evict(
+        command: EvictCommand,
+        allowNextInvocation: () => void,
+        database: DatabaseRequester
+    ): Promise<ActorExecutorReply> {
         const actor = this.resident
         if (actor === undefined) return { type: "evicted" }
         try {
             await actor.execute(command, allowNextInvocation, database)
         } catch {
-        // The thread is still stopped when onSleep fails.
+            // The thread is still stopped when onSleep fails.
         }
         this.resident = undefined
         actor.terminate("resident actor was evicted by the Rust host")

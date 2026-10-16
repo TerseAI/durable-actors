@@ -151,9 +151,13 @@ impl Mailbox {
     }
 
     async fn evict(&mut self) {
-        if let Err(error) =
-            execution::evict_actor(&self.actor, self.owner_epoch, &self.executor, &self.database)
-                .await
+        if let Err(error) = execution::evict_actor(
+            &self.actor,
+            self.owner_epoch,
+            &self.executor,
+            &self.database,
+        )
+        .await
         {
             tracing::warn!(%error, "failed to evict actor");
         }
