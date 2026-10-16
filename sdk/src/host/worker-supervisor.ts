@@ -306,7 +306,8 @@ class ActorWorkerSupervisor {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
             case "evict":
-                return this.evict(command)
+                console.log("evict")
+                return this.evict(command, allowNextInvocation, database)
             default:
                 throw command satisfies never
         }
@@ -387,9 +388,17 @@ class ActorWorkerSupervisor {
         })
     }
 
-    private evict(_command: EvictCommand): ActorExecutorReply {
-        this.resident?.terminate("resident actor was evicted by the Rust host")
+    private async evict(command: EvictCommand, allowNextInvocation: () => void, database: DatabaseRequester): Promise<ActorExecutorReply> {
+        const actor = this.resident
+        if (actor === undefined) return { type: "evicted" }
+        try {
+            await actor.execute(command, allowNextInvocation, database)
+        } catch {
+        // The thread is still stopped when onSleep fails.
+        }
         this.resident = undefined
+        console.log("terminating actor")
+        actor.terminate("resident actor was evicted by the Rust host")
         return { type: "evicted" }
     }
 
