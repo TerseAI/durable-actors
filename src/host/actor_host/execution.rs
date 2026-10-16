@@ -271,11 +271,11 @@ async fn evict(
     database: &Arc<HostDatabase>,
     reset: bool,
 ) {
-    if reset {
-        let _ = database.reset().await;
-    }
     if let Err(error) = evict_actor(actor, owner_epoch, executor, database).await {
         warn!(%error, "failed to evict actor after invocation failure");
+    }
+    if reset {
+        let _ = database.reset().await;
     }
 }
 
