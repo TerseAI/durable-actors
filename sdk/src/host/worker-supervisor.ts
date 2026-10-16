@@ -306,7 +306,6 @@ class ActorWorkerSupervisor {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
             case "evict":
-                console.log("evict")
                 return this.evict(command, allowNextInvocation, database)
             default:
                 throw command satisfies never
@@ -397,7 +396,6 @@ class ActorWorkerSupervisor {
         // The thread is still stopped when onSleep fails.
         }
         this.resident = undefined
-        console.log("terminating actor")
         actor.terminate("resident actor was evicted by the Rust host")
         return { type: "evicted" }
     }

@@ -215,7 +215,11 @@ pub trait ActorExecutor: Send + Sync {
         }))
     }
 
-    async fn evict(&self, _eviction: ActorMethodEviction) -> Result<()> {
+    async fn evict(
+        &self,
+        _eviction: ActorMethodEviction,
+        _database: Arc<dyn ActorDatabase>,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -488,9 +492,13 @@ impl ActorExecutor for JsActorExecutor {
         }
     }
 
-    async fn evict(&self, eviction: ActorMethodEviction) -> Result<()> {
+    async fn evict(
+        &self,
+        eviction: ActorMethodEviction,
+        database: Arc<dyn ActorDatabase>,
+    ) -> Result<()> {
         match self
-            .exchange(ExecutorCommand::Evict(eviction), None)
+            .exchange(ExecutorCommand::Evict(eviction), Some(database))
             .await?
         {
             ExecutorReply::Evicted => Ok(()),

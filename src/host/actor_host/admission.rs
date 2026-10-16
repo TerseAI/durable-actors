@@ -1,6 +1,5 @@
 use super::execution::{self, Completion};
 use super::*;
-use crate::actor::ActorMethodEviction;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 
 pub(super) async fn run(
@@ -15,6 +14,7 @@ pub(super) async fn run(
     mut admission: Option<watch::Receiver<()>>,
 ) {
     let stopped = database.stopped.clone();
+    let mut draining = accepting.clone();
     let mut mailbox = Mailbox {
         actor,
         endpoint,
@@ -27,6 +27,7 @@ pub(super) async fn run(
         blocked_on: None,
         interleaved: false,
         hydrating: false,
+        owner_epoch: 0,
     };
     let mut open = true;
     while open || !mailbox.running.is_empty() {
@@ -49,6 +50,10 @@ pub(super) async fn run(
                 }
                 None => open = false,
             },
+            () = draining.wait_for(|accepting| !*accepting).map(drop), if mailbox.running.is_empty() => {
+                mailbox.evict().await;
+                return;
+            }
         }
     }
 }
@@ -74,6 +79,7 @@ struct Mailbox {
     blocked_on: Option<u64>,
     interleaved: bool,
     hydrating: bool,
+    owner_epoch: u64,
 }
 
 impl Mailbox {
@@ -112,6 +118,7 @@ impl Mailbox {
             executed,
         } = completion;
         self.hydrating = false;
+        self.owner_epoch = request.owner_epoch;
         let unexpected = executed
             && self.interleaved
             && !interleaved
@@ -144,14 +151,11 @@ impl Mailbox {
     }
 
     async fn evict(&mut self) {
-        if let Err(error) = self
-            .executor
-            .evict(ActorMethodEviction {
-                actor: self.actor.clone(),
-            })
-            .await
+        if let Err(error) =
+            execution::evict_actor(&self.actor, self.owner_epoch, &self.executor, &self.database)
+                .await
         {
-            tracing::warn!(%error, "failed to evict stopped actor");
+            tracing::warn!(%error, "failed to evict actor");
         }
     }
 
