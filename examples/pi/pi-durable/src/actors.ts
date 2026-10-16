@@ -109,33 +109,57 @@ class ModalSandbox implements ActorResource {
         this.db.exec("CREATE TABLE IF NOT EXISTS modal_sandbox (id INTEGER PRIMARY KEY CHECK (id = 1), sandbox_id TEXT, workspace_image_id TEXT)")
     }
 
-    private async reattach(sandboxId: string | null): Promise<Sandbox | undefined> {
-        if (sandboxId === null) return undefined
-        
+    private async attach(sandboxId: string): Promise<Sandbox> {
         const sandbox = await this.modal.sandboxes.fromId(sandboxId)
-        return (await sandbox.poll()) === null ? sandbox : undefined
+        const isRunning = (await sandbox.poll()) !== null
+
+        if (isRunning) { // great, sandbox is still running
+            return sandbox
+        } else {
+            // sandbox is not running, we need to create a new one
+            const sandbox = await this.createNewSandbox()
+            return sandbox
+
+        }
     }
 
-    private async createSandbox(): Promise<Sandbox> {
+    private async createNewSandbox(): Promise<Sandbox> {
+        const imageId = this.db.exec<{ image_id: string }>("SELECT image_id FROM workspace_images WHERE image = ?", IMAGE)
+        const sandbox = await this.createSandbox()
+
+        this.db.exec("INSERT OR REPLACE INTO modal_sandbox (sandbox_id) VALUES (?)", sandbox.sandboxId)
+
+        return sandbox
+    }
+
+    private async createSandbox(imageId?: string | undefined): Promise<Sandbox> {
         const app = await this.modal.apps.fromName(APP_NAME, { createIfMissing: true })
-        return this.modal.sandboxes.create(app, this.modal.images.fromRegistry(IMAGE), {
+        const sandbox = await this.modal.sandboxes.create(app, this.modal.images.fromRegistry(imageId ?? IMAGE), {
             encryptedPorts: [...PORTS],
             timeoutMs: 10000,
             idleTimeoutMs: 10000,
         })
+
+        return sandbox
     }
 
     async onResume(): Promise<void> {
         const [row] = this.db.exec<SandboxRow>("SELECT sandbox_id, workspace_image_id FROM modal_sandbox")
 
+        // There is no active sandbox, likely, this is a fresh Actor instance!
         if (row.sandbox_id === null) {
-           this._sandbox = await this.createSandbox()
+           this._sandbox = await this.createNewSandbox()
+           return;
         }
 
-        return Promise.resolve();
+        this._sandbox = await this.attach(row.sandbox_id)
+        return;
     }
 
-    onGracefulShutdown(): Promise<void> {
-        return Promise.resolve();
+    async onGracefulShutdown(): Promise<void> {
+        const image = await this.sandbox.snapshotFilesystem({ ttlMs: null })
+        this.db.exec("UPDATE modal_sandbox SET workspace_image_id = ?", image.imageId)
+
+        return;
     }
 }
