@@ -55,8 +55,8 @@ class ActorRuntime {
         return operation
     }
 
-    async close(): Promise<void> {
-        await this.shutdown()
+    async close(isGracefuleShutdown: boolean): Promise<void> {
+        if (isGracefuleShutdown) await this.shutdown()
         this.reset()
     }
 
@@ -82,7 +82,8 @@ class ActorRuntime {
             }
             if (command.type === "invoke") return await this.invoke(command)
             if (command.type === "evict") {
-                await this.close()
+                const isGracefuleShutdown = command.graceful
+                await this.close(isGracefuleShutdown)
                 this.reset()
                 return { type: "evicted" }
             }

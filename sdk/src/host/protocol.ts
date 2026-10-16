@@ -63,7 +63,8 @@ const websocketEventCommandSchema = z.object({
 
 const evictCommandSchema = z.object({
     type: z.literal("evict"),
-    actor: actorIdentitySchema
+    actor: actorIdentitySchema,
+    graceful: z.boolean()
 })
 
 const hydrateCommandSchema = z.object({

@@ -36,7 +36,7 @@ pub(super) async fn run(
             Some(completion) = mailbox.running.next(), if !mailbox.running.is_empty() => {
                 if !mailbox.executed(completion).await { return; }
             }
-            _ = stopped.cancelled() => { mailbox.evict().await; return; }
+            _ = stopped.cancelled() => { mailbox.evict(false).await; return; }
             permission = admitted(&mut admission), if mailbox.blocked_on.is_some() && !mailbox.hydrating => {
                 if permission.is_err() { return; }
                 mailbox.interleaved = true;
@@ -51,7 +51,7 @@ pub(super) async fn run(
                 None => open = false,
             },
             () = draining.wait_for(|accepting| !*accepting).map(drop), if mailbox.running.is_empty() => {
-                mailbox.evict().await;
+                mailbox.evict(true).await;
                 return;
             }
         }
@@ -133,7 +133,7 @@ impl Mailbox {
             });
         self.interleaved |= interleaved;
         if stop || unexpected || self.database.stopped.is_cancelled() {
-            self.evict().await;
+            self.evict(false).await;
             self.finish(
                 request,
                 Ok(ActorExecutionResult::Failed {
@@ -150,12 +150,13 @@ impl Mailbox {
         true
     }
 
-    async fn evict(&mut self) {
+    async fn evict(&mut self, graceful: bool) {
         if let Err(error) = execution::evict_actor(
             &self.actor,
             self.owner_epoch,
             &self.executor,
             &self.database,
+            graceful
         )
         .await
         {

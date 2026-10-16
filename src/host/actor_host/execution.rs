@@ -271,7 +271,7 @@ async fn evict(
     database: &Arc<HostDatabase>,
     reset: bool,
 ) {
-    if let Err(error) = evict_actor(actor, owner_epoch, executor, database).await {
+    if let Err(error) = evict_actor(actor, owner_epoch, executor, database, false).await {
         warn!(%error, "failed to evict actor after invocation failure");
     }
     if reset {
@@ -284,6 +284,7 @@ pub(super) async fn evict_actor(
     owner_epoch: u64,
     executor: &Arc<dyn ActorExecutor>,
     database: &Arc<HostDatabase>,
+    graceful: bool
 ) -> Result<()> {
     let scope = database.invocation(
         ActorInvocation {
@@ -300,6 +301,7 @@ pub(super) async fn evict_actor(
         .evict(
             ActorMethodEviction {
                 actor: actor.clone(),
+                graceful
             },
             scope,
         )

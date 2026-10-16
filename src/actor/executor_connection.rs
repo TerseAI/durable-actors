@@ -41,6 +41,7 @@ pub struct ActorMethodInvocation {
 #[derive(Debug, Serialize)]
 pub struct ActorMethodEviction {
     pub actor: ActorKey,
+    pub graceful: bool,
 }
 
 #[derive(Debug, Serialize)]
