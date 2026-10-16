@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     ActorHost, HostEndpoint, HostId, HostLeaseMaintainer, LeaseRenewalTask,
-    actor_host::ActorActivity,
+    actor_host::{ActorPhase, ActorStatus},
     config::{ActorHostConfig, ExecutorConfig, HostNetwork, InvocationAuth, LeaseTiming},
 };
 
@@ -77,8 +77,7 @@ pub(super) async fn serve_assigned_host(
         storage,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
-    let mut activity = host.activity();
-    let mut actor_stopped = host.stopped();
+    let mut status = host.status();
 
     let service = ActorHostHttpService::new(
         host.clone(),
@@ -120,7 +119,7 @@ pub(super) async fn serve_assigned_host(
             return Err(error);
         }
     };
-    lease.observe(executor_connection.executor(), host.queues());
+    lease.observe(executor_connection.executor(), host.status());
     if let Some(readiness) = readiness {
         let _ = readiness.send(ready);
     }
@@ -148,7 +147,7 @@ pub(super) async fn serve_assigned_host(
         &mut javascript,
         shutdown.as_mut(),
         &mut lease_lost,
-        (&mut activity, &mut actor_stopped),
+        &mut status,
         config.idle_timeout,
     )
     .await;
@@ -471,10 +470,7 @@ async fn wait_for_host_stop<ServerFuture, ExecutorFuture, ShutdownFuture>(
     javascript: &mut tokio::process::Child,
     mut shutdown: std::pin::Pin<&mut ShutdownFuture>,
     lease_lost: &mut tokio::sync::watch::Receiver<bool>,
-    activity: (
-        &mut tokio::sync::watch::Receiver<ActorActivity>,
-        &mut tokio::sync::watch::Receiver<bool>,
-    ),
+    status: &mut tokio::sync::watch::Receiver<ActorStatus>,
     idle_timeout: Duration,
 ) -> Result<()>
 where
@@ -482,18 +478,17 @@ where
     ExecutorFuture: Future<Output = Result<()>> + ?Sized,
     ShutdownFuture: Future<Output = ()> + ?Sized,
 {
-    let (activity, actor_stopped) = activity;
     loop {
-        if *actor_stopped.borrow() {
+        let (phase, idle_since) = {
+            let current = status.borrow_and_update();
+            (current.phase, current.idle_since)
+        };
+        if phase == ActorPhase::Stopped {
             break Err(anyhow::anyhow!(
                 "actor activation stopped; host self-fenced"
             ));
         }
-        let current = *activity.borrow_and_update();
         tokio::select! {
-            changed = actor_stopped.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("actor lifecycle tracker stopped")); }
-            }
             result = server.as_mut() => break result.context("serve actor host network endpoints"),
             result = executor.as_mut() => break result.context("run JavaScript actor executor"),
             result = javascript.wait() => break Err(anyhow::anyhow!("JavaScript actor executor exited with {}", result?)),
@@ -503,14 +498,21 @@ where
                     break Err(anyhow::anyhow!("host lease expired; host self-fenced"));
                 }
             }
-            changed = activity.changed() => {
-                if changed.is_err() { break Err(anyhow::anyhow!("actor activity tracker stopped")); }
+            changed = status.changed() => {
+                if changed.is_err() { break Err(anyhow::anyhow!("actor status tracker stopped")); }
             }
-            () = tokio::time::sleep_until(current.last_active + idle_timeout), if current.active == 0 => {
-                if activity.has_changed()? { continue; }
+            () = idle_elapsed(idle_since, idle_timeout) => {
+                if status.has_changed().unwrap_or(true) { continue; }
                 break Ok(());
             },
         }
+    }
+}
+
+async fn idle_elapsed(idle_since: Option<tokio::time::Instant>, timeout: Duration) {
+    match idle_since {
+        Some(since) => tokio::time::sleep_until(since + timeout).await,
+        None => std::future::pending().await,
     }
 }
 

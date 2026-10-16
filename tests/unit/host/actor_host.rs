@@ -353,7 +353,7 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
                 invoke(&host, "after-failure").await?,
                 ActorExecutionResult::HostUnavailable
             );
-            assert!(*host.stopped().borrow());
+            assert_eq!(host.status().borrow().phase, ActorPhase::Stopped);
             return Ok(());
         }
         assert_eq!(first?, completed(1));
@@ -640,7 +640,7 @@ async fn controlled_host() -> (
 async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state() -> Result<()> {
     for _ in 0..64 {
         let (host, mut started, release) = controlled_host().await;
-        let mut activity = host.activity();
+        let mut status = host.status();
         let caller = host.clone();
         let first = tokio::spawn(async move { invoke(&caller, "first").await });
         assert_eq!(started.recv().await.as_deref(), Some("first"));
@@ -648,7 +648,7 @@ async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_sta
         let panicking = tokio::spawn(async move { invoke(&caller, "panic").await });
         tokio::time::timeout(
             Duration::from_secs(2),
-            activity.wait_for(|activity| activity.active == 2),
+            status.wait_for(|status| status.waiting.len() == 1),
         )
         .await??;
         release.add_permits(1);
@@ -665,9 +665,62 @@ async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_sta
             ActorExecutionResult::HostUnavailable
         );
         host.drain(Duration::from_secs(1)).await?;
-        assert_eq!(activity.borrow().active, 0);
-        assert!(host.queues().inventory().is_empty());
+        assert_eq!(status.borrow().phase, ActorPhase::Stopped);
+        assert!(status.borrow().waiting.is_empty());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_that_never_started_are_unavailable_when_the_actor_stops() -> Result<()> {
+    struct Executor(tokio::sync::Semaphore);
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            _: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            self.0.acquire().await?.forget();
+            panic!("actor executor panicked");
+        }
+    }
+    let executor = Arc::new(Executor(tokio::sync::Semaphore::new(0)));
+    let host = Arc::new(create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    ));
+    let mut status = host.status();
+    let caller = host.clone();
+    let first = tokio::spawn(async move { invoke(&caller, "first").await });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        status.wait_for(|status| status.idle_since.is_none()),
+    )
+    .await??;
+    let caller = host.clone();
+    let queued = tokio::spawn(async move { invoke(&caller, "queued").await });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        status.wait_for(|status| status.waiting.len() == 1),
+    )
+    .await??;
+    executor.0.add_permits(1);
+    assert!(matches!(
+        first.await??,
+        ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown"
+    ));
+    assert_eq!(queued.await??, ActorExecutionResult::HostUnavailable);
     Ok(())
 }
 
@@ -777,24 +830,21 @@ async fn interleaved_admission_continues_while_database_publication_is_pending()
         tokio::time::timeout(Duration::from_secs(2), saving.recv())
             .await?
             .unwrap();
-        let mut queues = host.queues().changes();
+        let mut status = host.status();
         let caller = host.clone();
         let second = tokio::spawn(async move { invoke(&caller, "second").await });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while queues.borrow_and_update().is_empty() {
-                queues.changed().await?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            status.wait_for(|status| !status.waiting.is_empty()),
+        )
         .await??;
         executor.admission.send_replace(());
-        let admitted = tokio::time::timeout(Duration::from_secs(1), async {
-            while !queues.borrow_and_update().is_empty() {
-                queues.changed().await?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await;
+        let admitted = tokio::time::timeout(
+            Duration::from_secs(1),
+            status.wait_for(|status| status.waiting.is_empty()),
+        )
+        .await
+        .is_ok();
         assert!(!first.is_finished(), "write acknowledged before storage");
         release.add_permits(1);
         assert_eq!(
@@ -806,7 +856,7 @@ async fn interleaved_admission_continues_while_database_publication_is_pending()
             completed(2)
         );
         assert!(
-            admitted.is_ok(),
+            admitted,
             "pending database publication blocked mailbox admission (immediate={immediate})"
         );
         host.drain(Duration::from_secs(1)).await?;
@@ -871,10 +921,10 @@ async fn traces_measure_queue_wait_and_record_panics() -> Result<()> {
     assert_eq!(started.recv().await.as_deref(), Some("first"));
     let caller = host.clone();
     let second = tokio::spawn(async move { invoke(&caller, "second").await });
-    let mut activity = host.activity();
+    let mut status = host.status();
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|activity| activity.active == 2),
+        status.wait_for(|status| status.waiting.len() == 1),
     )
     .await??;
     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -954,7 +1004,7 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 #[tokio::test]
 async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<()> {
     let (host, mut started, release) = controlled_host().await;
-    let mut activity = host.activity();
+    let mut status = host.status();
     let caller = host.clone();
     let first = tokio::spawn(async move { invoke(&caller, "first").await });
     assert_eq!(started.recv().await.as_deref(), Some("first"));
@@ -967,7 +1017,7 @@ async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<
     }
     tokio::time::timeout(
         Duration::from_secs(2),
-        activity.wait_for(|activity| activity.active == 129),
+        status.wait_for(|status| status.waiting.len() == 128),
     )
     .await??;
     let other = host.invoke_actor(
@@ -1002,8 +1052,8 @@ async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<
         assert_eq!(caller.await??, ActorExecutionResult::HostUnavailable);
     }
     host.drain(Duration::from_secs(1)).await?;
-    assert_eq!(activity.borrow().active, 0);
-    assert!(host.queues().inventory().is_empty());
+    assert!(status.borrow().idle_since.is_some());
+    assert!(status.borrow().waiting.is_empty());
     Ok(())
 }
 
@@ -1880,7 +1930,7 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
         },
         connections: Vec::new(),
     };
-    let activity = host.activity();
+    let status = host.status();
     authority.fenced.store(true, Ordering::SeqCst);
     assert_eq!(
         host.submit(ActorOperation::Socket(invocation("fenced")), 1)
@@ -1889,11 +1939,11 @@ async fn socket_events_return_effects_only_after_committing_state() -> Result<()
     );
     assert_eq!(executor.invocations.load(Ordering::SeqCst), 0);
     authority.fenced.store(false, Ordering::SeqCst);
-    let before_connect = activity.borrow().last_active;
+    let before_connect = status.borrow().idle_since;
     let result = host
         .submit(ActorOperation::Socket(invocation("committed")), 1)
         .await?;
-    assert!(activity.borrow().last_active > before_connect);
+    assert!(status.borrow().idle_since > before_connect);
 
     assert!(matches!(
         result,

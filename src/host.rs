@@ -6,7 +6,6 @@ pub(crate) mod http;
 mod lease_maintenance;
 mod persistence;
 mod process;
-mod queues;
 pub(crate) mod sockets;
 mod spare;
 pub(crate) mod storage;

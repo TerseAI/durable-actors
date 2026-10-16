@@ -7,10 +7,10 @@ use tracing::{debug, info, warn};
 
 use crate::{
     clock::Clock,
-    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
+    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest, WaitingOperation},
 };
 
-use super::HostEndpoint;
+use super::{HostEndpoint, actor_host::ActorStatus};
 
 const LEASE_RENEWAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -26,7 +26,7 @@ pub(crate) struct HostLeaseMaintainer {
 
 #[derive(Clone, Default)]
 struct HostObservation {
-    queues: Option<super::queues::ActorQueues>,
+    status: Option<watch::Receiver<ActorStatus>>,
     executor: Option<Arc<dyn crate::actor::ActorExecutor>>,
 }
 
@@ -68,11 +68,11 @@ impl HostLeaseMaintainer {
     pub(crate) fn observe(
         &self,
         executor: Arc<dyn crate::actor::ActorExecutor>,
-        queues: super::queues::ActorQueues,
+        status: watch::Receiver<ActorStatus>,
     ) {
         self.observation.send_replace(HostObservation {
             executor: Some(executor),
-            queues: Some(queues),
+            status: Some(status),
         });
     }
 
@@ -83,7 +83,7 @@ impl HostLeaseMaintainer {
             .executor
             .as_ref()
             .and_then(|executor| executor.residency_changes());
-        let queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
+        let waiting = observation.status.map(WaitingChanges::new);
         let initial = self.renew_once_with_deadline().await?;
         info!(
             host_id = %initial.lease.id,
@@ -100,7 +100,7 @@ impl HostLeaseMaintainer {
             task_shutdown,
             lease_lost_tx,
             changes,
-            queue_changes,
+            waiting,
             observation_changes,
         ));
 
@@ -125,7 +125,7 @@ impl HostLeaseMaintainer {
         shutdown: CancellationToken,
         lease_lost: watch::Sender<bool>,
         mut changes: Option<watch::Receiver<()>>,
-        mut queue_changes: Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
+        mut waiting: Option<WaitingChanges>,
         mut observation_changes: watch::Receiver<HostObservation>,
     ) {
         loop {
@@ -135,7 +135,7 @@ impl HostLeaseMaintainer {
                     &shutdown,
                     &lease_lost,
                     &mut changes,
-                    &mut queue_changes,
+                    &mut waiting,
                     &mut observation_changes,
                 )
                 .await
@@ -147,7 +147,7 @@ impl HostLeaseMaintainer {
                 .executor
                 .as_ref()
                 .and_then(|executor| executor.residency_changes());
-            queue_changes = observation.queues.as_ref().map(|queues| queues.changes());
+            waiting = observation.status.map(WaitingChanges::new);
             let Some(deadline) = self
                 .renew_before_deadline(local_deadline, &shutdown, &lease_lost)
                 .await
@@ -164,7 +164,7 @@ impl HostLeaseMaintainer {
         shutdown: &CancellationToken,
         lease_lost: &watch::Sender<bool>,
         changes: &mut Option<watch::Receiver<()>>,
-        queue_changes: &mut Option<watch::Receiver<Vec<crate::host_leases::ActorQueueInventory>>>,
+        waiting: &mut Option<WaitingChanges>,
         observation_changes: &mut watch::Receiver<HostObservation>,
     ) -> bool {
         tokio::select! {
@@ -182,9 +182,8 @@ impl HostLeaseMaintainer {
             _ = tokio::time::sleep(self.renew_every) => true,
             _ = residency_changed(changes) => true,
             _ = async {
-                residency_changed(queue_changes).await;
+                waiting_changed(waiting).await;
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                if let Some(changes) = queue_changes { changes.borrow_and_update(); }
             } => true,
         }
     }
@@ -243,10 +242,13 @@ impl HostLeaseMaintainer {
             .executor
             .as_ref()
             .and_then(|executor| executor.resident_actors());
-        let queues = observation.queues.as_ref().map(|queues| queues.inventory());
+        let waiting = observation
+            .status
+            .as_ref()
+            .map(|status| status.borrow().waiting.clone());
         let lease = self
             .store
-            .register_with_inventory(&request, residents.as_deref(), queues.as_deref())
+            .register_with_inventory(&request, residents.as_deref(), waiting.as_deref())
             .await?;
         debug!(
             host_id = %lease.id,
@@ -280,6 +282,30 @@ async fn residency_changed<T>(changes: &mut Option<watch::Receiver<T>>) {
         if receiver.changed().await.is_ok() {
             return;
         }
+    }
+    std::future::pending::<()>().await;
+}
+
+struct WaitingChanges {
+    status: watch::Receiver<ActorStatus>,
+    reported: Vec<WaitingOperation>,
+}
+
+impl WaitingChanges {
+    fn new(status: watch::Receiver<ActorStatus>) -> Self {
+        let reported = status.borrow().waiting.clone();
+        Self { status, reported }
+    }
+}
+
+async fn waiting_changed(changes: &mut Option<WaitingChanges>) {
+    if let Some(WaitingChanges { status, reported }) = changes
+        && status
+            .wait_for(|status| status.waiting != *reported)
+            .await
+            .is_ok()
+    {
+        return;
     }
     std::future::pending::<()>().await;
 }

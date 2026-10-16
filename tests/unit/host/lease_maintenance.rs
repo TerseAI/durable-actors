@@ -153,9 +153,12 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
 }
 
 #[tokio::test]
-async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
-    use crate::host_leases::ActorQueueInventory;
-    struct Store(watch::Sender<Option<Vec<ActorQueueInventory>>>);
+async fn waiting_changes_publish_before_the_heartbeat() -> Result<()> {
+    use crate::host_leases::WaitingOperation;
+    struct Store {
+        calls: AtomicUsize,
+        reports: watch::Sender<Option<Vec<WaitingOperation>>>,
+    }
     #[async_trait]
     impl HostLeaseRegistry for Store {
         async fn register(&self, _: &HostLeaseRequest) -> Result<HostLease> {
@@ -165,9 +168,10 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
             &self,
             request: &HostLeaseRequest,
             _: Option<&[crate::actor::ActorKey]>,
-            queues: Option<&[ActorQueueInventory]>,
+            waiting: Option<&[WaitingOperation]>,
         ) -> Result<HostLease> {
-            self.0.send_replace(queues.map(<[_]>::to_vec));
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.reports.send_replace(waiting.map(<[_]>::to_vec));
             Ok(HostLease {
                 id: request.id.clone(),
                 session_id: request.session_id.clone(),
@@ -179,15 +183,19 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
             Ok(())
         }
     }
-    let (sender, mut reports) = watch::channel(None);
-    let queues = super::super::queues::ActorQueues::new();
+    let (reports, mut reported) = watch::channel(None);
+    let store = Arc::new(Store {
+        calls: AtomicUsize::new(0),
+        reports,
+    });
+    let (status, observed) = watch::channel(ActorStatus::default());
     let manager = Arc::new(HostLeaseMaintainer::new(
         HostEndpoint {
             id: HostId::new("queued"),
             route: "http://host".into(),
         },
         "session".into(),
-        Arc::new(Store(sender)),
+        store.clone(),
         Arc::new(SystemClock),
         Duration::from_secs(30),
         Duration::from_secs(10),
@@ -195,28 +203,31 @@ async fn queue_changes_publish_before_the_heartbeat() -> Result<()> {
     let renewal = manager.clone().start().await?;
     manager
         .observation
-        .send_modify(|sources| sources.queues = Some(queues.clone()));
-    let waiting = queues.enqueue(
-        &crate::actor::ActorKey {
-            project_id: "default".into(),
-            actor_name: "Room".into(),
-            actor_id: "one".into(),
-        },
-        "sendMessage".into(),
-    );
+        .send_modify(|sources| sources.status = Some(observed));
+    tokio::time::timeout(Duration::from_secs(2), reported.wait_for(Option::is_some)).await??;
+    status.send_modify(|status| {
+        status.waiting.push(WaitingOperation {
+            id: "queued-1".into(),
+            operation: "sendMessage".into(),
+        })
+    });
     tokio::time::timeout(
         Duration::from_secs(2),
-        reports.wait_for(|report| report.as_ref().is_some_and(|queues| queues.len() == 1)),
+        reported.wait_for(|report| report.as_ref().is_some_and(|waiting| waiting.len() == 1)),
     )
     .await??;
     assert_eq!(
-        reports.borrow().as_ref().unwrap()[0].waiting[0].operation,
+        reported.borrow().as_ref().unwrap()[0].operation,
         "sendMessage"
     );
-    drop(waiting);
+    let calls = store.calls.load(Ordering::SeqCst);
+    status.send_modify(|status| status.idle_since = None);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(store.calls.load(Ordering::SeqCst), calls);
+    status.send_modify(|status| status.waiting.clear());
     tokio::time::timeout(
         Duration::from_secs(2),
-        reports.wait_for(|report| report.as_ref().is_some_and(|queues| queues.is_empty())),
+        reported.wait_for(|report| report.as_ref().is_some_and(Vec::is_empty)),
     )
     .await??;
     renewal.shutdown().await?;

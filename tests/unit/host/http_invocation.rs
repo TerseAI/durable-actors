@@ -102,16 +102,18 @@ fn diagnostic_logs_use_finalized_request_timing() -> Result<()> {
 #[tokio::test]
 async fn queued_response_reuses_observability_queue_wait() -> Result<()> {
     let mut fixture = HttpHost::start(None).await?;
-    let mut activity = fixture.host.activity();
+    let mut status = fixture.host.status();
     let (first, second, released) = tokio::join!(
         fixture.invoke("first", "counter-1"),
         async {
-            activity.wait_for(|value| value.active == 1).await?;
+            status
+                .wait_for(|status| status.idle_since.is_none())
+                .await?;
             fixture.invoke("second", "counter-1").await
         },
         async {
-            let mut activity = fixture.host.activity();
-            activity.wait_for(|value| value.active == 2).await?;
+            let mut status = fixture.host.status();
+            status.wait_for(|status| status.waiting.len() == 1).await?;
             tokio::time::sleep(Duration::from_millis(25)).await;
             fixture.release.add_permits(1);
             Ok::<_, anyhow::Error>(())
@@ -154,7 +156,7 @@ async fn draining_host_rejects_http_invocations_without_executing_them() -> Resu
     );
     fixture.host.drain(Duration::from_secs(1)).await?;
     assert!(fixture.started.try_recv().is_err());
-    assert!(fixture.host.queues().inventory().is_empty());
+    assert!(fixture.host.status().borrow().waiting.is_empty());
     Ok(())
 }
 

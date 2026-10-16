@@ -1,5 +1,12 @@
 use super::*;
 
+fn busy() -> ActorStatus {
+    ActorStatus {
+        idle_since: None,
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
     let mut server = Box::pin(std::future::pending::<Result<()>>());
@@ -10,18 +17,14 @@ async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
         .kill_on_drop(true)
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
-    let (requests, mut activity) = tokio::sync::watch::channel(ActorActivity {
-        active: 1,
-        ..Default::default()
-    });
-    let (_stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
+    let (actor, mut status) = tokio::sync::watch::channel(busy());
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
         executor.as_mut(),
         &mut javascript,
         shutdown.as_mut(),
         &mut lease,
-        (&mut activity, &mut actor_stopped),
+        &mut status,
         Duration::from_millis(100),
     ));
     assert!(
@@ -29,10 +32,7 @@ async fn admitted_requests_prevent_idle_host_shutdown() -> Result<()> {
             .await
             .is_err()
     );
-    requests.send_modify(|activity| {
-        activity.active = 0;
-        activity.last_active = tokio::time::Instant::now();
-    });
+    actor.send_modify(|status| status.idle_since = Some(tokio::time::Instant::now()));
     tokio::time::timeout(Duration::from_secs(1), stopped).await??;
     Ok(())
 }
@@ -47,18 +47,14 @@ async fn failed_activation_stops_a_busy_host() -> Result<()> {
         .kill_on_drop(true)
         .spawn()?;
     let (_lease_sender, mut lease) = tokio::sync::watch::channel(false);
-    let (_activity_sender, mut activity) = tokio::sync::watch::channel(ActorActivity {
-        active: 1,
-        ..Default::default()
-    });
-    let (stopped_sender, mut actor_stopped) = tokio::sync::watch::channel(false);
+    let (actor, mut status) = tokio::sync::watch::channel(busy());
     let mut stopped = Box::pin(wait_for_host_stop(
         server.as_mut(),
         executor.as_mut(),
         &mut javascript,
         shutdown.as_mut(),
         &mut lease,
-        (&mut activity, &mut actor_stopped),
+        &mut status,
         Duration::from_millis(10),
     ));
     assert!(
@@ -66,7 +62,7 @@ async fn failed_activation_stops_a_busy_host() -> Result<()> {
             .await
             .is_err()
     );
-    stopped_sender.send_replace(true);
+    actor.send_modify(|status| status.phase = ActorPhase::Stopped);
     let error = tokio::time::timeout(Duration::from_secs(1), stopped.as_mut())
         .await?
         .unwrap_err();
