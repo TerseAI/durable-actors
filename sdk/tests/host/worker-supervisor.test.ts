@@ -390,27 +390,27 @@ test("keeps the preloaded Worker available until the first request", async conte
     assert.equal(terminated, 1)
 })
 
-test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
-    const root = await createTypeScriptConsumer("CancelledCounter")
+test("graceful eviction settles a pending invocation and allows recovery", { timeout: 5_000 }, async () => {
+    const root = await createTypeScriptConsumer("EvictedCounter")
     const entrypoint = await buildConsumer(root)
-    const command = invokeCommand("counter-1", "CancelledCounter")
+    const command = invokeCommand("counter-1", "EvictedCounter")
+    const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
     try {
-        const runtime = new ActorWorkerSupervisor({
-            actorEntrypointUrl: entrypoint
-        })
         await runtime.ready()
         const pending = handle(runtime, command, () => {})
-        await handle(runtime, { type: "evict", actor: command.actor }, () => {})
-        const reply = await pending
-        assert.equal(reply.type, "failed")
-        if (reply.type === "failed") assert.equal(reply.code, "actor_worker_terminated")
-        seed(runtime, { count: 9 })
+        assert.deepEqual(await handle(runtime, { type: "evict", actor: command.actor }, () => {}), {
+            type: "evicted"
+        })
+        assertReply(await pending, { type: "invoked", result: 1 })
+        assert.deepEqual(runtime.activeActors(), [])
+        assert.deepEqual(hostDatabase(runtime).fields(), { count: 1 })
         assertReply(await handle(runtime, command, () => {}), {
             type: "invoked",
-            result: 10
+            result: 2
         })
         await handle(runtime, { type: "evict", actor: command.actor }, () => {})
     } finally {
+        runtime.close()
         await rm(root, { recursive: true, force: true })
     }
 })
