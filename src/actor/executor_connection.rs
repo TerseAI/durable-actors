@@ -198,7 +198,7 @@ pub trait ActorExecutor: Send + Sync {
         }))
     }
 
-    async fn evict(&self) -> Result<()> {
+    async fn evict(&self, _graceful: bool, _database: Arc<dyn ActorDatabase>) -> Result<()> {
         Ok(())
     }
 }
@@ -466,8 +466,11 @@ impl ActorExecutor for JsActorExecutor {
         }
     }
 
-    async fn evict(&self) -> Result<()> {
-        match self.exchange(ExecutorCommand::Evict, None).await? {
+    async fn evict(&self, graceful: bool, database: Arc<dyn ActorDatabase>) -> Result<()> {
+        match self
+            .exchange(ExecutorCommand::Evict { graceful }, Some(database))
+            .await?
+        {
             ExecutorReply::Evicted => Ok(()),
             ExecutorReply::Failed { code, message } => {
                 anyhow::bail!("actor executor rejected eviction ({code}): {message}")
@@ -749,7 +752,7 @@ impl ExecutorDriver {
             .get(&message_id)
             .context("connection lookup has no active actor invocation")?;
         ensure!(
-            !matches!(pending.command, ExecutorCommand::Evict),
+            !matches!(pending.command, ExecutorCommand::Evict { .. }),
             "cannot load connections during eviction"
         );
         ensure!(
@@ -1054,7 +1057,9 @@ enum ExecutorCommand {
         event: ActorSocketEvent,
         connections: Vec<ActorSocketConnection>,
     },
-    Evict,
+    Evict {
+        graceful: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]

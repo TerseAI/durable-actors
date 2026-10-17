@@ -167,7 +167,7 @@ test("the actor session carries only owned execution commands", async t => {
             `${JSON.stringify({
                 type: "command",
                 message_id: 4,
-                command: { type: "evict" }
+                command: { type: "evict", graceful: false }
             })}\n`
         )
         assert.deepEqual(await next(), {

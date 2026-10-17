@@ -59,7 +59,7 @@ const websocketEventCommandSchema = z.object({
     connections: z.array(socketConnectionSchema)
 })
 
-const evictCommandSchema = z.object({ type: z.literal("evict") })
+const evictCommandSchema = z.object({ type: z.literal("evict"), graceful: z.boolean() })
 
 const hydrateCommandSchema = z.object({ type: z.literal("hydrate") })
 
@@ -99,9 +99,10 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
 ])
 
 type InvokeCommand = z.infer<typeof invokeCommandSchema> & AssignedActor
+type EvictCommand = z.infer<typeof evictCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
-type ActorExecutionCommand = Exclude<ActorExecutorCommand, { type: "evict" }>
-type ActorWorkerCommand = ActorExecutionCommand & AssignedActor
+type ActorExecutionCommand = Exclude<ActorExecutorCommand, EvictCommand>
+type ActorWorkerCommand = ActorExecutorCommand & AssignedActor
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
     InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
@@ -202,6 +203,7 @@ export type {
     ActorWorkerCommand,
     ActorWorkerMessage,
     ActorWorkerRequest,
+    EvictCommand,
     InvokeCommand,
     WebSocketEventCommand
 }

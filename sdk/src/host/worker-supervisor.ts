@@ -14,7 +14,8 @@ import type {
     ActorWorkerCommand,
     ActorWorkerData,
     ActorWorkerMessage,
-    ActorWorkerRequest
+    ActorWorkerRequest,
+    EvictCommand
 } from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type {
@@ -306,7 +307,7 @@ class ActorWorkerSupervisor {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
             case "evict":
-                return this.evict()
+                return this.evict(command, allowNextInvocation, database)
             default:
                 throw command satisfies never
         }
@@ -356,8 +357,7 @@ class ActorWorkerSupervisor {
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
-        if (this.identity === undefined) throw new Error("actor supervisor has no assigned actor")
-        const workerCommand: ActorWorkerCommand = { ...command, actor: this.identity }
+        const workerCommand = this.workerCommand(command)
         let actor = this.resident
         if (actor === undefined) {
             actor = new ResidentActorWorker({
@@ -380,10 +380,26 @@ class ActorWorkerSupervisor {
         })
     }
 
-    private evict(): ActorExecutorReply {
-        this.resident?.terminate("resident actor was evicted by the Rust host")
+    private async evict(
+        command: EvictCommand,
+        allowNextInvocation: () => void,
+        database: DatabaseRequester
+    ): Promise<ActorExecutorReply> {
+        const actor = this.resident
+        if (actor === undefined) return { type: "evicted" }
+        try {
+            await actor.execute(this.workerCommand(command), allowNextInvocation, database)
+        } catch {
+            // The thread is still stopped when onSleep fails.
+        }
         this.resident = undefined
+        actor.terminate("resident actor was evicted by the Rust host")
         return { type: "evicted" }
+    }
+
+    private workerCommand(command: ActorExecutorCommand): ActorWorkerCommand {
+        if (this.identity === undefined) throw new Error("actor supervisor has no assigned actor")
+        return { ...command, actor: this.identity }
     }
 
     private takeSpeculativeWorker(): ActorWorkerHandle | undefined {

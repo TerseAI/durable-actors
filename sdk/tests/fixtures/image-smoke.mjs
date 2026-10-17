@@ -99,7 +99,7 @@ try {
         const result = await receive()
         assert.equal(result.reply.type, "invoked", JSON.stringify(result))
         assert.equal(result.reply.result, expected)
-        send({ type: "command", message_id: 10 + expected, command: { type: "evict" } })
+        send({ type: "command", message_id: 10 + expected, command: { type: "evict", graceful: false } })
         assert.equal((await receive()).reply.type, "evicted")
     }
     child.kill()

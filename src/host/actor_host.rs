@@ -65,11 +65,7 @@ impl Default for ActorStatus {
 
 impl ActorStatus {
     fn drained(&self) -> bool {
-        match self.phase {
-            ActorPhase::Serving => false,
-            ActorPhase::Draining => self.idle_since.is_some(),
-            ActorPhase::Stopped => true,
-        }
+        self.phase == ActorPhase::Stopped
     }
 }
 
@@ -84,6 +80,8 @@ impl ActorHost {
         let (status, observed) = watch::channel(ActorStatus::default());
         let (mailbox, requests) = mpsc::unbounded_channel();
         Actor {
+            actor: actor.clone(),
+            owner_epoch: 0,
             admission: executor.invocation_admission(),
             endpoint: endpoint.clone(),
             executor,
@@ -250,6 +248,8 @@ impl ActorHost {
 }
 
 struct Actor {
+    actor: ActorKey,
+    owner_epoch: u64,
     endpoint: HostEndpoint,
     executor: Arc<dyn ActorExecutor>,
     database: Arc<HostDatabase>,
@@ -280,6 +280,10 @@ impl Actor {
         let mut open = true;
         loop {
             self.start_ready();
+            if self.draining && self.running.is_empty() && self.pending.is_empty() {
+                self.evict(true).await;
+                return;
+            }
             self.publish();
             if !open && self.running.is_empty() {
                 return;
@@ -290,7 +294,7 @@ impl Actor {
                     if !self.executed(completion).await { return; }
                 }
                 _ = stopped.cancelled() => {
-                    self.evict().await;
+                    self.evict(false).await;
                     return;
                 }
                 permission = admitted(&mut self.admission), if self.blocked_on.is_some() && !self.hydrating => {
@@ -365,15 +369,16 @@ impl Actor {
             result,
             ..
         } = completion;
+        self.owner_epoch = request.owner_epoch;
         match recovery {
             Recovery::Keep => {}
-            Recovery::Evict => self.evict().await,
+            Recovery::Evict => self.evict(false).await,
             Recovery::Reset => {
-                self.evict().await;
+                self.evict(false).await;
                 let _ = self.database.reset().await;
             }
             Recovery::Stop => {
-                self.evict().await;
+                self.evict(false).await;
                 self.finish(
                     request,
                     Ok(ActorExecutionResult::Failed {
@@ -415,8 +420,19 @@ impl Actor {
         }
     }
 
-    async fn evict(&mut self) {
-        if let Err(error) = self.executor.evict().await {
+    async fn evict(&mut self, graceful: bool) {
+        let scope = self.database.invocation(
+            ActorInvocation {
+                actor: self.actor.clone(),
+                request_id: "evict".into(),
+                method: "evict".into(),
+                args: vec![],
+            },
+            self.owner_epoch,
+            Default::default(),
+        );
+        let _guard = ScopeGuard(scope.clone());
+        if let Err(error) = self.executor.evict(graceful, scope).await {
             warn!(%error, "failed to evict actor");
         }
     }
@@ -535,10 +551,12 @@ async fn run_request(
             args: vec![],
         });
         let result = activate(actor, &executor, &database).await;
-        let recovery = if result.is_ok() {
-            Recovery::Keep
-        } else {
-            Recovery::Stop
+        let recovery = match &result {
+            Ok(activation) => {
+                request.owner_epoch = activation.owner_epoch;
+                Recovery::Keep
+            }
+            Err(_) => Recovery::Stop,
         };
         request.tracker.state_version(database.state_version());
         let _ = reply.send(result);

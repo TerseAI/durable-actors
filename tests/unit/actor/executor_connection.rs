@@ -447,8 +447,8 @@ async fn commands_carry_no_sqlite_state() -> Result<()> {
 #[test]
 fn eviction_commands_name_no_actor() -> Result<()> {
     assert_eq!(
-        serde_json::to_value(ExecutorCommand::Evict)?,
-        json!({"type": "evict"})
+        serde_json::to_value(ExecutorCommand::Evict { graceful: true })?,
+        json!({"type": "evict", "graceful": true})
     );
     Ok(())
 }

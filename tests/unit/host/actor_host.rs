@@ -405,7 +405,7 @@ async fn an_unconfirmed_interleaved_commit_evicts_once_and_stops_the_actor() -> 
                 },
             ))
         }
-        async fn evict(&self) -> Result<()> {
+        async fn evict(&self, _: bool, _: Arc<dyn ActorDatabase>) -> Result<()> {
             self.evictions.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -571,7 +571,7 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
             increment(&*database).await
         }
 
-        async fn evict(&self) -> Result<()> {
+        async fn evict(&self, _: bool, _: Arc<dyn ActorDatabase>) -> Result<()> {
             self.evictions.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -2302,6 +2302,9 @@ fn ticket(state_version: u64) -> WritePlan {
 
 #[path = "http_invocation.rs"]
 mod http_invocation;
+
+#[path = "graceful_eviction.rs"]
+mod graceful_eviction;
 
 #[tokio::test]
 async fn restored_request_only_returns_a_saved_result_when_completion_is_present() -> Result<()> {

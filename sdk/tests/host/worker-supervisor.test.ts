@@ -42,7 +42,7 @@ test("worker eviction restores fields and SQL from the host database", { timeout
         const command = invokeCommand()
         assert.equal((await handle(supervisor, command, () => {})).type, "invoked")
         assert.deepEqual(hostDatabase(supervisor).fields(), { count: 1 })
-        await handle(supervisor, { type: "evict" }, () => {})
+        await handle(supervisor, { type: "evict", graceful: false }, () => {})
         const restored = await handle(supervisor, { ...command, method: "read" }, () => {})
         assert.equal(restored.type, "invoked")
         if (restored.type !== "invoked") return
@@ -157,7 +157,7 @@ test("correlates overlapping worker replies and socket lookups", { timeout: 1000
         const first = await holding
         assert.equal("result" in first && first.result, 2)
         assert.deepEqual(events, ['"started:one"', '"ended:one"'])
-        await handle(runtime, { type: "evict" }, () => {})
+        await handle(runtime, { type: "evict", graceful: false }, () => {})
         assert.equal(runtime.isResident(), false)
         const resumed = await handle(
             runtime,
@@ -262,7 +262,7 @@ test("reports a new actor only after its Worker is ready", { timeout: 5_000 }, a
     try {
         await assign(supervisor)
         await handle(supervisor, invokeCommand(), () => {})
-        await handle(supervisor, { type: "evict" }, () => {})
+        await handle(supervisor, { type: "evict", graceful: false }, () => {})
         const starting = handle(supervisor, invokeCommand(), () => {})
         assert.equal(supervisor.isResident(), false)
         assert.equal((await starting).type, "invoked")
@@ -414,27 +414,25 @@ test("keeps the preloaded Worker available until the first request", async conte
     assert.equal(terminated, 1)
 })
 
-test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
-    const root = await createTypeScriptConsumer("CancelledCounter")
+test("graceful eviction settles a pending invocation and allows recovery", { timeout: 5_000 }, async () => {
+    const root = await createTypeScriptConsumer("EvictedCounter")
     const entrypoint = await buildConsumer(root)
     const command = invokeCommand()
+    const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
     try {
-        const runtime = new ActorWorkerSupervisor({
-            actorEntrypointUrl: entrypoint
-        })
-        await assign(runtime, identity("CancelledCounter"))
+        await assign(runtime, identity("EvictedCounter"))
         const pending = handle(runtime, command, () => {})
-        await handle(runtime, { type: "evict" }, () => {})
-        const reply = await pending
-        assert.equal(reply.type, "failed")
-        if (reply.type === "failed") assert.equal(reply.code, "actor_worker_terminated")
-        seed(runtime, { count: 9 })
+        assert.deepEqual(await handle(runtime, { type: "evict", graceful: false }, () => {}), { type: "evicted" })
+        assertReply(await pending, { type: "invoked", result: 1 })
+        assert.equal(runtime.isResident(), false)
+        assert.deepEqual(hostDatabase(runtime).fields(), { count: 1 })
         assertReply(await handle(runtime, command, () => {}), {
             type: "invoked",
-            result: 10
+            result: 2
         })
-        await handle(runtime, { type: "evict" }, () => {})
+        await handle(runtime, { type: "evict", graceful: false }, () => {})
     } finally {
+        runtime.close()
         await rm(root, { recursive: true, force: true })
     }
 })
@@ -557,7 +555,7 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
         ),
         { type: "invoked", result: 5 }
     )
-    assert.deepEqual(await handle(runtime, { type: "evict" }, () => {}), { type: "evicted" })
+    assert.deepEqual(await handle(runtime, { type: "evict", graceful: false }, () => {}), { type: "evicted" })
     assertReply(
         await handle(
             runtime,
@@ -598,7 +596,7 @@ async function exerciseSocketRecovery(entrypoint: string): Promise<void> {
         }
     )
     assert.equal(runtime.isResident(), true)
-    await handle(runtime, { type: "evict" }, () => {})
+    await handle(runtime, { type: "evict", graceful: false }, () => {})
     assert.equal(runtime.isResident(), false)
     const published: SocketEffect[] = []
     assertReply(
@@ -729,7 +727,7 @@ test("residency reports actual workers and drops evicted and failed instances", 
         assert.equal(supervisor.isResident(), false)
         await handle(supervisor, invokeCommand(), () => {})
         assert.equal(supervisor.isResident(), true)
-        await handle(supervisor, { type: "evict" }, () => {})
+        await handle(supervisor, { type: "evict", graceful: false }, () => {})
         assert.equal(supervisor.isResident(), false)
         fail = true
         await handle(supervisor, invokeCommand(), () => {})
@@ -755,7 +753,7 @@ test("residency subscribers see worker creation and eviction immediately", async
         await assign(supervisor)
         const unsubscribe = supervisor.onResidencyChange(() => seen.push(supervisor.isResident()))
         await handle(supervisor, invokeCommand(), () => {})
-        await handle(supervisor, { type: "evict" }, () => {})
+        await handle(supervisor, { type: "evict", graceful: false }, () => {})
         assert.deepEqual(seen, [true, false])
         unsubscribe()
         await handle(supervisor, invokeCommand(), () => {})
