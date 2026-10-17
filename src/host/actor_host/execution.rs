@@ -284,7 +284,7 @@ pub(super) async fn evict_actor(
     owner_epoch: u64,
     executor: &Arc<dyn ActorExecutor>,
     database: &Arc<HostDatabase>,
-    graceful: bool
+    graceful: bool,
 ) -> Result<()> {
     let scope = database.invocation(
         ActorInvocation {
@@ -301,7 +301,7 @@ pub(super) async fn evict_actor(
         .evict(
             ActorMethodEviction {
                 actor: actor.clone(),
-                graceful
+                graceful,
             },
             scope,
         )

@@ -156,7 +156,7 @@ impl Mailbox {
             self.owner_epoch,
             &self.executor,
             &self.database,
-            graceful
+            graceful,
         )
         .await
         {
