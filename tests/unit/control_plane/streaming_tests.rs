@@ -683,6 +683,7 @@ impl Stack {
         ));
         connection
             .mark_ready(
+                host.actor().clone(),
                 Some(local_sockets.clone()),
                 Some(source.unwrap_or_else(|| local_sockets.clone())),
             )

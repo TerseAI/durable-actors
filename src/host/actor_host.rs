@@ -14,9 +14,8 @@ use tracing::{error, info, warn};
 
 use crate::actor::{
     ActorDatabase, ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
-    ActorKey, ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-    ActorSocketEvent, ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher,
-    validate_socket_effects,
+    ActorKey, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketEvent,
+    ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, validate_socket_effects,
 };
 use crate::host_leases::WaitingOperation;
 use crate::request_traces::{RequestKind, TraceRecorder, TraceSender};
@@ -86,7 +85,6 @@ impl ActorHost {
         let (mailbox, requests) = mpsc::unbounded_channel();
         Actor {
             admission: executor.invocation_admission(),
-            actor: actor.clone(),
             endpoint: endpoint.clone(),
             executor,
             database,
@@ -252,7 +250,6 @@ impl ActorHost {
 }
 
 struct Actor {
-    actor: ActorKey,
     endpoint: HostEndpoint,
     executor: Arc<dyn ActorExecutor>,
     database: Arc<HostDatabase>,
@@ -419,13 +416,7 @@ impl Actor {
     }
 
     async fn evict(&mut self) {
-        if let Err(error) = self
-            .executor
-            .evict(ActorMethodEviction {
-                actor: self.actor.clone(),
-            })
-            .await
-        {
+        if let Err(error) = self.executor.evict().await {
             warn!(%error, "failed to evict actor");
         }
     }
@@ -650,7 +641,7 @@ async fn activate(
     };
     let scope = database.invocation(
         ActorInvocation {
-            actor: actor.clone(),
+            actor,
             request_id: "activate".into(),
             method: "activate".into(),
             args: vec![],
@@ -659,9 +650,7 @@ async fn activate(
         Default::default(),
     );
     let _guard = ScopeGuard(scope.clone());
-    let result = executor
-        .hydrate(actor, "activate".into(), scope.clone())
-        .await;
+    let result = executor.hydrate("activate".into(), scope.clone()).await;
     scope.close();
     database.hydrated(activation, result).await
 }
@@ -677,7 +666,6 @@ async fn execute(
                 .invoke(
                     ActorMethodInvocation {
                         request_id: invocation.request_id.clone(),
-                        actor: invocation.actor.clone(),
                         method: invocation.method.clone(),
                         args: invocation.args.clone(),
                     },

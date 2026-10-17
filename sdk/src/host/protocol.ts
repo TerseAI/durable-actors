@@ -48,7 +48,6 @@ const databaseResultSchema = z.discriminatedUnion("type", [
 const invokeCommandSchema = z.object({
     type: z.literal("invoke"),
     request_id: actorComponentSchema,
-    actor: actorIdentitySchema,
     method: actorComponentSchema,
     args: z.array(jsonValueSchema)
 })
@@ -56,20 +55,13 @@ const invokeCommandSchema = z.object({
 const websocketEventCommandSchema = z.object({
     type: z.literal("websocket_event"),
     request_id: actorComponentSchema,
-    actor: actorIdentitySchema,
     event: socketEventSchema,
     connections: z.array(socketConnectionSchema)
 })
 
-const evictCommandSchema = z.object({
-    type: z.literal("evict"),
-    actor: actorIdentitySchema
-})
+const evictCommandSchema = z.object({ type: z.literal("evict") })
 
-const hydrateCommandSchema = z.object({
-    type: z.literal("hydrate"),
-    actor: actorIdentitySchema
-})
+const hydrateCommandSchema = z.object({ type: z.literal("hydrate") })
 
 const executorCommandSchema = z.discriminatedUnion("type", [
     invokeCommandSchema,
@@ -87,7 +79,7 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
             error: z.string().optional()
         })
         .refine(message => (message.result === undefined) !== (message.error === undefined)),
-    z.object({ type: z.literal("attached"), protocol: z.literal(27), supports_residency: z.boolean().optional() }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(28), actor: actorIdentitySchema }),
     z.object({
         type: z.literal("socket_connections"),
         message_id: z.number().int().nonnegative(),
@@ -106,17 +98,16 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
     })
 ])
 
-type HydrateCommand = z.infer<typeof hydrateCommandSchema>
-type InvokeCommand = z.infer<typeof invokeCommandSchema>
-type EvictCommand = z.infer<typeof evictCommandSchema>
+type InvokeCommand = z.infer<typeof invokeCommandSchema> & AssignedActor
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
-type ActorWorkerCommand = InvokeCommand | WebSocketEventCommand | HydrateCommand
+type ActorExecutionCommand = Exclude<ActorExecutorCommand, { type: "evict" }>
+type ActorWorkerCommand = ActorExecutionCommand & AssignedActor
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply =
     InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "hydrated" }
 type ActorSessionClientMessage =
     | { readonly type: "database_call"; readonly message_id: number; readonly call: DatabaseCall }
-    | { readonly type: "residency"; readonly actors: readonly ActorIdentity[] }
+    | { readonly type: "residency"; readonly resident: boolean }
     | AttachMessage
     | { readonly type: "ready_for_invocation"; readonly message_id: number }
     | ReplyMessage
@@ -125,8 +116,12 @@ type ActorSessionClientMessage =
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 27
+    readonly protocol: 28
     readonly actor_names: readonly string[]
+}
+
+interface AssignedActor {
+    readonly actor: ActorIdentity
 }
 
 interface ReplyMessage {
@@ -195,9 +190,10 @@ type ActorWorkerMessage =
     | { readonly type: "socket_effects"; readonly messageId: number; readonly effects: readonly SocketEffect[] }
     | { readonly type: "get_connections"; readonly messageId: number; readonly query?: SocketQuery }
 
-type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema>
+type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema> & AssignedActor
 export { failedReply, parseActorSessionServerMessage }
 export type {
+    ActorExecutionCommand,
     ActorExecutorCommand,
     ActorExecutorReply,
     ActorSessionClientMessage,
@@ -206,8 +202,6 @@ export type {
     ActorWorkerCommand,
     ActorWorkerMessage,
     ActorWorkerRequest,
-    EvictCommand,
-    HydrateCommand,
     InvokeCommand,
     WebSocketEventCommand
 }

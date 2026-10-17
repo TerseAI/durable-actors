@@ -174,7 +174,11 @@ async fn initialize_executor(
     sockets: &Arc<super::sockets::HostSockets>,
 ) -> Result<u64> {
     connection
-        .mark_ready(Some(sockets.clone()), Some(sockets.clone()))
+        .mark_ready(
+            host.actor().clone(),
+            Some(sockets.clone()),
+            Some(sockets.clone()),
+        )
         .await?;
     Ok(host.activate().await?.owner_epoch)
 }

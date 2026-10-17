@@ -405,7 +405,7 @@ async fn an_unconfirmed_interleaved_commit_evicts_once_and_stops_the_actor() -> 
                 },
             ))
         }
-        async fn evict(&self, _: crate::actor::ActorMethodEviction) -> Result<()> {
+        async fn evict(&self) -> Result<()> {
             self.evictions.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -571,7 +571,7 @@ async fn application_errors_preserve_the_worker_and_committed_state() -> Result<
             increment(&*database).await
         }
 
-        async fn evict(&self, _: crate::actor::ActorMethodEviction) -> Result<()> {
+        async fn evict(&self) -> Result<()> {
             self.evictions.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -648,7 +648,6 @@ impl ActorExecutor for ControlledExecutor {
             .invoke(
                 ActorMethodInvocation {
                     request_id: invocation.request_id,
-                    actor: invocation.actor,
                     method: "onMessage".into(),
                     args: Vec::new(),
                 },
@@ -1233,7 +1232,6 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
 
         async fn hydrate(
             &self,
-            _: ActorKey,
             request_id: String,
             database: Arc<dyn ActorDatabase>,
         ) -> Result<()> {

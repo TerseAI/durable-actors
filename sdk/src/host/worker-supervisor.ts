@@ -1,7 +1,6 @@
 import { Worker } from "node:worker_threads"
 
 import type { ActorIdentity } from "../actor/identity.js"
-import { actorKey } from "../actor/identity.js"
 import type { SocketEffect, SocketQuery } from "../actor/socketProtocol.js"
 import { errorMessage } from "../errors.js"
 
@@ -9,13 +8,13 @@ import type { DatabaseRequest } from "./database-bridge.js"
 import { completeDatabaseCall } from "./database-bridge.js"
 import type { DatabaseCall } from "./database.js"
 import type {
+    ActorExecutionCommand,
     ActorExecutorCommand,
     ActorExecutorReply,
     ActorWorkerCommand,
     ActorWorkerData,
     ActorWorkerMessage,
-    ActorWorkerRequest,
-    EvictCommand
+    ActorWorkerRequest
 } from "./protocol.js"
 import { failedReply } from "./protocol.js"
 import type {
@@ -261,10 +260,10 @@ class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
     private readonly createWorker: ActorWorkerFactory
     private resident: ResidentActorWorker | undefined
-    private lastActiveActors = "[]"
-    private readonly activeActorListeners = new Set<() => void>()
+    private lastResident = false
+    private readonly residencyListeners = new Set<() => void>()
     private speculativeWorker: ActorWorkerHandle | undefined
-    private identity: string | undefined
+    private identity: ActorIdentity | undefined
     private closed = false
     private actorNames: readonly string[] | undefined
     private lastSequence = 0
@@ -283,6 +282,12 @@ class ActorWorkerSupervisor {
         return this.actorNames
     }
 
+    assign(actor: ActorIdentity): void {
+        if (!this.actorNames?.includes(actor.actor_name))
+            throw new Error(`actor name ${actor.actor_name} is not loaded in this customer process`)
+        this.identity = { ...actor }
+    }
+
     async handle(
         command: ActorExecutorCommand,
         allowNextInvocation: () => void,
@@ -291,43 +296,38 @@ class ActorWorkerSupervisor {
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
         if (this.closed) return failedReply("actor_worker_terminated", "actor supervisor is closed")
-        const identity = actorKey(command.actor)
-        if (this.identity !== undefined && this.identity !== identity)
-            return failedReply("actor_identity_mismatch", "sandbox is permanently assigned to another actor")
-        if (command.type !== "evict") this.identity ??= identity
         switch (command.type) {
             case "hydrate":
             case "invoke":
             case "websocket_event":
                 try {
-                    if (this.actorNames === undefined) await this.ready()
                     return await this.execute(command, allowNextInvocation, database, publish, connections)
                 } catch (error) {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
             case "evict":
-                return this.evict(command)
+                return this.evict()
             default:
                 throw command satisfies never
         }
     }
 
-    onActiveActorsChange(listener: () => void): () => void {
-        this.activeActorListeners.add(listener)
+    onResidencyChange(listener: () => void): () => void {
+        this.residencyListeners.add(listener)
         return () => {
-            this.activeActorListeners.delete(listener)
+            this.residencyListeners.delete(listener)
         }
     }
 
-    private notifyActiveActorsChange(): void {
-        const current = JSON.stringify(this.activeActors())
-        if (current === this.lastActiveActors) return
-        this.lastActiveActors = current
-        for (const listener of this.activeActorListeners) listener()
+    private notifyResidencyChange(): void {
+        const current = this.isResident()
+        if (current === this.lastResident) return
+        this.lastResident = current
+        for (const listener of this.residencyListeners) listener()
     }
 
-    activeActors(): readonly ActorIdentity[] {
-        return this.resident?.isActive() ? [this.resident.identity] : []
+    isResident(): boolean {
+        return this.resident?.isActive() ?? false
     }
 
     close(): void {
@@ -338,7 +338,7 @@ class ActorWorkerSupervisor {
     }
 
     private preload(): ActorWorkerHandle {
-        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl }, () => this.notifyActiveActorsChange())
+        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl }, () => this.notifyResidencyChange())
         this.speculativeWorker = worker
         void worker.ready().catch(() => this.discardPreload(worker))
         return worker
@@ -350,34 +350,27 @@ class ActorWorkerSupervisor {
     }
 
     private execute(
-        command: ActorWorkerCommand,
+        command: ActorExecutionCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
-        if (!this.actorNames?.includes(command.actor.actor_name)) {
-            return Promise.resolve(
-                failedReply(
-                    "actor_name_not_found",
-                    `actor name ${command.actor.actor_name} is not loaded in this customer process`
-                )
-            )
-        }
+        if (this.identity === undefined) throw new Error("actor supervisor has no assigned actor")
+        const workerCommand: ActorWorkerCommand = { ...command, actor: this.identity }
         let actor = this.resident
         if (actor === undefined) {
             actor = new ResidentActorWorker({
-                identity: command.actor,
                 sequenceBase: this.lastSequence,
                 moduleUrl: this.actorEntrypointUrl,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
-                onActiveActorsChange: () => this.notifyActiveActorsChange()
+                onResidencyChange: () => this.notifyResidencyChange()
             })
             this.resident = actor
         }
         const base = actor.sequenceBase
-        return actor.execute(command, allowNextInvocation, database, publish, connections).then(reply => {
+        return actor.execute(workerCommand, allowNextInvocation, database, publish, connections).then(reply => {
             if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
                 const sequence = base + reply.sequence
                 this.lastSequence = Math.max(this.lastSequence, sequence)
@@ -387,7 +380,7 @@ class ActorWorkerSupervisor {
         })
     }
 
-    private evict(_command: EvictCommand): ActorExecutorReply {
+    private evict(): ActorExecutorReply {
         this.resident?.terminate("resident actor was evicted by the Rust host")
         this.resident = undefined
         return { type: "evicted" }
@@ -401,19 +394,17 @@ class ActorWorkerSupervisor {
 }
 
 class ResidentActorWorker {
-    readonly identity: ActorIdentity
     readonly sequenceBase: number
     readonly moduleUrl: string
     readonly createWorker: ActorWorkerFactory
-    private readonly onActiveActorsChange: () => void
+    private readonly onResidencyChange: () => void
     private worker: ActorWorkerHandle | undefined
 
     constructor(options: ResidentActorWorkerOptions) {
-        this.identity = { ...options.identity }
         this.sequenceBase = options.sequenceBase
         this.moduleUrl = options.moduleUrl
         this.createWorker = options.createWorker
-        this.onActiveActorsChange = options.onActiveActorsChange
+        this.onResidencyChange = options.onResidencyChange
         this.worker = options.worker
     }
 
@@ -424,9 +415,9 @@ class ResidentActorWorker {
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
-        this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl }, this.onActiveActorsChange)
+        this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl }, this.onResidencyChange)
         const worker = this.worker
-        this.onActiveActorsChange()
+        this.onResidencyChange()
         let reply: ActorExecutorReply
         try {
             reply = await worker.execute(command, allowNextInvocation, database, publish, connections)
@@ -446,7 +437,7 @@ class ResidentActorWorker {
         ) {
             worker.terminate("actor invocation failed")
             this.worker = undefined
-            this.onActiveActorsChange()
+            this.onResidencyChange()
         }
         return reply
     }
@@ -458,7 +449,7 @@ class ResidentActorWorker {
     terminate(reason: string): void {
         this.worker?.terminate(reason)
         this.worker = undefined
-        this.onActiveActorsChange()
+        this.onResidencyChange()
     }
 }
 
