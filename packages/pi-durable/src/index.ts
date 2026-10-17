@@ -61,7 +61,7 @@ export class DurablePiAgent implements ActorResource {
         this._harness = await Harness.open(new ActorStorage(this.db), this.options, context)
         this._root = await this.harness.root(context)
         await this.root.configure(
-            { model: this.options.agent.model },
+            this.options.agent,
             context,
         )
         this._harness.resume();
