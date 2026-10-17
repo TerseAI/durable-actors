@@ -56,7 +56,7 @@ function registerInspectCommand(program: Command): void {
     program
         .command("inspect")
         .argument("[selector]", "actor instance as ActorName/actorId")
-        .description("Print actor inventory and persisted snapshots from the control plane")
+        .description("Print actor inventory and the latest persisted state")
         .option("--json", "print machine-readable JSON")
         .option("--control-plane-url <url>", "control-plane origin (overrides DURABLE_ACTORS_CONTROL_PLANE_URL)")
         .addHelpText("after", connectionHelp)
@@ -112,50 +112,28 @@ function parseActorSelector(value: string): ActorSelector {
 }
 
 function formatInventory(inventory: Inventory): string {
-    if (inventory.actors.length === 0) return "No actor instances."
-    return inventory.actors.map(formatClass).join("\n")
+    const rows = inventory.actors.flatMap(actor =>
+        actor.instances.map(instance => [actor.actorName, instance.actorId, instance.status])
+    )
+    if (rows.length === 0) return "No actor instances."
+    const header = ["ACTOR", "INSTANCE ID", "STATUS"]
+    const width = (index: number) => Math.max(header[index]!.length, ...rows.map(row => row[index]!.length))
+    const actorWidth = width(0)
+    const idWidth = width(1)
+    const line = (actor: string, actorId: string, status: string) =>
+        `${actor.padEnd(actorWidth)}  ${actorId.padEnd(idWidth)}  ${status}`
+    return [line(header[0]!, header[1]!, header[2]!), ...rows.map(row => line(row[0]!, row[1]!, row[2]!))].join("\n")
 }
 
 function formatInstance(selector: ActorSelector, instance: ActorInstance, state: StateResponse): string {
-    const lines = [`${selector.actorName}/${selector.actorId}`, `status: ${instance.status}`]
-    if (instance.connections.length) {
-        lines.push(`connections: ${instance.connections.length}`)
-        for (const connection of instance.connections) lines.push(formatConnection(connection))
-    }
-    if (instance.waiting?.length) lines.push(`waiting: ${instance.waiting.map(item => item.operation).join(", ")}`)
-    if (!state.snapshot) {
-        lines.push(`No persisted snapshot for ${selector.actorName}/${selector.actorId}.`)
-        return lines.join("\n")
-    }
-    lines.push(`stateVersion: ${state.snapshot.stateVersion}`, `requestId: ${state.snapshot.requestId}`)
-    const attribution = state.snapshot.attribution
-    if (
-        attribution &&
-        typeof attribution === "object" &&
-        "operation" in attribution &&
-        typeof attribution.operation === "string"
-    )
-        lines.push(`lastWrite: ${attribution.operation}`)
-    lines.push(stringify(state.snapshot.state))
-    return lines.join("\n")
-}
-
-function formatClass(row: Inventory["actors"][number]): string {
-    const header = `${row.actorName}  live=${row.live}  dormant=${row.dormant}  unknown=${row.unknown}`
-    return [header, ...row.instances.map(formatInstanceLine)].join("\n")
-}
-
-function formatInstanceLine(instance: ActorInstance): string {
-    const details = [
-        instance.connections.length ? `connections=${instance.connections.length}` : undefined,
-        instance.waiting?.length ? `waiting=${instance.waiting.map(item => item.operation).join(",")}` : undefined
-    ].filter(Boolean)
-    return `  ${instance.actorId}  ${instance.status}${details.length ? `  ${details.join("  ")}` : ""}`
-}
-
-function formatConnection(connection: { id: string; metadata: unknown }): string {
-    if (connection.metadata === undefined || connection.metadata === null) return `  ${connection.id}`
-    return `  ${connection.id}  ${JSON.stringify(connection.metadata)}`
+    const missing = `No persisted snapshot for ${selector.actorName}/${selector.actorId}.`
+    return [
+        `Actor: ${selector.actorName}`,
+        `Instance ID: ${selector.actorId}`,
+        `Status: ${instance.status}`,
+        "State:",
+        state.snapshot ? stringify(state.snapshot.state) : missing
+    ].join("\n")
 }
 
 function findInstance(inventory: Inventory, selector: ActorSelector): ActorInstance | undefined {

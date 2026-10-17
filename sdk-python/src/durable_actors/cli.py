@@ -85,7 +85,7 @@ def observe(control_plane_url: str | None, open_browser: bool) -> None:
 @click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON.")
 @click.option("--control-plane-url", help="Override the configured control plane URL.")
 def inspect(selector: str | None, json_output: bool, control_plane_url: str | None) -> None:
-    """Print actor inventory and persisted snapshots."""
+    """Print actor inventory and the latest persisted state."""
     text, warning = run_inspect(control_plane_url, selector, json_output)
     if warning:
         click.echo(warning, err=True)

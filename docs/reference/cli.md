@@ -18,7 +18,7 @@ durable-actors [options] [command]
 | `init`     | Create a sample actor project                                   |
 | `dev`      | Run local actors and reload code changes                        |
 | `generate` | Generate actor clients from the running server or a source file |
-| `inspect`  | Print actor inventory and persisted snapshots                   |
+| `inspect`  | Print actor inventory and the latest persisted state            |
 | `observe`  | Open the local observability UI                                 |
 | `start`    | Start the production control plane server                       |
 
@@ -111,7 +111,7 @@ durable-actors generate src/actors.py --language python
 
 ## durable-actors inspect
 
-Print actor inventory and persisted snapshots. It uses the same connection settings as `generate`. Without a selector, inspect lists every actor class and instance. With `ActorName/actorId`, it prints that instance's residency, sockets, and latest persisted snapshot.
+Print actor inventory and the latest persisted state. It uses the same connection settings as `generate`. Without a selector, inspect lists every actor instance and its status. With `ActorName/actorId`, it prints that instance's status and latest persisted state as JSON.
 
 ```sh
 durable-actors inspect [ActorName/actorId] [--json] [--control-plane-url <url>]

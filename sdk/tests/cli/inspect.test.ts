@@ -57,33 +57,30 @@ test("inspect selector is ActorName/actorId", () => {
         assert.throws(() => parseActorSelector(selector), /Expected ActorName\/actorId/u)
 })
 
-test("inspect inventory text lists classes, instances, and an empty project", () => {
+test("inspect inventory text lists instances and an empty project", () => {
     assert.equal(formatInventory({ actors: [], connectionsComplete: true }), "No actor instances.")
     assert.equal(
         formatInventory(inventory),
-        [
-            "Counter  live=1  dormant=1  unknown=0",
-            "  one  live  connections=1",
-            "  two  dormant  waiting=increment"
-        ].join("\n")
+        ["ACTOR    INSTANCE ID  STATUS", "Counter  one          live", "Counter  two          dormant"].join("\n")
     )
 })
 
-test("inspect instance text includes status, sockets, and a missing snapshot", () => {
+test("inspect instance text is status and the latest state JSON", () => {
     const selector = { actorName: "Counter", actorId: "one" }
-    assert.match(formatInstance(selector, inventory.actors[0]!.instances[0]!, snapshot), /status: live/u)
-    assert.match(formatInstance(selector, inventory.actors[0]!.instances[0]!, snapshot), /sock-a/u)
-    assert.match(formatInstance(selector, inventory.actors[0]!.instances[0]!, snapshot), /"count": 3/u)
-    assert.match(formatInstance(selector, inventory.actors[0]!.instances[0]!, snapshot), /stateVersion: 3/u)
+    const text = formatInstance(selector, inventory.actors[0]!.instances[0]!, {
+        ...snapshot,
+        schema: { type: "object" }
+    })
+    assert.equal(
+        text,
+        ["Actor: Counter", "Instance ID: one", "Status: live", "State:", "{", '  "count": 3', "}"].join("\n")
+    )
+    assert.doesNotMatch(text, /sock-a|stateVersion|requestId|ownerEpoch|schema|increment/u)
     assert.equal(
         formatInstance(selector, inventory.actors[0]!.instances[0]!, { snapshot: null, schema: null }),
-        [
-            "Counter/one",
-            "status: live",
-            "connections: 1",
-            '  sock-a  {"user":"alice"}',
-            "No persisted snapshot for Counter/one."
-        ].join("\n")
+        ["Actor: Counter", "Instance ID: one", "Status: live", "State:", "No persisted snapshot for Counter/one."].join(
+            "\n"
+        )
     )
 })
 
@@ -110,8 +107,9 @@ test("inspectActors loads persisted state for a selector", async () => {
         { selector: "Counter/one" }
     )
     assert.deepEqual(requests, ["actorName=Counter&actorId=one"])
-    assert.match(result.text, /^Counter\/one$/m)
+    assert.match(result.text, /Actor: Counter/u)
     assert.match(result.text, /"count": 3/u)
+    assert.doesNotMatch(result.text, /stateVersion|requestId|ownerEpoch/u)
     assert.equal(result.warning, undefined)
 })
 
@@ -145,13 +143,15 @@ test("inspect CLI lists inventory and reads state from the control plane", async
         DURABLE_ACTORS_SECRET: "inspect-key"
     }
     const listed = await run(process.execPath, [cli, "inspect", "--control-plane-url", origin], { env })
-    assert.match(listed.stdout, /Counter  live=1  dormant=1  unknown=0/u)
-    assert.match(listed.stdout, /one  live  connections=1/u)
+    assert.match(listed.stdout, /ACTOR\s+INSTANCE ID\s+STATUS/u)
+    assert.match(listed.stdout, /Counter\s+one\s+live/u)
+    assert.doesNotMatch(listed.stdout, /connections|waiting/u)
     const json = await run(process.execPath, [cli, "inspect", "--json", "--control-plane-url", origin], { env })
     assert.deepEqual(JSON.parse(json.stdout), inventory)
     const detail = await run(process.execPath, [cli, "inspect", "Counter/one", "--control-plane-url", origin], { env })
-    assert.match(detail.stdout, /status: live/u)
+    assert.match(detail.stdout, /Status: live/u)
     assert.match(detail.stdout, /"count": 3/u)
+    assert.doesNotMatch(detail.stdout, /stateVersion|requestId|ownerEpoch|sock-a/u)
     assert.deepEqual(
         requests.map(request => request.url),
         [

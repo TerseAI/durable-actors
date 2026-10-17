@@ -1,4 +1,4 @@
-"""Print actor inventory and persisted snapshots from the control plane."""
+"""Print actor inventory and the latest persisted state from the control plane."""
 
 from __future__ import annotations
 
@@ -73,60 +73,42 @@ def parse_selector(value: str) -> tuple[str, str]:
 
 
 def format_inventory(inventory: dict[str, Any]) -> str:
-    actors = inventory["actors"]
-    if not actors:
+    rows = [
+        (row["actorName"], instance["actorId"], instance["status"])
+        for row in inventory["actors"]
+        for instance in row["instances"]
+    ]
+    if not rows:
         return "No actor instances."
-    return "\n".join(format_class(row) for row in actors)
+    header = ("ACTOR", "INSTANCE ID", "STATUS")
+    actor_width = max(len(header[0]), *(len(row[0]) for row in rows))
+    id_width = max(len(header[1]), *(len(row[1]) for row in rows))
+    lines = [
+        f"{actor:<{actor_width}}  {actor_id:<{id_width}}  {status}"
+        for actor, actor_id, status in (header, *rows)
+    ]
+    return "\n".join(lines)
 
 
 def format_instance(
     selector: tuple[str, str], instance: dict[str, Any], state: dict[str, Any]
 ) -> str:
     actor_name, actor_id = selector
-    lines = [f"{actor_name}/{actor_id}", f"status: {instance['status']}"]
-    connections = instance.get("connections") or []
-    if connections:
-        lines.append(f"connections: {len(connections)}")
-        lines.extend(format_connection(connection) for connection in connections)
-    waiting = instance.get("waiting") or []
-    if waiting:
-        lines.append("waiting: " + ", ".join(item["operation"] for item in waiting))
     snapshot = state.get("snapshot")
-    if not snapshot:
-        lines.append(f"No persisted snapshot for {actor_name}/{actor_id}.")
-        return "\n".join(lines)
-    lines.append(f"stateVersion: {snapshot['stateVersion']}")
-    lines.append(f"requestId: {snapshot['requestId']}")
-    attribution = snapshot.get("attribution")
-    if is_document(attribution) and isinstance(attribution.get("operation"), str):
-        lines.append(f"lastWrite: {attribution['operation']}")
-    lines.append(json.dumps(snapshot["state"], indent=2))
-    return "\n".join(lines)
-
-
-def format_class(row: dict[str, Any]) -> str:
-    header = f"{row['actorName']}  live={row['live']}  dormant={row['dormant']}  unknown={row['unknown']}"
-    instances = [format_instance_line(instance) for instance in row["instances"]]
-    return "\n".join([header, *instances])
-
-
-def format_instance_line(instance: dict[str, Any]) -> str:
-    details: list[str] = []
-    connections = instance.get("connections") or []
-    if connections:
-        details.append(f"connections={len(connections)}")
-    waiting = instance.get("waiting") or []
-    if waiting:
-        details.append("waiting=" + ",".join(item["operation"] for item in waiting))
-    suffix = f"  {'  '.join(details)}" if details else ""
-    return f"  {instance['actorId']}  {instance['status']}{suffix}"
-
-
-def format_connection(connection: dict[str, Any]) -> str:
-    metadata = connection.get("metadata")
-    if metadata is None:
-        return f"  {connection['id']}"
-    return f"  {connection['id']}  {json.dumps(metadata)}"
+    body = (
+        json.dumps(snapshot["state"], indent=2)
+        if snapshot
+        else f"No persisted snapshot for {actor_name}/{actor_id}."
+    )
+    return "\n".join(
+        [
+            f"Actor: {actor_name}",
+            f"Instance ID: {actor_id}",
+            f"Status: {instance['status']}",
+            "State:",
+            body,
+        ]
+    )
 
 
 def find_instance(inventory: dict[str, Any], selector: tuple[str, str]) -> dict[str, Any] | None:

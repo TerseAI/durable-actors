@@ -1,4 +1,4 @@
-"""Inspect CLI lists actor inventory and persisted snapshots without a JS runtime."""
+"""Inspect CLI lists actor inventory and the latest persisted state without a JS runtime."""
 
 from __future__ import annotations
 
@@ -72,27 +72,27 @@ def test_parse_selector_requires_actor_name_and_id():
             raise AssertionError(selector)
 
 
-def test_format_inventory_lists_classes_and_an_empty_project():
+def test_format_inventory_lists_instances_and_an_empty_project():
     assert format_inventory({"actors": [], "connectionsComplete": True}) == "No actor instances."
     assert format_inventory(INVENTORY) == (
-        "Counter  live=1  dormant=1  unknown=0\n"
-        "  one  live  connections=1\n"
-        "  two  dormant  waiting=increment"
+        "ACTOR    INSTANCE ID  STATUS\nCounter  one          live\nCounter  two          dormant"
     )
 
 
-def test_format_instance_includes_status_and_missing_snapshots():
+def test_format_instance_is_status_and_latest_state_json():
     instance = INVENTORY["actors"][0]["instances"][0]
-    text = format_instance(("Counter", "one"), instance, SNAPSHOT)
-    assert "status: live" in text
-    assert "sock-a" in text
-    assert '"count": 3' in text
-    assert "stateVersion: 3" in text
+    text = format_instance(("Counter", "one"), instance, {**SNAPSHOT, "schema": {"type": "object"}})
+    assert text == ('Actor: Counter\nInstance ID: one\nStatus: live\nState:\n{\n  "count": 3\n}')
+    assert "sock-a" not in text
+    assert "stateVersion" not in text
+    assert "requestId" not in text
+    assert "ownerEpoch" not in text
+    assert "schema" not in text
     assert format_instance(("Counter", "one"), instance, {"snapshot": None, "schema": None}) == (
-        "Counter/one\n"
-        "status: live\n"
-        "connections: 1\n"
-        '  sock-a  {"user": "alice"}\n'
+        "Actor: Counter\n"
+        "Instance ID: one\n"
+        "Status: live\n"
+        "State:\n"
         "No persisted snapshot for Counter/one."
     )
 
@@ -196,13 +196,16 @@ def test_inspect_cli_lists_inventory_and_state(tmp_path):
     with observe_server(routes) as (origin, requests):
         environment, _ = inspect_env(origin)
         listed = cli(tmp_path, environment, "inspect", "--control-plane-url", origin)
-        assert "Counter  live=1  dormant=1  unknown=0" in listed.stdout
-        assert "one  live  connections=1" in listed.stdout
+        assert "ACTOR    INSTANCE ID  STATUS" in listed.stdout
+        assert "Counter  one          live" in listed.stdout
+        assert "connections" not in listed.stdout
         payload = cli(tmp_path, environment, "inspect", "--json", "--control-plane-url", origin)
         assert json.loads(payload.stdout) == INVENTORY
         detail = cli(tmp_path, environment, "inspect", "Counter/one", "--control-plane-url", origin)
-        assert "status: live" in detail.stdout
+        assert "Status: live" in detail.stdout
         assert '"count": 3' in detail.stdout
+        assert "stateVersion" not in detail.stdout
+        assert "sock-a" not in detail.stdout
         assert [item["authorization"] for item in requests] == ["Bearer inspect-key"] * 4
         assert requests[3]["query"] == {"actorName": ["Counter"], "actorId": ["one"]}
 
