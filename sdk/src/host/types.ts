@@ -1,15 +1,7 @@
-import type { ActorIdentity } from "../actor/identity.js"
 import type { SocketEffect, SocketSource } from "../actor/socketProtocol.js"
 
 import type { DatabaseCall, DatabaseResult } from "./database.js"
-import type {
-    ActorExecutorCommand,
-    ActorExecutorReply,
-    ActorWorkerData,
-    HydrateCommand,
-    InvokeCommand,
-    WebSocketEventCommand
-} from "./protocol.js"
+import type { ActorExecutorReply, ActorWorkerCommand, ActorWorkerData } from "./protocol.js"
 import type { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
 interface ActorHostSettings {
@@ -22,17 +14,11 @@ type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
 
 type DatabaseRequester = (call: DatabaseCall) => Promise<DatabaseResult>
 
-type ActorCommandHandler = (
-    command: ActorExecutorCommand,
-    allowNextInvocation: () => void,
-    database: DatabaseRequester,
-    publish?: SocketPublisher,
-    connections?: SocketSource
-) => Promise<ActorExecutorReply>
+type ActorSessionSupervisor = Pick<ActorWorkerSupervisor, "assign" | "handle" | "isResident" | "onResidencyChange">
 
 type ActorWorkerSupervisorFactory = (
     options: ActorWorkerSupervisorOptions
-) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close" | "activeActors" | "onActiveActorsChange">
+) => ActorSessionSupervisor & Pick<ActorWorkerSupervisor, "ready" | "close">
 
 interface ActorWorkerSupervisorOptions {
     readonly actorEntrypointUrl: string
@@ -40,9 +26,8 @@ interface ActorWorkerSupervisorOptions {
 }
 
 interface ResidentActorWorkerOptions {
-    readonly identity: ActorIdentity
     readonly sequenceBase: number
-    readonly onActiveActorsChange: () => void
+    readonly onResidencyChange: () => void
     readonly moduleUrl: string
     readonly worker?: ActorWorkerHandle
     readonly createWorker: ActorWorkerFactory
@@ -54,7 +39,7 @@ interface ActorWorkerHandle {
     readonly state: ActorWorkerState
     ready(): Promise<readonly string[]>
     execute(
-        command: InvokeCommand | WebSocketEventCommand | HydrateCommand,
+        command: ActorWorkerCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
@@ -66,8 +51,8 @@ interface ActorWorkerHandle {
 type ActorWorkerFactory = (data: ActorWorkerData, onStateChange: () => void) => ActorWorkerHandle
 
 export type {
-    ActorCommandHandler,
     ActorHostSettings,
+    ActorSessionSupervisor,
     ActorWorkerFactory,
     ActorWorkerHandle,
     ActorWorkerState,

@@ -1,11 +1,11 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
 import { contentText } from "@earendil-works/pi-ai"
 import { AgentChange, AssistantEntry, Conversation, Harness, type HarnessOptions, type ModelRef } from "@earendil-works/pi-durable"
 import type { Actor, ActorDatabase, ActorResource, ActorResourceContext } from "durable-actors"
 
 import { ActorStorage } from "./storage.js"
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context"
 
-const context = BACKGROUND_CONTEXT;
+const context = BACKGROUND_CONTEXT
 
 export type DurablePiAgentOptions = HarnessOptions & {
     readonly agent: AgentChange & { readonly model: ModelRef }
@@ -13,7 +13,11 @@ export type DurablePiAgentOptions = HarnessOptions & {
 
 export class DurablePiAgent implements ActorResource {
     private _harness?: Harness
+<<<<<<< HEAD
     private _root?: Conversation
+=======
+    private readonly options: HarnessOptions
+>>>>>>> d43970c4e26e3f399de1f3ef5eebdb23cca57e84
 
     get harness(): Harness {
         if (!this._harness) {
