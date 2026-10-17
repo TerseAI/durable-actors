@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     clock::{Clock, SystemClock},
     host::HostId,
-    host_leases::HostLease,
+    host_leases::{ActivationInventory, HostLease},
 };
 use async_trait::async_trait;
 use std::sync::{
@@ -32,6 +32,7 @@ impl Clock for ManualClock {
 struct FlakyLeaseStore {
     calls: AtomicUsize,
     lease: Mutex<Option<HostLease>>,
+    resident: Mutex<Option<bool>>,
     changed: Notify,
     clock: Arc<ManualClock>,
 }
@@ -43,7 +44,11 @@ struct HangingLeaseRenewalStore {
 
 #[async_trait]
 impl HostLeaseRegistry for HangingLeaseRenewalStore {
-    async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+    async fn register(
+        &self,
+        request: &HostLeaseRequest,
+        _: ActivationInventory,
+    ) -> Result<HostLease> {
         if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
             return std::future::pending().await;
         }
@@ -64,7 +69,12 @@ impl HostLeaseRegistry for HangingLeaseRenewalStore {
 
 #[async_trait]
 impl HostLeaseRegistry for FlakyLeaseStore {
-    async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
+    async fn register(
+        &self,
+        request: &HostLeaseRequest,
+        inventory: ActivationInventory,
+    ) -> Result<HostLease> {
+        *self.resident.lock().expect("test store lock") = inventory.resident;
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         self.changed.notify_one();
         if call == 2 {
@@ -112,6 +122,9 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
         fn supports(&self, _: &str) -> bool {
             true
         }
+        fn resident(&self) -> Option<bool> {
+            Some(true)
+        }
         fn residency_changes(&self) -> Option<watch::Receiver<()>> {
             Some(self.0.subscribe())
         }
@@ -127,6 +140,7 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
     let store = Arc::new(FlakyLeaseStore {
         calls: AtomicUsize::new(0),
         lease: Mutex::new(None),
+        resident: Mutex::new(None),
         changed: Notify::new(),
         clock: clock.clone(),
     });
@@ -148,6 +162,7 @@ async fn residency_change_renews_before_the_heartbeat() -> Result<()> {
         .send_modify(|sources| sources.executor = Some(Arc::new(Executor(changed.clone()))));
     changed.send_replace(());
     tokio::time::timeout(Duration::from_millis(500), wait_for_calls(&store, 2)).await??;
+    assert_eq!(*store.resident.lock().unwrap(), Some(true));
     renewal.shutdown().await?;
     Ok(())
 }
@@ -161,17 +176,13 @@ async fn waiting_changes_publish_before_the_heartbeat() -> Result<()> {
     }
     #[async_trait]
     impl HostLeaseRegistry for Store {
-        async fn register(&self, _: &HostLeaseRequest) -> Result<HostLease> {
-            unreachable!()
-        }
-        async fn register_with_inventory(
+        async fn register(
             &self,
             request: &HostLeaseRequest,
-            _: Option<&[crate::actor::ActorKey]>,
-            waiting: Option<&[WaitingOperation]>,
+            inventory: ActivationInventory,
         ) -> Result<HostLease> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.reports.send_replace(waiting.map(<[_]>::to_vec));
+            self.reports.send_replace(inventory.waiting);
             Ok(HostLease {
                 id: request.id.clone(),
                 session_id: request.session_id.clone(),
@@ -255,6 +266,7 @@ async fn registers_immediately_retries_failure_and_stops_cleanly() -> Result<()>
     let store = Arc::new(FlakyLeaseStore {
         calls: AtomicUsize::new(0),
         lease: Mutex::new(None),
+        resident: Mutex::new(None),
         changed: Notify::new(),
         clock: clock.clone(),
     });

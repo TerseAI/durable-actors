@@ -7,7 +7,9 @@ use tracing::{debug, info, warn};
 
 use crate::{
     clock::Clock,
-    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest, WaitingOperation},
+    host_leases::{
+        ActivationInventory, HostLease, HostLeaseRegistry, HostLeaseRequest, WaitingOperation,
+    },
 };
 
 use super::{HostEndpoint, actor_host::ActorStatus};
@@ -238,18 +240,17 @@ impl HostLeaseMaintainer {
         };
 
         let observation = self.observation.borrow().clone();
-        let residents = observation
-            .executor
-            .as_ref()
-            .and_then(|executor| executor.resident_actors());
-        let waiting = observation
-            .status
-            .as_ref()
-            .map(|status| status.borrow().waiting.clone());
-        let lease = self
-            .store
-            .register_with_inventory(&request, residents.as_deref(), waiting.as_deref())
-            .await?;
+        let inventory = ActivationInventory {
+            resident: observation
+                .executor
+                .as_ref()
+                .and_then(|executor| executor.resident()),
+            waiting: observation
+                .status
+                .as_ref()
+                .map(|status| status.borrow().waiting.clone()),
+        };
+        let lease = self.store.register(&request, inventory).await?;
         debug!(
             host_id = %lease.id,
             route = %lease.route,

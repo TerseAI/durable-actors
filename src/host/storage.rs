@@ -20,7 +20,7 @@ use crate::{
     },
     clock::{Clock, SystemClock},
     control_plane::{ControlPlaneClient, LeaseFence},
-    host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
+    host_leases::{ActivationInventory, HostLease, HostLeaseRegistry, HostLeaseRequest},
     storage::WritePlan,
 };
 
@@ -191,13 +191,6 @@ impl HostStorage {
                 .await;
         });
     }
-
-    fn authorize(&self, actor: &ActorKey, host: &HostId) -> Result<()> {
-        actor.validate()?;
-        ensure!(self.actor == *actor, "actor identity mismatch");
-        ensure!(*host == self.host, "host storage scope mismatch");
-        self.ensure_authority()
-    }
 }
 
 #[async_trait]
@@ -221,8 +214,8 @@ impl ActorStorage for HostStorage {
             .check(Instant::now())
     }
 
-    async fn acquire_actor(&self, actor: &ActorKey, host: &HostId) -> Result<ActorActivation> {
-        self.authorize(actor, host)?;
+    async fn acquire_actor(&self) -> Result<ActorActivation> {
+        self.ensure_authority()?;
         if let Some(activation) = self.activation.lock().unwrap().take() {
             return Ok(activation);
         }
@@ -234,7 +227,7 @@ impl ActorStorage for HostStorage {
             .context("host lease missing")?;
         let loaded = self
             .runtime
-            .activate_actor(actor, &lease, &self.region)
+            .activate_actor(&self.actor, &lease, &self.region)
             .await?;
         self.ensure_authority()?;
         Ok(ActorActivation {
@@ -244,34 +237,26 @@ impl ActorStorage for HostStorage {
         })
     }
 
-    async fn verify_actor_ownership(
-        &self,
-        actor: &ActorKey,
-        host: &HostId,
-        epoch: u64,
-    ) -> Result<()> {
-        self.authorize(actor, host)?;
+    async fn verify_actor_ownership(&self, epoch: u64) -> Result<()> {
         let lease = self.current_lease()?;
         self.runtime
-            .verify_actor_ownership(actor, &lease, epoch)
+            .verify_actor_ownership(&self.actor, &lease, epoch)
             .await?;
         self.ensure_authority()
     }
 
-    async fn load_actor_state(
-        &self,
-        actor: &ActorKey,
-        host: &HostId,
-        epoch: u64,
-    ) -> Result<(u64, bytes::Bytes)> {
-        self.authorize(actor, host)?;
+    async fn load_actor_state(&self, epoch: u64) -> Result<(u64, bytes::Bytes)> {
+        self.ensure_authority()?;
         let lease = self
             .lease
             .lock()
             .unwrap()
             .clone()
             .context("host lease missing")?;
-        let loaded = self.runtime.load_owned_actor(actor, &lease, epoch).await?;
+        let loaded = self
+            .runtime
+            .load_owned_actor(&self.actor, &lease, epoch)
+            .await?;
         self.ensure_authority()?;
         Ok((
             loaded.placement.state_version,
@@ -279,15 +264,11 @@ impl ActorStorage for HostStorage {
         ))
     }
 
-    async fn read_sqlite(
-        &self,
-        actor: &ActorKey,
-        bytes: &[u8],
-    ) -> Result<crate::state_log::SqliteSnapshot> {
-        self.authorize(actor, &self.host)?;
+    async fn read_sqlite(&self, bytes: &[u8]) -> Result<crate::state_log::SqliteSnapshot> {
+        self.ensure_authority()?;
         let snapshot = crate::state_log::StateSnapshot::decode(bytes)?;
         let object = crate::storage::snapshot_object_name(
-            actor,
+            &self.actor,
             snapshot.state_version,
             &format!("{:032x}", snapshot.owner_epoch),
         )?;
@@ -296,14 +277,8 @@ impl ActorStorage for HostStorage {
             .await
     }
 
-    async fn prepare_state_write(
-        &self,
-        actor: &ActorKey,
-        host: &HostId,
-        epoch: u64,
-        version: u64,
-    ) -> Result<WritePlan> {
-        self.authorize(actor, host)?;
+    async fn prepare_state_write(&self, epoch: u64, version: u64) -> Result<WritePlan> {
+        self.ensure_authority()?;
         let lease = self
             .lease
             .lock()
@@ -313,7 +288,7 @@ impl ActorStorage for HostStorage {
         let ticket = self
             .runtime
             .prepare_actor_write(
-                actor,
+                &self.actor,
                 &lease,
                 epoch,
                 version.checked_add(1).context("state version overflow")?,
@@ -326,23 +301,10 @@ impl ActorStorage for HostStorage {
 
 #[async_trait]
 impl HostLeaseRegistry for HostStorage {
-    async fn register(&self, request: &HostLeaseRequest) -> Result<HostLease> {
-        self.register_with_residents(request, None).await
-    }
-
-    async fn register_with_residents(
+    async fn register(
         &self,
         request: &HostLeaseRequest,
-        residents: Option<&[crate::actor::ActorKey]>,
-    ) -> Result<HostLease> {
-        self.register_with_inventory(request, residents, None).await
-    }
-
-    async fn register_with_inventory(
-        &self,
-        request: &HostLeaseRequest,
-        residents: Option<&[crate::actor::ActorKey]>,
-        waiting: Option<&[crate::host_leases::WaitingOperation]>,
+        inventory: ActivationInventory,
     ) -> Result<HostLease> {
         ensure!(
             request.id == self.host && request.session_id == self.session,
@@ -352,16 +314,6 @@ impl HostLeaseRegistry for HostStorage {
         let started = Instant::now();
         self.fence.lock().unwrap().begin(started)?;
         let actor = &self.actor;
-        ensure!(
-            residents.is_none_or(
-                |actors| actors.len() <= 1 && actors.iter().all(|candidate| candidate == actor)
-            ),
-            "resident actor scope mismatch"
-        );
-        let inventory = crate::host_leases::ActivationInventory {
-            resident: residents.map(|actors| actors.contains(actor)),
-            waiting: waiting.map(<[_]>::to_vec),
-        };
         let first = self.lease.lock().unwrap().is_none();
         let lease = if first {
             let loaded = self

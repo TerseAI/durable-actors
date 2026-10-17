@@ -190,7 +190,7 @@ pub trait ActorExecutor: Send + Sync {
         Ok(())
     }
 
-    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+    fn resident(&self) -> Option<bool> {
         None
     }
 
@@ -222,7 +222,7 @@ pub trait ActorExecutor: Send + Sync {
 
 #[async_trait]
 pub(crate) trait ActorSocketPublisher: Send + Sync {
-    async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()>;
+    async fn publish(&self, effects: Vec<ActorSocketEffect>) -> Result<()>;
 }
 
 pub(crate) struct ActorExecutorListener {
@@ -377,7 +377,7 @@ impl Drop for ActorExecutorConnection {
     }
 }
 
-type Residency = Arc<Mutex<Option<(Instant, Vec<ActorKey>)>>>;
+type Residency = Arc<Mutex<Option<(Instant, bool)>>>;
 
 struct JsActorExecutor {
     changes: watch::Sender<()>,
@@ -417,13 +417,13 @@ impl ActorExecutor for JsActorExecutor {
     fn residency_changes(&self) -> Option<watch::Receiver<()>> {
         Some(self.changes.subscribe())
     }
-    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+    fn resident(&self) -> Option<bool> {
         self.residency
             .lock()
             .unwrap()
             .as_ref()
             .filter(|(at, _)| at.elapsed() < Duration::from_secs(5))
-            .map(|(_, actors)| actors.clone())
+            .map(|(_, resident)| *resident)
     }
 
     fn supports(&self, actor_name: &str) -> bool {
@@ -638,11 +638,11 @@ impl ExecutorDriver {
                 reply = replies.recv() => {
                     match reply.context("actor executor reader stopped")?? {
                         ActorExecutorClientMessage::Residency { actors } => {
-                            ensure!(actors.len() <= 32, "too many resident actors");
-                            for actor in &actors { actor.validate()?; }
+                            ensure!(actors.len() <= 1, "actor executor reported more than one resident actor");
+                            let resident = !actors.is_empty();
                             let mut current = self.residency.lock().unwrap();
-                            let changed = current.as_ref().is_none_or(|(_, previous)| previous != &actors);
-                            *current = Some((Instant::now(), actors));
+                            let changed = current.as_ref().is_none_or(|(_, previous)| *previous != resident);
+                            *current = Some((Instant::now(), resident));
                             if changed { self.changes.send_replace(()); }
                         }
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
@@ -772,13 +772,12 @@ impl ExecutorDriver {
             self.connection_lookup_ids.insert(message_id),
             "actor sent concurrent connection lookups"
         );
-        let actor = pending.command.actor().clone();
         let sockets = self.sockets.clone();
         self.loading_connections.spawn(async move {
             let result = async {
                 sockets
                     .context("actor connection lookup is unavailable")?
-                    .query(&actor, query)
+                    .query(query)
                     .await
             }
             .await;
@@ -796,7 +795,6 @@ impl ExecutorDriver {
             self.publishing_ids.insert(message_id),
             "actor sent concurrent socket publications"
         );
-        let actor = pending.command.actor().clone();
         let connecting = matches!(&pending.command, ExecutorCommand::WebsocketEvent(invocation) if matches!(invocation.event, ActorSocketEvent::Connect { .. }));
         let publisher = self.publisher.clone();
         self.publishing.spawn(async move {
@@ -808,7 +806,7 @@ impl ExecutorDriver {
                 super::validate_socket_effects(&effects)?;
                 publisher
                     .context("actor socket publishing is unavailable")?
-                    .publish(&actor, effects)
+                    .publish(effects)
                     .await
             }
             .await;
@@ -932,17 +930,6 @@ struct PendingCommand {
 struct ExecutorWrite {
     bytes: Vec<u8>,
     written: Option<oneshot::Sender<Result<()>>>,
-}
-
-impl ExecutorCommand {
-    fn actor(&self) -> &ActorKey {
-        match self {
-            Self::Invoke(invocation) => &invocation.actor,
-            Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Hydrate(hydration) => &hydration.actor,
-            Self::Evict(eviction) => &eviction.actor,
-        }
-    }
 }
 
 async fn read_client_message(

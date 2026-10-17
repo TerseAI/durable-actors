@@ -11,7 +11,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info};
 
 use crate::{
-    actor::{ActorExecutorConnection, ActorExecutorListener, ActorKey},
+    actor::{ActorExecutorConnection, ActorExecutorListener},
     bundle::ActorRuntime,
     clock::SystemClock,
     control_plane::{ActorJwtVerifier, ActorTokenPurpose, ControlPlaneClient},
@@ -87,13 +87,7 @@ pub(super) async fn serve_assigned_host(
     )
     .router();
     let initialized = async {
-        let owner_epoch = initialize_executor(
-            &config.assignment.actor,
-            &executor_connection,
-            &host,
-            &sockets,
-        )
-        .await?;
+        let owner_epoch = initialize_executor(&executor_connection, &host, &sockets).await?;
         let ready = HostReadiness {
             host_id: host_id.clone(),
             session_id: config.identity.session_id.clone(),
@@ -175,7 +169,6 @@ pub(super) async fn serve_assigned_host(
 }
 
 async fn initialize_executor(
-    actor: &ActorKey,
     connection: &ActorExecutorConnection,
     host: &Arc<ActorHost>,
     sockets: &Arc<super::sockets::HostSockets>,
@@ -183,7 +176,7 @@ async fn initialize_executor(
     connection
         .mark_ready(Some(sockets.clone()), Some(sockets.clone()))
         .await?;
-    Ok(host.activate_actor(actor.clone()).await?.owner_epoch)
+    Ok(host.activate().await?.owner_epoch)
 }
 
 struct PreparedActorHostResources {
@@ -299,6 +292,7 @@ async fn prepare_actor_host(
         }
     };
     let sockets = Arc::new(super::sockets::HostSockets::new(
+        assignment.actor.clone(),
         storage.clone(),
         control_plane.clone(),
     ));

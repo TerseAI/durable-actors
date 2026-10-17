@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -33,6 +33,7 @@ use super::{
 };
 
 pub(crate) struct ActorHost {
+    actor: ActorKey,
     endpoint: HostEndpoint,
     mailbox: mpsc::UnboundedSender<ActorMessage>,
     status: watch::Receiver<ActorStatus>,
@@ -85,7 +86,7 @@ impl ActorHost {
         let (mailbox, requests) = mpsc::unbounded_channel();
         Actor {
             admission: executor.invocation_admission(),
-            actor,
+            actor: actor.clone(),
             endpoint: endpoint.clone(),
             executor,
             database,
@@ -102,6 +103,7 @@ impl ActorHost {
         }
         .spawn();
         Self {
+            actor,
             endpoint,
             mailbox,
             status: observed,
@@ -118,12 +120,17 @@ impl ActorHost {
         &self.endpoint.id
     }
 
+    pub(crate) fn actor(&self) -> &ActorKey {
+        &self.actor
+    }
+
     pub(crate) fn status(&self) -> watch::Receiver<ActorStatus> {
         self.status.clone()
     }
 
-    pub(crate) async fn activate_actor(&self, actor: ActorKey) -> Result<ActorActivation> {
+    pub(crate) async fn activate(&self) -> Result<ActorActivation> {
         let (reply, result) = oneshot::channel();
+        let actor = self.actor.clone();
         self.submit(ActorOperation::Activate { actor, reply }, 0)
             .await?;
         result.await.context("actor activation was not completed")?
@@ -316,17 +323,6 @@ impl Actor {
         }
         if let Err(error) = operation.validate() {
             return Some(Err(error));
-        }
-        if !self.executor.supports(&operation.actor().actor_name) {
-            return Some(Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure {
-                    code: "actor_error".into(),
-                    message: "actor name is not loaded by this host".into(),
-                },
-            }));
-        }
-        if operation.actor() != &self.actor {
-            return Some(Ok(ActorExecutionResult::Reroute));
         }
         None
     }
@@ -615,8 +611,7 @@ async fn run_request(
         Ok(ActorMethodOutcome::Failed(failure)) => Some(failure.code.clone()),
         _ => None,
     };
-    let (result, recovery) =
-        commit_outcome(&request.operation, outcome, &database, &scope, &publisher).await;
+    let (result, recovery) = commit_outcome(outcome, &database, &scope, &publisher).await;
     request
         .tracker
         .mark(RequestStage::StatePublicationCompleted);
@@ -644,7 +639,12 @@ async fn activate(
     executor: &Arc<dyn ActorExecutor>,
     database: &Arc<HostDatabase>,
 ) -> Result<ActorActivation> {
-    let activation = match database.activate(actor.clone()).await? {
+    ensure!(
+        executor.supports(&actor.actor_name),
+        "actor name {} is not loaded by this host",
+        actor.actor_name
+    );
+    let activation = match database.activate().await? {
         PreparedActivation::Completed(activation) => return Ok(activation),
         PreparedActivation::Hydrate { activation } => activation,
     };
@@ -702,7 +702,6 @@ async fn execute(
 }
 
 async fn commit_outcome(
-    operation: &ActorOperation,
     outcome: Result<ActorMethodOutcome>,
     database: &Arc<HostDatabase>,
     scope: &DatabaseInvocation,
@@ -761,20 +760,11 @@ async fn commit_outcome(
         }
         Err(error) => return (Err(error), Recovery::Keep),
     };
-    let result = complete_with_state(
-        operation.actor(),
-        version,
-        result,
-        effects,
-        database,
-        publisher,
-    )
-    .await;
+    let result = complete_with_state(version, result, effects, database, publisher).await;
     (result, Recovery::Keep)
 }
 
 async fn complete_with_state(
-    actor: &ActorKey,
     state_version: u64,
     result: Value,
     effects: Vec<ActorSocketEffect>,
@@ -796,7 +786,7 @@ async fn complete_with_state(
         }
     }
     if !automatic.is_empty()
-        && let Err(error) = publisher.publish(actor, automatic).await
+        && let Err(error) = publisher.publish(automatic).await
     {
         warn!(%error, "committed state notification failed");
         return Ok(ActorExecutionResult::Failed {
@@ -854,14 +844,6 @@ impl ActorOperation {
         match self {
             Self::Socket(invocation) => CommitOrigin::socket(&invocation.event),
             _ => CommitOrigin::default(),
-        }
-    }
-
-    fn actor(&self) -> &ActorKey {
-        match self {
-            Self::Activate { actor, .. } => actor,
-            Self::Method(invocation) => &invocation.actor,
-            Self::Socket(invocation) => &invocation.actor,
         }
     }
 
@@ -970,7 +952,6 @@ fn actor_execution_outcome(result: &ActorExecutionResult) -> &'static str {
     match result {
         ActorExecutionResult::Completed { .. } => "completed",
         ActorExecutionResult::Failed { .. } => "failed",
-        ActorExecutionResult::Reroute => "reroute",
         ActorExecutionResult::HostUnavailable => "host_unavailable",
     }
 }

@@ -165,9 +165,12 @@ async fn host_assigned_to_another_actor_rejects_before_execution() -> Result<()>
     let mut fixture = HttpHost::start(None).await?;
     fixture.invoke("warm", "counter-1").await?;
     assert_eq!(fixture.started.recv().await.as_deref(), Some("warm"));
+    let error = fixture.invoke("wrong-host", "another").await.unwrap_err();
     assert_eq!(
-        without_metadata(fixture.invoke("wrong-host", "another").await?),
-        json!({"type":"not_executed", "reason":"stale_owner"})
+        error
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status),
+        Some(reqwest::StatusCode::FORBIDDEN)
     );
     assert!(fixture.started.try_recv().is_err());
     assert_eq!(
@@ -253,6 +256,7 @@ impl HttpHost {
         let (trace_sender, traces) = crate::request_traces::TraceSender::channel(16);
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let sockets = Arc::new(HostSockets::new(
+            counter(),
             storage.clone(),
             Arc::new(crate::sockets::SocketRegistry::default()),
         ));

@@ -25,7 +25,7 @@ struct EmptySocketPublisher;
 
 #[async_trait]
 impl ActorSocketPublisher for EmptySocketPublisher {
-    async fn publish(&self, _: &ActorKey, _: Vec<ActorSocketEffect>) -> Result<()> {
+    async fn publish(&self, _: Vec<ActorSocketEffect>) -> Result<()> {
         Ok(())
     }
 }
@@ -1057,7 +1057,7 @@ async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Resul
 }
 
 #[tokio::test]
-async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<()> {
+async fn queued_actor_bursts_respect_shutdown_fencing() -> Result<()> {
     let (host, mut started, release) = controlled_host().await;
     let mut status = host.status();
     let caller = host.clone();
@@ -1075,27 +1075,6 @@ async fn queued_actor_bursts_preserve_identity_and_shutdown_fencing() -> Result<
         status.wait_for(|status| status.waiting.len() == 128),
     )
     .await??;
-    let other = host.invoke_actor(
-        ActorInvocation {
-            request_id: "other".into(),
-            actor: ActorKey {
-                project_id: "default".into(),
-                actor_name: "Counter".into(),
-                actor_id: "other".into(),
-            },
-            method: "increment".into(),
-            args: Vec::new(),
-        },
-        1,
-        HostState::Warm,
-        0.0,
-    );
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), other)
-            .await?
-            .0?,
-        ActorExecutionResult::Reroute
-    );
     assert!(host.drain(Duration::from_millis(30)).await.is_err());
     assert_eq!(
         invoke(&host, "draining").await?,
@@ -1205,7 +1184,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
         Arc::new(EmptySocketPublisher),
         replication().await,
     );
-    let activation = host.activate_actor(actor.clone()).await?;
+    let activation = host.activate().await?;
     assert_eq!(activation.owner_epoch, 7);
     assert!(authority.preparations.lock().unwrap().is_empty());
     let invoke = |request_id: &str| ActorInvocation {
@@ -1220,7 +1199,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
             .0?,
         completed(1)
     );
-    host.activate_actor(actor.clone()).await?;
+    host.activate().await?;
     assert_eq!(
         host.invoke_actor(invoke("two"), 7, HostState::Warm, 0.0)
             .await
@@ -1230,7 +1209,7 @@ async fn activation_acquires_on_host_without_preparing_a_write() -> Result<()> {
     assert_eq!(*authority.preparations.lock().unwrap(), vec![0]);
 
     authority.fenced.store(true, Ordering::SeqCst);
-    assert!(host.activate_actor(actor).await.is_err());
+    assert!(host.activate().await.is_err());
     Ok(())
 }
 
@@ -1301,8 +1280,7 @@ async fn activation_services_immediate_writes_during_hydration() -> Result<()> {
     ));
 
     let caller = host.clone();
-    let activating_actor = actor.clone();
-    let activating = tokio::spawn(async move { caller.activate_actor(activating_actor).await });
+    let activating = tokio::spawn(async move { caller.activate().await });
     let acknowledged = tokio::time::timeout(Duration::from_secs(1), captured.recv())
         .await?
         .context("hydration did not write")?;
@@ -1384,7 +1362,7 @@ async fn activation_reuses_recovered_bytes_and_publishes_readiness_without_a_wri
         Arc::new(EmptySocketPublisher),
         replication().await,
     );
-    let activation = host.activate_actor(actor.clone()).await?;
+    let activation = host.activate().await?;
     assert_eq!(activation.state_version, 3);
     assert!(authority.preparations.lock().unwrap().is_empty());
     let result = host
@@ -1428,11 +1406,7 @@ impl ActorStorage for FakeAuthority {
         Ok(())
     }
 
-    async fn acquire_actor(
-        &self,
-        _actor: &ActorKey,
-        _host: &super::super::HostId,
-    ) -> Result<ActorActivation> {
+    async fn acquire_actor(&self) -> Result<ActorActivation> {
         Ok(ActorActivation {
             owner_epoch: 7,
             state_version: self
@@ -1449,22 +1423,12 @@ impl ActorStorage for FakeAuthority {
         anyhow::ensure!(!self.fenced.load(Ordering::SeqCst), "host lease expired");
         Ok(())
     }
-    async fn verify_actor_ownership(
-        &self,
-        _: &ActorKey,
-        _: &super::super::HostId,
-        epoch: u64,
-    ) -> Result<()> {
+    async fn verify_actor_ownership(&self, epoch: u64) -> Result<()> {
         self.ensure_authority()?;
         anyhow::ensure!(epoch == 7, "actor ownership changed");
         Ok(())
     }
-    async fn load_actor_state(
-        &self,
-        _: &ActorKey,
-        _: &super::super::HostId,
-        _: u64,
-    ) -> Result<(u64, bytes::Bytes)> {
+    async fn load_actor_state(&self, _: u64) -> Result<(u64, bytes::Bytes)> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         if let Some(bytes) = self
             .persisted
@@ -1475,14 +1439,10 @@ impl ActorStorage for FakeAuthority {
         }
         Ok(self.initial_state.clone().unwrap_or_default())
     }
-    async fn read_sqlite(
-        &self,
-        actor: &ActorKey,
-        bytes: &[u8],
-    ) -> Result<crate::state_log::SqliteSnapshot> {
+    async fn read_sqlite(&self, bytes: &[u8]) -> Result<crate::state_log::SqliteSnapshot> {
         let snapshot = StateSnapshot::decode(bytes)?;
         let object = crate::storage::snapshot_object_name(
-            actor,
+            &counter(),
             snapshot.state_version,
             &format!("{:032x}", snapshot.owner_epoch),
         )?;
@@ -1496,21 +1456,17 @@ impl ActorStorage for FakeAuthority {
     }
     async fn prepare_state_write(
         &self,
-        _actor: &ActorKey,
-        _host_id: &super::super::HostId,
-        _owner_epoch: u64,
+        owner_epoch: u64,
         expected_version: u64,
     ) -> Result<WritePlan> {
         self.preparations.lock().unwrap().push(expected_version);
         let mut ticket = ticket(expected_version + 1);
         {
+            let snapshots = crate::storage_paths::snapshots(&counter())?;
             let stream = crate::storage::StateStream {
-                prefix: format!("{}epoch/", crate::storage_paths::snapshots(_actor)?),
-                session: format!(
-                    "{}epoch/sessions/one/",
-                    crate::storage_paths::snapshots(_actor)?
-                ),
-                owner_epoch: _owner_epoch,
+                prefix: format!("{snapshots}epoch/"),
+                session: format!("{snapshots}epoch/sessions/one/"),
+                owner_epoch,
                 base_version: 0,
             };
             ticket.object_name = stream.object(ticket.state_version);
@@ -1900,7 +1856,7 @@ async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers(
     }
     #[async_trait]
     impl crate::actor::ActorSocketPublisher for Publisher {
-        async fn publish(&self, _: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
+        async fn publish(&self, effects: Vec<ActorSocketEffect>) -> Result<()> {
             let persisted = self.state.writes.lock().unwrap();
             let version = StateSnapshot::decode(
                 persisted
@@ -2395,5 +2351,37 @@ async fn restored_request_only_returns_a_saved_result_when_completion_is_present
         }
         host.drain(Duration::from_secs(1)).await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_fails_when_the_executor_does_not_load_the_assigned_actor() -> Result<()> {
+    struct Unloaded;
+    #[async_trait]
+    impl ActorExecutor for Unloaded {
+        fn supports(&self, _: &str) -> bool {
+            false
+        }
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            _: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            anyhow::bail!("unused")
+        }
+    }
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host".into(),
+        },
+        Arc::new(Unloaded),
+        Arc::new(FakeAuthority::default()),
+        Arc::new(FakeStateTransport::default()),
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+    let error = host.activate().await.unwrap_err();
+    assert!(format!("{error:#}").contains("not loaded"));
     Ok(())
 }

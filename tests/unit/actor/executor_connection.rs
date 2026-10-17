@@ -103,7 +103,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
     let connection = listener.accept().await?;
     connection.mark_ready(None, None).await?;
     let executor = connection.executor();
-    assert!(executor.resident_actors().is_none());
+    assert!(executor.resident().is_none());
     let mut changes = executor
         .residency_changes()
         .expect("residency notifications");
@@ -116,7 +116,7 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
         write_json_line(&mut peer, &json!({"type":"residency", "actors":actors})).await?;
         timeout(Duration::from_secs(1), changes.changed()).await??;
         timeout(Duration::from_secs(1), async {
-            while executor.resident_actors() != Some(actors.clone()) {
+            while executor.resident() != Some(!actors.is_empty()) {
                 tokio::task::yield_now().await;
             }
         })
@@ -129,24 +129,23 @@ async fn residency_reports_are_separate_from_invocation_cache_hints() -> Result<
 async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_actors()
 -> Result<()> {
     struct Source {
-        requested: mpsc::UnboundedSender<ActorKey>,
+        requested: mpsc::UnboundedSender<()>,
         release: Arc<tokio::sync::Semaphore>,
     }
     #[async_trait]
     impl ActorSocketSource for Source {
         async fn query(
             &self,
-            actor: &ActorKey,
             query: crate::actor::SocketQuery,
         ) -> Result<crate::actor::SocketLookup> {
-            self.requested.send(actor.clone())?;
+            self.requested.send(())?;
             self.release.acquire().await?.forget();
             if query.count_only {
                 return Ok(crate::actor::SocketLookup::Count(1));
             }
             Ok(crate::actor::SocketLookup::Connections(vec![
                 ActorSocketConnection {
-                    id: actor.actor_id.clone(),
+                    id: "socket-1".into(),
                     metadata: json!({}),
                     tags: vec![],
                 },
@@ -172,23 +171,25 @@ async fn connection_lookup_is_scoped_to_its_invocation_and_does_not_block_other_
         let mut customer = BufReader::new(customer);
         assert_eq!(read_json_line(&mut customer).await?["type"], "attached");
         let slow = read_json_line(&mut customer).await?;
-        write_json_line(&mut customer, &json!({"type":"get_connections", "message_id":slow["message_id"], "actor": {"project_id": "default", "actor_name":"forged","actor_id":"forged"}})).await?;
+        write_json_line(
+            &mut customer,
+            &json!({"type":"get_connections", "message_id":slow["message_id"]}),
+        )
+        .await?;
         let fast = read_json_line(&mut customer).await?;
         assert_eq!(fast["command"]["actor"]["actor_id"], "fast");
         write_json_line(&mut customer, &json!({"type":"reply", "message_id":fast["message_id"], "reply":{"type":"invoked", "result":42}})).await?;
         let loaded = read_json_line(&mut customer).await?;
         assert_eq!(loaded["type"], "socket_connections");
         assert_eq!(loaded["message_id"], slow["message_id"]);
-        assert_eq!(loaded["connections"][0]["id"], "slow");
+        assert_eq!(loaded["connections"][0]["id"], "socket-1");
         write_json_line(&mut customer, &json!({"type":"reply", "message_id":slow["message_id"], "reply":{"type":"invoked", "result":1}})).await?;
         anyhow::Ok(())
     };
     let invoke = |id: &str| executor.invoke(invocation(id, "run"), actor_database::unused());
     let callers = async {
         let fast = async {
-            let actor = requests.recv().await.context("no lookup")?;
-            assert_eq!(actor.actor_name, "counter");
-            assert_eq!(actor.actor_id, "slow");
+            requests.recv().await.context("no lookup")?;
             assert!(
                 matches!(invoke("fast").await?, ActorMethodOutcome::Completed { result, .. } if result == json!(42))
             );
