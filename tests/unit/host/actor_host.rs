@@ -382,6 +382,61 @@ async fn assert_reentrant_commit_order(fail_write: bool) -> Result<()> {
 }
 
 #[tokio::test]
+async fn an_unconfirmed_interleaved_commit_evicts_once_and_stops_the_actor() -> Result<()> {
+    struct Executor {
+        evictions: AtomicUsize,
+    }
+    #[async_trait]
+    impl ActorExecutor for Executor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _: ActorMethodInvocation,
+            database: Arc<dyn ActorDatabase>,
+        ) -> Result<ActorMethodOutcome> {
+            write_fields(&*database, json!({ "count": 1 })).await?;
+            Ok(ActorMethodOutcome::Interleaved(
+                crate::actor::ActorInterleavedOutcome {
+                    sequence: 1,
+                    result: json!(1),
+                    effects: vec![],
+                },
+            ))
+        }
+        async fn evict(&self, _: crate::actor::ActorMethodEviction) -> Result<()> {
+            self.evictions.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let executor = Arc::new(Executor {
+        evictions: AtomicUsize::new(0),
+    });
+    let state = Arc::new(FakeStateTransport::default());
+    state.failures.store(1, Ordering::SeqCst);
+    let host = create_host(
+        HostEndpoint {
+            id: super::super::HostId::new("host-1"),
+            route: "http://host.invalid/".into(),
+        },
+        executor.clone(),
+        Arc::new(FakeAuthority::default()),
+        state,
+        Arc::new(EmptySocketPublisher),
+        replication().await,
+    );
+    assert!(matches!(
+        invoke(&host, "first").await?,
+        ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown"
+    ));
+    host.drain(Duration::from_secs(1)).await?;
+    assert_eq!(host.status().borrow().phase, ActorPhase::Stopped);
+    assert_eq!(executor.evictions.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_reentrant_completion_cannot_open_an_ordinary_invocations_gate() -> Result<()> {
     struct Executor {
         admission: watch::Sender<()>,

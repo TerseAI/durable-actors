@@ -286,7 +286,7 @@ impl Actor {
                     if !self.executed(completion).await { return; }
                 }
                 _ = stopped.cancelled() => {
-                    evict(&self.actor, &*self.executor).await;
+                    self.evict().await;
                     return;
                 }
                 permission = admitted(&mut self.admission), if self.blocked_on.is_some() && !self.hydrating => {
@@ -363,20 +363,45 @@ impl Actor {
     }
 
     async fn executed(&mut self, completion: Completion) -> bool {
+        self.hydrating = false;
+        let recovery = self.recovery(&completion);
+        self.interleaved |= completion.interleaved;
         let Completion {
             id,
             request,
             result,
-            interleaved,
-            stop,
-            failure_code,
-            executed,
+            ..
         } = completion;
-        self.hydrating = false;
-        let unexpected = executed
+        match recovery {
+            Recovery::Keep => {}
+            Recovery::Evict => self.evict().await,
+            Recovery::Reset => {
+                self.evict().await;
+                let _ = self.database.reset().await;
+            }
+            Recovery::Stop => {
+                self.evict().await;
+                self.finish(
+                    request,
+                    Ok(ActorExecutionResult::Failed {
+                        failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                    }),
+                );
+                return false;
+            }
+        }
+        if self.blocked_on == Some(id) {
+            self.blocked_on = None;
+        }
+        self.finish(request, result);
+        true
+    }
+
+    fn recovery(&self, completion: &Completion) -> Recovery {
+        let unexpected = completion.executed
             && self.interleaved
-            && !interleaved
-            && failure_code.as_deref().is_none_or(|code| {
+            && !completion.interleaved
+            && completion.failure_code.as_deref().is_none_or(|code| {
                 !matches!(
                     code,
                     "actor_method_failed"
@@ -385,22 +410,28 @@ impl Actor {
                         | "method_not_callable"
                 )
             });
-        self.interleaved |= interleaved;
-        if stop || unexpected || self.database.stopped.is_cancelled() {
-            evict(&self.actor, &*self.executor).await;
-            self.finish(
-                request,
-                Ok(ActorExecutionResult::Failed {
-                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-                }),
+        let interleaving_failed = completion.interleaved
+            && !matches!(
+                completion.result,
+                Ok(ActorExecutionResult::Completed { .. })
             );
-            return false;
+        if unexpected || interleaving_failed || self.database.stopped.is_cancelled() {
+            Recovery::Stop
+        } else {
+            completion.recovery
         }
-        if self.blocked_on == Some(id) {
-            self.blocked_on = None;
+    }
+
+    async fn evict(&mut self) {
+        if let Err(error) = self
+            .executor
+            .evict(ActorMethodEviction {
+                actor: self.actor.clone(),
+            })
+            .await
+        {
+            warn!(%error, "failed to evict actor");
         }
-        self.finish(request, result);
-        true
     }
 
     fn finish(&self, request: ActorRequest, result: Result<ActorExecutionResult>) {
@@ -486,9 +517,17 @@ struct Completion {
     request: ActorRequest,
     result: Result<ActorExecutionResult>,
     interleaved: bool,
-    stop: bool,
+    recovery: Recovery,
     failure_code: Option<String>,
     executed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Recovery {
+    Keep,
+    Evict,
+    Reset,
+    Stop,
 }
 
 async fn run_request(
@@ -509,7 +548,11 @@ async fn run_request(
             args: vec![],
         });
         let result = activate(actor, &executor, &database).await;
-        let stop = result.is_err();
+        let recovery = if result.is_ok() {
+            Recovery::Keep
+        } else {
+            Recovery::Stop
+        };
         request.tracker.state_version(database.state_version());
         let _ = reply.send(result);
         return Completion {
@@ -520,7 +563,7 @@ async fn run_request(
                 effects: vec![],
             }),
             interleaved: false,
-            stop,
+            recovery,
             failure_code: None,
             executed: false,
         };
@@ -548,7 +591,7 @@ async fn run_request(
                 request,
                 result: Ok(result),
                 interleaved: false,
-                stop: false,
+                recovery: Recovery::Keep,
                 failure_code: None,
                 executed: false,
             };
@@ -559,7 +602,7 @@ async fn run_request(
                 request,
                 result: Err(error),
                 interleaved: false,
-                stop: true,
+                recovery: Recovery::Stop,
                 failure_code: None,
                 executed: false,
             };
@@ -572,26 +615,18 @@ async fn run_request(
         Ok(ActorMethodOutcome::Failed(failure)) => Some(failure.code.clone()),
         _ => None,
     };
-    let result = commit_outcome(
-        &request.operation,
-        outcome,
-        &executor,
-        &database,
-        &scope,
-        &publisher,
-    )
-    .await;
+    let (result, recovery) =
+        commit_outcome(&request.operation, outcome, &database, &scope, &publisher).await;
     request
         .tracker
         .mark(RequestStage::StatePublicationCompleted);
     request.tracker.state_version(database.state_version());
-    let stop = interleaved && !matches!(&result, Ok(ActorExecutionResult::Completed { .. }));
     Completion {
         id,
         request,
         result,
         interleaved,
-        stop,
+        recovery,
         failure_code,
         executed: true,
     }
@@ -669,57 +704,64 @@ async fn execute(
 async fn commit_outcome(
     operation: &ActorOperation,
     outcome: Result<ActorMethodOutcome>,
-    executor: &Arc<dyn ActorExecutor>,
     database: &Arc<HostDatabase>,
     scope: &DatabaseInvocation,
     publisher: &Arc<dyn ActorSocketPublisher>,
-) -> Result<ActorExecutionResult> {
+) -> (Result<ActorExecutionResult>, Recovery) {
     let (result, effects, sequence) = match outcome {
         Ok(ActorMethodOutcome::Completed { result, effects }) => (result, effects, None),
         Ok(ActorMethodOutcome::Interleaved(outcome)) => {
             (outcome.result, outcome.effects, Some(outcome.sequence))
         }
         Ok(ActorMethodOutcome::Failed(failure)) => {
-            if !matches!(
+            let recovery = if matches!(
                 failure.code.as_str(),
                 "actor_method_failed" | "actor_socket_failed"
             ) {
-                discard(operation.actor(), &**executor, database).await;
-            }
+                Recovery::Keep
+            } else {
+                Recovery::Reset
+            };
             let code = if failure.code == "resource_exhausted" {
                 "resource_exhausted"
             } else {
                 "actor_error"
             };
-            return Ok(failed(code, failure.message));
+            return (Ok(failed(code, failure.message)), recovery);
         }
         Err(error) => {
-            discard(operation.actor(), &**executor, database).await;
-            return Ok(failed(
-                "actor_error",
-                format!("actor executor failed: {error:#}"),
-            ));
+            return (
+                Ok(failed(
+                    "actor_error",
+                    format!("actor executor failed: {error:#}"),
+                )),
+                Recovery::Reset,
+            );
         }
     };
     if let Err(error) = validate_socket_effects(&effects) {
-        discard(operation.actor(), &**executor, database).await;
-        return Ok(failed(
-            "actor_error",
-            format!("actor returned invalid socket effects: {error:#}"),
-        ));
+        return (
+            Ok(failed(
+                "actor_error",
+                format!("actor returned invalid socket effects: {error:#}"),
+            )),
+            Recovery::Reset,
+        );
     }
     let version = match scope.complete(result.clone(), sequence).await {
         Ok(version) => version,
         Err(error) if error.is::<PublicationError>() || sequence.is_some() => {
             warn!(error = %format!("{error:#}"), "actor completed but state publication could not be confirmed");
-            evict(operation.actor(), &**executor).await;
-            return Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            });
+            return (
+                Ok(ActorExecutionResult::Failed {
+                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                }),
+                Recovery::Evict,
+            );
         }
-        Err(error) => return Err(error),
+        Err(error) => return (Err(error), Recovery::Keep),
     };
-    complete_with_state(
+    let result = complete_with_state(
         operation.actor(),
         version,
         result,
@@ -727,23 +769,8 @@ async fn commit_outcome(
         database,
         publisher,
     )
-    .await
-}
-
-async fn discard(actor: &ActorKey, executor: &dyn ActorExecutor, database: &HostDatabase) {
-    evict(actor, executor).await;
-    let _ = database.reset().await;
-}
-
-async fn evict(actor: &ActorKey, executor: &dyn ActorExecutor) {
-    if let Err(error) = executor
-        .evict(ActorMethodEviction {
-            actor: actor.clone(),
-        })
-        .await
-    {
-        warn!(%error, "failed to evict actor");
-    }
+    .await;
+    (result, Recovery::Keep)
 }
 
 async fn complete_with_state(
