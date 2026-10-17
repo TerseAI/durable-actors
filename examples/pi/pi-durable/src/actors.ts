@@ -4,7 +4,7 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
 import { createRegistry, watchEvents } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Actor, Resource, Interleave, ActorSocket, ActorResource, ActorResourceContext, ActorDatabase } from "durable-actors"
-import { ModalClient, Sandbox } from "modal";
+import { ModalClient, Probe, Sandbox } from "modal";
 
 const models = createModels()
 models.setProvider(openaiProvider())
@@ -21,14 +21,20 @@ export type ChatMessage =
   | { role: "user"; content: string }
   | { role: "assistant"; content: string };
 
-export class PiAgent extends Actor<null, string, ChatEvent> {
+  export type Preview =
+  | { status: "starting" }
+  | { status: "ready"; url: string }
+  | { status: "stopped" }
+  | { status: "error"; message: string };
+
+export class PiAgent extends Actor<null, string, ChatEvent | Preview> {
     @Resource private readonly agent = new DurablePiAgent(this.db, {
         models,
         registry,
         agent: { model: { provider: "openai", modelId: "gpt-6-sol" } },
     })
 
-    @Resource private sanbdox = new ModalSandbox(this.db)
+    @Resource private sandbox = new ModalSandbox(this.db)
 
     @Interleave
     async prompt(text: string): Promise<string> {
@@ -66,10 +72,11 @@ export class PiAgent extends Actor<null, string, ChatEvent> {
         process.exit(1)
     }
 
-    async onConnect(socket: ActorSocket<null, ChatEvent, string>) {
+    async onConnect(socket: ActorSocket<null, ChatEvent|Preview, string>) {
         const { messages } = await this.agent.root.context(context)
         const messages2 = Array.from(messages);
         socket.send({ type: "history", messages: chatMessages(messages2) });
+        socket.send({ status: "ready", url: await this.sandbox.previewUrl() });
     }
 }
 
@@ -84,7 +91,7 @@ function chatMessages(messages: readonly Message[]): ChatMessage[] {
 const APP_NAME = "pi-durable-sandboxes"
 const WORKSPACE = "/workspace"
 const IMAGE = "node:22"
-const PORTS = [3000]
+const PREVIEW_PORT = 3000
 
 class ModalSandbox implements ActorResource {
     private modal: ModalClient;
@@ -108,7 +115,8 @@ class ModalSandbox implements ActorResource {
     }
 
     private async createNewSandbox(): Promise<Sandbox> {
-        const imageId = this.resourceKV.get("image_id")
+        // const imageId = this.resourceKV.get("image_id")
+        const imageId = undefined
 
         // If there is no workspace image, no problem!
         let sandbox: Sandbox
@@ -124,9 +132,12 @@ class ModalSandbox implements ActorResource {
     }
 
     private async createSandbox(imageId?: string | undefined): Promise<Sandbox> {
+        console.log("Creating sandbox with imageId", imageId)
         const app = await this.modal.apps.fromName(APP_NAME, { createIfMissing: true })
         const sandbox = await this.modal.sandboxes.create(app, this.modal.images.fromRegistry(imageId ?? IMAGE), {
-            encryptedPorts: [...PORTS],
+            encryptedPorts: [PREVIEW_PORT],
+            command: ["node", "-e", PREVIEW_SERVER],
+            readinessProbe: Probe.withTcp(PREVIEW_PORT),
             timeoutMs: 10000,
             idleTimeoutMs: 10000,
         })
@@ -141,6 +152,14 @@ class ModalSandbox implements ActorResource {
         return sandbox
     }
 
+    async previewUrl(): Promise<string> {
+        const tunnels = await this.sandbox.tunnels();
+        return tunnels[PREVIEW_PORT].url;
+    }
+
+    // MARK: Lifecycle hooks
+
+    // Check if sandboxId in resourceKV is still active, else create a new sandbox
     async onResume(): Promise<void> {
         console.log("Resume hook fired")
         const sandboxId = this.resourceKV.get("sandbox_id")
@@ -153,7 +172,7 @@ class ModalSandbox implements ActorResource {
         }
 
         const sandbox = await this.modal.sandboxes.fromId(sandboxId)
-        const isRunning = (await sandbox.poll()) !== null
+        const isRunning = (await sandbox.poll()) === null
 
         if (!isRunning) {
             this._sandbox = await this.createNewSandbox()
@@ -167,16 +186,16 @@ class ModalSandbox implements ActorResource {
 
     async onGracefulShutdown(): Promise<void> {
         console.log("Graceful shutdown hook fired")
-        const image = await this.sandbox.snapshotFilesystem({ ttlMs: null })
-
-        console.log("Snapshot filesystem", image.imageId)
-        this.resourceKV.set("image_id", image.imageId)
-
-        console.log("Updated database with image id", image.imageId)
+        // const image = await this.sandbox.snapshotFilesystem({ ttlMs: null })
 
         return;
     }
 }
+
+const PREVIEW_SERVER = `require("http").createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end("<h1>Hello from " + require("os").hostname() + "</h1>");
+  }).listen(${PREVIEW_PORT}, "0.0.0.0")`;
 
 class ResourceKV {
     constructor(private readonly db: ActorDatabase, private readonly namespace: string) {
