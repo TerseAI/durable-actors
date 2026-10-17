@@ -86,12 +86,10 @@ const WORKSPACE = "/workspace"
 const IMAGE = "node:22"
 const PORTS = [3000]
 
-type SandboxRow = { sandbox_id: string | null; workspace_image_id: string | null }
-
-
 class ModalSandbox implements ActorResource {
     private modal: ModalClient;
     private _sandbox: Sandbox | undefined;
+    private resourceKV: ResourceKV
 
     get sandbox(): Sandbox {
         if (this._sandbox === undefined) {
@@ -106,28 +104,21 @@ class ModalSandbox implements ActorResource {
             tokenSecret: process.env.MODAL_TOKEN_SECRET,
         });
 
-        this.db.exec("CREATE TABLE IF NOT EXISTS modal_sandbox (id INTEGER PRIMARY KEY CHECK (id = 1), sandbox_id TEXT, workspace_image_id TEXT)")
-    }
-
-    private async attach(sandboxId: string): Promise<Sandbox> {
-        const sandbox = await this.modal.sandboxes.fromId(sandboxId)
-        const isRunning = (await sandbox.poll()) !== null
-
-        if (isRunning) { // great, sandbox is still running
-            return sandbox
-        } else {
-            // sandbox is not running, we need to create a new one
-            const sandbox = await this.createNewSandbox()
-            return sandbox
-
-        }
+        this.resourceKV = new ResourceKV(this.db, "modal_sandbox")
     }
 
     private async createNewSandbox(): Promise<Sandbox> {
-        const imageId = this.db.exec<{ image_id: string }>("SELECT image_id FROM workspace_images WHERE image = ?", IMAGE)
-        const sandbox = await this.createSandbox()
+        const imageId = this.resourceKV.get("image_id")
 
-        this.db.exec("INSERT OR REPLACE INTO modal_sandbox (sandbox_id) VALUES (?)", sandbox.sandboxId)
+        // If there is no workspace image, no problem!
+        let sandbox: Sandbox
+        if (imageId === undefined) {
+            sandbox = await this.createSandbox(IMAGE)
+        } else {
+            sandbox = await this.createSandbox(imageId)
+        }
+
+        this.resourceKV.set("sandbox_id", sandbox.sandboxId)
 
         return sandbox
     }
@@ -140,26 +131,66 @@ class ModalSandbox implements ActorResource {
             idleTimeoutMs: 10000,
         })
 
+        console.log("created sandbox \n", sandbox.sandboxId)
+        if (imageId === undefined) {
+            console.log("no image id, using default image", IMAGE)
+        } else {
+            console.log("using image id", imageId)
+        }
+
         return sandbox
     }
 
     async onResume(): Promise<void> {
-        const [row] = this.db.exec<SandboxRow>("SELECT sandbox_id, workspace_image_id FROM modal_sandbox")
+        console.log("Resume hook fired")
+        const sandboxId = this.resourceKV.get("sandbox_id")
 
-        // There is no active sandbox, likely, this is a fresh Actor instance!
-        if (row.sandbox_id === null) {
-           this._sandbox = await this.createNewSandbox()
-           return;
+        // No sandbox session associated with this actor
+        if (sandboxId === undefined) {
+            this._sandbox = await this.createNewSandbox()
+            this.resourceKV.set("sandbox_id", this._sandbox.sandboxId)
+            return;
         }
 
-        this._sandbox = await this.attach(row.sandbox_id)
+        const sandbox = await this.modal.sandboxes.fromId(sandboxId)
+        const isRunning = (await sandbox.poll()) !== null
+
+        if (!isRunning) {
+            this._sandbox = await this.createNewSandbox()
+        } else {
+            this._sandbox = sandbox
+        }
+
+        console.log("Attached sandbox", this._sandbox.sandboxId)
         return;
     }
 
     async onGracefulShutdown(): Promise<void> {
+        console.log("Graceful shutdown hook fired")
         const image = await this.sandbox.snapshotFilesystem({ ttlMs: null })
-        this.db.exec("UPDATE modal_sandbox SET workspace_image_id = ?", image.imageId)
+
+        console.log("Snapshot filesystem", image.imageId)
+        this.resourceKV.set("image_id", image.imageId)
+
+        console.log("Updated database with image id", image.imageId)
 
         return;
+    }
+}
+
+class ResourceKV {
+    constructor(private readonly db: ActorDatabase, private readonly namespace: string) {
+        db.exec("CREATE TABLE IF NOT EXISTS resource_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    }
+    get(key: string): string | undefined {
+        return this.db.exec<{ value: string }>(
+            "SELECT value FROM resource_kv WHERE key = ?", `${this.namespace}:${key}`
+        )[0]?.value
+    }
+    set(key: string, value: string): void {
+        this.db.exec(
+            "INSERT INTO resource_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            `${this.namespace}:${key}`, value
+        )
     }
 }
