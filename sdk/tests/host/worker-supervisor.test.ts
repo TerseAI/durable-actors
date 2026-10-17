@@ -154,7 +154,11 @@ test("correlates overlapping worker replies and socket lookups", { timeout: 1000
         const first = await holding
         assert.equal("result" in first && first.result, 2)
         assert.deepEqual(events, ['"started:one"', '"ended:one"'])
-        await handle(runtime, { type: "evict", actor: invokeCommand("one", "InterleavedWorker").actor, graceful: false }, () => {})
+        await handle(
+            runtime,
+            { type: "evict", actor: invokeCommand("one", "InterleavedWorker").actor, graceful: false },
+            () => {}
+        )
         assert.deepEqual(runtime.activeActors(), [])
         const resumed = await handle(
             runtime,
@@ -535,7 +539,9 @@ async function exerciseActiveActors(entrypoint: string): Promise<void> {
         ),
         { type: "invoked", result: 5 }
     )
-    assert.deepEqual(await handle(runtime, { type: "evict", actor: actorIdentity, graceful: false }, () => {}), { type: "evicted" })
+    assert.deepEqual(await handle(runtime, { type: "evict", actor: actorIdentity, graceful: false }, () => {}), {
+        type: "evicted"
+    })
     assertReply(
         await handle(
             runtime,
