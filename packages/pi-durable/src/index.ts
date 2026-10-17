@@ -13,11 +13,7 @@ export type DurablePiAgentOptions = HarnessOptions & {
 
 export class DurablePiAgent implements ActorResource {
     private _harness?: Harness
-<<<<<<< HEAD
     private _root?: Conversation
-=======
-    private readonly options: HarnessOptions
->>>>>>> d43970c4e26e3f399de1f3ef5eebdb23cca57e84
 
     get harness(): Harness {
         if (!this._harness) {
