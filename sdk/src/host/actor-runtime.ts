@@ -44,7 +44,13 @@ class ActorRuntime {
     }
 
     async handle(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
-        if (command.type === "hydrate" || command.type === "evict") return this.execute(command)
+        if (command.type === "hydrate") return this.execute(command)
+        if (command.type === "evict") {
+            // Eviction waits behind queued calls so onSleep never runs beside one.
+            const eviction = this.serial.then(() => this.execute(command))
+            this.serial = eviction.catch(() => undefined)
+            return eviction
+        }
         const method = command.type === "invoke" ? command.method : lifecycleMethod(command)
         const interleave = method !== undefined && (this.definition.state.interleaveMethods?.includes(method) ?? false)
         const operation = this.serial.then(() => this.execute(command))
@@ -250,7 +256,7 @@ class ActorRuntime {
 
     private async restoreInstance(identity: ActorIdentity): Promise<void> {
         this.database.rollback()
-        await this.createInstance(identity, this.database.fields(), false)
+        await this.createInstance(identity, this.database.fields())
     }
 
     private stateUpdates(before: JsonObject, state: JsonObject, except?: string): SocketEffect[] {
@@ -263,7 +269,7 @@ class ActorRuntime {
         this.instance = undefined
     }
 
-    private async createInstance(identity: ActorIdentity, state: JsonValue | null, wake = true): Promise<AnyActor> {
+    private async createInstance(identity: ActorIdentity, state: JsonValue | null): Promise<AnyActor> {
         const context = RuntimeActorContext.runtime(identity.actor_id, this.database)
         const instance = context.construct(this.definition.actorClass) as AnyActor
         validateActorState(instance, this.definition.state)
@@ -280,22 +286,10 @@ class ActorRuntime {
                 await resource.onResume({ db: this.database })
             }
         })
-        if (wake) {
-            try {
-                if (await this.runLifecycleHook(instance, "onWake")) {
-                    validateActorState(instance, this.definition.state)
-                    this.database.commit()
-                    if (this.interleaved) this.lastCompletedState = this.database.fields()
-                }
-            } catch (error) {
-                this.database.rollback()
-                throw error
-            }
-        }
         return instance
     }
 
-    private async runLifecycleHook(instance: AnyActor, name: "onWake" | "onSleep"): Promise<boolean> {
+    private async runLifecycleHook(instance: AnyActor, name: "onSleep"): Promise<boolean> {
         const method: unknown = Reflect.get(instance, name)
         if (typeof method !== "function") return false
         await runWithActorDatabase(instance, "immediate", async () => {

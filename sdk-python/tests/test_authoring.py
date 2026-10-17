@@ -50,11 +50,8 @@ def test_alarm_lifecycle_is_not_published_as_an_rpc():
     assert [method["name"] for method in methods] == ["schedule"]
 
 
-def test_wake_and_sleep_hooks_are_not_published_as_rpcs():
+def test_sleep_hook_is_not_published_as_an_rpc():
     class Probe(Actor):
-        def on_wake(self) -> None:
-            pass
-
         def on_sleep(self) -> None:
             pass
 

@@ -42,7 +42,7 @@ class ActorRuntime:
     async def handle(self, command: Document) -> Document:
         async with self.lifecycle:
             if command["type"] == "evict":
-                return await self.evict()
+                return await self.evict(command.get("graceful", True))
             task = asyncio.create_task(self.run(command))
             self.pending.add(task)
         try:
@@ -55,13 +55,14 @@ class ActorRuntime:
         finally:
             self.pending.discard(task)
 
-    async def evict(self) -> Document:
+    async def evict(self, graceful: bool = True) -> Document:
         tasks = tuple(self.pending)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            await self.run_hook("on_sleep")
+            if graceful:
+                await self.run_hook("on_sleep")
         finally:
             self.instance = None
             self.fatal = None
@@ -99,9 +100,7 @@ class ActorRuntime:
         if self.instance is None:
             try:
                 self.restore(await self.database.fields())
-                await self.run_hook("on_wake")
             except Exception as error:
-                self.instance = None
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}

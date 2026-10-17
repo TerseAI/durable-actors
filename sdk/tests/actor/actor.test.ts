@@ -133,9 +133,8 @@ test("onAlarm is a lifecycle hook, not an RPC method", () => {
     assert.equal(reference.onAlarm, undefined)
 })
 
-test("onWake and onSleep are lifecycle hooks, not RPC methods", () => {
+test("onSleep is a lifecycle hook, not an RPC method", () => {
     class WakeSleepProbe extends Actor {
-        async onWake(): Promise<void> {}
         async onSleep(): Promise<void> {}
         async ping(): Promise<void> {}
     }
@@ -145,8 +144,6 @@ test("onWake and onSleep are lifecycle hooks, not RPC methods", () => {
     })
     assert.deepEqual([...definition.methods], ["ping"])
     const reference = WakeSleepProbe.get("one")
-    // @ts-expect-error lifecycle hooks are not callable through actor references
-    assert.equal(reference.onWake, undefined)
     // @ts-expect-error lifecycle hooks are not callable through actor references
     assert.equal(reference.onSleep, undefined)
 })

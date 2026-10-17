@@ -35,7 +35,6 @@ function createActorStub<Stub extends object>(
                 "onMessage",
                 "onDisconnect",
                 "onAlarm",
-                "onWake",
                 "onSleep"
             ].includes(method.name)
         )

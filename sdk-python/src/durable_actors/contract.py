@@ -19,8 +19,8 @@ from .guards import is_document, is_field, is_list
 from .json import JsonValue
 
 Document = dict[str, Any]
-HOOKS = {"on_connect", "on_message", "on_disconnect", "on_alarm", "on_wake", "on_sleep"}
-ZERO_ARG_HOOKS = {"on_alarm", "on_wake", "on_sleep"}
+HOOKS = {"on_connect", "on_message", "on_disconnect", "on_alarm", "on_sleep"}
+ZERO_ARG_HOOKS = {"on_alarm", "on_sleep"}
 RESERVED = {
     "get_connections",
     "get_connection_count",

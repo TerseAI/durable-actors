@@ -53,7 +53,6 @@ function validateRpc(rpc: RpcContract): void {
                 "onMessage",
                 "onDisconnect",
                 "onAlarm",
-                "onWake",
                 "onSleep"
             ].includes(method.name)
         )

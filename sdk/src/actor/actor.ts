@@ -34,8 +34,6 @@ interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming,
     ): Promise<void>
     /** Runs when the actor's scheduled alarm becomes due. The alarm is cleared afterward unless this callback sets a new one. */
     onAlarm?(): Promise<void>
-    /** Runs once after this worker constructs the instance and restores persisted fields. */
-    onWake?(): Promise<void>
     /** Runs during graceful eviction or worker shutdown before the instance is discarded. */
     onSleep?(): Promise<void>
 }
@@ -231,7 +229,7 @@ function discoverMethods(actorClass: ActorClass, actorName: string): string[] {
     })
 }
 
-const zeroArgLifecycle = new Set(["onAlarm", "onWake", "onSleep"])
+const zeroArgLifecycle = new Set(["onAlarm", "onSleep"])
 const lifecycleMethods = new Set(["onConnect", "onMessage", "onDisconnect", ...zeroArgLifecycle])
 
 function validateActorClass(actorClass: ActorClass, actorName: string): void {
@@ -300,7 +298,7 @@ type ActorReference<Instance extends AnyActor> = {
     /** Sends to all connections without running actor code. Messages are not saved. */
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
-type ActorLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect" | "onAlarm" | "onWake" | "onSleep"
+type ActorLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect" | "onAlarm" | "onSleep"
 type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["metadata"]
 type SocketIncoming<Instance extends AnyActor> = Instance[typeof actorTypes]["incoming"]
 type SocketOutgoing<Instance extends AnyActor> = Instance[typeof actorTypes]["outgoing"]

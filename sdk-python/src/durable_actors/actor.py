@@ -93,12 +93,8 @@ class Actor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
         """Handle a due alarm. It is cleared afterward unless this hook sets a new one."""
         pass
 
-    def on_wake(self) -> None:
-        """Run once after this worker constructs the instance and restores persisted fields."""
-        pass
-
     def on_sleep(self) -> None:
-        """Run during graceful eviction before the instance is discarded."""
+        """Run during a graceful eviction before the instance is discarded. Not run on a crash."""
         pass
 
     def get_connections(self, tag: Tag | None = None) -> list[ActorSocket[Metadata, Outgoing, Tag]]:

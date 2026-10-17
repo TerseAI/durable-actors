@@ -268,6 +268,8 @@ class ActorWorkerSupervisor {
     private closed = false
     private actorNames: readonly string[] | undefined
     private lastSequence = 0
+    private readonly running = new Set<Promise<unknown>>()
+    private eviction: Promise<ActorExecutorReply> | undefined
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
@@ -350,13 +352,16 @@ class ActorWorkerSupervisor {
         this.takeSpeculativeWorker()?.terminate("actor preload failed")
     }
 
-    private execute(
+    private async execute(
         command: ActorExecutionCommand,
         allowNextInvocation: () => void,
         database: DatabaseRequester,
         publish?: SocketPublisher,
         connections?: SocketSource
     ): Promise<ActorExecutorReply> {
+        // Work that arrives during an eviction runs on a fresh worker after onSleep finishes,
+        // never beside it on the worker that is about to be terminated.
+        while (this.eviction !== undefined) await this.eviction.catch(() => undefined)
         const workerCommand = this.workerCommand(command)
         let actor = this.resident
         if (actor === undefined) {
@@ -370,14 +375,19 @@ class ActorWorkerSupervisor {
             this.resident = actor
         }
         const base = actor.sequenceBase
-        return actor.execute(workerCommand, allowNextInvocation, database, publish, connections).then(reply => {
+        const run = actor.execute(workerCommand, allowNextInvocation, database, publish, connections)
+        this.running.add(run)
+        try {
+            const reply = await run
             if ((reply.type === "invoked" || reply.type === "websocket_handled") && reply.sequence !== undefined) {
                 const sequence = base + reply.sequence
                 this.lastSequence = Math.max(this.lastSequence, sequence)
                 return { ...reply, sequence }
             }
             return reply
-        })
+        } finally {
+            this.running.delete(run)
+        }
     }
 
     private async evict(
@@ -385,8 +395,31 @@ class ActorWorkerSupervisor {
         allowNextInvocation: () => void,
         database: DatabaseRequester
     ): Promise<ActorExecutorReply> {
+        if (this.eviction !== undefined) return this.eviction
+        const eviction = this.evictResident(command, allowNextInvocation, database)
+        this.eviction = eviction
+        try {
+            return await eviction
+        } finally {
+            this.eviction = undefined
+        }
+    }
+
+    private async evictResident(
+        command: EvictCommand,
+        allowNextInvocation: () => void,
+        database: DatabaseRequester
+    ): Promise<ActorExecutorReply> {
+        // Let work already on the resident worker settle before onSleep runs on it. A call that
+        // does not settle within the grace period ends the actor without onSleep.
+        const drained = await settleWithin([...this.running], evictionGraceMs)
         const actor = this.resident
         if (actor === undefined) return { type: "evicted" }
+        if (!drained) {
+            this.resident = undefined
+            actor.terminate("resident actor was evicted by the Rust host")
+            return { type: "evicted" }
+        }
         try {
             await actor.execute(this.workerCommand(command), allowNextInvocation, database)
         } catch {
@@ -406,6 +439,21 @@ class ActorWorkerSupervisor {
         const worker = this.speculativeWorker
         this.speculativeWorker = undefined
         return worker
+    }
+}
+
+const evictionGraceMs = 30_000
+
+async function settleWithin(work: readonly Promise<unknown>[], ms: number): Promise<boolean> {
+    if (work.length === 0) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<false>(resolve => {
+        timer = setTimeout(() => resolve(false), ms)
+    })
+    try {
+        return await Promise.race([Promise.allSettled(work).then(() => true as const), expired])
+    } finally {
+        clearTimeout(timer)
     }
 }
 
