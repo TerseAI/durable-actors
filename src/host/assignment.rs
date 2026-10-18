@@ -76,9 +76,9 @@ async fn prepare_code(
     let artifact = headers
         .get("terse-code-artifact")
         .and_then(|header| URL_SAFE_NO_PAD.decode(header.as_bytes()).ok())
-        .and_then(|bytes| serde_json::from_slice::<crate::artifacts::ArtifactFile>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<crate::bundle::BundleFile>(&bytes).ok())
         .ok_or(StatusCode::BAD_REQUEST)?;
-    crate::artifacts::install_file(
+    crate::bundle::install_file(
         &state.code_root,
         &artifact,
         body.into_data_stream().map_err(anyhow::Error::from),

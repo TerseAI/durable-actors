@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite"
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
@@ -32,10 +31,6 @@ try {
         export const version = 1;
     `
     )
-    const databasePath = path.join(directory, "actor.sqlite")
-    const database = new Database(databasePath)
-    database.exec("PRAGMA journal_mode=WAL; CREATE TABLE __terse_fields(name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))")
-    database.close()
     const socketPath = path.join(directory, "executor.sock")
     server.listen(socketPath)
     await once(server, "listening")
@@ -53,21 +48,43 @@ try {
     ])
     const lines = createInterface({ input: socket })[Symbol.asyncIterator]()
     const send = message => socket.write(JSON.stringify(message) + "\n")
-    let txid = 1
+    let committed = {}
+    let pending = {}
+    const call = request => {
+        switch (request.op) {
+            case "fields":
+                return { type: "fields", fields: pending }
+            case "initialize_fields":
+                pending = { ...request.fields, ...pending }
+                break
+            case "persist_field":
+                pending = { ...pending, [request.name]: request.value }
+                if (request.immediate) committed = pending
+                break
+            case "commit":
+                committed = pending
+                break
+            case "rollback":
+                pending = committed
+                break
+            default:
+                throw new Error(`unexpected database call ${request.op}`)
+        }
+        return { type: "done" }
+    }
     const receive = async () => {
         for (;;) {
             const { value, done } = await lines.next()
             assert.equal(done, false, "executor closed its connection")
             const message = JSON.parse(value)
-            if (message.type !== "commit_sqlite") return message
-            send({ type: "sqlite_committed", message_id: message.message_id, txid: ++txid })
+            if (message.type === "database_call") send({ type: "database_result", message_id: message.message_id, result: call(message.call) })
+            else if (message.type !== "residency") return message
         }
     }
-    assert.deepEqual(await receive(), { type: "warm", protocol: 24 })
+    assert.deepEqual(await receive(), { type: "warm", protocol: 28 })
     send({ type: "load", entrypoint, environment: {} })
-    assert.deepEqual(await receive(), { type: "attach", protocol: 24, actor_names: ["Counter"] })
-    send({ type: "attached", protocol: 24 })
-    const actor = { project_id: "default", actor_name: "Counter", actor_id: "one" }
+    assert.deepEqual(await receive(), { type: "attach", protocol: 28, actor_names: ["Counter"] })
+    send({ type: "attached", protocol: 28, actor: { project_id: "default", actor_name: "Counter", actor_id: "one" } })
     for (let expected = 1; expected <= 2; expected++) {
         send({
             type: "command",
@@ -75,21 +92,19 @@ try {
             command: {
                 type: "invoke",
                 request_id: `request-${expected}`,
-                actor,
                 method: "add",
-                args: [],
-                sqlite: { txid, path: databasePath }
+                args: []
             }
         })
         const result = await receive()
         assert.equal(result.reply.type, "invoked", JSON.stringify(result))
         assert.equal(result.reply.result, expected)
-        send({ type: "command", message_id: 10 + expected, command: { type: "evict", actor } })
+        send({ type: "command", message_id: 10 + expected, command: { type: "evict", graceful: false } })
         assert.equal((await receive()).reply.type, "evicted")
     }
     child.kill()
     await exited
-    console.log("TypeScript image: generic warmup, actor invocation, and SQLite recovery passed")
+    console.log("TypeScript image: generic warmup, actor invocation, and database recovery passed")
 } finally {
     clearTimeout(timeout)
     child?.kill()

@@ -22,22 +22,19 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::{ActorInvocationFailure, ActorKey, ActorSocketSource};
+use super::{
+    ActorDatabase, ActorInvocationFailure, ActorKey, ActorSocketSource, DatabaseCall,
+    DatabaseResult,
+};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 24;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 28;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 
 #[derive(Debug, Serialize)]
 pub struct ActorMethodInvocation {
     pub request_id: String,
-    pub actor: ActorKey,
     pub method: String,
     pub args: Vec<Value>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ActorMethodEviction {
-    pub actor: ActorKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,7 +142,6 @@ pub enum ActorMethodOutcome {
     Interleaved(ActorInterleavedOutcome),
     Completed {
         result: Value,
-        state: ActorState,
         effects: Vec<ActorSocketEffect>,
     },
     Failed(ActorInvocationFailure),
@@ -154,10 +150,7 @@ pub enum ActorMethodOutcome {
 #[derive(Debug, PartialEq)]
 pub enum ActorSocketOutcome {
     Interleaved(ActorInterleavedOutcome),
-    Handled {
-        state: ActorState,
-        effects: Vec<ActorSocketEffect>,
-    },
+    Handled { effects: Vec<ActorSocketEffect> },
     Failed(ActorInvocationFailure),
 }
 
@@ -165,13 +158,7 @@ pub enum ActorSocketOutcome {
 pub struct ActorInterleavedOutcome {
     pub sequence: u64,
     pub result: Value,
-    pub state: ActorState,
     pub effects: Vec<ActorSocketEffect>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ActorState {
-    pub sqlite: crate::litestream::storage::SqliteState,
 }
 
 #[async_trait]
@@ -182,11 +169,11 @@ pub trait ActorExecutor: Send + Sync {
         None
     }
 
-    async fn hydrate(&self, _actor: ActorKey, _state: Option<Arc<ActorState>>) -> Result<()> {
+    async fn hydrate(&self, _request_id: String, _database: Arc<dyn ActorDatabase>) -> Result<()> {
         Ok(())
     }
 
-    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+    fn resident(&self) -> Option<bool> {
         None
     }
 
@@ -197,13 +184,13 @@ pub trait ActorExecutor: Send + Sync {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&ActorState>,
+        database: Arc<dyn ActorDatabase>,
     ) -> Result<ActorMethodOutcome>;
 
     async fn handle_socket(
         &self,
         _invocation: ActorSocketInvocation,
-        _state: Option<&ActorState>,
+        _database: Arc<dyn ActorDatabase>,
     ) -> Result<ActorSocketOutcome> {
         Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
             code: "socket_not_supported".into(),
@@ -211,31 +198,14 @@ pub trait ActorExecutor: Send + Sync {
         }))
     }
 
-    // Queued executors can retain immutable snapshots; borrowed implementations keep their defaults.
-    async fn invoke_shared(
-        &self,
-        invocation: ActorMethodInvocation,
-        state: Option<Arc<ActorState>>,
-    ) -> Result<ActorMethodOutcome> {
-        self.invoke(invocation, state.as_deref()).await
-    }
-
-    async fn handle_socket_shared(
-        &self,
-        invocation: ActorSocketInvocation,
-        state: Option<Arc<ActorState>>,
-    ) -> Result<ActorSocketOutcome> {
-        self.handle_socket(invocation, state.as_deref()).await
-    }
-
-    async fn evict(&self, _eviction: ActorMethodEviction) -> Result<()> {
+    async fn evict(&self, _graceful: bool, _database: Arc<dyn ActorDatabase>) -> Result<()> {
         Ok(())
     }
 }
 
 #[async_trait]
 pub(crate) trait ActorSocketPublisher: Send + Sync {
-    async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()>;
+    async fn publish(&self, effects: Vec<ActorSocketEffect>) -> Result<()>;
 }
 
 pub(crate) struct ActorExecutorListener {
@@ -356,13 +326,11 @@ impl ActorExecutorConnection {
 
     pub(crate) async fn mark_ready(
         &self,
+        actor: ActorKey,
         publisher: Option<Arc<dyn ActorSocketPublisher>>,
         sockets: Option<Arc<dyn ActorSocketSource>>,
-        replication: Arc<dyn crate::litestream::Replicator>,
     ) -> Result<()> {
-        self.executor
-            .mark_ready(publisher, sockets, replication)
-            .await?;
+        self.executor.mark_ready(actor, publisher, sockets).await?;
         info!(
             actor_names = ?self.executor.actor_names,
             "customer JavaScript process attached to actor executor"
@@ -393,7 +361,7 @@ impl Drop for ActorExecutorConnection {
     }
 }
 
-type Residency = Arc<Mutex<Option<(Instant, Vec<ActorKey>)>>>;
+type Residency = Arc<Mutex<Option<(Instant, bool)>>>;
 
 struct JsActorExecutor {
     changes: watch::Sender<()>,
@@ -409,32 +377,29 @@ impl ActorExecutor for JsActorExecutor {
         Some(self.admission.subscribe())
     }
 
-    async fn hydrate(&self, actor: ActorKey, state: Option<Arc<ActorState>>) -> Result<()> {
+    async fn hydrate(&self, request_id: String, database: Arc<dyn ActorDatabase>) -> Result<()> {
         match self
-            .exchange(
-                ExecutorCommand::Hydrate(ActorMethodEviction { actor }),
-                state,
-            )
+            .exchange(ExecutorCommand::Hydrate { request_id }, Some(database))
             .await?
         {
             ExecutorReply::Hydrated => Ok(()),
             ExecutorReply::Failed { code, message } => {
                 anyhow::bail!("actor hydration failed ({code}): {message}")
             }
-            _ => anyhow::bail!("unexpected actor hydration reply"),
+            reply => anyhow::bail!("unexpected actor hydration reply: {reply:?}"),
         }
     }
 
     fn residency_changes(&self) -> Option<watch::Receiver<()>> {
         Some(self.changes.subscribe())
     }
-    fn resident_actors(&self) -> Option<Vec<ActorKey>> {
+    fn resident(&self) -> Option<bool> {
         self.residency
             .lock()
             .unwrap()
             .as_ref()
             .filter(|(at, _)| at.elapsed() < Duration::from_secs(5))
-            .map(|(_, actors)| actors.clone())
+            .map(|(_, resident)| *resident)
     }
 
     fn supports(&self, actor_name: &str) -> bool {
@@ -444,47 +409,23 @@ impl ActorExecutor for JsActorExecutor {
     async fn invoke(
         &self,
         invocation: ActorMethodInvocation,
-        state: Option<&ActorState>,
-    ) -> Result<ActorMethodOutcome> {
-        self.invoke_shared(invocation, state.cloned().map(Arc::new))
-            .await
-    }
-
-    async fn handle_socket(
-        &self,
-        invocation: ActorSocketInvocation,
-        state: Option<&ActorState>,
-    ) -> Result<ActorSocketOutcome> {
-        self.handle_socket_shared(invocation, state.cloned().map(Arc::new))
-            .await
-    }
-
-    async fn invoke_shared(
-        &self,
-        invocation: ActorMethodInvocation,
-        state: Option<Arc<ActorState>>,
+        database: Arc<dyn ActorDatabase>,
     ) -> Result<ActorMethodOutcome> {
         match self
-            .exchange(ExecutorCommand::Invoke(invocation), state)
+            .exchange(ExecutorCommand::Invoke(invocation), Some(database))
             .await?
         {
             ExecutorReply::Invoked {
                 result,
-                state,
                 effects,
                 sequence,
             } => Ok(match sequence {
                 Some(sequence) => ActorMethodOutcome::Interleaved(ActorInterleavedOutcome {
                     sequence,
                     result,
-                    state,
                     effects,
                 }),
-                None => ActorMethodOutcome::Completed {
-                    result,
-                    state,
-                    effects,
-                },
+                None => ActorMethodOutcome::Completed { result, effects },
             }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
@@ -492,36 +433,28 @@ impl ActorExecutor for JsActorExecutor {
                     message,
                 }))
             }
-            ExecutorReply::Hydrated | ExecutorReply::Evicted | ExecutorReply::StateRequired => {
-                anyhow::bail!("actor executor returned eviction reply to invocation")
-            }
-            ExecutorReply::WebsocketHandled { .. } => {
-                anyhow::bail!("actor executor returned socket reply to invocation")
-            }
+            reply => anyhow::bail!("unexpected actor invocation reply: {reply:?}"),
         }
     }
 
-    async fn handle_socket_shared(
+    async fn handle_socket(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<Arc<ActorState>>,
+        database: Arc<dyn ActorDatabase>,
     ) -> Result<ActorSocketOutcome> {
-        match self
-            .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
-            .await?
-        {
-            ExecutorReply::WebsocketHandled {
-                state,
-                effects,
-                sequence,
-            } => Ok(match sequence {
+        let command = ExecutorCommand::WebsocketEvent {
+            request_id: invocation.request_id,
+            event: invocation.event,
+            connections: invocation.connections,
+        };
+        match self.exchange(command, Some(database)).await? {
+            ExecutorReply::WebsocketHandled { effects, sequence } => Ok(match sequence {
                 Some(sequence) => ActorSocketOutcome::Interleaved(ActorInterleavedOutcome {
                     sequence,
                     result: Value::Null,
-                    state,
                     effects,
                 }),
-                None => ActorSocketOutcome::Handled { state, effects },
+                None => ActorSocketOutcome::Handled { effects },
             }),
             ExecutorReply::Failed { code, message } => {
                 Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
@@ -529,30 +462,20 @@ impl ActorExecutor for JsActorExecutor {
                     message,
                 }))
             }
-            ExecutorReply::Hydrated
-            | ExecutorReply::Invoked { .. }
-            | ExecutorReply::Evicted
-            | ExecutorReply::StateRequired => {
-                anyhow::bail!("actor executor returned the wrong reply to socket event")
-            }
+            reply => anyhow::bail!("unexpected actor socket reply: {reply:?}"),
         }
     }
 
-    async fn evict(&self, eviction: ActorMethodEviction) -> Result<()> {
+    async fn evict(&self, graceful: bool, database: Arc<dyn ActorDatabase>) -> Result<()> {
         match self
-            .exchange(ExecutorCommand::Evict(eviction), None)
+            .exchange(ExecutorCommand::Evict { graceful }, Some(database))
             .await?
         {
             ExecutorReply::Evicted => Ok(()),
             ExecutorReply::Failed { code, message } => {
                 anyhow::bail!("actor executor rejected eviction ({code}): {message}")
             }
-            ExecutorReply::Hydrated | ExecutorReply::Invoked { .. } => {
-                anyhow::bail!("actor executor returned the wrong reply to eviction")
-            }
-            ExecutorReply::WebsocketHandled { .. } | ExecutorReply::StateRequired => {
-                anyhow::bail!("actor executor returned socket reply to eviction")
-            }
+            reply => anyhow::bail!("unexpected actor eviction reply: {reply:?}"),
         }
     }
 }
@@ -567,6 +490,7 @@ impl JsActorExecutor {
         let residency = Arc::new(Mutex::new(None));
         let (changes, _) = watch::channel(());
         let (admission, _) = watch::channel(());
+
         let executor = Arc::new(Self {
             changes: changes.clone(),
             residency: residency.clone(),
@@ -574,26 +498,39 @@ impl JsActorExecutor {
             admission: admission.clone(),
             commands,
         });
-        let task = tokio::spawn(run_executor_connection(
-            reader, writer, incoming, residency, changes, admission,
-        ));
+
+        let task = tokio::spawn(async move {
+            let result =
+                run_executor_connection(reader, writer, incoming, residency, changes, admission)
+                    .await;
+
+            if let Err(error) = &result {
+                tracing::error!(
+                    error = %format!("{error:#}"),
+                    "executor connection failed"
+                );
+            }
+
+            result
+        });
+
         (executor, task)
     }
 
     async fn mark_ready(
         &self,
+        actor: ActorKey,
         publisher: Option<Arc<dyn ActorSocketPublisher>>,
         sockets: Option<Arc<dyn ActorSocketSource>>,
-        replication: Arc<dyn crate::litestream::Replicator>,
     ) -> Result<()> {
         let (reply, ready) = oneshot::channel();
         self.commands
-            .send(ExecutorRequest::Ready(
-                reply,
+            .send(ExecutorRequest::Ready {
+                actor,
+                written: reply,
                 publisher,
                 sockets,
-                replication,
-            ))
+            })
             .await
             .context("actor executor stopped")?;
         ready
@@ -604,18 +541,15 @@ impl JsActorExecutor {
     async fn exchange(
         &self,
         command: ExecutorCommand,
-        state: Option<Arc<ActorState>>,
+        database: Option<Arc<dyn ActorDatabase>>,
     ) -> Result<ExecutorReply> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(ExecutorRequest::Exchange(Box::new(PendingCommand {
                 command,
-                state,
+                database,
                 reply,
-                resident_only: false,
                 admission_granted: false,
-                committed_txid: None,
-                commit_failed: false,
             })))
             .await
             .context("actor executor stopped")?;
@@ -640,7 +574,6 @@ async fn run_executor_connection(
         changes,
         residency,
         pending: HashMap::new(),
-        residents: HashSet::new(),
         next_message_id: 1,
         outbound,
         publisher: None,
@@ -649,9 +582,8 @@ async fn run_executor_connection(
         publishing_ids: HashSet::new(),
         loading_connections: JoinSet::new(),
         connection_lookup_ids: HashSet::new(),
-        replication: None,
-        committing: JoinSet::new(),
-        commit_ids: HashSet::new(),
+        database_calls: JoinSet::new(),
+        database_ids: HashSet::new(),
     };
     tokio::try_join!(
         driver.run(commands, replies),
@@ -666,7 +598,6 @@ struct ExecutorDriver {
     changes: watch::Sender<()>,
     residency: Residency,
     pending: HashMap<u64, PendingCommand>,
-    residents: HashSet<ActorKey>,
     next_message_id: u64,
     outbound: mpsc::Sender<ExecutorWrite>,
     publisher: Option<Arc<dyn ActorSocketPublisher>>,
@@ -675,9 +606,8 @@ struct ExecutorDriver {
     publishing_ids: HashSet<u64>,
     loading_connections: JoinSet<(u64, Result<super::SocketLookup>)>,
     connection_lookup_ids: HashSet<u64>,
-    replication: Option<Arc<dyn crate::litestream::Replicator>>,
-    committing: JoinSet<(u64, Result<u64>)>,
-    commit_ids: HashSet<u64>,
+    database_calls: JoinSet<(u64, Result<DatabaseResult>)>,
+    database_ids: HashSet<u64>,
 }
 
 impl ExecutorDriver {
@@ -691,32 +621,31 @@ impl ExecutorDriver {
                 biased;
                 reply = replies.recv() => {
                     match reply.context("actor executor reader stopped")?? {
-                        ActorExecutorClientMessage::Residency { actors } => {
-                            ensure!(actors.len() <= 32, "too many resident actors");
-                            for actor in &actors { actor.validate()?; }
+                        ActorExecutorClientMessage::Residency { resident } => {
                             let mut current = self.residency.lock().unwrap();
-                            let changed = current.as_ref().is_none_or(|(_, previous)| previous != &actors);
-                            *current = Some((Instant::now(), actors));
+                            let changed = current.as_ref().is_none_or(|(_, previous)| *previous != resident);
+                            *current = Some((Instant::now(), resident));
                             if changed { self.changes.send_replace(()); }
                         }
                         ActorExecutorClientMessage::ReadyForInvocation { message_id } => self.allow_next_invocation(message_id)?,
                         ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
                         ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
-                        ActorExecutorClientMessage::CommitSqlite { message_id } => self.commit_sqlite(message_id)?,
+                        ActorExecutorClientMessage::DatabaseCall { message_id, call } => self.call_database(message_id, call)?,
                         ActorExecutorClientMessage::GetConnections { message_id, query } => self.load_connections(message_id, query)?,
                         ActorExecutorClientMessage::Warm { .. } | ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
                     }
                 }
-                committed = self.committing.join_next(), if !self.committing.is_empty() => {
-                    let (message_id, result) = committed.context("SQLite capture stopped")??;
-                    self.commit_ids.remove(&message_id);
-                    let pending = self.pending.get_mut(&message_id).context("SQLite commit lost its invocation")?;
-                    let (txid, error) = match result {
-                        Ok(txid) => { pending.committed_txid = Some(txid); (Some(txid), None) },
-                        Err(error) => { pending.commit_failed = true; (None, Some(format!("{error:#}"))) },
+                called = self.database_calls.join_next(), if !self.database_calls.is_empty() => {
+                    let (message_id, result) = called.context("actor database call stopped")??;
+                    self.database_ids.remove(&message_id);
+                    let (result, error) = match result {
+                        Ok(result) => (Some(result), None),
+                        Err(error) => (None, Some(format!("{error:#}"))),
                     };
                     self.outbound.send(ExecutorWrite {
-                        bytes: encode_server_message(&ActorExecutorServerMessage::SqliteCommitted { message_id, txid, error })?,
+                        bytes: encode_server_message(&ActorExecutorServerMessage::DatabaseResult {
+                            message_id, result, error,
+                        })?,
                         written: None,
                     }).await.context("actor executor writer stopped")?;
                 }
@@ -755,24 +684,20 @@ impl ExecutorDriver {
 
     fn handle_command(&mut self, command: ExecutorRequest) -> Result<()> {
         match command {
-            ExecutorRequest::Exchange(mut pending) => {
-                let resident = self.residents.remove(pending.command.actor());
-                pending.resident_only = resident
-                    && !matches!(
-                        pending.command,
-                        ExecutorCommand::Evict(_) | ExecutorCommand::Hydrate(_)
-                    );
-                self.enqueue(*pending)
-            }
-            ExecutorRequest::Ready(written, publisher, sockets, replication) => {
-                self.replication = Some(replication);
+            ExecutorRequest::Exchange(pending) => self.enqueue(*pending),
+            ExecutorRequest::Ready {
+                actor,
+                written,
+                publisher,
+                sockets,
+            } => {
                 self.publisher = publisher;
                 self.sockets = sockets;
                 self.outbound
                     .try_send(ExecutorWrite {
                         bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
-                            supports_residency: true,
                             protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
+                            actor,
                         })?,
                         written: Some(written),
                     })
@@ -791,7 +716,7 @@ impl ExecutorDriver {
         ensure!(
             matches!(
                 pending.command,
-                ExecutorCommand::Invoke(_) | ExecutorCommand::WebsocketEvent(_)
+                ExecutorCommand::Invoke(_) | ExecutorCommand::WebsocketEvent { .. }
             ),
             "only invocations can admit another call"
         );
@@ -804,37 +729,20 @@ impl ExecutorDriver {
         Ok(())
     }
 
-    fn commit_sqlite(&mut self, message_id: u64) -> Result<()> {
-        let pending = self
+    fn call_database(&mut self, message_id: u64, call: DatabaseCall) -> Result<()> {
+        let database = self
             .pending
             .get(&message_id)
-            .context("SQLite commit has no active invocation")?;
-        ensure!(
-            matches!(
-                pending.command,
-                ExecutorCommand::Invoke(_) | ExecutorCommand::WebsocketEvent(_)
-            ),
-            "SQLite commit requires an invocation"
-        );
-        ensure!(
-            pending.committed_txid.is_none()
-                && !pending.commit_failed
-                && !self.commit_ids.contains(&message_id),
-            "SQLite commit was already requested"
-        );
-        let path = pending
-            .state
-            .as_ref()
-            .and_then(|state| state.sqlite.path.as_ref())
-            .context("invocation has no registered SQLite database")?
-            .clone();
-        let replication = self
-            .replication
+            .context("database call has no active invocation")?
+            .database
             .clone()
-            .context("executor is not ready for SQLite commits")?;
-        self.commit_ids.insert(message_id);
-        self.committing
-            .spawn(async move { (message_id, replication.sync(Path::new(&path)).await) });
+            .context("command has no actor database")?;
+        ensure!(
+            self.database_ids.insert(message_id),
+            "actor sent concurrent database calls"
+        );
+        self.database_calls
+            .spawn(async move { (message_id, database.call(call).await) });
         Ok(())
     }
 
@@ -844,20 +752,19 @@ impl ExecutorDriver {
             .get(&message_id)
             .context("connection lookup has no active actor invocation")?;
         ensure!(
-            !matches!(pending.command, ExecutorCommand::Evict(_)),
+            !matches!(pending.command, ExecutorCommand::Evict { .. }),
             "cannot load connections during eviction"
         );
         ensure!(
             self.connection_lookup_ids.insert(message_id),
             "actor sent concurrent connection lookups"
         );
-        let actor = pending.command.actor().clone();
         let sockets = self.sockets.clone();
         self.loading_connections.spawn(async move {
             let result = async {
                 sockets
                     .context("actor connection lookup is unavailable")?
-                    .query(&actor, query)
+                    .query(query)
                     .await
             }
             .await;
@@ -875,8 +782,13 @@ impl ExecutorDriver {
             self.publishing_ids.insert(message_id),
             "actor sent concurrent socket publications"
         );
-        let actor = pending.command.actor().clone();
-        let connecting = matches!(&pending.command, ExecutorCommand::WebsocketEvent(invocation) if matches!(invocation.event, ActorSocketEvent::Connect { .. }));
+        let connecting = matches!(
+            &pending.command,
+            ExecutorCommand::WebsocketEvent {
+                event: ActorSocketEvent::Connect { .. },
+                ..
+            }
+        );
         let publisher = self.publisher.clone();
         self.publishing.spawn(async move {
             let result = async {
@@ -887,7 +799,7 @@ impl ExecutorDriver {
                 super::validate_socket_effects(&effects)?;
                 publisher
                     .context("actor socket publishing is unavailable")?
-                    .publish(&actor, effects)
+                    .publish(effects)
                     .await
             }
             .await;
@@ -901,19 +813,9 @@ impl ExecutorDriver {
         self.next_message_id = message_id
             .checked_add(1)
             .context("actor executor message ID overflow")?;
-        let state = if pending.resident_only || matches!(pending.command, ExecutorCommand::Evict(_))
-        {
-            None
-        } else {
-            pending.state.as_deref()
-        };
         let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
             message_id,
-            command: ExecutorCommandEnvelope {
-                command: &pending.command,
-                sqlite: state.map(|value| &value.sqlite),
-                resident_only: pending.resident_only,
-            },
+            command: &pending.command,
         });
         match bytes {
             Ok(bytes) => {
@@ -937,8 +839,8 @@ impl ExecutorDriver {
 
     fn deliver(&mut self, message_id: u64, reply: ExecutorReply) -> Result<()> {
         ensure!(
-            !self.commit_ids.contains(&message_id),
-            "actor replied before SQLite capture completed"
+            !self.database_ids.contains(&message_id),
+            "actor replied before its database call completed"
         );
         ensure!(
             !self.connection_lookup_ids.contains(&message_id),
@@ -948,45 +850,10 @@ impl ExecutorDriver {
             !self.publishing_ids.contains(&message_id),
             "actor completed before socket output was acknowledged"
         );
-        let mut pending = self
+        let pending = self
             .pending
             .remove(&message_id)
             .with_context(|| format!("actor executor replied to unknown message {message_id}"))?;
-        ensure!(
-            !pending.commit_failed || matches!(reply, ExecutorReply::Failed { .. }),
-            "actor returned success after SQLite capture failed"
-        );
-        if let Some(txid) = pending.committed_txid {
-            match &reply {
-                ExecutorReply::Invoked { state, .. }
-                | ExecutorReply::WebsocketHandled { state, .. } => ensure!(
-                    state.sqlite.txid == txid,
-                    "actor reply differs from its captured SQLite position"
-                ),
-                _ => {}
-            }
-        }
-        if matches!(reply, ExecutorReply::StateRequired) {
-            if pending.resident_only {
-                pending.resident_only = false;
-                return self.enqueue(pending);
-            }
-            let _ = pending.reply.send(Err(anyhow::anyhow!(
-                "actor executor refused explicit hydration"
-            )));
-            return Ok(());
-        }
-        if matches!(
-            reply,
-            ExecutorReply::Hydrated
-                | ExecutorReply::Invoked { .. }
-                | ExecutorReply::WebsocketHandled { .. }
-        ) {
-            if self.residents.len() >= 4096 {
-                self.residents.clear();
-            }
-            self.residents.insert(pending.command.actor().clone());
-        }
         let _ = pending.reply.send(Ok(reply));
         Ok(())
     }
@@ -1039,37 +906,24 @@ async fn write_executor_messages(
 
 enum ExecutorRequest {
     Exchange(Box<PendingCommand>),
-    Ready(
-        oneshot::Sender<Result<()>>,
-        Option<Arc<dyn ActorSocketPublisher>>,
-        Option<Arc<dyn ActorSocketSource>>,
-        Arc<dyn crate::litestream::Replicator>,
-    ),
+    Ready {
+        actor: ActorKey,
+        written: oneshot::Sender<Result<()>>,
+        publisher: Option<Arc<dyn ActorSocketPublisher>>,
+        sockets: Option<Arc<dyn ActorSocketSource>>,
+    },
 }
 
 struct PendingCommand {
     command: ExecutorCommand,
-    state: Option<Arc<ActorState>>,
-    resident_only: bool,
+    database: Option<Arc<dyn ActorDatabase>>,
     admission_granted: bool,
-    committed_txid: Option<u64>,
-    commit_failed: bool,
     reply: oneshot::Sender<Result<ExecutorReply>>,
 }
 
 struct ExecutorWrite {
     bytes: Vec<u8>,
     written: Option<oneshot::Sender<Result<()>>>,
-}
-
-impl ExecutorCommand {
-    fn actor(&self) -> &ActorKey {
-        match self {
-            Self::Invoke(invocation) => &invocation.actor,
-            Self::WebsocketEvent(invocation) => &invocation.actor,
-            Self::Evict(eviction) | Self::Hydrate(eviction) => &eviction.actor,
-        }
-    }
 }
 
 async fn read_client_message(
@@ -1128,10 +982,10 @@ async fn remove_socket(path: &Path) -> Result<()> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorServerMessage<'a> {
-    SqliteCommitted {
+    DatabaseResult {
         message_id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
-        txid: Option<u64>,
+        result: Option<DatabaseResult>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -1147,35 +1001,27 @@ enum ActorExecutorServerMessage<'a> {
         error: Option<String>,
     },
     Attached {
-        supports_residency: bool,
         protocol: u32,
+        actor: ActorKey,
     },
     Command {
         message_id: u64,
-        command: ExecutorCommandEnvelope<'a>,
+        command: &'a ExecutorCommand,
     },
-}
-
-#[derive(Debug, Serialize)]
-struct ExecutorCommandEnvelope<'a> {
-    #[serde(flatten)]
-    command: &'a ExecutorCommand,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sqlite: Option<&'a crate::litestream::storage::SqliteState>,
-    resident_only: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
-    CommitSqlite {
+    DatabaseCall {
         message_id: u64,
+        call: DatabaseCall,
     },
     Warm {
         protocol: u32,
     },
     Residency {
-        actors: Vec<ActorKey>,
+        resident: bool,
     },
     GetConnections {
         message_id: u64,
@@ -1202,29 +1048,32 @@ enum ActorExecutorClientMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorCommand {
-    Hydrate(ActorMethodEviction),
+    Hydrate {
+        request_id: String,
+    },
     Invoke(ActorMethodInvocation),
-    WebsocketEvent(ActorSocketInvocation),
-    Evict(ActorMethodEviction),
+    WebsocketEvent {
+        request_id: String,
+        event: ActorSocketEvent,
+        connections: Vec<ActorSocketConnection>,
+    },
+    Evict {
+        graceful: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ExecutorReply {
     Hydrated,
-    StateRequired,
     Invoked {
         result: Value,
-        #[serde(flatten)]
-        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         #[serde(default)]
         effects: Vec<ActorSocketEffect>,
     },
     WebsocketHandled {
-        #[serde(flatten)]
-        state: ActorState,
         #[serde(default)]
         sequence: Option<u64>,
         effects: Vec<ActorSocketEffect>,

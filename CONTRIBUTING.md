@@ -1,6 +1,8 @@
 # Contributing to Durable Actors
 
-We welcome bug reports, documentation improvements, examples, and code contributions. For a larger change, open an [issue](https://github.com/TerseAI/durable-actors/issues) to discuss the approach before starting. Small fixes can go straight to a pull request.
+We welcome bug reports, documentation improvements, examples, and code contributions. Start by opening a [GitHub issue](https://github.com/TerseAI/durable-actors/issues/new/choose). External contributors do not need a Linear account or the lit CLI. Discuss larger changes before starting implementation.
+
+New GitHub issues sync to our Durable Actors team in Linear. During triage, a maintainer adds the corresponding ticket ID and link to the GitHub issue, for example `Tracked as [DUR-123](https://linear.app/terse-inc/issue/DUR-123)`. Use that ID in your branch; you can continue the discussion entirely on GitHub. If the ID is missing, ask a maintainer on the issue. The Linear link may require team access, but the visible DUR ID is all you need.
 
 Please follow our [code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
@@ -51,7 +53,7 @@ Update documentation and examples when changing a public API, configuration, or 
 
 ## Run checks
 
-SQLite test fixtures use the upstream Go Litestream CLI to create and restore compatible backups. Install Go 1.27.1 and the pinned test tool, then add Go's binary directory to your PATH:
+Rust SQLite test fixtures use the upstream Go Litestream CLI to create and restore compatible backups. Install Go 1.27.1 and the pinned test tool, then add Go's binary directory to your PATH:
 
 ```sh
 go install github.com/benbjohnson/litestream/cmd/litestream@v0.5.17
@@ -155,8 +157,22 @@ Repeat for `python` and `control-plane`. CI runs each target on amd64 and arm64.
 
 ## Open a pull request
 
+Include exactly one Durable Actors ticket ID in the source branch, for example `your-name/DUR-123-fix-reconnect`, or as `Fixes DUR-123` in the PR description. The `Ticket branch` check rejects missing, malformed, ambiguous, conflicting, or other-team IDs. Release PRs follow the same rule. This checks the identifier format without accessing Linear. If you do not have Linear access, open the PR anyway; a maintainer will add the corresponding `Fixes DUR-123` line to the description. Always include it in the description so the integration can link and complete the ticket.
+
+Also include `Closes #123` for the corresponding GitHub issue. A maintainer applies exactly one release label: `release:feature`, `release:fix`, or `release:skip` for changes with no user-visible effect, including version-only release PRs. The same required check enforces this choice. Write the PR title as a concise description of the user-visible change: it becomes a bullet under **Features** or **Fixes** in the release notes. Put detailed migration guidance in the linked PR. External contributors can open a PR before a maintainer applies the label.
+
 Describe the problem, the resulting behavior, and how you verified it. Link related issues and include screenshots for UI changes. Note any checks you could not run. Maintainers will review the change and arrange releases through the existing [release workflow](.github/workflows/release.yml).
 
-Contributions are made under the repository's [MIT license](LICENSE.md).
+## Release notes
+
+Prepare the notes for the current `origin/main` commit:
+
+```sh
+node scripts/release-notes.mjs
+```
+
+The command fetches `origin/main`, reads the latest stable GitHub release, and prints **Features** and **Fixes** for pull requests merged after that release. The same commit and release list produce the same notes. A pull request without `release:feature`, `release:fix`, or `release:skip` stops the command. `bun run release:notes` runs the same script.
+
+Contributions are made under the repository's [MIT license](LICENSE.md). See also the [Contributor License Agreement](CLA.md).
 
 Published chart packages include all three image digests from the same release. The release job uploads the chart to GitHub Releases and `ghcr.io/terseai/charts/durable-actors`. Configure that GHCR package for public access when first published.

@@ -3,7 +3,6 @@
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,13 +23,7 @@ class Counter(Actor):
 """)
         # Package a fixture artifact; production executors receive compiled artifacts.
         build_actor(project, "actors.py", project / "build")
-        database_path = project / "actor.sqlite"
-        with sqlite3.connect(database_path) as database:
-            database.execute("PRAGMA journal_mode=WAL")
-            database.execute(
-                "CREATE TABLE __terse_fields(name TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(json_valid(value)))"
-            )
-        txid = 1
+        database = FieldStore()
         for expected in (1, 2):
             with socket.socket(socket.AF_UNIX) as listener:
                 address = str(project / f"executor-{expected}.sock")
@@ -50,21 +43,21 @@ class Counter(Actor):
                             connection.sendall((json.dumps(message) + "\n").encode())
 
                         def receive():
-                            nonlocal txid
                             while True:
                                 message = json.loads(messages.readline())
-                                if message["type"] != "commit_sqlite":
+                                if message["type"] == "residency":
+                                    continue
+                                if message["type"] != "database_call":
                                     return message
-                                txid += 1
                                 send(
                                     {
-                                        "type": "sqlite_committed",
+                                        "type": "database_result",
                                         "message_id": message["message_id"],
-                                        "txid": txid,
+                                        "result": database.call(message["call"]),
                                     }
                                 )
 
-                        assert receive() == {"type": "warm", "protocol": 24}
+                        assert receive() == {"type": "warm", "protocol": 28}
                         send(
                             {
                                 "type": "load",
@@ -74,11 +67,11 @@ class Counter(Actor):
                         )
                         assert receive() == {
                             "type": "attach",
-                            "protocol": 24,
+                            "protocol": 28,
                             "actor_names": ["Counter"],
                         }
-                        send({"type": "attached", "protocol": 24})
                         actor = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
+                        send({"type": "attached", "protocol": 28, "actor": actor})
                         send(
                             {
                                 "type": "command",
@@ -86,10 +79,8 @@ class Counter(Actor):
                                 "command": {
                                     "type": "invoke",
                                     "request_id": f"request-{expected}",
-                                    "actor": actor,
                                     "method": "increment",
                                     "args": [],
-                                    "sqlite": {"txid": txid, "path": str(database_path)},
                                 },
                             }
                         )
@@ -100,7 +91,7 @@ class Counter(Actor):
                             {
                                 "type": "command",
                                 "message_id": 10 + expected,
-                                "command": {"type": "evict", "actor": actor},
+                                "command": {"type": "evict"},
                             }
                         )
                         assert receive()["reply"]["type"] == "evicted"
@@ -112,7 +103,29 @@ class Counter(Actor):
                         executor.kill()
                         executor.wait()
                         raise
-    print("Python image: generic warmup, invocation, and SQLite recovery after restart passed")
+    print("Python image: generic warmup, invocation, and database recovery after restart passed")
+
+
+class FieldStore:
+    """Stands in for the host database; the actor only touches its fields."""
+
+    def __init__(self):
+        self.committed = {}
+        self.pending = {}
+
+    def call(self, call):
+        op = call["op"]
+        if op == "fields":
+            return {"type": "fields", "fields": self.committed}
+        if op == "replace_fields":
+            self.pending = call["fields"]
+        elif op == "commit":
+            self.committed = self.pending
+        elif op == "rollback":
+            self.pending = self.committed
+        else:
+            raise ValueError(f"unexpected database call {op}")
+        return {"type": "done"}
 
 
 main()

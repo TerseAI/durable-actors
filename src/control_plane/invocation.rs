@@ -1,4 +1,5 @@
-use crate::request_tracking::HostState;
+use crate::{request_tracking::HostState, sockets::operations::SocketOperation};
+use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -12,6 +13,39 @@ use super::public_api::{
     ActorPath, ActorTargetReply, ApiError, FindActorRequest, PublicApiState, resolve_actor_target,
 };
 use crate::actor::ActorInvocation;
+
+pub(super) async fn invoke_alarm(
+    service: &super::ControlPlaneService,
+    client: &reqwest::Client,
+    alarm: &super::alarms::ClaimedAlarm,
+) -> anyhow::Result<()> {
+    let started = tokio::time::Instant::now();
+    let target = service
+        .resolve_actor_route(&alarm.actor, None, None, None)
+        .await
+        .context("could not route alarm")?;
+    let invocation = ActorInvocation {
+        actor: alarm.actor.clone(),
+        request_id: format!("alarm-{}", alarm.revision),
+        method: "onAlarm".into(),
+        args: vec![],
+    };
+    let outcome = dispatch(
+        client,
+        &target.route,
+        &target.token,
+        target.owner_epoch,
+        &invocation,
+        target.host_state,
+        started.elapsed().as_secs_f64() * 1000.0,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("alarm outcome could not be confirmed"))?;
+    match outcome["type"].as_str() {
+        Some("completed" | "failed") => Ok(()),
+        _ => anyhow::bail!("alarm was not executed: {outcome}"),
+    }
+}
 
 pub(super) async fn invoke(
     State(state): State<PublicApiState>,
@@ -156,27 +190,39 @@ pub(super) async fn publish(
         return Err(ApiError::unauthorized("bearer token required"));
     }
     let Json(request) = body.map_err(ApiError::json)?;
-    let route = gateway
-        .invocation_route(&actor, request.owner_epoch, authorization)
+
+    let owner_epoch = gateway
+        .authorize_publish(&actor, authorization)
         .map_err(|_| ApiError::unauthorized("actor invocation credential was rejected"))?;
+    if owner_epoch != request.owner_epoch {
+        return Err(ApiError::unauthorized(
+            "actor invocation credential was rejected",
+        ));
+    }
     crate::actor::validate_socket_effects(&request.effects).map_err(ApiError::bad_request)?;
-    let url = format!(
-        "/v1/projects/{}/actors/{}/{}/socket-effects",
-        actor.project_id, actor.actor_name, actor.actor_id
-    );
-    let response = crate::sandbox::transport::host_request(&state.hosts, &route, &url)
-        .map_err(ApiError::bad_request)?
-        .header(header::AUTHORIZATION, authorization)
-        .json(&request)
-        .send()
+
+    gateway
+        .connections
+        .operation(
+            &actor,
+            SocketOperation::Publish {
+                effects: request.effects,
+            },
+            authorization,
+        )
         .await
-        .map_err(|_| outcome_unknown())?;
-    let status = response.status();
-    let body = response.bytes().await.map_err(|_| outcome_unknown())?;
-    Ok((status, [(header::CACHE_CONTROL, "no-store")], body).into_response())
+        .map_err(|error| {
+            tracing::warn!(error = %format!("{error:#}"), "socket effects could not be delivered");
+            ApiError::unavailable("socket effects could not be delivered")
+        })?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(header::CACHE_CONTROL, "no-store")],
+    )
+        .into_response())
 }
 
-#[derive(serde::Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PublishRequest {
     owner_epoch: u64,
@@ -224,7 +270,7 @@ async fn dispatch(
         Some("not_executed")
             if matches!(
                 reply["reason"].as_str(),
-                Some("stale_owner" | "host_unavailable" | "upstream_not_reached")
+                Some("host_unavailable" | "upstream_not_reached")
             ) =>
         {
             Ok(reply)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::artifacts::{ArtifactFile, ArtifactManifest};
+use crate::bundle::{ActorBundle, BundleFile};
 use bytes::Bytes;
 use futures_util::stream::BoxStream;
 use google_cloud_storage::client::Storage;
@@ -8,14 +8,14 @@ pub(super) type CodeStream = BoxStream<'static, Result<Bytes>>;
 
 #[async_trait]
 pub(super) trait CodeSource: Send + Sync {
-    async fn open(&self, bucket: &str, file: &ArtifactFile) -> Result<CodeStream>;
+    async fn open(&self, bucket: &str, file: &BundleFile) -> Result<CodeStream>;
 }
 
 pub(super) struct GcsCodeSource(pub Storage);
 
 #[async_trait]
 impl CodeSource for GcsCodeSource {
-    async fn open(&self, bucket: &str, file: &ArtifactFile) -> Result<CodeStream> {
+    async fn open(&self, bucket: &str, file: &BundleFile) -> Result<CodeStream> {
         let response = self
             .0
             .read_object(format!("projects/_/buckets/{bucket}"), &file.object)
@@ -42,7 +42,7 @@ impl SubstrateProvider {
             .metadata
             .as_ref()
             .context("template identity missing")?;
-        let manifest = ArtifactManifest::decode(artifact)?;
+        let manifest = ActorBundle::decode(artifact)?;
         let target = code_tag(template, artifact)?;
         if let Some(tag) = self.api.tag(target.clone()).await? {
             proto::validate_tag(&tag, &meta.uid)?;
@@ -73,7 +73,7 @@ impl SubstrateProvider {
     async fn capture_code(
         &self,
         actor: &proto::Actor,
-        manifest: &ArtifactManifest,
+        manifest: &ActorBundle,
         target: proto::ObjectRef,
     ) -> Result<()> {
         let meta = actor
@@ -115,7 +115,7 @@ pub(super) fn code_tag(
         .as_ref()
         .context("template identity missing")?;
     ensure!(!meta.uid.is_empty(), "template UID missing");
-    let manifest = ArtifactManifest::decode(artifact)?;
+    let manifest = ActorBundle::decode(artifact)?;
     let identity = serde_json::to_string(&(&meta.uid, manifest))?;
     Ok(reference(
         &meta.atespace,

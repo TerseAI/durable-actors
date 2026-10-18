@@ -88,7 +88,7 @@ Deployment registration prepares snapshots containing the runtime and customer c
 
 The chart projects the Substrate API token and CA bundle into the control plane. Customer secrets require the label `terse.ai/customer-secret=true`. The separate snapshot bucket requires object access and bucket metadata access for the Substrate `ate-api-server` and `atelet` service-account principals. Follow the pinned Substrate installation instructions for API authentication and worker networking.
 
-Migration V18 removes the retired spare tables; V1–V17 and existing actor state are preserved.
+Migration V19 removes the retired spare tables; V1–V18 and existing actor state are preserved.
 
 ### WebSocket capacity
 

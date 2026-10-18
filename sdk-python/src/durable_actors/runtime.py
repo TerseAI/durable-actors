@@ -8,28 +8,29 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any
 
-from .actor import Actor
+from .actor_base import ActorBase
 from .contract import Document, Method, decode, describe_actor, encode
-from .database import actor_database_invocation, bind_actor_database
+from .database import RuntimeActorContext, actor_database_invocation
 from .socket import Effects, SocketScope, scope_context
-from .sqlite import SqliteCaptureError, Storage
+from .sqlite import DatabaseCommitError, DatabaseProxy
 from .threads import run_in_thread
 
 
 class ActorRuntime:
     def __init__(
         self,
-        actor: type[Actor[Any, Any, Any, Any]],
+        actor: type[ActorBase[Any, Any, Any, Any]],
+        identity: Document,
         effects: Effects,
-        database: Storage,
+        database: DatabaseProxy,
     ) -> None:
+        self.identity = identity
         self.effects = effects
         self.database = database
         self.completion = asyncio.Lock()
         self.fatal: Document | None = None
         self.definition = describe_actor(actor)
-        self.instance: Actor[Any, Any, Any, Any] | None = None
-        self.identity: Document | None = None
+        self.instance: ActorBase[Any, Any, Any, Any] | None = None
         self.lifecycle = asyncio.Lock()
         self.pending: set[asyncio.Task[Document]] = set()
         self.serial = asyncio.Lock()
@@ -38,11 +39,6 @@ class ActorRuntime:
 
     async def handle(self, command: Document) -> Document:
         async with self.lifecycle:
-            if self.identity is not None and command["actor"] != self.identity:
-                return failed("actor_identity_mismatch", "executor is assigned to another actor")
-            if command["actor"]["actor_name"] != self.definition.actor.__name__:
-                return failed("actor_name_not_found", "actor is not loaded")
-            self.identity = command["actor"]
             if command["type"] == "evict":
                 return await self.evict()
             task = asyncio.create_task(self.run(command))
@@ -64,12 +60,13 @@ class ActorRuntime:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.instance = None
         self.fatal = None
-        self.database.close()
         return {"type": "evicted"}
 
     async def run(self, command: Document) -> Document:
         await self.serial.acquire()
         name = command.get("method") or "on_" + command.get("event", {}).get("type", "")
+        if name == "onAlarm":
+            name = "on_alarm"
         released = False
 
         def admit() -> None:
@@ -95,13 +92,9 @@ class ActorRuntime:
 
     async def execute(self, command: Document, admit: Any) -> Document:
         if self.instance is None:
-            if command.get("resident_only"):
-                return {"type": "state_required"}
             try:
-                self.database.restore(command.get("sqlite"))
-                self.restore(self.database.fields())
+                self.restore(await self.database.fields())
             except Exception as error:
-                self.database.close()
                 return failed("invalid_actor_state", str(error))
         if command["type"] == "hydrate":
             return {"type": "hydrated"}
@@ -112,13 +105,16 @@ class ActorRuntime:
         assert instance is not None
         socket_event = command["type"] == "websocket_event"
         name = "on_" + command["event"]["type"] if socket_event else command["method"]
-        if not socket_event and name not in self.definition.methods:
+        alarm_event = not socket_event and name == "onAlarm"
+        if alarm_event:
+            name = "on_alarm"
+        if not socket_event and not alarm_event and name not in self.definition.methods:
             return failed("method_not_found", name)
         before = self.snapshot()
         connecting = socket_event and command["event"]["type"] == "connect"
         scope = SocketScope(
             instance,
-            command["actor"]["actor_id"],
+            self.identity["actor_id"],
             self.definition.socket_types,
             self.effects,
             command.get("connections"),
@@ -131,6 +127,10 @@ class ActorRuntime:
                 admit()
                 if hasattr(instance, name):
                     await invoke_handler(scope, getattr(instance, name), *args)
+                result = None
+            elif alarm_event:
+                admit()
+                await invoke_handler(scope, getattr(instance, name))
                 result = None
             else:
                 method = self.definition.methods[name]
@@ -150,17 +150,14 @@ class ActorRuntime:
                 state = self.snapshot()
                 previous = self.last_state if self.definition.reentrant_methods else before
                 effects.extend(self.state_updates(previous, state, command))
-                await run_in_thread(partial(self.database.persist_fields, state))
+                await self.database.replace_fields(state)
                 try:
-                    sqlite = await self.database.snapshot()
-                except SqliteCaptureError as error:
+                    await self.database.commit()
+                except DatabaseCommitError as error:
                     self.fatal = failed("actor_database_failed", str(error))
                     return self.fatal
                 self.last_state = state
-                reply: Document = {
-                    "type": "websocket_handled" if socket_event else "invoked",
-                    "sqlite": sqlite,
-                }
+                reply: Document = {"type": "websocket_handled" if socket_event else "invoked"}
                 if not socket_event:
                     reply["result"] = result
                 if socket_event or effects:
@@ -169,9 +166,14 @@ class ActorRuntime:
                     self.sequence += 1
                     reply["sequence"] = self.sequence
                 return reply
+        except asyncio.CancelledError:
+            if not self.definition.reentrant_methods:
+                self.instance = None
+                await self.database.rollback()
+            raise
         except Exception as error:
             if not self.definition.reentrant_methods:
-                self.database.rollback()
+                await self.database.rollback()
                 self.restore(before)
             return failed(
                 "actor_socket_failed" if socket_event else "actor_method_failed", str(error)
@@ -219,8 +221,7 @@ class ActorRuntime:
         return effects
 
     def restore(self, state: Any) -> None:
-        instance = self.definition.actor()
-        bind_actor_database(instance, self.database)
+        instance = self.definition.actor(RuntimeActorContext(self.database))
         if state is not None:
             if not isinstance(state, dict):
                 raise ValueError("persisted state must be an object")
@@ -246,6 +247,12 @@ async def invoke_handler(
     scope: SocketScope, handler: Callable[..., Any], *args: Any, **kwargs: Any
 ) -> Any:
     with actor_database_invocation(getattr(handler, "__self__", None)):
+        if inspect.iscoroutinefunction(handler):
+            try:
+                return await handler(*args, **kwargs)
+            except asyncio.CancelledError:
+                scope.cancel()
+                raise
         return await run_in_thread(partial(handler, *args, **kwargs), scope.cancel)
 
 

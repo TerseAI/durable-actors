@@ -4,13 +4,13 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { z } from "zod"
 
-import type { ActorIdentity } from "../actor/identity.js"
 import type { SocketEffect, SocketLookup, SocketQuery } from "../actor/socketProtocol.js"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
+import type { DatabaseCall, DatabaseResult } from "./database.js"
 import { parseActorSessionServerMessage } from "./protocol.js"
-import type { ActorExecutorCommand, ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
-import type { ActorCommandHandler, ActorHostSettings, ActorWorkerSupervisorFactory } from "./types.js"
+import type { ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
+import type { ActorHostSettings, ActorSessionSupervisor, ActorWorkerSupervisorFactory } from "./types.js"
 import { ActorWorkerSupervisor } from "./worker-supervisor.js"
 
 async function runActorHost(): Promise<never> {
@@ -44,17 +44,13 @@ class ActorSession {
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
         const supervisor = this.createSupervisor({ actorEntrypointUrl })
-        const commandHandler: ActorCommandHandler = (command, allowNextInvocation, commit, publish, connections) =>
-            supervisor.handle(command, allowNextInvocation, commit, publish, connections)
         try {
             const actorNames = await discoverActorNames(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(
                 this.settings.socketPath,
                 actorNames,
-                commandHandler,
+                supervisor,
                 this.settings.startupTimeoutMs,
-                supervisor.activeActors.bind(supervisor),
-                supervisor.onActiveActorsChange.bind(supervisor),
                 this.socket
             )
             void this.connection.closed().then(() => supervisor.close())
@@ -94,7 +90,10 @@ class ActorSessionConnection {
     private readonly attachedPromise: Promise<void>
     private closedResolve: (() => void) | undefined
     private readonly closedPromise: Promise<void>
-    private readonly committing = new Map<number, { resolve: (txid: number) => void; reject: (error: Error) => void }>()
+    private readonly databaseCalls = new Map<
+        number,
+        { resolve: (result: DatabaseResult) => void; reject: (error: Error) => void }
+    >()
     private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
     private readonly loadingConnections = new Map<
         number,
@@ -104,19 +103,17 @@ class ActorSessionConnection {
     static async open(
         socketPath: string,
         actorNames: readonly string[],
-        commandHandler: ActorCommandHandler,
+        supervisor: ActorSessionSupervisor,
         timeoutMs: number,
-        activeActors: () => readonly ActorIdentity[],
-        watchActiveActors: (listener: () => void) => () => void,
         connectedSocket?: Socket
     ): Promise<ActorSessionConnection> {
         if (actorNames.length === 0)
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = connectedSocket ?? (await connectSocket(socketPath))
-        const connection = new ActorSessionConnection(socket, commandHandler, activeActors, watchActiveActors)
+        const connection = new ActorSessionConnection(socket, supervisor)
         connection.send({
             type: "attach",
-            protocol: 24,
+            protocol: 28,
             actor_names: actorNames
         })
         await connection.waitUntilAttached(timeoutMs)
@@ -129,9 +126,7 @@ class ActorSessionConnection {
 
     private constructor(
         private readonly socket: Socket,
-        private readonly commandHandler: ActorCommandHandler,
-        private readonly activeActors: () => readonly ActorIdentity[],
-        private readonly watchActiveActors: (listener: () => void) => () => void
+        private readonly supervisor: ActorSessionSupervisor
     ) {
         this.attachedPromise = new Promise<void>((resolve, reject) => {
             this.attachedResolve = resolve
@@ -186,19 +181,8 @@ class ActorSessionConnection {
             const message = parseActorSessionServerMessage(rawMessage)
             switch (message.type) {
                 case "attached":
-                    if (message.supports_residency && !this.activityTimer) {
-                        const report = () => {
-                            try {
-                                this.send({ type: "residency", actors: this.activeActors() })
-                            } catch (error) {
-                                this.fail(sessionError(error))
-                            }
-                        }
-                        this.unsubscribeActivity = this.watchActiveActors(report)
-                        report()
-                        this.activityTimer = setInterval(report, 1_000)
-                        this.activityTimer.unref()
-                    }
+                    this.supervisor.assign(message.actor)
+                    this.reportResidency()
                     this.attachedResolve?.()
                     this.attachedResolve = undefined
                     this.attachedReject = undefined
@@ -206,27 +190,22 @@ class ActorSessionConnection {
                 case "command":
                     await this.reply(
                         message.message_id,
-                        await this.commandHandler(
+                        await this.supervisor.handle(
                             message.command,
                             () => this.send({ type: "ready_for_invocation", message_id: message.message_id }),
-                            () => this.commitSqlite(message.message_id),
+                            call => this.callDatabase(message.message_id, call),
                             effects => this.publish(message.message_id, effects),
                             query => this.getConnections(message.message_id, query)
                         )
                     )
                     break
-                case "sqlite_committed": {
-                    const pending = this.committing.get(message.message_id)
+                case "database_result": {
+                    const pending = this.databaseCalls.get(message.message_id)
                     if (pending === undefined)
-                        throw new ActorProtocolError("Rust host acknowledged unknown SQLite commit")
-                    this.committing.delete(message.message_id)
-                    if (message.error !== undefined) pending.reject(new ActorSessionError(message.error))
-                    else if (message.txid !== undefined) pending.resolve(message.txid)
-                    else {
-                        const error = new ActorProtocolError("Rust host omitted the SQLite commit position")
-                        pending.reject(error)
-                        throw error
-                    }
+                        throw new ActorProtocolError("Rust host replied to unknown database call")
+                    this.databaseCalls.delete(message.message_id)
+                    if (message.result === undefined) pending.reject(new ActorSessionError(message.error!))
+                    else pending.resolve(message.result)
                     break
                 }
                 case "socket_connections": {
@@ -255,15 +234,31 @@ class ActorSessionConnection {
         }
     }
 
-    private commitSqlite(messageId: number): Promise<number> {
-        return new Promise((resolve, reject) => {
-            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before SQLite commit")
-            if (this.committing.has(messageId)) throw new ActorProtocolError("actor SQLite commit is already pending")
-            this.committing.set(messageId, { resolve, reject })
+    private reportResidency(): void {
+        if (this.activityTimer) return
+        const report = () => {
             try {
-                this.send({ type: "commit_sqlite", message_id: messageId })
+                this.send({ type: "residency", resident: this.supervisor.isResident() })
             } catch (error) {
-                this.committing.delete(messageId)
+                this.fail(sessionError(error))
+            }
+        }
+        this.unsubscribeActivity = this.supervisor.onResidencyChange(report)
+        report()
+        this.activityTimer = setInterval(report, 1_000)
+        this.activityTimer.unref()
+    }
+
+    private callDatabase(messageId: number, call: DatabaseCall): Promise<DatabaseResult> {
+        return new Promise((resolve, reject) => {
+            if (this.socket.destroyed) throw new ActorSessionError("Rust host disconnected before the database call")
+            if (this.databaseCalls.has(messageId))
+                throw new ActorProtocolError("actor database call is already pending")
+            this.databaseCalls.set(messageId, { resolve, reject })
+            try {
+                this.send({ type: "database_call", message_id: messageId, call })
+            } catch (error) {
+                this.databaseCalls.delete(messageId)
                 reject(sessionError(error))
             }
         })
@@ -316,9 +311,9 @@ class ActorSessionConnection {
         clearInterval(this.activityTimer)
         this.unsubscribeActivity?.()
         this.unsubscribeActivity = undefined
-        for (const pending of this.committing.values())
-            pending.reject(new ActorSessionError("Rust host disconnected during SQLite commit"))
-        this.committing.clear()
+        for (const pending of this.databaseCalls.values())
+            pending.reject(new ActorSessionError("Rust host disconnected during a database call"))
+        this.databaseCalls.clear()
         for (const pending of this.loadingConnections.values())
             pending.reject(new ActorSessionError("Rust host disconnected while loading connections"))
         this.loadingConnections.clear()

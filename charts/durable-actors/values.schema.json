@@ -210,6 +210,14 @@
         }
       }
     },
+    "alarms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pollIntervalMs": {"type": "integer", "minimum": 1}
+      },
+      "required": ["pollIntervalMs"]
+    },
     "cluster": {
       "type": "object",
       "additionalProperties": false,
@@ -264,7 +272,8 @@
     "region",
     "storage",
     "serviceAccount",
-    "substrate"
+    "substrate",
+    "alarms"
   ],
   "$schema": "https://json-schema.org/draft-07/schema#",
   "definitions": {

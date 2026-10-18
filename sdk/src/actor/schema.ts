@@ -1,6 +1,7 @@
 import type { SocketContract } from "../wire/contract.js"
 
 import type { ComputeOptions } from "./compute.js"
+import type { ActorResource } from "./resource.js"
 
 const ACTOR_ARTIFACT_VERSION = 1
 
@@ -15,13 +16,15 @@ interface ActorFieldSchema {
     readonly private?: boolean
     readonly visibility?: "private" | "protected"
     readonly emittable?: boolean
+    readonly resource?: boolean
 }
 
 interface ActorSchema {
     readonly actorName: string
     readonly fields: readonly ActorFieldSchema[]
     readonly sandbox?: ComputeOptions
-    readonly reentrantMethods?: readonly string[]
+    readonly atomicMethods?: readonly string[]
+    readonly interleaveMethods?: readonly string[]
     readonly contract?: SocketContract
 }
 

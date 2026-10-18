@@ -435,7 +435,7 @@ trait HostAssignment: Send + Sync {
         &self,
         route: &str,
         token: &str,
-        artifact: &crate::artifacts::ArtifactFile,
+        artifact: &crate::bundle::BundleFile,
         chunks: code::CodeStream,
     ) -> Result<()>;
     async fn assign(
@@ -452,7 +452,7 @@ impl HostAssignment for HttpAssignment {
         &self,
         route: &str,
         token: &str,
-        artifact: &crate::artifacts::ArtifactFile,
+        artifact: &crate::bundle::BundleFile,
         chunks: code::CodeStream,
     ) -> Result<()> {
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};

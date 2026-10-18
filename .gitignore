@@ -5,6 +5,8 @@ sdk/dist-host/
 sdk/.test-dist/
 packages/*/dist/
 sdk/src/generated/
+examples/persistence/cli/generated/
+examples/pi/pi-cli/generated/
 target/
 dist-runtime/
 .durable-actors/
@@ -12,6 +14,7 @@ dist-runtime/
 .env
 .env.*
 !.env.example
+!.env.staging.example
 .DS_Store
 Thumbs.db
 

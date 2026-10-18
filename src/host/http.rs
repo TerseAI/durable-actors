@@ -13,7 +13,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
-    actor::{ActorExecutionResult, ActorInvocation, ActorKey, ActorSocketEffect},
+    actor::{ActorExecutionResult, ActorInvocation, ActorKey},
     control_plane::{ActorJwtVerifier, ActorPrincipal},
     host::{ActorHost, HostId, sockets::HostSockets},
 };
@@ -50,10 +50,6 @@ impl ActorHostHttpService {
                 "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/invoke",
                 post(invoke),
             )
-            .route(
-                "/v1/projects/{project_id}/actors/{actor_name}/{actor_id}/socket-effects",
-                post(publish),
-            )
             .layer(DefaultBodyLimit::disable())
             .with_state(Arc::new(self))
     }
@@ -86,7 +82,14 @@ impl ActorHostHttpService {
             &self.session_id,
             actor,
             owner_epoch,
-        )
+        )?;
+        if actor != self.host.actor() {
+            return Err(HttpError(
+                StatusCode::FORBIDDEN,
+                "actor host serves another actor".into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn execute(
@@ -96,7 +99,6 @@ impl ActorHostHttpService {
         host_state: HostState,
         routing_ms: f64,
     ) -> InvocationResponse {
-        let actor = invocation.actor.clone();
         let request_id = invocation.request_id.clone();
         let (result, metadata) = self
             .host
@@ -105,10 +107,7 @@ impl ActorHostHttpService {
         let outcome = match result {
             Ok(ActorExecutionResult::Completed { result, effects }) => {
                 if !effects.is_empty()
-                    && let Err(error) = self
-                        .sockets
-                        .publish_authorized(&actor, self.host.id(), owner_epoch, effects)
-                        .await
+                    && let Err(error) = self.sockets.publish_authorized(owner_epoch, effects).await
                 {
                     warn!(request_id, error = %format!("{error:#}"), "actor completed but socket delivery failed");
                     return InvocationReply::failed(
@@ -122,9 +121,6 @@ impl ActorHostHttpService {
             Ok(ActorExecutionResult::Failed { failure }) => InvocationReply::Failed {
                 code: failure.code,
                 message: failure.message,
-            },
-            Ok(ActorExecutionResult::Reroute) => InvocationReply::NotExecuted {
-                reason: RejectionReason::StaleOwner,
             },
             Ok(ActorExecutionResult::HostUnavailable) => InvocationReply::NotExecuted {
                 reason: RejectionReason::HostUnavailable,
@@ -177,9 +173,7 @@ async fn socket_event(
         Ok(ActorExecutionResult::Completed { effects, .. }) => {
             SocketEventReply::Completed { effects }
         }
-        Ok(ActorExecutionResult::Reroute | ActorExecutionResult::HostUnavailable) => {
-            SocketEventReply::NotExecuted
-        }
+        Ok(ActorExecutionResult::HostUnavailable) => SocketEventReply::NotExecuted,
         Ok(ActorExecutionResult::Failed { failure }) => SocketEventReply::Failed {
             message: failure.message,
         },
@@ -228,42 +222,6 @@ async fn invoke(
             )
             .await,
     ))
-}
-
-async fn publish(
-    State(service): State<Arc<ActorHostHttpService>>,
-    Path(actor): Path<ActorKey>,
-    headers: HeaderMap,
-    body: Result<Json<PublishRequest>, JsonRejection>,
-) -> Result<StatusCode, HttpError> {
-    let principal = service.authenticate(&headers)?;
-    authorize_grant(
-        principal
-            .invocation
-            .as_ref()
-            .and_then(|capability| capability.grant.as_ref()),
-        None,
-    )?;
-    let Json(request) = body.map_err(json_error)?;
-    service.authorize(&principal, &actor, request.owner_epoch)?;
-    crate::actor::validate_socket_effects(&request.effects).map_err(bad_request)?;
-    service
-        .sockets
-        .publish_authorized(
-            &actor,
-            service.host.id(),
-            request.owner_epoch,
-            request.effects,
-        )
-        .await
-        .map_err(|error| {
-            warn!(error = %format!("{error:#}"), "socket effects could not be delivered");
-            HttpError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "socket effects could not be delivered".into(),
-            )
-        })?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 fn authorize_grant(
@@ -334,13 +292,6 @@ struct InvokeRequest {
     args: Vec<Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PublishRequest {
-    owner_epoch: u64,
-    effects: Vec<ActorSocketEffect>,
-}
-
 #[derive(Serialize)]
 struct InvocationResponse {
     #[serde(flatten)]
@@ -368,7 +319,6 @@ enum InvocationReply {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RejectionReason {
-    StaleOwner,
     HostUnavailable,
 }
 

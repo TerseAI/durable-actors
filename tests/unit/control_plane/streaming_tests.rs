@@ -54,12 +54,7 @@ async fn ordinary_calls_skip_connection_lookup_and_explicit_lookup_failures_are_
     struct UnavailableConnections(std::sync::atomic::AtomicUsize);
     #[async_trait]
     impl ActorSocketSource for UnavailableConnections {
-        async fn query(
-            &self,
-            actor: &ActorKey,
-            _: crate::actor::SocketQuery,
-        ) -> Result<crate::actor::SocketLookup> {
-            assert_eq!(actor.actor_id, "counter-1");
+        async fn query(&self, _: crate::actor::SocketQuery) -> Result<crate::actor::SocketLookup> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             anyhow::bail!("gateway unavailable")
         }
@@ -386,15 +381,6 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
         serde_json::json!({"name": "member"})
     );
     assert_eq!(clients[0]["tags"], serde_json::json!(["member"]));
-    let mut outside = stack.actor.clone();
-    outside.actor_id = "another-actor".into();
-    assert!(
-        stack
-            .publisher
-            .query(&outside, Default::default())
-            .await
-            .is_err()
-    );
     stack
         .invoke("notifyClient", vec![clients[0]["id"].clone()])
         .await?;
@@ -420,13 +406,7 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
-    assert!(
-        stack
-            .publisher
-            .query(&stack.actor, Default::default())
-            .await
-            .is_err()
-    );
+    assert!(stack.publisher.query(Default::default()).await.is_err());
     assert!(stack.invoke("clients", vec![]).await.is_err());
     stack.child.kill().await?;
     Ok(())
@@ -466,20 +446,11 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     );
     assert_eq!(stack.invoke("readHistory", vec![]).await?, "firstlast");
 
-    let mut outside = stack.actor.clone();
-    outside.actor_id = "another-actor".into();
-    assert!(
-        stack
-            .publisher
-            .query(&outside, Default::default())
-            .await
-            .is_err()
-    );
     stack
         .storage
         .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
         .await?;
-    assert!(stack.publisher.publish(&stack.actor, vec![]).await.is_err());
+    assert!(stack.publisher.publish(vec![]).await.is_err());
     first.close(None).await?;
     late.close(None).await?;
     stack.child.kill().await?;
@@ -657,7 +628,7 @@ impl Stack {
         let storage = Arc::new(
             crate::host::storage::HostStorage::new(
                 crate::bucket::access::HostStorageConfig {
-                    persistence: crate::bucket::PersistenceConfig::Local,
+                    persistence: crate::bucket::SnapshotStoreConfig::Local,
                     bucket: crate::bucket::access::BucketLocation::File {
                         directory: runtime.directory.path().into(),
                     },
@@ -669,45 +640,55 @@ impl Stack {
                 publisher.clone(),
                 tokio_util::sync::CancellationToken::new(),
                 None,
-                Some(actor.clone()),
+                actor.clone(),
             )
             .await?
             .with_activation(true, None),
         );
         storage
-            .register(&HostLeaseRequest {
-                id: host_id.clone(),
-                session_id: "00000000-0000-4000-8000-000000000001".into(),
-                route: host_route.clone(),
-                duration_ms: 60_000,
-            })
+            .register(
+                &HostLeaseRequest {
+                    id: host_id.clone(),
+                    session_id: "00000000-0000-4000-8000-000000000001".into(),
+                    route: host_route.clone(),
+                    duration_ms: 60_000,
+                },
+                Default::default(),
+            )
             .await?;
 
         let local_sockets = Arc::new(crate::host::sockets::HostSockets::new(
+            actor.clone(),
             storage.clone(),
             publisher,
         ));
         let replication = Arc::new(crate::litestream::Litestream::default());
         let (child, connection) = start_worker(directory.path()).await?;
-        connection
-            .mark_ready(
-                Some(local_sockets.clone()),
-                Some(source.unwrap_or_else(|| local_sockets.clone())),
-                replication.clone(),
-            )
-            .await?;
-        let host = Arc::new(ActorHost::new(
-            HostEndpoint {
-                id: host_id.clone(),
-                route: host_route.clone(),
-            },
-            connection.executor(),
+        let endpoint = HostEndpoint {
+            id: host_id.clone(),
+            route: host_route.clone(),
+        };
+        let database = crate::host::HostDatabase::new(
+            endpoint.clone(),
             storage.clone(),
             storage.runtime.clone(),
+            replication.clone(),
+        );
+        let host = Arc::new(ActorHost::new(
+            endpoint,
+            actor.clone(),
+            connection.executor(),
+            database,
             local_sockets.clone(),
-            replication,
         ));
-        host.activate_actor(actor.clone()).await?;
+        connection
+            .mark_ready(
+                host.actor().clone(),
+                Some(local_sockets.clone()),
+                Some(source.unwrap_or_else(|| local_sockets.clone())),
+            )
+            .await?;
+        host.activate().await?;
         tasks.spawn(async move {
             let _ = connection
                 .run(tokio_util::sync::CancellationToken::new())
@@ -820,7 +801,7 @@ async fn start_worker(
         &entrypoint,
         format!(
             r#"
-import {{ Actor, Persisted, Emittable, type ActorSocket }} from {};
+import {{ Actor, Atomic, Persisted, Emittable, type ActorSocket }} from {};
 import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
 export class Counter extends Actor<{{name?:string; notified?:boolean; user?:string}}, {{type:"start"; padding?:string}}, {{delta:string}} | {{text:string}}> {{
@@ -831,6 +812,7 @@ export class Counter extends Actor<{{name?:string; notified?:boolean; user?:stri
     async readHistory() {{ return this.history; }}
     async appendHistory() {{ this.history += 'saved'; return this.history; }}
     async change() {{ this.count++; this.count++; this.secret = 'changed'; }}
+    @Atomic
     async fail() {{ this.count++; throw new Error('failed'); }}
     async onConnect(socket: ActorSocket<{{name?:string; notified?:boolean; user?:string}}, {{delta:string}} | {{text:string}}, "member">) {{
         socket.metadata = {{ name: 'member' }};
@@ -995,6 +977,7 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
         .json()
         .await?;
     let route = &stack.host_route;
+    let gateway = &stack.gateway;
     let token = target["token"].as_str().context("token missing")?;
     let epoch = target["ownerEpoch"].as_u64().context("epoch missing")?;
     let url = format!("{route}/v1/projects/default/actors/Counter/counter-1");
@@ -1021,12 +1004,14 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
     assert_eq!(update["changes"]["count"], 2);
     let command = serde_json::json!({"ownerEpoch":epoch, "effects":[{"type":"broadcast", "message":{"type":"text", "data":"{\"notice\":\"hello\"}"}, "except_connection_ids":[], "tags":[]}]});
     assert_eq!(
-        http.post(format!("{url}/socket-effects"))
-            .bearer_auth(token)
-            .json(&command)
-            .send()
-            .await?
-            .status(),
+        http.post(format!(
+            "{gateway}/v1/projects/default/actors/Counter/counter-1/socket-effects"
+        ))
+        .bearer_auth(token)
+        .json(&command)
+        .send()
+        .await?
+        .status(),
         reqwest::StatusCode::NO_CONTENT
     );
     assert_eq!(
@@ -1051,14 +1036,14 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
         wrong["ownerEpoch"] = owner_epoch.into();
         assert_eq!(
             http.post(format!(
-                "{route}/v1/projects/default/actors/Counter/{actor_id}/socket-effects"
+                "{gateway}/v1/projects/default/actors/Counter/{actor_id}/socket-effects"
             ))
             .bearer_auth(token)
             .json(&wrong)
             .send()
             .await?
             .status(),
-            reqwest::StatusCode::FORBIDDEN
+            reqwest::StatusCode::UNAUTHORIZED
         );
     }
     let mut malformed = invocation.clone();
@@ -1071,19 +1056,6 @@ async fn http_invocations_and_socket_delivery_are_actor_bound() -> Result<()> {
             .await?
             .status(),
         reqwest::StatusCode::UNPROCESSABLE_ENTITY
-    );
-    stack
-        .storage
-        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
-        .await?;
-    assert_eq!(
-        http.post(format!("{url}/socket-effects"))
-            .bearer_auth(token)
-            .json(&command)
-            .send()
-            .await?
-            .status(),
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
     );
     stack.child.kill().await?;
     Ok(())
@@ -1137,13 +1109,16 @@ async fn delegated_http_invocations_enforce_methods_and_socket_boundaries() -> R
         assert_eq!(reply["code"], "forbidden");
     }
     assert_eq!(
-        http.post(format!("{url}/socket-effects"))
-            .bearer_auth(&ticket)
-            .json(&serde_json::json!({"ownerEpoch":epoch,"effects":[]}))
-            .send()
-            .await?
-            .status(),
-        reqwest::StatusCode::FORBIDDEN
+        http.post(format!(
+            "{}/v1/projects/default/actors/Counter/counter-1/socket-effects",
+            stack.gateway
+        ))
+        .bearer_auth(&ticket)
+        .json(&serde_json::json!({"ownerEpoch":epoch,"effects":[]}))
+        .send()
+        .await?
+        .status(),
+        reqwest::StatusCode::UNAUTHORIZED
     );
     let reply: serde_json::Value = http.post(format!("{url}/invoke")).bearer_auth(&ticket)
         .json(&serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(), "ownerEpoch":epoch, "routingMs":0.0, "method":"readHistory", "args":[]}))

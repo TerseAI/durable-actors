@@ -6,6 +6,7 @@ import signal
 import socket
 import sys
 import traceback
+from collections.abc import Collection
 from contextlib import suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -15,8 +16,8 @@ from .build import load_artifact
 from .client import component
 from .contract import Document
 from .executor_wire import Channel, serialize
-from .runtime import ActorRuntime, failed
-from .sqlite import SqliteStorage, valid_txid
+from .runtime import ActorRuntime
+from .sqlite import DatabaseProxy
 
 message_id: ContextVar[int] = ContextVar("actor_message_id")
 
@@ -24,16 +25,15 @@ message_id: ContextVar[int] = ContextVar("actor_message_id")
 class Session(Channel):
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         super().__init__(reader, writer)
-        self.runtimes: dict[str, ActorRuntime] = {}
-        self.assigned: Document | None = None
         self.pending: dict[tuple[str, int], asyncio.Future[Any]] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.residency: asyncio.Task[None] | None = None
+        self.database_calls = asyncio.Lock()
 
     async def run(self, entrypoint: str | None, generic: bool) -> None:
         try:
             if generic:
-                await self.send({"type": "warm", "protocol": 24})
+                await self.send({"type": "warm", "protocol": 28})
                 assignment = await self.read()
                 if (
                     assignment.get("type") != "load"
@@ -47,32 +47,25 @@ class Session(Channel):
             async with asyncio.timeout(60):
                 while not path.is_file():
                     await asyncio.sleep(0.01)
-            actors = load_artifact(path)
-            self.runtimes = {
-                actor.__name__: ActorRuntime(actor, self, SqliteStorage(self.commit_sqlite))
-                for actor in actors
-            }
-            await self.send(
-                {"type": "attach", "protocol": 24, "actor_names": sorted(self.runtimes)}
-            )
-            attached = await self.read()
-            if attached.get("type") != "attached" or attached.get("protocol") != 24:
-                raise ValueError("unsupported executor protocol")
-            if attached.get("supports_residency"):
-                self.residency = asyncio.create_task(self.report_residency())
+            actors = {actor.__name__: actor for actor in load_artifact(path)}
+            await self.send({"type": "attach", "protocol": 28, "actor_names": sorted(actors)})
+            identity = attached_actor(await self.read(), actors)
+            database = DatabaseProxy(self.call_database, asyncio.get_running_loop())
+            runtime = ActorRuntime(actors[identity["actor_name"]], identity, self, database)
+            self.residency = asyncio.create_task(self.report_residency(runtime))
             while True:
                 message = await self.read()
                 if message["type"] == "command":
                     if len(self.tasks) >= 512:
                         raise ValueError("executor command queue is full")
                     validate_command(message)
-                    task = asyncio.create_task(self.execute(message))
+                    task = asyncio.create_task(self.execute(runtime, message))
                     self.tasks.add(task)
                     task.add_done_callback(self.completed)
                 elif message["type"] in {
                     "socket_connections",
                     "socket_effects_published",
-                    "sqlite_committed",
+                    "database_result",
                 }:
                     pending = self.pending.pop((message["type"], message["message_id"]))
                     if pending.cancelled():
@@ -81,8 +74,8 @@ class Session(Channel):
                         pending.set_exception(RuntimeError(message["error"]))
                     else:
                         pending.set_result(
-                            message.get("txid")
-                            if message["type"] == "sqlite_committed"
+                            message.get("result")
+                            if message["type"] == "database_result"
                             else message.get("connections")
                         )
                 else:
@@ -90,21 +83,10 @@ class Session(Channel):
         finally:
             await self.close()
 
-    async def execute(self, message: Document) -> None:
+    async def execute(self, runtime: ActorRuntime, message: Document) -> None:
         token = message_id.set(message["message_id"])
         try:
-            command = message["command"]
-            actor = command["actor"]
-            if self.assigned is not None and actor != self.assigned:
-                reply = failed(
-                    "actor_identity_mismatch", "sandbox is permanently assigned to another actor"
-                )
-            elif actor["actor_name"] not in self.runtimes:
-                reply = failed("actor_name_not_found", "actor is not loaded")
-            else:
-                if command["type"] != "evict":
-                    self.assigned = actor
-                reply = await self.runtimes[actor["actor_name"]].handle(command)
+            reply = await runtime.handle(message["command"])
             response = {"type": "reply", "message_id": message["message_id"], "reply": reply}
             await self.send(response)
         finally:
@@ -115,11 +97,12 @@ class Session(Channel):
         if not task.cancelled() and task.exception() is not None:
             self.writer.close()
 
-    async def commit_sqlite(self) -> int:
-        txid = await self.exchange("commit_sqlite", "sqlite_committed")
-        if not valid_txid(txid):
-            raise ValueError("invalid host commit position")
-        return int(txid)
+    async def call_database(self, call: Document) -> Document:
+        # The host accepts one outstanding database call per invocation.
+        async with self.database_calls:
+            return cast(
+                Document, await self.exchange("database_call", "database_result", call=call)
+            )
 
     async def publish(self, effects: list[Document]) -> None:
         await self.exchange("socket_effects", "socket_effects_published", effects=effects)
@@ -152,14 +135,9 @@ class Session(Channel):
             if not future.cancelled():
                 self.pending.pop(key, None)
 
-    async def report_residency(self) -> None:
+    async def report_residency(self, runtime: ActorRuntime) -> None:
         while True:
-            actors = [
-                runtime.identity
-                for runtime in self.runtimes.values()
-                if runtime.instance is not None
-            ]
-            await self.send({"type": "residency", "actors": actors})
+            await self.send({"type": "residency", "resident": runtime.instance is not None})
             await asyncio.sleep(1)
 
     async def close(self) -> None:
@@ -175,14 +153,23 @@ class Session(Channel):
         await self.writer.wait_closed()
 
 
+def attached_actor(message: Document, actor_names: Collection[str]) -> Document:
+    if message.get("type") != "attached" or message.get("protocol") != 28:
+        raise ValueError("unsupported executor protocol")
+    actor = cast(Document, message["actor"])
+    for field, size in (("project_id", 64), ("actor_name", 255), ("actor_id", 128)):
+        component(actor[field], size)
+    if actor["actor_name"] not in actor_names:
+        raise ValueError("attached actor is not loaded")
+    return actor
+
+
 def validate_command(message: Document) -> None:
     if type(message.get("message_id")) is not int or message["message_id"] < 0:
         raise ValueError("invalid executor message ID")
     command = message["command"]
     if command["type"] not in {"invoke", "hydrate", "evict", "websocket_event"}:
         raise ValueError("unsupported executor command")
-    for field, size in (("project_id", 64), ("actor_name", 255), ("actor_id", 128)):
-        component(command["actor"][field], size)
     if command["type"] == "invoke":
         component(command["method"], 255)
         if not isinstance(command["args"], list):

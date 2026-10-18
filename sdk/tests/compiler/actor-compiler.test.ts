@@ -28,14 +28,41 @@ test("db is reserved for the actor SQLite database", () => {
     assert.ok(result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("reserved")))
 })
 
+test("records only atomic methods, including aliased decorators", () => {
+    const result = analyze(`import { Actor, Atomic as A } from "./sdk.js"
+        export class PiAgent extends Actor { @A async testAtomic() {} async prompt() {} }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas, [{ actorName: "PiAgent", fields: [], atomicMethods: ["testAtomic"] }])
+})
+
+test("rejects invalid atomic declarations", () => {
+    for (const member of [
+        "@Atomic value = 1",
+        "@Atomic sync() {}",
+        "@Atomic static async run() {}",
+        "@Atomic private async run() {}",
+        "@Atomic protected async run() {}",
+        "@Atomic async #run() {}",
+        "@Atomic() async run() {}",
+        "@Atomic @Atomic async run() {}"
+    ]) {
+        const result = analyze(`import { Actor, Atomic } from "./sdk.js"
+            export class Room extends Actor { ${member} }`)
+        assert.ok(
+            result.diagnostics.some(diagnostic => String(diagnostic.messageText).includes("@Atomic")),
+            member
+        )
+    }
+})
+
 test("recognizes aliased interleave async methods", () => {
     const result = analyze(`import { Actor, Interleave as R } from "./sdk.js"
         export class Room extends Actor { @R async stream() {} async read() {} }`)
     assert.deepEqual(result.diagnostics, [])
-    assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [], reentrantMethods: ["stream"] }])
+    assert.deepEqual(result.schemas, [{ actorName: "Room", fields: [], interleaveMethods: ["stream"] }])
 })
 
-test("continues compiling undecorated actors against SDKs without reentrancy", () => {
+test("continues compiling undecorated actors against SDKs without interleave", () => {
     const result = analyze(`import { Actor } from "./sdk.js"; export class Room extends Actor { async read() {} }`, {
         "sdk.ts": `export abstract class Actor { protected constructor() {} }
             export function Persisted(...args: unknown[]) {}
@@ -70,9 +97,9 @@ test("retains state visibility and stacked emission annotations", () => {
         }`)
     assert.deepEqual(result.diagnostics, [])
     assert.deepEqual(result.schemas[0]?.fields, [
-        { name: "messages", persistence: Persistence.Persisted, emittable: true },
-        { name: "secret", persistence: Persistence.Persisted, visibility: "private" },
-        { name: "internal", persistence: Persistence.Persisted, visibility: "protected" }
+        field("messages", Persistence.Persisted, { emittable: true }),
+        field("secret", Persistence.Persisted, { visibility: "private" }),
+        field("internal", Persistence.Persisted, { visibility: "protected" })
     ])
 })
 
@@ -174,9 +201,9 @@ test("checks source actors and returns persistence schemas without generating fi
             {
                 actorName: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                    { name: "cache", persistence: Persistence.Ephemeral },
-                    { name: "callback", persistence: Persistence.Ephemeral }
+                    field("count", Persistence.Persisted, { visibility: "private" }),
+                    field("cache", Persistence.Ephemeral),
+                    field("callback", Persistence.Ephemeral)
                 ]
             }
         ])
@@ -279,9 +306,9 @@ test("checks private and optional computed fields on re-exported actors", async 
             {
                 actorName: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                    { name: "label", persistence: Persistence.Persisted },
-                    { name: "cache", persistence: Persistence.Ephemeral }
+                    field("count", Persistence.Persisted, { visibility: "private" }),
+                    field("label", Persistence.Persisted),
+                    field("cache", Persistence.Ephemeral)
                 ]
             }
         ])
@@ -312,9 +339,9 @@ test("resolves actor and decorator aliases through re-exports and namespaces", (
         {
             actorName: "Counter",
             fields: [
-                { name: "count", persistence: Persistence.Persisted, visibility: "private" },
-                { name: "cache", persistence: Persistence.Ephemeral },
-                { name: "#resource", persistence: Persistence.Ephemeral, private: true }
+                field("count", Persistence.Persisted, { visibility: "private" }),
+                field("cache", Persistence.Ephemeral),
+                field("#resource", Persistence.Ephemeral, { private: true })
             ]
         }
     ])
@@ -337,9 +364,7 @@ test("discovers actors alongside unrelated runtime and type exports", () => {
         result.diagnostics.map(diagnostic => diagnostic.messageText),
         []
     )
-    assert.deepEqual(result.schemas, [
-        { actorName: "Counter", fields: [{ name: "count", persistence: Persistence.Persisted }] }
-    ])
+    assert.deepEqual(result.schemas, [{ actorName: "Counter", fields: [field("count", Persistence.Persisted)] }])
 })
 
 test("requires at least one actor even when the entrypoint exports other values or types", () => {
@@ -388,10 +413,10 @@ test("rejects unsupported persistence targets and syntax", () => {
         "@Persisted #count = 0",
         "@Persisted [Symbol.iterator] = 0",
         "@Persisted() count = 0",
-        "constructor(public count = 0) { super() }",
+        "constructor(context: ActorContext, public count = 0) { super(context) }",
         "@Persisted declare count: number"
     ]) {
-        const result = analyze(`import { Actor, Persisted } from "./sdk.js"
+        const result = analyze(`import { Actor, type ActorContext, Persisted } from "./sdk.js"
             export class Counter extends Actor { ${member} }`)
         assert.ok(result.diagnostics.length > 0, member)
         assert.deepEqual(result.schemas, [], member)
@@ -420,6 +445,19 @@ test("checks class decorators and entrypoint exports", () => {
         )
     }
 })
+
+function field(
+    name: string,
+    persistence: Persistence,
+    options: Partial<{
+        private: boolean
+        visibility: "private" | "protected"
+        emittable: boolean
+        resource: boolean
+    }> = {}
+) {
+    return { name, persistence, private: false, visibility: undefined, emittable: false, resource: false, ...options }
+}
 
 async function createProject() {
     const root = await mkdtemp(path.join(os.tmpdir(), "actor-compiler-"))
@@ -465,12 +503,16 @@ function analyze(source: string, extra: Record<string, string> = {}) {
     const files = new Map(
         Object.entries({
             "actors.ts": source,
-            "sdk.ts": `export abstract class Actor { protected constructor() {} }
+            "sdk.ts": `export interface ActorContext { readonly actorContext: unique symbol }
+            export abstract class Actor { protected constructor(context: ActorContext) {} }
+            export abstract class ActorResource { private readonly actorResource!: void }
             export function Persisted(...args: unknown[]) {}
             export function Emittable(...args: unknown[]) {}
             export function Interleave(...args: unknown[]) {}
+            export function Atomic(...args: unknown[]) {}
             export function Compute(...args: unknown[]) {}
-            export function Ephemeral(...args: unknown[]) {}`,
+            export function Ephemeral(...args: unknown[]) {}
+            export function Resource(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])
     )

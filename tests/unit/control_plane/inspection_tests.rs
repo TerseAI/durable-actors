@@ -294,12 +294,9 @@ async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> R
     let first = stream_inventory(&mut stream).await?;
     assert!(first.get("namespaceId").is_none());
     assert_eq!(first["actors"][0]["unknown"], 1);
-    let queues = vec![crate::host_leases::ActorQueueInventory {
-        actor: actor.clone(),
-        waiting: vec![crate::host_leases::WaitingOperation {
-            id: "queued-1".into(),
-            operation: "sendMessage".into(),
-        }],
+    let waiting = vec![crate::host_leases::WaitingOperation {
+        id: "queued-1".into(),
+        operation: "sendMessage".into(),
     }];
     fixture
         .store
@@ -308,7 +305,7 @@ async fn inventory_stream_reports_host_queues_and_fences_expired_sessions() -> R
             &request,
             crate::host_leases::ActivationInventory {
                 resident: Some(true),
-                waiting: Some(queues[0].waiting.clone()),
+                waiting: Some(waiting),
             },
         )
         .await?;
@@ -792,7 +789,7 @@ async fn state_inspection_reads_committed_values_and_retained_attribution() -> R
             .await?;
         let snapshot: StateSnapshot = serde_json::from_value(json!({
             "stateVersion": version, "ownerEpoch": 1, "requestId": format!("req-{version}"),
-            "sqlite": crate::test_sqlite::snapshot(json!({"count": version, "settings": {"enabled": true}}))?, "result": null,
+            "sqlite": crate::test_sqlite::snapshot(json!({"count": version, "settings": {"enabled": true}}))?, "completion": {"result": null},
             "attribution": {"operation": "onMessage", "connectionId": "socket-a", "committedAtMs": 1234, "interleaved": false}
         }))?;
         fixture

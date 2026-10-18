@@ -52,6 +52,8 @@ sockets:
     limits:
       memory: 2Gi
 hostIdleTimeoutMs: 10000
+alarms:
+  pollIntervalMs: 100
 gateway:
   enabled: true
   className: gke-l7-global-external-managed

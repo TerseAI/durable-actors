@@ -7,9 +7,12 @@ import { ActorDefinitionError } from "../errors.js"
 import type { PublicActorContract } from "../wire/public-contract.js"
 
 import { DeclarationCompiler } from "./declarations.js"
+import { readAtomicity, validateAtomicity } from "./features/atomicity.js"
 import { readCompute, validateCompute } from "./features/compute.js"
-import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
-import { readReentrancy, validateReentrancy } from "./features/reentrancy.js"
+import { readInterleave, validateInterleave } from "./features/interleave.js"
+import { validatePersistence } from "./features/persistence.js"
+import { readResource } from "./features/resource.js"
+import { readEmission, readPersistence } from "./fieldParsing.js"
 import { extractPublicSchema } from "./public-schema.js"
 import { rpcContract } from "./rpc-contract.js"
 import { socketContract } from "./socket-contract.js"
@@ -44,7 +47,7 @@ class ActorCompiler {
     }
 
     compileDeployment(entrypoint: string, options: CompilerOptions = {}) {
-        const { checker, actors, schemas, program } = this.describe(entrypoint, options)
+        const { checker, actors, schemas, program, sdk } = this.describe(entrypoint, options)
         const api = {
             actors: [...schemas]
                 .sort((left, right) =>
@@ -64,7 +67,8 @@ class ActorCompiler {
                     },
                     rpc: rpcContract(
                         checker,
-                        actors.find(actor => actor.name!.text === schema.actorName)!
+                        actors.find(actor => actor.name!.text === schema.actorName)!,
+                        sdk.Unchecked
                     )
                 }))
         }
@@ -85,12 +89,14 @@ class ActorCompiler {
             program,
             checker,
             actors,
+            sdk,
             schemas: schemas.map(schema => ({
                 ...schema,
                 contract: socketContract(
                     checker,
                     actors.find(actor => actor.name!.text === schema.actorName)!,
-                    schema
+                    schema,
+                    sdk.Unchecked
                 )
             }))
         }
@@ -270,8 +276,25 @@ function readActor(node: ts.ClassDeclaration, checker: ts.TypeChecker, sdk: SdkS
     return {
         name: node.name!.text,
         ...readDecorators(node, checker, sdk),
-        members: node.members.map(member => ({ node: member, ...readDecorators(member, checker, sdk) }))
+        members: node.members.map(member => ({
+            node: member,
+            ...readDecorators(member, checker, sdk),
+            resource: isPrivateResource(member, checker, sdk)
+        }))
     }
+}
+
+function isPrivateResource(node: ts.ClassElement, checker: ts.TypeChecker, sdk: SdkSymbols): boolean {
+    if (!ts.isPropertyDeclaration(node) || sdk.ActorResource === undefined || node.initializer === undefined)
+        return false
+    const privateField =
+        ts.isPrivateIdentifier(node.name) ||
+        ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.PrivateKeyword)
+    if (!privateField || ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword))
+        return false
+    const type = checker.getTypeAtLocation(node)
+    if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) return false
+    return checker.isTypeAssignableTo(type, checker.getDeclaredTypeOfSymbol(sdk.ActorResource))
 }
 
 function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbols): DecoratorResult {
@@ -281,14 +304,19 @@ function readDecorators(target: ts.Node, checker: ts.TypeChecker, sdk: SdkSymbol
         const call = ts.isCallExpression(node.expression) ? node.expression : undefined
         const symbol = symbolAt(checker, call?.expression ?? node.expression)
         const use = { node, target, called: call !== undefined }
-        const result = readDecorator(symbol, use, sdk)
+        const result = readDecorator(symbol, use, sdk, checker)
         annotations.push(...result.annotations)
         diagnostics.push(...result.diagnostics)
     }
     return { annotations, diagnostics }
 }
 
-function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: SdkSymbols): DecoratorResult {
+function readDecorator(
+    symbol: ts.Symbol | undefined,
+    use: DecoratorUse,
+    sdk: SdkSymbols,
+    checker: ts.TypeChecker
+): DecoratorResult {
     if (symbol === undefined) return { annotations: [], diagnostics: [] }
     switch (symbol) {
         case sdk.Persisted:
@@ -297,10 +325,14 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readPersistence(use, Persistence.Ephemeral)
         case sdk.Emittable:
             return readEmission(use)
+        case sdk.Atomic:
+            return readAtomicity(use)
         case sdk.Interleave:
-            return readReentrancy(use)
+            return readInterleave(use)
         case sdk.Compute:
             return readCompute(use)
+        case sdk.Resource:
+            return readResource(use, sdk, checker)
         default:
             return { annotations: [], diagnostics: [] }
     }
@@ -313,15 +345,18 @@ function validateActors(actors: readonly ParsedActor[], discoveryDiagnostics: re
         diagnostics.push(...actor.diagnostics, ...actor.members.flatMap(member => member.diagnostics))
         const persistence = validatePersistence(actor)
         diagnostics.push(...persistence.diagnostics)
-        const reentrancy = validateReentrancy(actor)
-        diagnostics.push(...reentrancy.diagnostics)
+        const atomicity = validateAtomicity(actor)
+        diagnostics.push(...atomicity.diagnostics)
+        const interleave = validateInterleave(actor)
+        diagnostics.push(...interleave.diagnostics)
         const compute = validateCompute(actor)
         diagnostics.push(...compute.diagnostics)
         schemas.push({
             actorName: actor.name,
             fields: persistence.fields,
             ...(compute.options === undefined ? {} : { sandbox: compute.options }),
-            ...(reentrancy.methods.length ? { reentrantMethods: reentrancy.methods } : {})
+            ...(atomicity.methods.length ? { atomicMethods: atomicity.methods } : {}),
+            ...(interleave.methods.length ? { interleaveMethods: interleave.methods } : {})
         })
     }
     return { schemas: diagnostics.length === 0 ? schemas : [], diagnostics }
@@ -335,15 +370,23 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         if (symbol === undefined) throw new ActorDefinitionError(`cannot resolve SDK export ${name}`)
         return canonicalSymbol(checker, symbol)
     }
+    const atomic = exports.find(symbol => symbol.name === "Atomic")
     const interleave = exports.find(symbol => symbol.name === "Interleave")
     const compute = exports.find(symbol => symbol.name === "Compute")
+    const resource = exports.find(symbol => symbol.name === "Resource")
+    const actorResource = exports.find(symbol => symbol.name === "ActorResource")
+    const unchecked = exports.find(symbol => symbol.name === "Unchecked")
     return {
         Actor: resolve("Actor"),
         Persisted: resolve("Persisted"),
         Ephemeral: resolve("Ephemeral"),
         Emittable: resolve("Emittable"),
+        ...(atomic === undefined ? {} : { Atomic: canonicalSymbol(checker, atomic) }),
         ...(compute === undefined ? {} : { Compute: canonicalSymbol(checker, compute) }),
-        ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) })
+        ...(unchecked === undefined ? {} : { Unchecked: canonicalSymbol(checker, unchecked) }),
+        ...(interleave === undefined ? {} : { Interleave: canonicalSymbol(checker, interleave) }),
+        ...(resource === undefined ? {} : { Resource: canonicalSymbol(checker, resource) }),
+        ...(actorResource === undefined ? {} : { ActorResource: canonicalSymbol(checker, actorResource) })
     }
 }
 

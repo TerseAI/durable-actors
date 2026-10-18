@@ -1833,7 +1833,7 @@ async fn provider_bootstrap_keeps_deployment_access_without_serializing_launch_c
         crate::bucket::access::BucketLocation::File {
             directory: std::env::temp_dir(),
         },
-        crate::bucket::PersistenceConfig::Local,
+        crate::bucket::SnapshotStoreConfig::Local,
     )?);
     let provisioner = SandboxHostProvisioner::new(
         Arc::new(Provider),

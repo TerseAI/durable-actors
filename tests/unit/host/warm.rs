@@ -122,6 +122,7 @@ async fn run_activation(
         "DURABLE_ACTORS_HOST_ROUTE": route, "DURABLE_ACTORS_JWT_ISSUER": "issuer",
         "DURABLE_ACTORS_INVOKE_JWT_AUDIENCE": "invocation",
         "DURABLE_ACTORS_HOST_READY_FILE": ready.to_str().unwrap(),
+        "DURABLE_ACTORS_ENTRYPOINT": code.to_str().unwrap(),
         "DURABLE_ACTORS_ACTOR": serde_json::to_string(actor)?,
         "DURABLE_ACTORS_ACTOR_IS_NEW": (before < 0).to_string(),
         "DURABLE_ACTORS_RUNTIME_CONFIG": serde_json::json!({
@@ -159,7 +160,6 @@ async fn run_activation(
         listener: super::super::server::HostServer::new(listener, axum::Router::new()),
         executor,
         javascript,
-        entrypoint: code.to_str().unwrap().into(),
         storage: WarmGcs::new().await?,
         replication: Arc::new(Litestream::default()),
     };
@@ -168,6 +168,7 @@ async fn run_activation(
     tokio::fs::write(&code, artifact).await?;
     let task = tokio::spawn(serve_assigned_host(
         config,
+        HostStartupTimings::start(),
         Some(warm),
         stop.clone().cancelled_owned(),
     ));

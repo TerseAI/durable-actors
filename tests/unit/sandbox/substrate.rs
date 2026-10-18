@@ -119,7 +119,7 @@ impl Api {
 struct TestCodeSource;
 #[async_trait]
 impl code::CodeSource for TestCodeSource {
-    async fn open(&self, _: &str, _: &crate::artifacts::ArtifactFile) -> Result<code::CodeStream> {
+    async fn open(&self, _: &str, _: &crate::bundle::BundleFile) -> Result<code::CodeStream> {
         Ok(stream::once(async { Ok(bytes::Bytes::from_static(b"test-code")) }).boxed())
     }
 }
@@ -205,7 +205,7 @@ impl HostAssignment for FailingAssignment {
         &self,
         _: &str,
         token: &str,
-        artifact: &crate::artifacts::ArtifactFile,
+        artifact: &crate::bundle::BundleFile,
         mut chunks: code::CodeStream,
     ) -> Result<()> {
         assert!(!token.is_empty());
@@ -331,9 +331,9 @@ fn issuer() -> Result<crate::control_plane::ActorJwtIssuer> {
     )
 }
 fn request() -> Result<EnsureHostRequest> {
-    let manifest = crate::artifacts::ArtifactManifest {
+    let manifest = crate::bundle::ActorBundle {
         bucket: "code-bucket".into(),
-        files: vec![crate::artifacts::ArtifactFile {
+        files: vec![crate::bundle::BundleFile {
             path: "actors.mjs".into(),
             object: "code/actors.mjs".into(),
             generation: 1,
@@ -371,8 +371,7 @@ fn request() -> Result<EnsureHostRequest> {
 #[test]
 fn python_assignment_uses_its_manifest_entrypoint() -> Result<()> {
     let mut request = request()?;
-    let mut manifest =
-        crate::artifacts::ArtifactManifest::decode(request.code_snapshot.as_ref().unwrap())?;
+    let mut manifest = crate::bundle::ActorBundle::decode(request.code_snapshot.as_ref().unwrap())?;
     manifest.files[0].path = "actors.pyz".into();
     request.code_snapshot = Some(manifest.encode()?);
     request.actor_entrypoint = Some("actors.pyz".into());
@@ -447,8 +446,7 @@ async fn code_snapshots_are_reused_and_changed_artifacts_get_new_snapshots() -> 
     let first = actor.source_tag.unwrap();
     assert!(first.name.starts_with("code-"));
     assert!(api.2.lock().unwrap().contains_key(&first.name));
-    let mut manifest =
-        crate::artifacts::ArtifactManifest::decode(host.code_snapshot.as_ref().unwrap())?;
+    let mut manifest = crate::bundle::ActorBundle::decode(host.code_snapshot.as_ref().unwrap())?;
     manifest.files[0].generation += 1;
     host.code_snapshot = Some(manifest.encode()?);
     assert!(
@@ -621,7 +619,7 @@ impl HostAssignment for ReadyAssignment {
         &self,
         _: &str,
         _: &str,
-        _: &crate::artifacts::ArtifactFile,
+        _: &crate::bundle::BundleFile,
         _: code::CodeStream,
     ) -> Result<()> {
         Ok(())

@@ -378,10 +378,7 @@ async fn write_history(
     writer: &RapidSnapshots,
     count: u64,
 ) -> Result<(Arc<crate::litestream::Litestream>, Vec<Bytes>)> {
-    use crate::litestream::{
-        Litestream, Replicator,
-        storage::{SqliteCapture, SqliteState},
-    };
+    use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
     writer.start(&f.stream).await?;
     let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
@@ -395,7 +392,7 @@ async fn write_history(
         db.execute("INSERT INTO entries VALUES (?)", [version as i64])?;
         db.execute("UPDATE __terse_fields SET value=?", [version.to_string()])?;
         let txid = replication.sync(&capture.path()).await?;
-        let files = capture.capture(&SqliteState::position(txid)).await?;
+        let files = capture.capture(txid).await?;
         let snapshot = StateSnapshot::new(
             version,
             1,
@@ -571,10 +568,7 @@ async fn partial_flush_cannot_acknowledge_a_write_and_remains_recoverable() -> R
 #[tokio::test]
 async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> {
     use crate::{
-        litestream::{
-            Litestream, Replicator,
-            storage::{SqliteCapture, SqliteState},
-        },
+        litestream::{Litestream, Replicator, storage::SqliteCapture},
         state_log::SqliteSnapshot,
         storage::SnapshotRef,
     };
@@ -591,7 +585,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
         SqliteSnapshot {
             txid,
             parent: None,
-            files: capture.capture(&SqliteState::position(txid)).await?,
+            files: capture.capture(txid).await?,
         },
         serde_json::json!(1),
     )?;
@@ -605,7 +599,7 @@ async fn archived_sqlite_parent_and_rapid_tail_restore_together() -> Result<()> 
         SqliteSnapshot {
             txid,
             parent: Some(SnapshotRef::new(f.stream.object(1), &first, &first_bytes)),
-            files: capture.capture(&SqliteState::position(txid)).await?,
+            files: capture.capture(txid).await?,
         },
         serde_json::json!(2),
     )?;
@@ -768,7 +762,7 @@ async fn conflicting_batches_never_allow_recovery_to_delete_rapid_data() -> Resu
         .unwrap();
     let manifest: Manifest = serde_json::from_slice(&f.archive.get(&key).await?.unwrap().bytes)?;
     let mut snapshot = StateSnapshot::decode(&original)?;
-    snapshot.result = serde_json::json!(9);
+    snapshot.completion.as_mut().unwrap().result = serde_json::json!(9);
     let frame = Record {
         version: 1,
         state: snapshot.encode()?.into(),
@@ -842,7 +836,8 @@ async fn large_records_archive_after_retry_and_remain_indexed() -> Result<()> {
     archive.fail_batch.store(true, Ordering::SeqCst);
     writer.start(&f.stream).await?;
     let mut snapshot = StateSnapshot::decode(&state(1, 1)?)?;
-    snapshot.result = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    snapshot.completion.as_mut().unwrap().result =
+        serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
     let bytes = snapshot.encode()?;
     writer.put(&f.stream.object(1), bytes.clone()).await?;
     writer.put(&f.stream.object(2), state(2, 1)?).await?;

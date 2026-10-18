@@ -1,4 +1,5 @@
 pub(crate) mod admin;
+mod alarms;
 pub(crate) mod assignment;
 mod auth;
 mod bootstrap;

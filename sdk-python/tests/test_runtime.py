@@ -5,11 +5,11 @@ from threading import Event
 
 import pytest
 from fixtures.effects import Effects
-from fixtures.sqlite import ActorRuntime, HostStorage, seed
+from fixtures.host_database import HostDatabase
+from fixtures.runtime import ActorRuntime
 from pydantic import BaseModel
 
-from durable_actors import Actor, ephemeral, interleave, persisted
-from durable_actors.runtime import ActorRuntime as Runtime
+from durable_actors import Actor, AsyncActor, ephemeral, interleave, persisted
 
 
 class Value(BaseModel):
@@ -28,9 +28,6 @@ class Counter(Actor):
     def fail(self) -> None:
         self.value.count = 99
         raise ValueError("failed")
-
-
-ACTOR = {"project_id": "local", "actor_name": "Counter", "actor_id": "one"}
 
 
 async def test_socket_handlers_load_connections_only_on_demand():
@@ -57,8 +54,6 @@ async def test_socket_handlers_load_connections_only_on_demand():
             {
                 "type": "websocket_event",
                 "request_id": "lookup",
-                "actor": {**ACTOR, "actor_name": "Room"},
-                "sqlite": seed(),
                 "connections": effects.connections[:1],
                 "event": {
                     "type": "message",
@@ -76,19 +71,17 @@ def command(method="increment", args=None, **extra):
     return {
         "type": "invoke",
         "request_id": "r1",
-        "actor": ACTOR,
         "method": method,
         "args": args or [],
-        "sqlite": seed(),
         **extra,
     }
 
 
 async def test_hydrates_validates_and_snapshots_typed_state():
-    runtime = ActorRuntime(Counter, Effects())
-    reply = await runtime.handle(command(args=[2], sqlite=seed({"value": {"count": 3}})))
+    runtime = ActorRuntime(Counter, Effects(), HostDatabase.seeded({"value": {"count": 3}}))
+    reply = await runtime.handle(command(args=[2]))
     assert reply["result"] == {"count": 5}
-    assert runtime.database.fields() == {"value": {"count": 5}}
+    assert runtime.host.fields() == {"value": {"count": 5}}
     assert (await runtime.handle(command()))["result"] == {"count": 6}
 
 
@@ -100,23 +93,58 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_alarm_lifecycle_uses_the_normal_invocation_path():
+    class Reminder(Actor):
+        fired: bool = persisted(False)
+
+        def schedule(self, timestamp_ms: int) -> int | None:
+            self.alarm.set(timestamp_ms)
+            return self.alarm.get()
+
+        def on_alarm(self) -> None:
+            self.alarm.delete()
+            self.fired = True
+
+        def state(self) -> tuple[bool, int | None]:
+            return self.fired, self.alarm.get()
+
+    runtime = ActorRuntime(Reminder, Effects())
+    assert (await runtime.handle(command("schedule", [1_000])))["result"] == 1_000
+
+    delivered = await runtime.handle(command("onAlarm"))
+    assert delivered == {"type": "invoked", "result": None}
+    assert (await runtime.handle(command("state")))["result"] == [True, None]
+
+
+async def test_async_actors_can_schedule_and_handle_alarms():
+    class Reminder(AsyncActor):
+        fired: bool = persisted(False)
+
+        async def schedule(self, timestamp_ms: int) -> None:
+            await self.alarm.set(timestamp_ms)
+
+        async def on_alarm(self) -> None:
+            await self.alarm.delete()
+            self.fired = True
+
+        async def fired_at(self) -> tuple[bool, int | None]:
+            return self.fired, await self.alarm.get()
+
+    runtime = ActorRuntime(Reminder, Effects())
+    await runtime.handle(command("schedule", [1_000]))
+    await runtime.handle(command("onAlarm"))
+    assert (await runtime.handle(command("fired_at")))["result"] == [True, None]
+
+
 async def test_replaced_and_evicted_instances_are_released():
     runtime = ActorRuntime(Counter, Effects())
     instances = []
     for _ in range(3):
         await runtime.handle(command("fail"))
         instances.append(weakref.ref(runtime.instance))
-    await runtime.handle({"type": "evict", "actor": ACTOR})
+    await runtime.handle({"type": "evict"})
     gc.collect()
     assert [instance() for instance in instances] == [None, None, None]
-
-
-async def test_residency_and_eviction_require_explicit_hydration():
-    runtime = ActorRuntime(Counter, Effects())
-    assert (await runtime.handle(command(resident_only=True)))["type"] == "state_required"
-    await runtime.handle(command())
-    assert (await runtime.handle({"type": "evict", "actor": ACTOR}))["type"] == "evicted"
-    assert (await runtime.handle(command(resident_only=True)))["type"] == "state_required"
 
 
 async def test_argument_validation_precedes_actor_execution():
@@ -145,37 +173,31 @@ async def test_reentrant_failure_does_not_erase_overlapping_success():
             return self.count
 
     runtime = ActorRuntime(Shared, Effects())
-    actor = {**ACTOR, "actor_name": "Shared"}
-    pending = asyncio.create_task(runtime.handle(command("wait_and_fail", actor=actor)))
+    pending = asyncio.create_task(runtime.handle(command("wait_and_fail")))
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        reply = await asyncio.wait_for(runtime.handle(command(actor=actor)), 1)
+        reply = await asyncio.wait_for(runtime.handle(command()), 1)
         resume.set()
         assert (await pending)["type"] == "failed"
         assert reply["result"] == 1
         assert reply["sequence"] == 1
-        assert (await runtime.handle(command(actor=actor)))["result"] == 2
+        assert (await runtime.handle(command()))["result"] == 2
     finally:
         resume.set()
         await asyncio.gather(pending, return_exceptions=True)
 
 
-async def test_completion_waits_for_an_interleaved_sql_statement_off_the_event_loop():
-    entered, persisting = asyncio.Event(), asyncio.Event()
-    release = Event()
-    loop = asyncio.get_running_loop()
+async def test_a_pending_sql_statement_does_not_block_other_completions():
+    entered, persisting, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-    class ContendedStorage(HostStorage):
-        def exec(self, sql, *bindings):
-            with self.lock:
-                loop.call_soon_threadsafe(entered.set)
-                if not release.wait(3):
-                    raise TimeoutError("the event loop stalled behind the database lock")
-                return super().exec(sql, *bindings)
-
-        def persist_fields(self, fields):
-            loop.call_soon_threadsafe(persisting.set)
-            super().persist_fields(fields)
+    class ContendedDatabase(HostDatabase):
+        async def call(self, call):
+            if call["op"] == "exec":
+                entered.set()
+                await release.wait()
+            if call["op"] == "replace_fields":
+                persisting.set()
+            return await super().call(call)
 
     class Ledger(Actor):
         count: int = persisted(0)
@@ -188,12 +210,11 @@ async def test_completion_waits_for_an_interleaved_sql_statement_off_the_event_l
             self.count += 1
             return self.count
 
-    runtime = Runtime(Ledger, Effects(), ContendedStorage())
-    actor = {**ACTOR, "actor_name": "Ledger"}
-    tasks = [asyncio.create_task(runtime.handle(command("record", actor=actor)))]
+    runtime = ActorRuntime(Ledger, Effects(), ContendedDatabase())
+    tasks = [asyncio.create_task(runtime.handle(command("record")))]
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        tasks.append(asyncio.create_task(runtime.handle(command(actor=actor))))
+        tasks.append(asyncio.create_task(runtime.handle(command())))
         await asyncio.wait_for(persisting.wait(), 1)
         release.set()
         replies = await asyncio.wait_for(asyncio.gather(*tasks), 5)
@@ -222,8 +243,6 @@ async def test_socket_messages_are_typed_and_emit_persisted_changes():
         {
             "type": "websocket_event",
             "request_id": "s1",
-            "actor": {**ACTOR, "actor_name": "Room"},
-            "sqlite": seed(),
             "connections": [{"id": "s1", "metadata": {"count": 2}, "tags": []}],
             "event": {
                 "type": "message",
@@ -259,19 +278,18 @@ async def test_sync_handlers_keep_order_and_drain_before_eviction(evict):
             return self.count
 
     runtime = ActorRuntime(Blocking, Effects())
-    actor = {**ACTOR, "actor_name": "Blocking"}
-    active = asyncio.create_task(runtime.handle(command("hold", actor=actor)))
+    active = asyncio.create_task(runtime.handle(command("hold")))
     tasks = [active]
     try:
         await asyncio.wait_for(entered.wait(), 1)
         assert not active.done()
         running = next(iter(runtime.pending))
-        queued = asyncio.create_task(runtime.handle(command(actor=actor)))
+        queued = asyncio.create_task(runtime.handle(command()))
         tasks.append(queued)
         await asyncio.sleep(0)
         assert not queued.done()
         if evict:
-            eviction = asyncio.create_task(runtime.handle({"type": "evict", "actor": actor}))
+            eviction = asyncio.create_task(runtime.handle({"type": "evict"}))
             tasks.append(eviction)
             await asyncio.sleep(0)
             running.cancel()
@@ -282,9 +300,7 @@ async def test_sync_handlers_keep_order_and_drain_before_eviction(evict):
         if evict:
             assert [reply["code"] for reply in results[:2]] == ["actor_evicted"] * 2
             assert results[2] == {"type": "evicted"}
-            assert (await runtime.handle(command(actor=actor, sqlite=seed({"count": 10}))))[
-                "result"
-            ] == 11
+            assert (await runtime.handle(command()))["result"] == 1
         else:
             assert [reply["result"] for reply in results] == [1, 2]
     finally:
@@ -305,13 +321,10 @@ async def test_eviction_unblocks_sync_socket_queries():
             return len(self.get_connections())
 
     runtime = ActorRuntime(Room, WaitingEffects())
-    actor = {**ACTOR, "actor_name": "Room"}
-    active = asyncio.create_task(runtime.handle(command("count_connections", actor=actor)))
+    active = asyncio.create_task(runtime.handle(command("count_connections")))
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        assert await asyncio.wait_for(runtime.handle({"type": "evict", "actor": actor}), 1) == {
-            "type": "evicted"
-        }
+        assert await asyncio.wait_for(runtime.handle({"type": "evict"}), 1) == {"type": "evicted"}
         assert (await active)["code"] == "actor_evicted"
     finally:
         active.cancel()
@@ -339,12 +352,11 @@ async def test_nested_sync_reentrant_calls_keep_the_ordinary_call_exclusive():
 
     effects = Effects()
     runtime = ActorRuntime(Nested, effects)
-    actor = {**ACTOR, "actor_name": "Nested"}
-    ordinary = asyncio.create_task(runtime.handle(command("ordinary", actor=actor)))
+    ordinary = asyncio.create_task(runtime.handle(command("ordinary")))
     tasks = [ordinary]
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        direct = asyncio.create_task(runtime.handle(command("hold", actor=actor)))
+        direct = asyncio.create_task(runtime.handle(command("hold")))
         tasks.append(direct)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -385,14 +397,12 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
 
     effects = Effects()
     runtime = ActorRuntime(Concurrent, effects)
-    actor = {**ACTOR, "actor_name": "Concurrent"}
     tasks = [
-        asyncio.create_task(runtime.handle(command("hold", args=[index], actor=actor)))
-        for index in range(2)
+        asyncio.create_task(runtime.handle(command("hold", args=[index]))) for index in range(2)
     ]
     try:
         assert {await asyncio.wait_for(entered.get(), 1) for _ in range(2)} == {0, 1}
-        eviction = asyncio.create_task(runtime.handle({"type": "evict", "actor": actor}))
+        eviction = asyncio.create_task(runtime.handle({"type": "evict"}))
         tasks.append(eviction)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -404,8 +414,8 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
         assert [reply["code"] for reply in replies[:2]] == ["actor_evicted"] * 2
         assert replies[2] == {"type": "evicted"}
         assert effects.published == []
-        reply = await runtime.handle(command(actor=actor, sqlite=seed({"count": 10})))
-        assert reply["result"] == 11
+        reply = await runtime.handle(command())
+        assert reply["result"] == 1
         assert reply["sequence"] == 1
     finally:
         for release in releases:
@@ -413,9 +423,7 @@ async def test_eviction_drains_all_sync_reentrant_handlers_before_rehydrating():
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_path):
-    from durable_actors.sqlite import SqliteStorage
-
+async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails():
     captured: list[object] = []
 
     class Account(Actor):
@@ -439,27 +447,14 @@ async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_pa
             captured.append(self.db)
             return self.db.exec("SELECT amount FROM ledger ORDER BY rowid")
 
-    path = tmp_path / "actor.sqlite"
-    path.touch()
-    commits = 1
-
-    async def sync() -> int:
-        nonlocal commits
-        commits += 1
-        return commits
-
-    runtime = Runtime(Account, Effects(), SqliteStorage(sync))
-    actor = {**ACTOR, "actor_name": "Account"}
-    state = {"path": str(path), "txid": 1}
+    runtime = ActorRuntime(Account, Effects())
 
     def invoke(method: str, args: list[int] | None = None):
         return {
             "type": "invoke",
             "request_id": method,
-            "actor": actor,
             "method": method,
             "args": args or [],
-            "sqlite": state,
         }
 
     assert (await runtime.handle(invoke("deposit", [5])))["result"] == 5
@@ -479,3 +474,21 @@ async def test_sql_commits_with_fields_and_rolls_back_when_the_call_fails(tmp_pa
     ]
     with pytest.raises(RuntimeError, match="outside its invocation"):
         captured[0].exec("SELECT amount FROM ledger")  # type: ignore[attr-defined]
+
+
+async def test_async_actor_serializes_across_awaits_and_persists_results():
+    class Counter(AsyncActor):
+        count: int = persisted(0)
+
+        async def increment(self, amount: int = 1) -> int:
+            before = self.count
+            await asyncio.sleep(0)
+            self.count = before + amount
+            return self.count
+
+    runtime = ActorRuntime(Counter, Effects(), HostDatabase.seeded({"count": 3}))
+    reply = await runtime.handle(command(args=[2]))
+    assert reply["result"] == 5
+    replies = await asyncio.gather(*(runtime.handle(command()) for _ in range(3)))
+    assert [reply["result"] for reply in replies] == [6, 7, 8]
+    assert runtime.host.fields() == {"count": 8}

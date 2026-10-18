@@ -1,6 +1,37 @@
 use super::*;
 
 #[tokio::test]
+async fn state_writes_require_local_ownership_and_a_matching_lease() -> Result<()> {
+    let f = Fixture::new()?;
+    let active = f
+        .runtime
+        .register_activation(&f.actor, &request("first"), "us-east", true, None)
+        .await?;
+    let lease = active.placement.lease;
+    let mut other_host = lease.clone();
+    other_host.id = HostId::new("other-host");
+    let mut other_session = lease.clone();
+    other_session.session_id = "other-session".into();
+    for mismatched in [other_host, other_session] {
+        let error = f
+            .runtime
+            .prepare_actor_write(&f.actor, &mismatched, 1, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "actor ownership changed");
+    }
+    let mut other_actor = f.actor.clone();
+    other_actor.actor_id = "not-activated".into();
+    let error = f
+        .runtime
+        .prepare_actor_write(&other_actor, &lease, 1, 1)
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "actor is not locally activated");
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publication() -> Result<()> {
     use crate::litestream::{Litestream, Replicator, storage::SqliteCapture};
     use crate::state_log::{SqliteSnapshot, StateSnapshot};
@@ -10,7 +41,7 @@ async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publicati
     let directory = tempfile::tempdir()?;
     let snapshots = Arc::new(FileBucket::new(directory.path().join("snapshots"))?);
     f.runtime = f.runtime.with_persistence(
-        crate::bucket::PersistenceConfig::Local,
+        crate::bucket::SnapshotStoreConfig::Local,
         Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
     )?;
     let active = f
@@ -27,31 +58,30 @@ async fn sqlite_dependencies_must_exist_in_the_snapshot_backend_before_publicati
         .await?;
     let replication = Arc::new(Litestream::default());
     let mut capture = SqliteCapture::new(replication.clone()).await?;
-    let initial = capture.state();
+    let initial = capture.txid();
     let first = StateSnapshot::new(
         1,
         1,
         "sql".into(),
         SqliteSnapshot {
-            txid: initial.txid,
+            txid: initial,
             parent: None,
-            files: capture.capture(&initial).await?,
+            files: capture.capture(initial).await?,
         },
         serde_json::Value::Null,
     )?;
     let first_bytes = first.encode()?;
     let database = rusqlite::Connection::open(capture.path())?;
     database.execute("INSERT INTO __terse_fields VALUES ('count', '1')", [])?;
-    let mut changed = initial;
-    changed.txid = replication.sync(&capture.path()).await?;
+    let changed = replication.sync(&capture.path()).await?;
     let next = StateSnapshot::new(
         2,
         1,
         "fields".into(),
         SqliteSnapshot {
-            txid: changed.txid,
+            txid: changed,
             parent: Some(first_plan.stream.snapshot(&first_bytes)?),
-            files: capture.capture(&changed).await?,
+            files: capture.capture(changed).await?,
         },
         serde_json::Value::Null,
     )?;
@@ -79,7 +109,7 @@ async fn ownership_and_state_can_use_independent_backends() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let snapshots = Arc::new(FileBucket::new(directory.path().to_owned())?);
     f.runtime = f.runtime.with_persistence(
-        crate::bucket::PersistenceConfig::Local,
+        crate::bucket::SnapshotStoreConfig::Local,
         Arc::new(crate::bucket::BucketSnapshots(snapshots.clone())),
     )?;
     let active = f
@@ -884,7 +914,7 @@ async fn rapid_resume_retains_the_durable_base_across_epochs() -> Result<()> {
     Ok(())
 }
 
-fn rapid_policy() -> crate::bucket::PersistenceConfig {
+fn rapid_policy() -> crate::bucket::SnapshotStoreConfig {
     serde_json::from_value(
         serde_json::json!({"type":"rapid", "archive_bucket":"archive-test", "buckets":[
             {"bucket":"rapid-test-a", "zone":"us-west4-a"},

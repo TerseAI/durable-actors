@@ -97,7 +97,7 @@ async fn prepared_code_is_verified_and_cannot_change_after_assignment() -> anyho
         axum::serve(listener, router(authorization, send, directory)).await
     }));
     let body = "export const Counter = 1;";
-    let mut artifact = crate::artifacts::ArtifactFile {
+    let mut artifact = crate::bundle::BundleFile {
         path: "actors.mjs".into(),
         object: "code/actors.mjs".into(),
         generation: 1,
@@ -115,7 +115,7 @@ async fn prepared_code_is_verified_and_cannot_change_after_assignment() -> anyho
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    let upload = |artifact: &crate::artifacts::ArtifactFile, body: &'static str| {
+    let upload = |artifact: &crate::bundle::BundleFile, body: &'static str| {
         client
             .post(format!("{url}/prepare-code"))
             .bearer_auth(&token)

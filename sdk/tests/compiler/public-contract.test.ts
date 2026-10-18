@@ -64,6 +64,7 @@ test("public contracts survive JSON transport without actor source and with expl
             async onConnect() {}
             async onMessage() {}
             async onDisconnect() {}
+            async onAlarm() {}
         }
         throw new Error("generation must not execute actor code")
     `)
@@ -80,7 +81,7 @@ test("public contracts survive JSON transport without actor source and with expl
     )
     assert.deepEqual(actor.rpc.methods[0].result, { kind: "void" })
     assert.deepEqual(actor.socket.emittable, ["messages"])
-    for (const absent of [project.root, "secret", "hidden", "internal", "onConnect"])
+    for (const absent of [project.root, "secret", "hidden", "internal", "onConnect", "onAlarm"])
         assert.equal(serialized.includes(absent), false, absent)
     await rm(project.root, { recursive: true, force: true })
     const fetched = JSON.parse(serialized)
@@ -141,6 +142,57 @@ test("bundles local type dependencies through the project's path aliases", async
         const returned: actors.Room.Outgoing = await actors.Room.get("one").echo(message)
         // @ts-expect-error nested readonly fields survive bundling
         returned.values[0].text = "changed"
+    `
+    )
+    const program = ts.createProgram([consumer], {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: false,
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.NodeNext
+    })
+    assert.deepEqual(
+        ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, "\n")),
+        []
+    )
+})
+
+test("unchecked types reach clients as unknown without their package", async t => {
+    const project = await createProject(t)
+    const harness = path.join(project.root, "node_modules/@example/harness")
+    await mkdir(harness, { recursive: true })
+    await writeFile(
+        path.join(harness, "package.json"),
+        JSON.stringify({ name: "@example/harness", version: "1.0.0", type: "module", types: "index.d.ts" })
+    )
+    await writeFile(path.join(harness, "index.d.ts"), "export interface Message { readonly [key: symbol]: string }")
+    await project.write(`
+        import { type Unchecked, unchecked } from "durable-actors"
+        import type { Message } from "@example/harness"
+        type Outgoing = { view: Unchecked<Message> }
+        export class Room extends Actor<{}, never, Outgoing> {
+            async latest() { return unchecked([] as Message[]) }
+        }
+    `)
+    const contract = new ActorCompiler().compileContract(project.entrypoint)
+    assert.deepEqual(contract.typescript.dependencies, {})
+    assert.doesNotMatch(contract.typescript.declarations, /Unchecked|@example\/harness/)
+    await rm(harness, { recursive: true })
+    for (const [name, contents] of await generateClientArtifacts(contract)) {
+        const file = path.join(project.root, "generated", name)
+        await mkdir(path.dirname(file), { recursive: true })
+        await writeFile(file, contents)
+    }
+    const consumer = path.join(project.root, "consumer.ts")
+    await writeFile(
+        consumer,
+        `
+        import { actors } from "./generated/index.js"
+        declare const outgoing: actors.Room.Outgoing
+        const view: unknown = outgoing.view
+        const latest: unknown = await actors.Room.get("one").latest()
+        // @ts-expect-error unchecked values are unknown to clients
+        outgoing.view.length
     `
     )
     const program = ts.createProgram([consumer], {

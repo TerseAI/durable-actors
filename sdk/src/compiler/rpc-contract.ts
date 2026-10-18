@@ -7,16 +7,20 @@ import type { RpcContract, RpcMethod, RpcParameter, TypeReference } from "../wir
 import { assertJsonType, jsonSchema, sourceTypeName } from "./json-schema.js"
 import { extractPublicSchema } from "./public-schema.js"
 
-function rpcContract(checker: ts.TypeChecker, actor: ts.ClassDeclaration): RpcContract {
+function rpcContract(
+    checker: ts.TypeChecker,
+    actor: ts.ClassDeclaration,
+    unchecked: ts.Symbol | undefined
+): RpcContract {
     const types: Record<string, ts.Type> = Object.create(null)
     const methods = publicMethods(checker, actor).map(({ name, declaration }) =>
-        readMethod(checker, declaration, `${actor.name!.text}.${name}`, name, types)
+        readMethod(checker, unchecked, declaration, `${actor.name!.text}.${name}`, name, types)
     )
-    return { schema: rpcSchema(checker, types), methods }
+    return { schema: rpcSchema(checker, unchecked, types), methods }
 }
 
-function rpcSchema(checker: ts.TypeChecker, types: Record<string, ts.Type>) {
-    const schema = jsonSchema(checker, types)
+function rpcSchema(checker: ts.TypeChecker, unchecked: ts.Symbol | undefined, types: Record<string, ts.Type>) {
+    const schema = jsonSchema(checker, unchecked, types)
     for (const [name, definition] of Object.entries(schema.definitions ?? {})) {
         if (typeof definition === "boolean" || definition.$ref) continue
         const title = types[name] ? sourceTypeName(types[name]) : /^[A-Za-z_$][\w$]*$/u.test(name) ? name : undefined
@@ -39,8 +43,12 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
                 throw new ActorDefinitionError(`${label}: callable fields must be declared as async methods`)
             continue
         }
+        if (name === "onAlarm") {
+            validateAlarmLifecycle(label, member)
+            continue
+        }
         if (["onConnect", "onMessage", "onDisconnect"].includes(name)) continue
-        if (["then", "connect", "broadcast", "db"].includes(name))
+        if (["then", "connect", "broadcast", "db", "alarm"].includes(name))
             throw new ActorDefinitionError(`${label}: reserved RPC method name`)
         validateActorComponent("actor method", name)
         if (symbol?.declarations?.filter(ts.isMethodDeclaration).length !== 1)
@@ -55,6 +63,13 @@ function publicMethods(checker: ts.TypeChecker, actor: ts.ClassDeclaration) {
     return methods.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
 }
 
+function validateAlarmLifecycle(label: string, member: ts.MethodDeclaration): void {
+    if (!member.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) || member.asteriskToken)
+        throw new ActorDefinitionError(`${label}: lifecycle hook must be async`)
+    if (member.parameters.length !== 0)
+        throw new ActorDefinitionError(`${label}: lifecycle hook must take no arguments`)
+}
+
 function isPublicInstance(member: ts.ClassElement): boolean {
     const excluded = [ts.SyntaxKind.PrivateKeyword, ts.SyntaxKind.ProtectedKeyword, ts.SyntaxKind.StaticKeyword]
     return !ts.canHaveModifiers(member) || !ts.getModifiers(member)?.some(modifier => excluded.includes(modifier.kind))
@@ -62,6 +77,7 @@ function isPublicInstance(member: ts.ClassElement): boolean {
 
 function readMethod(
     checker: ts.TypeChecker,
+    unchecked: ts.Symbol | undefined,
     method: ts.MethodDeclaration,
     label: string,
     name: string,
@@ -69,11 +85,11 @@ function readMethod(
 ): RpcMethod {
     const signature = checker.getSignatureFromDeclaration(method)!
     const parameters = method.parameters.map((parameter, index) =>
-        readParameter(checker, parameter, index, method, label, name, types)
+        readParameter(checker, unchecked, parameter, index, method, label, name, types)
     )
     const result = checker.getAwaitedType(signature.getReturnType())!
     if (result.flags & ts.TypeFlags.Void) return { name, parameters, result: { kind: "void" } }
-    assertJsonType(checker, result, `${label} result`)
+    assertJsonType(checker, unchecked, result, `${label} result`)
     return {
         name,
         parameters,
@@ -83,6 +99,7 @@ function readMethod(
 
 function readParameter(
     checker: ts.TypeChecker,
+    unchecked: ts.Symbol | undefined,
     parameter: ts.ParameterDeclaration,
     index: number,
     method: ts.MethodDeclaration,
@@ -104,7 +121,7 @@ function readParameter(
             .some(next => !next.questionToken && !next.initializer && !next.dotDotDotToken)
     )
         throw new ActorDefinitionError(`${label}: default parameters before required parameters are not supported`)
-    assertJsonType(checker, type, `${label} parameter ${name}`, optional)
+    assertJsonType(checker, unchecked, type, `${label} parameter ${name}`, optional)
     return { name, optional, rest, type: registerType(types, `Method_${methodName}_Parameter_${index}`, type) }
 }
 
