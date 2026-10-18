@@ -37,7 +37,7 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 ## Capacity and placement
 
-Actor resource limits come from `@Compute` (default 1 CPU and 256 MiB). Resource shapes use the same WorkerPool; deployment registration prepares snapshots containing customer code before activation. Worker capacity must cover concurrent reservations and snapshot preparation. The chart exposes capacity through `substrate.worker`.
+Actor resource limits come from `@Compute` (default 0.25 CPU and 128 MiB; 0.125–16 CPU and 128–16384 MiB allowed). Resource shapes use the same WorkerPool; deployment registration prepares snapshots containing customer code before activation. Worker capacity must cover concurrent reservations and snapshot preparation. The chart exposes capacity through `substrate.worker`.
 
 | Variable | Description |
 | --- | --- |

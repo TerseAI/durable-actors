@@ -81,6 +81,9 @@ fn malformed_or_nonportable_contracts_are_rejected() -> Result<()> {
     }
     for sandbox in [
         json!({"cpu":0}),
+        json!({"cpu":0.124}),
+        json!({"cpu":16.001}),
+        json!({"memoryMiB":16385}),
         json!({"memoryMiB":127}),
         json!({"idleTimeoutMs":0}),
         json!({"regions":["unknown"]}),

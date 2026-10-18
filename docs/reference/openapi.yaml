@@ -907,8 +907,8 @@ components:
             additionalProperties: false
             description: Optional actor sandbox overrides compiled from the class decorator. Omitted fields inherit deployment defaults.
             properties:
-                cpu: { type: number, minimum: 0.1, maximum: 64, multipleOf: 0.001 }
-                memoryMiB: { type: integer, minimum: 128, maximum: 262144 }
+                cpu: { type: number, minimum: 0.125, maximum: 16, multipleOf: 0.001 }
+                memoryMiB: { type: integer, minimum: 128, maximum: 16384 }
                 idleTimeoutMs: { type: integer, minimum: 1, maximum: 86400000 }
                 regions:
                     type: array

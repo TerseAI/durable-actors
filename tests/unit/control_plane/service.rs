@@ -589,9 +589,9 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
         "sandboxes":{"Counter":{"cpu":2.5,"idleTimeoutMs":60000},"Room":{"memoryMiB":4096}}
     }))?;
     for (actor_name, cpu_millis, memory_mib) in [
-        ("Counter", 2500, 256),
-        ("Room", 1000, 4096),
-        ("Plain", 1000, 256),
+        ("Counter", 2500, 128),
+        ("Room", 250, 4096),
+        ("Plain", 250, 128),
     ] {
         let actor = ActorKey {
             project_id: "default".into(),

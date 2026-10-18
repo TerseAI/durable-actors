@@ -13,8 +13,8 @@ const computeRegion = z.enum([
 ])
 
 const computeOptionsSchema = z.strictObject({
-    cpu: z.number().min(0.1).max(64).multipleOf(0.001).optional(),
-    memoryMiB: z.number().int().min(128).max(262144).optional(),
+    cpu: z.number().min(0.125).max(16).multipleOf(0.001).optional(),
+    memoryMiB: z.number().int().min(128).max(16384).optional(),
     idleTimeoutMs: z.number().int().min(1).max(86400000).optional(),
     regions: z
         .array(computeRegion)
@@ -26,9 +26,9 @@ const computeOptionsSchema = z.strictObject({
 
 type ComputeRegion = z.infer<typeof computeRegion>
 interface ComputeOptions {
-    /** CPU cores, from 0.1 to 64 in increments of 0.001. */
+    /** CPU cores, from 0.125 to 16 in increments of 0.001. Defaults to 0.25. */
     readonly cpu?: number
-    /** Memory request and cap, from 128 to 262144 MiB. */
+    /** Memory request and cap, from 128 to 16384 MiB. Defaults to 128. */
     readonly memoryMiB?: number
     /** Inactivity before eviction, from 1 to 86400000 ms. Inherits the server default (normally 10000). */
     readonly idleTimeoutMs?: number

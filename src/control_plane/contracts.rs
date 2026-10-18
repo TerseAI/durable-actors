@@ -200,14 +200,15 @@ impl SandboxOptions {
         if let Some(cpu) = &self.cpu {
             let cpu = cpu.as_f64().context("invalid sandbox CPU")?;
             ensure!(
-                (0.1..=64.0).contains(&cpu) && (cpu * 1000.0 - (cpu * 1000.0).round()).abs() < 1e-8,
-                "sandbox CPU must be 0.1–64 cores in increments of 0.001"
+                (0.125..=16.0).contains(&cpu)
+                    && (cpu * 1000.0 - (cpu * 1000.0).round()).abs() < 1e-8,
+                "sandbox CPU must be 0.125–16 cores in increments of 0.001"
             );
         }
         if let Some(memory) = self.memory_mib {
             ensure!(
-                (128..=262144).contains(&memory),
-                "sandbox memory must be 128–262144 MiB"
+                (128..=16384).contains(&memory),
+                "sandbox memory must be 128–16384 MiB"
             );
         }
         if let Some(timeout) = self.idle_timeout_ms {

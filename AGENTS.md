@@ -16,10 +16,8 @@ Rules for working in this repo. Keep changes minimal and idiomatic.
 
 6. **Follow SOLID principles**
 
-7. **Follow TDD.** Add a failing behavior test before production changes, then implement and refactor.
+7. **Keep tests separate from implementation.** Put tests and fixtures in each project’s `tests/` directory; SDK CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access. Run Go tests from `providers/modal-go` with `go test -race -mod=readonly -overlay tests/overlay.json ./...`; keep the overlay mappings updated when adding or renaming tests.
 
-8. **Keep tests separate from implementation.** Put tests and fixtures in each project’s `tests/` directory; SDK CLI tests belong in `sdk/tests/cli/`. Rust unit tests use `#[path]` declarations to retain private access. Run Go tests from `providers/modal-go` with `go test -race -mod=readonly -overlay tests/overlay.json ./...`; keep the overlay mappings updated when adding or renaming tests.
+8. **Tests must honor production contracts.** Do not make required dependencies optional or add production fallbacks, branches, or APIs solely to accommodate tests. Test doubles must implement the required interface.
 
-9. **Tests must honor production contracts.** Do not make required dependencies optional or add production fallbacks, branches, or APIs solely to accommodate tests. Test doubles must implement the required interface.
-
-10. **Test current behavior.** Do not add tests for legacy implementations or solely to assert that removed behavior, endpoints, or commands remain absent.
+9. **Test current behavior.** Do not add tests for legacy implementations or solely to assert that removed behavior, endpoints, or commands remain absent.

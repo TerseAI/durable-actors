@@ -64,12 +64,12 @@ def check() -> int:
 @pytest.mark.parametrize(
     "options",
     [
-        {"cpu": 0.099},
-        {"cpu": 64.001},
+        {"cpu": 0.124},
+        {"cpu": 16.001},
         {"cpu": 0.1234},
         {"cpu": True},
         {"memory_mib": 127},
-        {"memory_mib": 262145},
+        {"memory_mib": 16385},
         {"memory_mib": 128.5},
         {"idle_timeout_ms": 0},
         {"idle_timeout_ms": 86400001},

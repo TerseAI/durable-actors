@@ -32,8 +32,8 @@ class ComputeOptions(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True, allow_inf_nan=False)
-    cpu: float | None = Field(default=None, ge=0.1, le=64, multiple_of=0.001)
-    memory_mib: int | None = Field(default=None, ge=128, le=262144, serialization_alias="memoryMiB")
+    cpu: float | None = Field(default=None, ge=0.125, le=16, multiple_of=0.001)
+    memory_mib: int | None = Field(default=None, ge=128, le=16384, serialization_alias="memoryMiB")
     idle_timeout_ms: int | None = Field(
         default=None, ge=1, le=86400000, serialization_alias="idleTimeoutMs"
     )
@@ -61,9 +61,10 @@ def compute(
 ) -> Callable[[type[A]], type[A]]:
     """Configure an actor class while preserving its type and method signatures.
 
-    cpu accepts 0.1–64 cores in 0.001 increments; memory_mib accepts 128–262144;
-    idle_timeout_ms accepts 1–86400000. regions must be nonempty and unique.
-    Use once per actor class. Unspecified values inherit deployment defaults.
+    cpu accepts 0.125–16 cores in 0.001 increments (default 0.25); memory_mib
+    accepts 128–16384 (default 128); idle_timeout_ms accepts 1–86400000. regions
+    must be nonempty and unique. Use once per actor class. Unspecified values
+    inherit deployment defaults.
     """
     options = ComputeOptions(
         cpu=cpu, memory_mib=memory_mib, idle_timeout_ms=idle_timeout_ms, regions=regions
