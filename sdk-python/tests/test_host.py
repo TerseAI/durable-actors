@@ -146,6 +146,78 @@ class Counter(Actor):
                 await server.wait_closed()
 
 
+async def test_graceful_eviction_runs_on_sleep_in_the_worker(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "sleep_actors.py").write_text("""from durable_actors import Actor, persisted
+class Sleeper(Actor):
+    calls: int = persisted(0)
+    sleeps: int = persisted(0)
+    def on_sleep(self) -> None:
+        self.sleeps += 1
+    def read(self) -> list[int]:
+        self.calls += 1
+        return [self.calls, self.sleeps]
+""")
+    build_actor(project, "sleep_actors.py", tmp_path / "build")
+    connected = asyncio.get_running_loop().create_future()
+
+    async def accepted(reader, writer):
+        connected.set_result((reader, writer))
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as short:
+        socket = str(Path(short) / "executor.sock")
+        server = await asyncio.start_unix_server(accepted, socket)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "durable_actors.host",
+            env={
+                **os.environ,
+                "DURABLE_ACTORS_EXECUTOR_SOCKET": socket,
+                "DURABLE_ACTORS_ENTRYPOINT": str(tmp_path / "build/actors.pyz"),
+            },
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            async with asyncio.timeout(10):
+                reader, writer = await connected
+                host = ExecutorHost(reader, writer, HostDatabase())
+                receive, send = host.receive, host.send
+                assert (await receive())["type"] == "attach"
+                actor = {"project_id": "local", "actor_name": "Sleeper", "actor_id": "one"}
+                send({"type": "attached", "protocol": 28, "actor": actor})
+                read = {"type": "invoke", "request_id": "r", "method": "read", "args": []}
+                send({"type": "command", "message_id": 0, "command": read})
+                assert (await receive())["reply"]["result"] == [1, 0]
+                send(
+                    {
+                        "type": "command",
+                        "message_id": 1,
+                        "command": {"type": "evict", "graceful": True},
+                    }
+                )
+                # A command sent during the eviction runs afterwards on a fresh worker.
+                send({"type": "command", "message_id": 2, "command": read})
+                evicted = await receive()
+                assert evicted["message_id"] == 1
+                assert evicted["reply"] == {"type": "evicted"}
+                restored = await receive()
+                assert restored["message_id"] == 2
+                assert restored["reply"]["result"] == [2, 1]
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            await asyncio.wait_for(process.communicate(), 5)
+            server.close()
+            if connected.done():
+                _, writer = connected.result()
+                writer.transport.abort()
+                await asyncio.wait_for(writer.wait_closed(), 1)
+            await server.wait_closed()
+
+
 @pytest.mark.parametrize("action", ["evict", "kill_host"])
 async def test_worker_stops_blocked_handlers_on_eviction_and_host_death(tmp_path, action):
     project = tmp_path / "project"

@@ -44,7 +44,13 @@ class ActorRuntime {
     }
 
     async handle(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
-        if (command.type === "hydrate" || command.type === "evict") return this.execute(command)
+        if (command.type === "hydrate") return this.execute(command)
+        if (command.type === "evict") {
+            // Eviction waits behind queued calls so onSleep never runs beside one.
+            const eviction = this.serial.then(() => this.execute(command))
+            this.serial = eviction.catch(() => undefined)
+            return eviction
+        }
         const method = command.type === "invoke" ? command.method : lifecycleMethod(command)
         const interleave = method !== undefined && (this.definition.state.interleaveMethods?.includes(method) ?? false)
         const operation = this.serial.then(() => this.execute(command))
@@ -59,15 +65,24 @@ class ActorRuntime {
 
     async shutdown(): Promise<void> {
         if (this.instance === undefined) return
-
-        const fields = this.definition.state.fields.filter(field => field.resource).reverse()
-
-        await runWithActorDatabase(this.instance, "immediate", async () => {
-            for (const field of fields) {
-                const resource = Reflect.get(this.instance!, field.name) as ActorResource
-                await resource.onGracefulShutdown({ db: this.database })
+        const instance = this.instance
+        try {
+            if (await this.runLifecycleHook(instance, "onSleep")) {
+                validateActorState(instance, this.definition.state)
+                this.database.commit()
             }
-        })
+        } catch (error) {
+            this.database.rollback()
+            throw error
+        } finally {
+            const fields = this.definition.state.fields.filter(field => field.resource).reverse()
+            await runWithActorDatabase(instance, "immediate", async () => {
+                for (const field of fields) {
+                    const resource = Reflect.get(instance, field.name) as ActorResource
+                    await resource.onGracefulShutdown({ db: this.database })
+                }
+            })
+        }
     }
 
     private async execute(command: ActorWorkerCommand): Promise<ActorExecutorReply> {
@@ -272,6 +287,15 @@ class ActorRuntime {
             }
         })
         return instance
+    }
+
+    private async runLifecycleHook(instance: AnyActor, name: "onSleep"): Promise<boolean> {
+        const method: unknown = Reflect.get(instance, name)
+        if (typeof method !== "function") return false
+        await runWithActorDatabase(instance, "immediate", async () => {
+            await Reflect.apply(method, instance, [])
+        })
+        return true
     }
 }
 

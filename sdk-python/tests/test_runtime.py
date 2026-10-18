@@ -93,6 +93,66 @@ async def test_failure_rolls_back_persisted_state():
     assert (await runtime.handle(command()))["result"] == {"count": 2}
 
 
+async def test_on_sleep_persists_before_eviction():
+    class Probe(Actor):
+        asleep: bool = persisted(False)
+
+        def on_sleep(self) -> None:
+            self.asleep = True
+            self.db.exec("CREATE TABLE IF NOT EXISTS sleeps (n INTEGER)")
+            self.db.exec("INSERT INTO sleeps (n) VALUES (1)")
+
+        def ping(self) -> bool:
+            return self.asleep
+
+        def sleep_rows(self) -> int:
+            return self.db.exec("SELECT count(*) AS n FROM sleeps")[0]["n"]
+
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("ping")))["result"] is False
+    assert await runtime.handle({"type": "evict", "graceful": True}) == {"type": "evicted"}
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("ping")))["result"] is True
+    assert (await restored.handle(command("sleep_rows")))["result"] == 1
+
+
+async def test_async_on_sleep_runs_on_the_event_loop():
+    class Probe(AsyncActor):
+        asleep: bool = persisted(False)
+
+        async def on_sleep(self) -> None:
+            self.asleep = True
+
+        async def snapshot(self) -> bool:
+            return self.asleep
+
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("snapshot")))["result"] is False
+    await runtime.handle({"type": "evict", "graceful": True})
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("snapshot")))["result"] is True
+
+
+async def test_non_graceful_eviction_skips_on_sleep():
+    class Probe(Actor):
+        asleep: bool = persisted(False)
+
+        def on_sleep(self) -> None:
+            self.asleep = True
+
+        def ping(self) -> bool:
+            return self.asleep
+
+    host = HostDatabase()
+    runtime = ActorRuntime(Probe, Effects(), host)
+    assert (await runtime.handle(command("ping")))["result"] is False
+    await runtime.handle({"type": "evict", "graceful": False})
+    restored = ActorRuntime(Probe, Effects(), host)
+    assert (await restored.handle(command("ping")))["result"] is False
+
+
 async def test_alarm_lifecycle_uses_the_normal_invocation_path():
     class Reminder(Actor):
         fired: bool = persisted(False)

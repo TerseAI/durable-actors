@@ -18,6 +18,89 @@ const actorIdentity = {
     actor_id: "counter-1"
 }
 
+test("worker eviction runs onSleep and restores the persisted shutdown writes", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("SleepingWorker")
+    const file = path.join(root, "src/actors.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class SleepingWorker extends Actor {
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                this.sleeps += 1
+            }
+            async read(): Promise<number> {
+                return this.sleeps
+            }
+        }`
+    )
+    const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: await buildConsumer(root) })
+    try {
+        await assign(supervisor, identity("SleepingWorker"))
+        assert.equal(
+            (await handle(supervisor, { type: "invoke", request_id: "read", method: "read", args: [] }, () => {})).type,
+            "invoked"
+        )
+        await handle(supervisor, { type: "evict", graceful: true }, () => {})
+        assert.equal(hostDatabase(supervisor).fields().sleeps, 1)
+        const restored = await handle(
+            supervisor,
+            { type: "invoke", request_id: "read-again", method: "read", args: [] },
+            () => {}
+        )
+        assert.equal(restored.type, "invoked")
+        if (restored.type !== "invoked") return
+        assert.equal(restored.result, 1)
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
+test("work that overlaps an eviction runs after onSleep on a fresh worker", { timeout: 30000 }, async () => {
+    const root = await createTypeScriptConsumer("RacingWorker")
+    const file = path.join(root, "src/actors.ts")
+    await writeFile(
+        file,
+        `import { Actor, Persisted } from ${JSON.stringify(fileURLToPath(new URL("../../src/index.js", import.meta.url)))}
+        export class RacingWorker extends Actor {
+            @Persisted calls = 0
+            @Persisted sleeps = 0
+            async onSleep(): Promise<void> {
+                await new Promise(resolve => setTimeout(resolve, 50))
+                this.sleeps += 1
+            }
+            async slow(): Promise<number> {
+                await new Promise(resolve => setTimeout(resolve, 50))
+                this.calls += 1
+                return this.calls
+            }
+            async read(): Promise<{ calls: number; sleeps: number }> {
+                return { calls: this.calls, sleeps: this.sleeps }
+            }
+        }`
+    )
+    const supervisor = new ActorWorkerSupervisor({ actorEntrypointUrl: await buildConsumer(root) })
+    try {
+        await assign(supervisor, identity("RacingWorker"))
+        const invoke = (method: string) =>
+            handle(supervisor, { type: "invoke", request_id: method, method, args: [] }, () => {})
+        assert.equal((await invoke("read")).type, "invoked")
+        const slow = invoke("slow")
+        const evicted = handle(supervisor, { type: "evict", graceful: true }, () => {})
+        const after = invoke("read")
+        const [slowReply, evictReply, afterReply] = await Promise.all([slow, evicted, after])
+        assert.equal(slowReply.type, "invoked")
+        assert.equal(evictReply.type, "evicted")
+        assert.equal(afterReply.type, "invoked")
+        if (afterReply.type !== "invoked") return
+        assert.deepEqual(afterReply.result, { calls: 1, sleeps: 1 })
+    } finally {
+        supervisor.close()
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
 test("worker eviction restores fields and SQL from the host database", { timeout: 30000 }, async context => {
     const root = await createTypeScriptConsumer("SqliteWorker")
     const file = path.join(root, "src/actors.ts")

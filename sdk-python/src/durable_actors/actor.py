@@ -93,6 +93,10 @@ class Actor(ActorBase[Metadata, Incoming, Outgoing, Tag]):
         """Handle a due alarm. It is cleared afterward unless this hook sets a new one."""
         pass
 
+    def on_sleep(self) -> None:
+        """Run during a graceful eviction before the instance is discarded. Not run on a crash."""
+        pass
+
     def get_connections(self, tag: Tag | None = None) -> list[ActorSocket[Metadata, Outgoing, Tag]]:
         """Return connected sockets from a synchronous actor method or hook.
 

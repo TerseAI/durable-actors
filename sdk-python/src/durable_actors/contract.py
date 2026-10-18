@@ -19,7 +19,8 @@ from .guards import is_document, is_field, is_list
 from .json import JsonValue
 
 Document = dict[str, Any]
-HOOKS = {"on_connect", "on_message", "on_disconnect", "on_alarm"}
+HOOKS = {"on_connect", "on_message", "on_disconnect", "on_alarm", "on_sleep"}
+ZERO_ARG_HOOKS = {"on_alarm", "on_sleep"}
 RESERVED = {
     "get_connections",
     "get_connection_count",
@@ -123,8 +124,8 @@ def _describe_actor(actor: type[ActorBase[Any, Any, Any, Any]]) -> Definition:
             )
         if name in RESERVED:
             raise ValueError(f"reserved actor method: {name}")
-        if name == "on_alarm" and list(inspect.signature(value).parameters) != ["self"]:
-            raise ValueError(f"{actor.__name__}.on_alarm: alarm hooks take no arguments")
+        if name in ZERO_ARG_HOOKS and list(inspect.signature(value).parameters) != ["self"]:
+            raise ValueError(f"{actor.__name__}.{name}: lifecycle hooks take no arguments")
         if getattr(value, "__actor_reentrant__", False):
             reentrant_methods.add(name)
         if name not in HOOKS:
