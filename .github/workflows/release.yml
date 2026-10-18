@@ -286,7 +286,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                runner: [blacksmith-4vcpu-ubuntu-2204, blacksmith-4vcpu-ubuntu-2204-arm, blacksmith-6vcpu-macos-15, macos-15-intel]
+                runner: [blacksmith-4vcpu-ubuntu-2204, blacksmith-4vcpu-ubuntu-2204-arm, blacksmith-6vcpu-macos-15]
         runs-on: ${{ matrix.runner }}
         timeout-minutes: 60
         permissions:
