@@ -1,9 +1,9 @@
 import { DurablePiAgent } from "@durable-actors/pi-durable"
 import { contentText, createModels, Message, Type } from "@earendil-works/pi-ai"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import { createRegistry, watchEvents } from "@earendil-works/pi-durable"
+import { createRegistry, JsonObject, TaskId, watchEvents } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Actor, Resource, Interleave, ActorSocket, ActorResource, ActorDatabase } from "durable-actors"
+import { Actor, Resource, Interleave, ActorSocket } from "durable-actors"
 import { CodingTools } from "@earendil-works/pi-durable/tools"
 import { ModalSandbox } from "./modal/SandboxResource.js";
 
@@ -25,7 +25,7 @@ export class PiAgent extends Actor<null, string, ChatEvent | Preview> {
 
     @Interleave
     async prompt(text: string): Promise<string> {
-        const stream = await watchEvents(this.agent.harness,this.agent.root.id, context)
+        const stream = await watchEvents(this.agent.harness, this.agent.root.id, context)
         this.broadcast({ type: "start", prompt: text })
 
         await stream.start(async (events) => {
@@ -37,6 +37,15 @@ export class PiAgent extends Actor<null, string, ChatEvent | Preview> {
                                 this.broadcast({ type: "delta", text: change.delta });
                             }
                         }
+                        break;
+                    case "tool_execution_start":
+                        this.broadcast({ type: "tool_start", toolName: event.toolName, args: event.args, taskId: taskId(event.taskId) });
+                        break;
+                    case "tool_execution_end":
+                        this.broadcast({ type: "tool_end", toolName: event.toolName, taskId: taskId(event.taskId) });
+                        break;
+                    case "turn_end":
+                        this.broadcast({ type: "done" });
                         break;
                 }
             }
@@ -80,6 +89,8 @@ export type ChatEvent =
   | { type: "history"; messages: ChatMessage[] }
   | { type: "start"; prompt: string }
   | { type: "delta"; text: string }
+  | { type: "tool_start"; toolName: string, args: JsonObject, taskId: string }
+  | { type: "tool_end"; toolName: string, taskId: string }
   | { type: "done" };
 
 export type ChatMessage =
@@ -100,3 +111,8 @@ models.setProvider(openaiProvider())
 const registry = createRegistry()
 registry.install(CodingTools)
 const context = BACKGROUND_CONTEXT
+
+// MARK: Helpers
+function taskId(taskId: TaskId | undefined): string {
+    return taskId?.toString() ?? ""
+}
