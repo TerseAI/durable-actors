@@ -1,17 +1,17 @@
 import { DurablePiAgent } from "@durable-actors/pi-durable"
 import { contentText, createModels, Message, Type } from "@earendil-works/pi-ai"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import { createRegistry, JsonObject, TaskId, watchEvents } from "@earendil-works/pi-durable"
+import { ConversationView, ConversationWatch, createRegistry, TaskId, watchEvents } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Actor, Resource, Interleave, ActorSocket } from "durable-actors"
+import { Actor, Resource, Interleave, ActorSocket, Ephemeral, Unchecked, unchecked } from "durable-actors"
 import { CodingTools } from "@earendil-works/pi-durable/tools"
 import { ModalSandbox } from "./modal/SandboxResource.js";
+import { Op } from "@earendil-works/chord/delta";
 
 export const WORKSPACE = "/workspace"
 
-export class PiAgent extends Actor<null, string, ChatEvent | Preview> {
+export class PiAgent extends Actor<null, string, Outgoing> {
     @Resource private sandbox = new ModalSandbox(this.db)
-
     @Resource private readonly agent = new DurablePiAgent(this.db, {
         models,
         registry,
@@ -23,79 +23,39 @@ export class PiAgent extends Actor<null, string, ChatEvent | Preview> {
         },
     })
 
+    @Ephemeral private readonly watches = new Map<string, ConversationWatch>()
+
     @Interleave
     async prompt(text: string): Promise<string> {
-        const stream = await watchEvents(this.agent.harness, this.agent.root.id, context)
-        this.broadcast({ type: "start", prompt: text })
-
-        await stream.start(async (events) => {
-            for (const event of events) {
-                switch (event.type) {
-                    case "message_update":
-                        for (const change of event.changes) {
-                            if (change.type === "text_delta")  {
-                                this.broadcast({ type: "delta", text: change.delta });
-                            }
-                        }
-                        break;
-                    case "tool_execution_start":
-                        this.broadcast({ type: "tool_start", toolName: event.toolName, args: event.args, taskId: taskId(event.taskId) });
-                        break;
-                    case "tool_execution_end":
-                        this.broadcast({ type: "tool_end", toolName: event.toolName, taskId: taskId(event.taskId) });
-                        break;
-                    case "turn_end":
-                        this.broadcast({ type: "done" });
-                        break;
-                }
-            }
-        })
-
+        const watch = await this.agent.root.watch(context)
+        watch.start(async (_view, ops) => this.broadcast({ type: "ops", ops: unchecked(ops) }))
+        
         const response = await this.agent.prompt(text)
-        this.broadcast({ type: "done" });
-
         return response
     }
 
     async reset() {
         await this.agent.root.reset(undefined, context)
-        const { messages } = await this.agent.root.context(context)
-        const messages2 = Array.from(messages);
-        this.broadcast({ type: "history", messages: chatMessages(messages2) });
     }
 
     async ringGoesInMountDoom() {
         process.exit(1)
     }
 
-    async onConnect(socket: ActorSocket<null, ChatEvent|Preview, string>) {
-        const { messages } = await this.agent.root.context(context)
-        const messages2 = Array.from(messages);
-        socket.send({ type: "history", messages: chatMessages(messages2) });
-        socket.send({ status: "ready", url: await this.sandbox.previewUrl() });
+    async onConnect(socket: ActorSocket<null, Outgoing, string>) {
+        const watch = await this.agent.root.watch(context)
+        socket.send({ type: "view", view: unchecked(watch.value) })
+        watch.start(async (_view, ops) => socket.send({ type: "ops", ops: unchecked(ops) }))
+        this.watches.set(socket.id, watch)
+        socket.send({ status: "ready", url: await this.sandbox.previewUrl() })
     }
 }
 
-function chatMessages(messages: readonly Message[]): ChatMessage[] {
-    return messages.flatMap((message) =>
-        message.role === "user" || message.role === "assistant"
-            ? [{ role: message.role, content: contentText(message.content) }]
-            : []
-    )
-}
-
 // MARK: Types
-export type ChatEvent =
-  | { type: "history"; messages: ChatMessage[] }
-  | { type: "start"; prompt: string }
-  | { type: "delta"; text: string }
-  | { type: "tool_start"; toolName: string, args: JsonObject, taskId: string }
-  | { type: "tool_end"; toolName: string, taskId: string }
-  | { type: "done" };
-
-export type ChatMessage =
-  | { role: "user"; content: string }
-  | { role: "assistant"; content: string };
+type Outgoing =
+| { type: "view"; view: Unchecked<ConversationView> }
+| { type: "ops"; ops: Unchecked<readonly Op[]> }
+| Preview
 
 export type Preview =
 | { status: "starting" }
