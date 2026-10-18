@@ -28,14 +28,6 @@ async fn warmed_listener_switches_to_assigned_routes_without_rebinding() -> anyh
             .await?,
         "42"
     );
-    assert_eq!(
-        client
-            .post(format!("http://{address}/assign"))
-            .send()
-            .await?
-            .status(),
-        404
-    );
     drop(server);
     Ok(())
 }

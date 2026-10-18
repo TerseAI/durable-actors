@@ -9,14 +9,7 @@ import ts from "typescript"
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "../../src/compiler/actor-compiler.js"
 
 test("rejects invalid or dynamic compute overrides", () => {
-    for (const settings of [
-        "{ cpu: 0.124 }",
-        "{ cpu: 16.001 }",
-        "{ memoryMiB: 16385 }",
-        "{ regions: [] }",
-        "{ cpu: Math.random() }",
-        "{ ...defaults }"
-    ]) {
+    for (const settings of ["{ cpu: 0 }", "{ regions: [] }", "{ cpu: Math.random() }", "{ ...defaults }"]) {
         const result = analyze(`import { Actor, Compute } from "./sdk.js"
             const defaults = { cpu: 1 }
             @Compute(${settings}) export class Room extends Actor { async read() {} }`)

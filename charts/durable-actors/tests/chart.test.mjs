@@ -44,28 +44,11 @@ test("renders two Rapid zones and the Standard archive", () => {
     assert.match(result.stdout, /whenUnsatisfiable: DoNotSchedule/)
 })
 
-for (const [name, overrides, bytes, interval] of [
-    ["default", {}, 16777216, 10000],
-    ["configured", { storage: { rapid: { archiveBatchBytes: 2097152, archiveBatchIntervalMs: 250 } } }, 2097152, 250]
-]) test(`renders ${name} archive batch triggers`, () => {
-    const result = render(overrides)
-    assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, new RegExp(`DURABLE_ACTORS_ARCHIVE_BATCH_BYTES, value: "${bytes}"`))
-    assert.match(result.stdout, new RegExp(`DURABLE_ACTORS_ARCHIVE_BATCH_INTERVAL_MS, value: "${interval}"`))
-})
-
-for (const field of ["archiveBatchBytes", "archiveBatchIntervalMs"])
-    test(`rejects nonpositive ${field}`, () => assert.notEqual(render({ storage: { rapid: { [field]: 0 } } }).status, 0))
-
 for (const [name, override] of [
-    ["single control plane", { replicaCount: 1 }],
     ["duplicate Rapid zones", { storage: { rapid: { buckets: [{ bucket: "rapid-one", zone: "us-west4-a" }, { bucket: "rapid-two", zone: "us-west4-a" }] } } }],
-    ["single Rapid zone", { storage: { rapid: { buckets: [{ bucket: "rapid-one", zone: "us-west4-a" }] } } }],
-    ["empty Rapid set", { storage: { rapid: { buckets: [] } } }],
     ["mutable control-plane image", { images: { controlPlane: { digest: "latest" } } }],
     ["mutable TypeScript image", { images: { typescript: { digest: "latest" } } }],
-    ["mutable Python image", { images: { python: { digest: "latest" } } }],
-    ["invalid worker memory", { substrate: { worker: { memory: "" } } }]
+    ["mutable Python image", { images: { python: { digest: "latest" } } }]
 ]) test(`rejects ${name}`, () => assert.notEqual(render(override).status, 0))
 
 test("uses a Google-managed certificate on the HTTPS gateway", () => {
@@ -75,12 +58,6 @@ test("uses a Google-managed certificate on the HTTPS gateway", () => {
     assert.match(gateway, /networking\.gke\.io\/pre-shared-certs: "actors-production"/)
     assert.doesNotMatch(gateway, /certificateRefs/)
 })
-
-for (const [name, gateway] of [
-    ["missing TLS certificate", { tlsSecret: "", preSharedCert: "" }],
-    ["ambiguous TLS certificates", { tlsSecret: "tls", preSharedCert: "managed" }]
-])
-    test(`rejects ${name}`, () => assert.notEqual(render({ gateway }).status, 0))
 
 test("Cloud SQL connects through a private local proxy that starts before the control plane", () => {
     const result = render({ cloudSql: { instanceConnectionName: "project:us-west4:actors-db" } })

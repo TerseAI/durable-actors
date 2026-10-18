@@ -305,6 +305,7 @@ fn fixture_with_idle_timeout(
                 jwt_issuer: "issuer".into(),
                 invocation_jwt_audience: "invocation".into(),
                 host_idle_timeout_ms,
+                max_resources: crate::sandbox::ResourceLimits::MAXIMUM,
             },
             issuer.clone(),
             Some(super::super::process::RuntimeImages {

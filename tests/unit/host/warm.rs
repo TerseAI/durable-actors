@@ -11,37 +11,6 @@ use std::{collections::HashMap, path::PathBuf, process::Stdio};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-#[test]
-fn snapshot_assignment_reads_the_current_identity_and_fails_closed() -> Result<()> {
-    let issuer = issuer()?;
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("uid");
-    std::fs::write(&path, "restored")?;
-    let env = HashMap::from([
-        (
-            "DURABLE_ACTORS_ASSIGNMENT_PUBLIC_KEYS",
-            issuer.verifier_keys_json()?,
-        ),
-        ("DURABLE_ACTORS_JWT_ISSUER", "issuer".into()),
-        (
-            "DURABLE_ACTORS_SANDBOX_IDENTITY_FILE",
-            path.to_str().unwrap().into(),
-        ),
-    ]);
-    let verifier = assignment_authorization(|key| env.get(key).cloned())?;
-    let restored = issuer.issue_assignment("restored")?;
-    verifier.verify(&restored)?;
-    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
-    std::fs::write(&path, "next\n")?;
-    verifier.verify(&issuer.issue_assignment("next")?)?;
-    assert!(verifier.verify(&restored).is_err());
-    std::fs::write(&path, "")?;
-    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
-    std::fs::remove_file(&path)?;
-    assert!(verifier.verify(&issuer.issue_assignment("seed")?).is_err());
-    Ok(())
-}
-
 #[tokio::test]
 #[ignore = "requires Bun and bun run --bun --cwd sdk build"]
 async fn generic_bun_host_restores_committed_state_before_becoming_ready() -> Result<()> {

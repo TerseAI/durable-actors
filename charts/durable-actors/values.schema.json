@@ -132,6 +132,7 @@
         "atespace",
         "snapshotLocation",
         "worker",
+        "maxActor",
         "egressCidrs"
       ],
       "properties": {
@@ -198,6 +199,25 @@
                   "maximum": 3600
                 }
               }
+            }
+          }
+        },
+        "maxActor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cpu",
+            "memoryMiB"
+          ],
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]{1,3})?$"
+            },
+            "memoryMiB": {
+              "type": "integer",
+              "minimum": 128,
+              "maximum": 16384
             }
           }
         },

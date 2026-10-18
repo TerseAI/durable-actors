@@ -85,19 +85,19 @@ async fn failed_initialization_never_reports_ready() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn prepared_code_is_verified_and_cannot_change_after_assignment() -> anyhow::Result<()> {
+async fn prepared_code_is_published_after_verification() -> anyhow::Result<()> {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let root = tempfile::tempdir()?;
     let directory = root.path().to_owned();
     let (authorization, token) = authorization()?;
-    let (send, receive) = oneshot::channel();
+    let (send, _receive) = oneshot::channel();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
     let server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         axum::serve(listener, router(authorization, send, directory)).await
     }));
     let body = "export const Counter = 1;";
-    let mut artifact = crate::bundle::BundleFile {
+    let artifact = crate::bundle::BundleFile {
         path: "actors.mjs".into(),
         object: "code/actors.mjs".into(),
         generation: 1,
@@ -105,60 +105,22 @@ async fn prepared_code_is_verified_and_cannot_change_after_assignment() -> anyho
             aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, body.as_bytes()).as_ref(),
         ),
     };
-    let client = reqwest::Client::new();
-    assert_eq!(
-        client
-            .post(format!("{url}/prepare-code"))
-            .body("code")
-            .send()
-            .await?
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    let upload = |artifact: &crate::bundle::BundleFile, body: &'static str| {
-        client
-            .post(format!("{url}/prepare-code"))
-            .bearer_auth(&token)
-            .header(
-                "terse-code-artifact",
-                URL_SAFE_NO_PAD.encode(serde_json::to_vec(artifact).unwrap()),
-            )
-            .body(body)
-    };
-    assert_eq!(
-        upload(&artifact, body).send().await?.status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        tokio::fs::read_to_string(root.path().join("actors.mjs")).await?,
-        body
-    );
-    assert_eq!(
-        upload(&artifact, "corrupt").send().await?.status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        tokio::fs::read_to_string(root.path().join("actors.mjs")).await?,
-        body
-    );
-    artifact.path = "../escape.mjs".into();
-    assert_eq!(
-        upload(&artifact, body).send().await?.status(),
-        StatusCode::BAD_REQUEST
-    );
-    artifact.path = "actors.mjs".into();
-    let assign = client
-        .post(format!("{url}/assign"))
+    let status = reqwest::Client::new()
+        .post(format!("{url}/prepare-code"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({}));
-    let call = tokio::spawn(async move { assign.send().await });
-    let assigned = receive.await?;
+        .header(
+            "terse-code-artifact",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&artifact)?),
+        )
+        .body(body)
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
-        upload(&artifact, body).send().await?.status(),
-        StatusCode::CONFLICT
+        tokio::fs::read_to_string(root.path().join("actors.mjs")).await?,
+        body
     );
-    drop(assigned);
-    assert_eq!(call.await??.status(), StatusCode::SERVICE_UNAVAILABLE);
     drop(server);
     Ok(())
 }

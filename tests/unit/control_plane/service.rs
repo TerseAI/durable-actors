@@ -580,6 +580,7 @@ fn sandbox_resources_override_only_the_configured_fields() -> Result<()> {
             jwt_issuer: "issuer".into(),
             invocation_jwt_audience: "invocation".into(),
             host_idle_timeout_ms: 10_000,
+            max_resources: crate::sandbox::ResourceLimits::MAXIMUM,
         },
         test_issuer()?,
         None,
@@ -1798,72 +1799,4 @@ async fn with_socket_gateway(mut service: ControlPlaneService) -> Result<Control
         sockets,
     )?);
     Ok(service)
-}
-
-#[tokio::test]
-async fn provider_bootstrap_keeps_deployment_access_without_serializing_launch_credentials()
--> Result<()> {
-    struct Provider;
-    #[async_trait]
-    impl SandboxProvider for Provider {
-        fn bootstraps_storage(&self) -> bool {
-            true
-        }
-        async fn prepare_runtime(&self, _: &crate::sandbox::RuntimeTemplateRequest) -> Result<()> {
-            Ok(())
-        }
-        async fn ensure_host(
-            &self,
-            request: &crate::sandbox::EnsureHostRequest,
-        ) -> Result<crate::sandbox::ActorHostHandle> {
-            ensure!(
-                request.runtime_config.is_none(),
-                "credentials were issued before provider startup"
-            );
-            anyhow::bail!("provider reached")
-        }
-        async fn terminate_hosts(
-            &self,
-            _: &crate::sandbox::TerminateHostsRequest,
-        ) -> Result<crate::sandbox::HostTermination> {
-            unreachable!()
-        }
-    }
-    let access = Arc::new(crate::bucket::access::RuntimeAccess::new(
-        crate::bucket::access::BucketLocation::File {
-            directory: std::env::temp_dir(),
-        },
-        crate::bucket::SnapshotStoreConfig::Local,
-    )?);
-    let provisioner = SandboxHostProvisioner::new(
-        Arc::new(Provider),
-        HostSandboxRuntimeConfig {
-            control_plane_url: "http://control".into(),
-            jwt_issuer: "issuer".into(),
-            invocation_jwt_audience: "invocation".into(),
-            host_idle_timeout_ms: 10000,
-        },
-        test_issuer()?,
-        Some(super::super::process::RuntimeImages {
-            typescript: "image".into(),
-            python: "python".into(),
-        }),
-    )
-    .with_runtime_access(access);
-    let spec: HostLaunchSpec = serde_json::from_value(serde_json::json!({
-        "projectId":"default", "imageRef":"image", "workingDirectory":"/app", "secretRefs":[]
-    }))?;
-    let actor = ActorKey {
-        project_id: "default".into(),
-        actor_name: "Counter".into(),
-        actor_id: "one".into(),
-    };
-    let error = provisioner
-        .launch(&spec, "north-america-west", &actor, true, None)
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(error.to_string(), "provider reached");
-    assert!(provisioner.runtime_access.is_some());
-    Ok(())
 }

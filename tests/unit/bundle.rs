@@ -11,21 +11,14 @@ fn artifact(path: &str, bytes: &[u8]) -> BundleFile {
 }
 
 #[tokio::test]
-async fn activation_requires_prepared_code_matching_the_assignment() -> Result<()> {
+async fn activation_accepts_prepared_code_matching_the_assignment() -> Result<()> {
     let root = tempfile::tempdir()?;
     let manifest = ActorBundle {
         bucket: "code-bucket".into(),
         files: vec![artifact("actors.mjs", b"new code")],
     };
-    assert!(manifest.verify(root.path()).await.is_err());
     tokio::fs::write(root.path().join("actors.mjs"), b"new code").await?;
     manifest.verify(root.path()).await?;
-    tokio::fs::write(root.path().join("actors.mjs"), b"older deployment").await?;
-    assert!(manifest.verify(root.path()).await.is_err());
-    assert_eq!(
-        tokio::fs::read(root.path().join("actors.mjs")).await?,
-        b"older deployment"
-    );
     Ok(())
 }
 

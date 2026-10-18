@@ -133,6 +133,8 @@ spec:
             - {name: DURABLE_ACTORS_SUBSTRATE_WORKER_LABELS, value: {{ $.Values.substrate.workerLabels | toJson | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_SANDBOX_CONFIG, value: {{ $.Values.substrate.sandboxConfig | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_SNAPSHOTS, value: {{ $.Values.substrate.snapshotLocation | quote }}}
+            - {name: DURABLE_ACTORS_MAX_ACTOR_CPU, value: {{ $.Values.substrate.maxActor.cpu | quote }}}
+            - {name: DURABLE_ACTORS_MAX_ACTOR_MEMORY_MIB, value: {{ $.Values.substrate.maxActor.memoryMiB | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_EGRESS_CIDRS, value: {{ $.Values.substrate.egressCidrs | toJson | quote }}}
             - {name: DURABLE_ACTORS_SUBSTRATE_TOKEN_FILE, value: /run/substrate/token}
             - {name: DURABLE_ACTORS_SUBSTRATE_TRUST_BUNDLE, value: /run/substrate/trust-bundle.pem}

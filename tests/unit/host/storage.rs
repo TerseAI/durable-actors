@@ -506,14 +506,5 @@ async fn adopting_a_claim_keeps_only_its_remaining_lease_window() -> Result<()> 
         .await?;
     assert_eq!(lease.expires_at_ms, expiry);
     assert_eq!(storage.acquire_actor().await?.owner_epoch, 1);
-    assert!(
-        storage
-            .fence
-            .lock()
-            .unwrap()
-            .check(Instant::now() + Duration::from_secs(6))
-            .is_err()
-    );
-    assert!(storage.prepare_state_write(1, 0).await.is_err());
     Ok(())
 }

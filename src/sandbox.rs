@@ -1,5 +1,5 @@
 pub(crate) mod transport;
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,52 @@ impl Default for ResourceLimits {
             memory_mib: 128,
         }
     }
+}
+
+impl ResourceLimits {
+    pub const MAXIMUM: Self = Self {
+        cpu_millis: 16_000,
+        memory_mib: 16_384,
+    };
+
+    pub(crate) fn fits_within(&self, maximum: &Self) -> bool {
+        self.cpu_millis <= maximum.cpu_millis && self.memory_mib <= maximum.memory_mib
+    }
+}
+
+pub(crate) fn max_actor_resources(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<ResourceLimits> {
+    let maximum = ResourceLimits {
+        cpu_millis: match get("DURABLE_ACTORS_MAX_ACTOR_CPU") {
+            Some(cores) => cpu_millis(&cores)?,
+            None => ResourceLimits::MAXIMUM.cpu_millis,
+        },
+        memory_mib: match get("DURABLE_ACTORS_MAX_ACTOR_MEMORY_MIB") {
+            Some(mib) => mib
+                .parse()
+                .context("DURABLE_ACTORS_MAX_ACTOR_MEMORY_MIB must be an integer")?,
+            None => ResourceLimits::MAXIMUM.memory_mib,
+        },
+    };
+    ensure!(
+        ResourceLimits::default().fits_within(&maximum)
+            && maximum.fits_within(&ResourceLimits::MAXIMUM),
+        "max actor resources must cover the 0.25 CPU and 128 MiB default and stay within 16 CPU and 16384 MiB"
+    );
+    Ok(maximum)
+}
+
+fn cpu_millis(cores: &str) -> Result<u32> {
+    let cores: f64 = cores
+        .parse()
+        .context("DURABLE_ACTORS_MAX_ACTOR_CPU must be a number of cores")?;
+    let millis = (cores * 1000.0).round();
+    ensure!(
+        cores.is_finite() && (cores * 1000.0 - millis).abs() < 1e-8,
+        "DURABLE_ACTORS_MAX_ACTOR_CPU must use increments of 0.001"
+    );
+    Ok(millis as u32)
 }
 
 pub struct RuntimeTemplateRequest {
@@ -145,6 +191,7 @@ pub struct HostSandboxRuntimeConfig {
     pub jwt_issuer: String,
     pub invocation_jwt_audience: String,
     pub host_idle_timeout_ms: u64,
+    pub max_resources: ResourceLimits,
 }
 
 #[cfg(test)]

@@ -902,13 +902,7 @@ impl HostProvisioner for SandboxHostProvisioner {
             .for_entrypoint(manifest.entrypoint()?)?
             .into();
         prepared.validate()?;
-        let mut resources = vec![crate::sandbox::ResourceLimits::default()];
-        for options in prepared.sandboxes.values() {
-            let limits = options.resources(crate::sandbox::ResourceLimits::default());
-            if !resources.contains(&limits) {
-                resources.push(limits);
-            }
-        }
+        let resources = self.resource_shapes(&prepared.sandboxes)?;
         self.provider
             .prepare_runtime(&crate::sandbox::RuntimeTemplateRequest {
                 code_snapshot: prepared.code_snapshot.clone(),
@@ -953,6 +947,29 @@ impl HostProvisioner for SandboxHostProvisioner {
 }
 
 impl SandboxHostProvisioner {
+    fn resource_shapes(
+        &self,
+        sandboxes: &std::collections::BTreeMap<String, super::contracts::SandboxOptions>,
+    ) -> Result<Vec<crate::sandbox::ResourceLimits>> {
+        let maximum = &self.runtime.max_resources;
+        let mut shapes = vec![crate::sandbox::ResourceLimits::default()];
+        for (actor, options) in sandboxes {
+            let limits = options.resources(crate::sandbox::ResourceLimits::default());
+            ensure!(
+                limits.fits_within(maximum),
+                "actor {actor} requests {}m CPU and {} MiB; this deployment allows at most {}m CPU and {} MiB",
+                limits.cpu_millis,
+                limits.memory_mib,
+                maximum.cpu_millis,
+                maximum.memory_mib
+            );
+            if !shapes.contains(&limits) {
+                shapes.push(limits);
+            }
+        }
+        Ok(shapes)
+    }
+
     async fn launch(
         &self,
         spec: &HostLaunchSpec,

@@ -565,6 +565,7 @@ fn sandbox_provider_config(
             jwt_issuer: jwt_issuer.into(),
             invocation_jwt_audience: invocation_audience.into(),
             host_idle_timeout_ms: crate::host::host_idle_timeout_ms(get)?,
+            max_resources: crate::sandbox::max_actor_resources(get)?,
         },
     })
 }

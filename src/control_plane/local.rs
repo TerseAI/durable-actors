@@ -350,6 +350,7 @@ async fn local_routes(
         host_idle_timeout_ms: crate::host::host_idle_timeout_ms(&mut |name| {
             std::env::var(name).ok()
         })?,
+        max_resources: crate::sandbox::max_actor_resources(&mut |name| std::env::var(name).ok())?,
     };
     let max_socket_connections =
         crate::sockets::max_connections(&mut |name| std::env::var(name).ok())?;

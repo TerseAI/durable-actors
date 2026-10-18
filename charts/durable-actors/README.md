@@ -82,7 +82,7 @@ Actor-scoped credentials cover only the ownership object, the actor's log and ar
 
 ## Capacity and deployment
 
-The chart creates a shared `WorkerPool`. Each actor's `@Compute` CPU and memory become Substrate resource limits. Size `substrate.worker` for concurrent actor reservations and snapshot preparation; worker replicas and nodes must have enough capacity for those reservations.
+The chart creates a shared `WorkerPool`. Each actor's `@Compute` CPU and memory become Substrate resource limits. `substrate.maxActor` caps the shapes accepted at deploy time; larger requests fail with a 400. Keep it within `substrate.worker`, because an actor must fit inside one worker. Size `substrate.worker` for concurrent actor reservations and snapshot preparation; worker replicas and nodes must have enough capacity for those reservations.
 
 Deployment registration prepares snapshots containing the runtime and customer code for each resource shape. Customer modules execute only after activation. Snapshot restoration runs alongside scoped credential issuance and ownership acquisition; `/assign` passes the ownership grant to the host, which verifies the restored code and remaining lease before becoming ready. Idle hosts shut down and release worker capacity.
 
