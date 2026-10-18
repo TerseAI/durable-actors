@@ -30,8 +30,14 @@ export class PiAgent extends Actor<null, string, Outgoing> {
         const watch = await this.agent.root.watch(context)
         watch.start(async (_view, ops) => this.broadcast({ type: "ops", ops: unchecked(ops) }))
         
-        const response = await this.agent.prompt(text)
-        return response
+        try {
+            return await this.agent.prompt(text)
+        } finally {
+            await watch.stop()
+            const latest = await this.agent.root.watch(context)
+            this.broadcast({ type: "view", view: unchecked(latest.value) })
+            await latest.stop()
+        }
     }
 
     async reset() {
