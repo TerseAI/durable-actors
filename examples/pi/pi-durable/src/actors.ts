@@ -1,9 +1,9 @@
 import { DurablePiAgent } from "@durable-actors/pi-durable"
-import { contentText, createModels, Message, Type } from "@earendil-works/pi-ai"
+import { createModels } from "@earendil-works/pi-ai"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import { ConversationView, ConversationWatch, createRegistry, TaskId, watchEvents } from "@earendil-works/pi-durable"
+import { ConversationView, createRegistry } from "@earendil-works/pi-durable"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Actor, Resource, Interleave, ActorSocket, Ephemeral, Unchecked, unchecked } from "durable-actors"
+import { Actor, Resource, Interleave, ActorSocket, Unchecked, unchecked } from "durable-actors"
 import { CodingTools } from "@earendil-works/pi-durable/tools"
 import { ModalSandbox } from "./modal/SandboxResource.js";
 import { Op } from "@earendil-works/chord/delta";
@@ -38,9 +38,12 @@ export class PiAgent extends Actor<null, string, Outgoing> {
 
     async reset() {
         await this.agent.root.reset(undefined, context)
+        const watch = await this.agent.root.watch(context)
+        this.broadcast({ type: "view", view: unchecked(watch.value) })
+        await watch.stop()
     }
 
-    async onConnect(socket: ActorSocket<null, Outgoing, string>) {
+    async onConnect(socket: ActorSocket<null, Outgoing>) {
         const watch = await this.agent.root.watch(context)
         socket.send({ type: "view", view: unchecked(watch.value) })
         await watch.stop()
