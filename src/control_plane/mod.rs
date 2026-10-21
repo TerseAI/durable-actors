@@ -45,6 +45,9 @@ pub(crate) use self::{
     service::ControlPlaneService,
 };
 
+// Gateways switch to the bus in the next change.
+#[cfg_attr(not(test), allow(dead_code))]
+mod socket_bus;
 mod socket_directory;
 pub(crate) mod socket_gateway;
 mod socket_inventory;

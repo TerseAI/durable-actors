@@ -26,6 +26,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 mod redis;
+pub(crate) use self::redis::Redis;
 pub use self::redis::RedisConfig;
 
 /// Where a cache keeps its entries.
@@ -150,6 +151,11 @@ impl Caches {
                 }
             }
         });
+    }
+
+    /// The Redis connection, for state that is not a cache but lives with them.
+    pub fn redis_connection(&self) -> Option<Redis> {
+        self.redis.clone()
     }
 
     /// Checks Redis once, so a misconfigured URL or credential shows up at

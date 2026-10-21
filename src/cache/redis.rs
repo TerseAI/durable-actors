@@ -1,5 +1,6 @@
-//! Shared caches in Redis: one multiplexed connection per process, JSON values,
-//! and an expiry on every write.
+//! Redis: one multiplexed connection per process, shared by the caches (JSON
+//! values, an expiry on every write) and the socket bus, which also opens its
+//! own pub/sub connection.
 
 use super::Store;
 use anyhow::{Context, Result, anyhow};
@@ -47,7 +48,8 @@ const SILENCE: Duration = Duration::from_secs(2);
 type Breaker = failsafe::StateMachine<ConsecutiveFailures<Constant>, ()>;
 
 #[derive(Clone)]
-pub(super) struct Redis {
+pub(crate) struct Redis {
+    client: redis::Client,
     connection: ConnectionManager,
     breaker: Breaker,
     liveness: Arc<Liveness>,
@@ -67,7 +69,7 @@ impl Redis {
         }
         .context("configure Redis client")?;
         let connection = ConnectionManager::new_lazy_with_config(
-            client,
+            client.clone(),
             ConnectionManagerConfig::new()
                 .set_connection_timeout(Some(Duration::from_secs(1)))
                 .set_response_timeout(Some(COMMAND_TIMEOUT))
@@ -75,6 +77,7 @@ impl Redis {
         )
         .context("configure Redis connection")?;
         Ok(Self {
+            client,
             connection,
             breaker: failsafe::Config::new()
                 .failure_policy(consecutive_failures(1, backoff::constant(BACKOFF)))
@@ -96,7 +99,15 @@ impl Redis {
         self.run::<String>(redis::cmd("PING")).await.map(drop)
     }
 
-    async fn run<T: redis::FromRedisValue>(&self, command: redis::Cmd) -> Result<T> {
+    /// A dedicated connection for subscribing to channels.
+    pub(crate) async fn pubsub(&self) -> Result<redis::aio::PubSub> {
+        tokio::time::timeout(Duration::from_secs(5), self.client.get_async_pubsub())
+            .await
+            .context("Redis pub/sub connection timed out")?
+            .context("open Redis pub/sub connection")
+    }
+
+    pub(crate) async fn run<T: redis::FromRedisValue>(&self, command: redis::Cmd) -> Result<T> {
         let mut connection = self.connection.clone();
         let attempt = async {
             match tokio::time::timeout(COMMAND_TIMEOUT, command.query_async(&mut connection)).await
