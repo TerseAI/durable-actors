@@ -3,16 +3,21 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
-use gcp_auth::TokenProvider;
-use google_cloud_auth::credentials::{AccessTokenCredentials, Builder};
+use reqsign_core::{ErrorKind, Granter, OsEnv, ProvideCredential, ProvideCredentialChain};
+use reqsign_file_read_tokio::TokioFileRead;
+use reqsign_google::{
+    ClientSideCredentialAccessBoundaryGranter, Credential, CredentialAccessBoundaryGrant,
+    CredentialAccessBoundaryPermissions as Permissions, EnvCredentialProvider,
+    ServiceAccountTokenCredentialProvider, VmMetadataCredentialProvider,
+};
+use reqsign_http_send_reqwest::ReqwestHttpSend;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
 
-use crate::clock::{Clock, SystemClock};
-
-mod client_side;
+/// Tokens expire with the intermediary credential, which expires with the source token. The
+/// metadata server serves one source token until about 5 minutes before it expires, so the
+/// library's 30-minute default would refuse to mint for much of each hour. Hosts refresh 60 s
+/// before expiry.
+const MINIMUM_TOKEN_LIFETIME: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,14 +68,7 @@ impl RuntimeAccess {
     pub fn new(location: BucketLocation, persistence: super::SnapshotStoreConfig) -> Result<Self> {
         Ok(Self {
             token_source: match &location {
-                BucketLocation::Gcs { .. } => Some(Box::new(client_side::ClientSideTokens::new(
-                    Box::new(GcsIntermediaryExchange {
-                        credentials: StorageCredentials::new()?,
-                        http: reqwest::Client::builder()
-                            .timeout(Duration::from_secs(20))
-                            .build()?,
-                    }),
-                ))),
+                BucketLocation::Gcs { .. } => Some(Box::new(ClientSideTokens::from_environment()?)),
                 BucketLocation::File { .. } => None,
             },
             location,
@@ -142,221 +140,117 @@ trait StorageTokenSource: Send + Sync {
     async fn issue(&self, rules: &[Rule]) -> Result<StorageToken>;
 }
 
-struct GcsIntermediaryExchange {
-    credentials: StorageCredentials,
-    http: reqwest::Client,
+struct ClientSideTokens {
+    granter: Granter<Credential>,
+    boundaries: ClientSideCredentialAccessBoundaryGranter,
 }
 
-#[async_trait]
-impl client_side::IntermediaryExchange for GcsIntermediaryExchange {
-    async fn exchange(&self) -> Result<client_side::IntermediaryToken> {
-        let source = self.credentials.token().await?;
-        let mut form = reqwest::Url::parse("https://sts.googleapis.com/")?;
-        form.query_pairs_mut().extend_pairs([
-            (
-                "grant_type",
-                "urn:ietf:params:oauth:grant-type:token-exchange",
-            ),
-            (
-                "subject_token_type",
-                "urn:ietf:params:oauth:token-type:access_token",
-            ),
-            (
-                "requested_token_type",
-                "urn:ietf:params:oauth:token-type:access_boundary_intermediary_token",
-            ),
-            ("subject_token", &source),
-        ]);
-        let started = SystemClock.now_ms()?;
-        let response = self.exchange_token(form.query().unwrap()).await?;
-        #[derive(Deserialize)]
-        struct Token {
-            access_token: String,
-            expires_in: u64,
-            access_boundary_session_key: String,
+impl ClientSideTokens {
+    /// Signs in with the service-account key named by `GOOGLE_APPLICATION_CREDENTIALS`, or
+    /// otherwise through the metadata server (Workload Identity on GKE).
+    fn from_environment() -> Result<Self> {
+        let context = reqsign_core::Context::new()
+            .with_http_send(ReqwestHttpSend::new(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()?,
+            ))
+            .with_file_read(TokioFileRead)
+            .with_env(OsEnv);
+        let source = ProvideCredentialChain::new()
+            .push(ServiceAccountTokenCredentialProvider::from_provider(
+                EnvCredentialProvider::new(),
+            ))
+            .push(VmMetadataCredentialProvider::new());
+        Ok(Self::new(context, source))
+    }
+
+    fn new(
+        context: reqsign_core::Context,
+        source: impl ProvideCredential<Credential = Credential> + 'static,
+    ) -> Self {
+        // Never granted: each issue swaps in the actor's grant, and an empty bucket name fails
+        // validation. Clones share the source token and intermediary caches.
+        let boundaries = ClientSideCredentialAccessBoundaryGranter::new(
+            CredentialAccessBoundaryGrant::for_bucket("", Permissions::OBJECT_VIEWER),
+        )
+        .with_minimum_token_lifetime(MINIMUM_TOKEN_LIFETIME);
+        Self {
+            granter: Granter::new(context, source, boundaries.clone()),
+            boundaries,
         }
-        let token: Token = response.json().await.context(
-            "exchange intermediary GCS credentials (service-account credentials required)",
-        )?;
-        ensure!(
-            token.expires_in > 60,
-            "GCS credential lifetime is too short"
-        );
-        Ok(client_side::IntermediaryToken {
-            access_token: token.access_token,
-            expires_at_ms: started + (token.expires_in - 30) * 1000,
-            session_key: token.access_boundary_session_key,
-        })
     }
 }
 
-impl GcsIntermediaryExchange {
-    async fn exchange_token(&self, form: &str) -> reqwest::Result<reqwest::Response> {
+#[async_trait]
+impl StorageTokenSource for ClientSideTokens {
+    async fn issue(&self, rules: &[Rule]) -> Result<StorageToken> {
+        let granter = self
+            .granter
+            .clone()
+            .with_credential_granter(self.boundaries.clone().with_grant(grant(rules)?));
         let mut attempt = 1;
-        (|| async {
-            self.http
-                .post("https://sts.googleapis.com/v1/token")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(form.to_owned())
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await?
-                .error_for_status()
-        })
-        .retry(
-            ExponentialBuilder::default()
-                .with_min_delay(Duration::from_millis(250))
-                .with_max_times(3)
-                .with_jitter(),
-        )
-        .when(|error: &reqwest::Error| {
-            error.is_connect()
-                || error.is_timeout()
-                || matches!(
-                    error.status().map(|status| status.as_u16()),
-                    Some(429 | 500 | 502 | 503 | 504)
-                )
-        })
-        .adjust(|error, delay| throttled_delay(error.status(), delay))
-        .notify(|error, delay| {
-            attempt += 1;
-            tracing::warn!(attempt, status = ?error.status(), delay_ms = delay.as_millis(),
-                "retrying intermediary GCS credential exchange");
-        })
-        .await
+        let credential = (|| granter.grant(None))
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(Duration::from_millis(250))
+                    .with_max_times(3)
+                    .with_jitter(),
+            )
+            .when(reqsign_core::Error::is_retryable)
+            .adjust(|error, delay| throttled_delay(error.kind(), delay))
+            .notify(|error, delay| {
+                attempt += 1;
+                tracing::warn!(attempt, %error, delay_ms = delay.as_millis(),
+                    "retrying scoped GCS credential grant");
+            })
+            .await?;
+        storage_token(credential.token.context("GCS credential has no token")?)
     }
 }
 
 /// A 429 means the project-wide STS quota is exhausted, so retrying on the transient
 /// schedule only adds to the next rejection.
-fn throttled_delay(
-    status: Option<reqwest::StatusCode>,
-    delay: Option<Duration>,
-) -> Option<Duration> {
-    delay.map(|delay| match status {
-        Some(reqwest::StatusCode::TOO_MANY_REQUESTS) => delay + Duration::from_secs(1),
+fn throttled_delay(kind: ErrorKind, delay: Option<Duration>) -> Option<Duration> {
+    delay.map(|delay| match kind {
+        ErrorKind::RateLimited => delay + Duration::from_secs(1),
         _ => delay,
     })
 }
 
-enum StorageCredentials {
-    ServiceAccount(String),
-    ApplicationDefault(AccessTokenCredentials),
+fn storage_token(token: reqsign_google::Token) -> Result<StorageToken> {
+    let expires_at = token.expires_at.context("GCS credential has no expiry")?;
+    Ok(StorageToken {
+        access_token: token.access_token,
+        expires_at_ms: expires_at
+            .as_system_time()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+            .try_into()?,
+    })
 }
 
-impl StorageCredentials {
-    fn new() -> Result<Self> {
-        if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
-            let document = std::fs::read_to_string(path)?;
-            let value: Value = serde_json::from_str(&document)?;
-            if value["type"] == "service_account" {
-                gcp_auth::CustomServiceAccount::from_json(&document)?;
-                return Ok(Self::ServiceAccount(document));
-            }
-        }
-        Ok(Self::ApplicationDefault(
-            Builder::default().build_access_token_credentials()?,
-        ))
-    }
-
-    async fn token(&self) -> Result<String> {
-        match self {
-            // STS requires an OAuth access token, not the default library's self-signed JWT. The
-            // intermediary expires with this token, and gcp_auth reuses a cached one until 20 s
-            // before expiry, so each exchange signs in afresh.
-            Self::ServiceAccount(document) => {
-                Ok(gcp_auth::CustomServiceAccount::from_json(document)?
-                    .token(&["https://www.googleapis.com/auth/cloud-platform"])
-                    .await?
-                    .as_str()
-                    .to_owned())
-            }
-            Self::ApplicationDefault(credentials) => Ok(credentials.access_token().await?.token),
-        }
-    }
+fn grant(rules: &[Rule]) -> Result<CredentialAccessBoundaryGrant> {
+    let (first, rest) = rules
+        .split_first()
+        .context("credential boundary has no rules")?;
+    Ok(rest.iter().fold(
+        CredentialAccessBoundaryGrant::for_object_prefix(
+            &first.bucket,
+            &first.prefix,
+            first.permissions,
+        ),
+        |grant, rule| grant.with_object_prefix_rule(&rule.bucket, &rule.prefix, rule.permissions),
+    ))
 }
 
-/// One Credential Access Boundary rule. Its condition is an OR of terms, rendered as CEL text for
-/// server-side boundaries and compiled to an expression tree for client-side ones.
+/// Grants `permissions` on the objects in `bucket` whose names start with `prefix`, including
+/// listing them.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Rule {
-    pub bucket: String,
-    pub roles: &'static [&'static str],
-    pub terms: Vec<Term>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum Term {
-    /// `resource.name == <object resource>`
-    Equals(String),
-    /// `resource.name.startsWith(<object resource prefix>)`
-    StartsWith(String),
-    /// `api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith(<prefix>)`
-    ListPrefix(String),
-}
-
-const LIST_PREFIX_ATTRIBUTE: &str = "storage.googleapis.com/objectListPrefix";
-
-impl Rule {
-    fn resource(&self) -> String {
-        format!(
-            "//storage.googleapis.com/projects/_/buckets/{}",
-            self.bucket
-        )
-    }
-
-    fn permissions(&self) -> Vec<String> {
-        self.roles
-            .iter()
-            .map(|role| format!("inRole:roles/{role}"))
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn expression(&self) -> Result<String> {
-        let terms = self
-            .terms
-            .iter()
-            .map(|term| {
-                Ok(match term {
-                    Term::Equals(name) => {
-                        format!("resource.name == {}", serde_json::to_string(name)?)
-                    }
-                    Term::StartsWith(prefix) => {
-                        format!(
-                            "resource.name.startsWith({})",
-                            serde_json::to_string(prefix)?
-                        )
-                    }
-                    Term::ListPrefix(prefix) => format!(
-                        "api.getAttribute('{LIST_PREFIX_ATTRIBUTE}', '').startsWith({})",
-                        serde_json::to_string(prefix)?
-                    ),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(terms.join(" || "))
-    }
-}
-
-/// The server-side form of the boundary, as STS `options` would take it.
-#[cfg(test)]
-fn boundary(
-    bucket: &str,
-    persistence: &super::SnapshotStoreConfig,
-    artifact_bucket: Option<&str>,
-    actor: &crate::actor::ActorKey,
-    code: Option<&crate::bundle::ActorBundle>,
-) -> Result<Value> {
-    let rules = rules(bucket, persistence, artifact_bucket, actor, code)?
-        .iter()
-        .map(|rule| {
-            Ok(json!({"availableResource": rule.resource(),
-                "availablePermissions": rule.permissions(),
-                "availabilityCondition": {"expression": rule.expression()?}}))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"accessBoundary": {"accessBoundaryRules": rules}}))
+struct Rule {
+    bucket: String,
+    prefix: String,
+    permissions: Permissions,
 }
 
 fn rules(
@@ -366,29 +260,30 @@ fn rules(
     actor: &crate::actor::ActorKey,
     code: Option<&crate::bundle::ActorBundle>,
 ) -> Result<Vec<Rule>> {
-    let owner = format!(
-        "projects/_/buckets/{bucket}/objects/{}",
-        crate::storage_paths::owner(&actor.storage_key())?
-    );
-    let mut rules = vec![Rule {
-        bucket: bucket.into(),
-        roles: &["storage.objectUser"],
-        terms: vec![Term::Equals(owner)],
-    }];
+    let snapshots = Permissions::OBJECT_VIEWER | Permissions::OBJECT_CREATOR;
+    // Owner paths end in `<base64url id>.json`, and base64url has no `.`, so this prefix matches
+    // only this actor's owner object.
+    let mut rules = vec![rule(
+        bucket,
+        crate::storage_paths::owner(&actor.storage_key())?,
+        Permissions::OBJECT_USER,
+    )];
     let prefix = crate::storage_paths::snapshots(actor)?;
     match persistence {
-        super::SnapshotStoreConfig::Local => rules.push(snapshot_rule(bucket, &[&prefix], false)),
+        super::SnapshotStoreConfig::Local => rules.push(rule(bucket, prefix, snapshots)),
         super::SnapshotStoreConfig::Rapid {
             archive_bucket,
             buckets,
             ..
         } => {
             let prefix = super::rapid::object_name(&prefix)?;
-            rules.push(snapshot_rule(archive_bucket, &[&prefix], false));
             let logs = prefix.replacen("snapshots-", "logs-", 1);
-            for placement in buckets {
-                rules.push(snapshot_rule(&placement.bucket, &[&logs], true));
-            }
+            rules.push(rule(archive_bucket, prefix, snapshots));
+            rules.extend(
+                buckets.iter().map(|placement| {
+                    rule(&placement.bucket, logs.clone(), Permissions::OBJECT_USER)
+                }),
+            );
         }
     }
 
@@ -397,37 +292,20 @@ fn rules(
             Some(code.bucket.as_str()) == artifact_bucket,
             "code artifact belongs to another bucket"
         );
-        rules.push(Rule {
-            bucket: code.bucket.clone(),
-            roles: &["storage.objectViewer"],
-            terms: vec![Term::StartsWith(format!(
-                "projects/_/buckets/{}/objects/{}",
-                code.bucket,
-                artifact_prefix(code)?,
-            ))],
-        });
+        rules.push(rule(
+            &code.bucket,
+            artifact_prefix(code)?,
+            Permissions::OBJECT_VIEWER,
+        ));
     }
     Ok(rules)
 }
 
-fn snapshot_rule(bucket: &str, prefixes: &[&str], mutable: bool) -> Rule {
-    let terms = prefixes
-        .iter()
-        .flat_map(|prefix| {
-            [
-                Term::StartsWith(format!("projects/_/buckets/{bucket}/objects/{prefix}")),
-                Term::ListPrefix((*prefix).to_owned()),
-            ]
-        })
-        .collect();
+fn rule(bucket: &str, prefix: String, permissions: Permissions) -> Rule {
     Rule {
         bucket: bucket.into(),
-        roles: if mutable {
-            &["storage.objectUser"]
-        } else {
-            &["storage.objectViewer", "storage.objectCreator"]
-        },
-        terms,
+        prefix,
+        permissions,
     }
 }
 
