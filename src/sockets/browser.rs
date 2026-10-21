@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 
 use super::{OutboundMessage, SocketReceiver, SocketRegistry, socket_channel};
 use crate::actor::{
-    ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
+    ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketEvent, ActorSocketInvocation,
     ActorSocketMessage, validate_socket_effects,
 };
 use crate::control_plane::socket_ticket::SocketTicket;
@@ -23,6 +23,16 @@ pub(crate) trait SocketDispatcher: Send + Sync {
         ticket: &SocketTicket,
         invocation: ActorSocketInvocation,
     ) -> Result<Vec<ActorSocketEffect>>;
+    /// Delivers the effects a socket event produced to every socket of the actor.
+    async fn deliver(
+        &self,
+        registry: &SocketRegistry,
+        actor: &ActorKey,
+        effects: Vec<ActorSocketEffect>,
+    ) -> Result<()> {
+        registry.apply(actor, effects).await;
+        Ok(())
+    }
     fn notify(&self, _ticket: &SocketTicket, _event: &ActorSocketEvent) {}
 }
 
@@ -300,7 +310,10 @@ async fn dispatch(
             state.registry.activate(&ticket.actor, &connection.id).await;
         }
     }
-    state.registry.apply(&ticket.actor, effects).await;
+    state
+        .dispatcher
+        .deliver(&state.registry, &ticket.actor, effects)
+        .await?;
     state.dispatcher.notify(ticket, &event);
     Ok(())
 }

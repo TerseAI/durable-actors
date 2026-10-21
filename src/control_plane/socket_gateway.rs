@@ -270,6 +270,16 @@ impl SocketDispatcher for GatewaySocketDispatcher {
         }
         result
     }
+    /// The actor's sockets may sit on several gateways, so its effects go
+    /// through the bus, back to this one too.
+    async fn deliver(
+        &self,
+        _: &SocketRegistry,
+        actor: &ActorKey,
+        effects: Vec<ActorSocketEffect>,
+    ) -> Result<()> {
+        self.gateway.bus.publish(actor, effects).await
+    }
     fn notify(&self, ticket: &SocketTicket, event: &crate::actor::ActorSocketEvent) {
         self.service
             .deliver_socket_message_event(&ticket.actor, None, event);
