@@ -57,6 +57,7 @@ moka = { version = "0.12", features = ["future"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks"], default-features = false }
 memmap2 = "0.9"
 backon = "1"
+redis = { version = "1.7.1", default-features = false, features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 reqsign-core = "3.3.2"
 reqsign-http-send-reqwest = "4.0.7"
 reqsign-file-read-tokio = "3.0.7"

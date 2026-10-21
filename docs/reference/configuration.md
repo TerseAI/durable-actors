@@ -33,14 +33,14 @@ Configuration uses environment variables. Precedence is to use exported variable
 
 | Variable                                | Default | Description                                                                                                                          |
 | --------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS` | `32768` | Per-actor connection limit; 1–32,768, including pending connect handlers. Actual capacity depends on workload and gateway resources. |
+| `DURABLE_ACTORS_SOCKET_MAX_CONNECTIONS` | `32768` | Per-actor connection limit on each process; 1–32,768, including pending connect handlers. Actual capacity depends on workload and gateway resources. |
 
 ## Capacity and placement
 
 | Variable                              | Default | Description                                                                                                                                                                                                                                                                                 |
 | ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DURABLE_ACTORS_HOST_IDLE_TIMEOUT_MS` | `10000` | Actor idle time before eviction; 1–86400000 ms. Applies locally too. Method calls and WebSocket handlers reset the timer; running handlers defer eviction. Open WebSockets remain at the gateway and do not keep the sandbox alive. Automatic gateway replies do not reset actor idle time. |
-| `DURABLE_ACTORS_HOST_STARTUP_MS`      | `10000` | Positive actor-host startup timeout in milliseconds.                                                                                                                                                                                                                                        |
+| `DURABLE_ACTORS_HOST_STARTUP_MS`      | `30000` | Executor startup timeout in milliseconds. Actor hosts set it to three times the Rapid operation timeout.                                                                                                                                                                                    |
 | `DURABLE_ACTORS_SPARE_IDLE`           | `64`    | Ready actor sandboxes per image and configured compute region; must not exceed the fleet budget. Zero creates hosts on demand. Control-plane replicas must share pool settings. Customer secrets are installed at assignment.                                                               |
 | `DURABLE_ACTORS_SPARE_FLEET_MAX`      | `256`   | Maximum unassigned spares across pools. Active actors do not count against this budget.                                                                                                                                                                                                     |
 | `DURABLE_ACTORS_SPARE_MAX_STARTING`   | `32`    | Maximum simultaneous spare starts across control-plane replicas.                                                                                                                                                                                                                            |
@@ -71,11 +71,12 @@ Use the [self-hosting guide](../self-hosting.md) and [Helm chart](../../charts/d
 | `DURABLE_ACTORS_CONTROL_PLANE_BIND` | Listen address, `0.0.0.0:7100` in the chart. |
 | `DURABLE_ACTORS_ALARM_POLL_INTERVAL_MS` | Interval for checking due alarms, default `100` milliseconds. The chart sets it from `alarms.pollIntervalMs`. Shorter intervals reduce polling delay and increase database load. |
 | `DURABLE_ACTORS_CONTROL_PLANE_URL` | Private Kubernetes Service origin reachable from sandboxes. |
-| `DURABLE_ACTORS_GATEWAY_ROUTE` | Private HTTP origin of the gateway pod; the chart uses its pod IP. |
-| `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process can own socket rooms; defaults to `true`. |
+| `DURABLE_ACTORS_GATEWAY_ACCEPT_CONNECTIONS` | Whether this process accepts browser WebSockets; defaults to `true`. |
 | `DURABLE_ACTORS_PUBLIC_URL` | Public HTTPS origin for client invocation and socket routing. |
 | `DURABLE_ACTORS_POSTGRES_URL` | Registry, trace, and spare bookkeeping database; the user needs migration privileges. |
-| `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing, trace writes, alarm polling, and socket ownership share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
+| `DURABLE_ACTORS_POSTGRES_MAX_CONNECTIONS` | PostgreSQL pool size per process, default `8`, range 1–1,000. The chart sets it from `postgres.maxConnections`. Invocation routing, trace writes, and alarm polling share the pool. Budget the database's connection limit for this pool size times the controller replica count, plus other database clients. |
+| `DURABLE_ACTORS_REDIS_URL` | Redis that carries socket messages between processes; required with more than one. `redis://host:6379`, or `rediss://:password@host:6378` for TLS. If the connection drops, the process closes its sockets with `1012` and browsers reconnect. Unset, a single process keeps everything in memory. The chart reads it from the key named by `redis.urlSecretKey`. |
+| `DURABLE_ACTORS_REDIS_CA_CERT` | PEM CA for a `rediss://` server with a private CA, such as Memorystore. The chart reads it from the key named by `redis.caSecretKey`. |
 | `DURABLE_ACTORS_PERSISTENCE` | `standard` by default. Select `rapid` for two-zone Rapid append logs with Standard archives. |
 | `DURABLE_ACTORS_BUCKET` | Standard GCS bucket for ownership and, in Standard mode, immutable state snapshots. |
 | `DURABLE_ACTORS_ARTIFACT_BUCKET` | Immutable compiled actor code. Defaults to `DURABLE_ACTORS_BUCKET` in Standard mode; the chart uses that bucket in both modes. |
